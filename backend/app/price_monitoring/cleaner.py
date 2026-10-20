@@ -116,6 +116,37 @@ def extract_generic_nomenclature_codes(name: str) -> list[str]:
     return codes
 
 
+def is_drawing_or_part_code(token: str, full_text: str = "") -> bool:
+    """
+    Определяет, является ли токен специализированным номером заводского чертежа или артикулом детали (Правило 14).
+    Отличает чертежи от геометрических размеров (3х2.5, 1000х2000) и стандартов (ГОСТ 7798-70, DIN 912).
+    """
+    token = token.strip("()[]{}<>\"'*#№!, ")
+    if len(token) < 4:
+        return False
+    # Геометрические габариты (3х2.5, 50х150, 1000х2000) - это характеристики, а не чертежи
+    if re.fullmatch(r'\d+(?:[.,]\d+)?\s*[xхXХ*]\s*\d+(?:[.,]\d+)?(?:\s*[xхXХ*]\s*\d+(?:[.,]\d+)?)?', token):
+        return False
+    # Общепринятые стандарты (ГОСТ, ОСТ, ТУ, DIN, ISO) - публичные нормативные документы, а не закрытые чертежи
+    if full_text and re.search(r'\b(?:гост|ост|ту|din|iso)\s*' + re.escape(token), full_text, re.I):
+        return False
+    # Децимальный чертеж с цифрами и точками/дефисами (например 1085.05.02, 059.00.00-02)
+    if re.search(r'\d+[.\-_/]\d+[.\-_/]\d+', token):
+        return True
+    # Чертеж с буквенным префиксом серии (например ЭГ.059.00.00-02, ВР30.02.000-01)
+    if re.search(r'[a-zA-Zа-яА-ЯёЁ]+[.\-_/]\d+[.\-_/]', token):
+        return True
+    # Буквенно-цифровой артикул узла/детали (например SPGA4270-200-01, ИП43хВх10х35х7)
+    has_letters = bool(re.search(r'[a-zA-Zа-яА-ЯёЁ]', token))
+    has_digits = bool(re.search(r'\d', token))
+    if has_letters and has_digits and len(token) >= 5:
+        return True
+    # Числовой артикул детали (5-8 цифр, например 130539, 26038)
+    if re.fullmatch(r'\d{5,8}', token):
+        return True
+    return False
+
+
 def build_commercial_search_queries(clean_name: str, unit: str, city: str = "") -> list[str]:
     """
     Генерирует поисковые запросы для широкой выдачи с ценами (розница, опт, каталоги, интернет-магазины).
@@ -126,7 +157,32 @@ def build_commercial_search_queries(clean_name: str, unit: str, city: str = "") 
     norm_u = normalize_unit(unit)
     clean_city = str(city or "").strip()
 
-    # 0. Приоритетные региональные запросы при наличии города поставки
+    tokens = clean_name.split()
+    noun = tokens[0] if tokens else ""
+    codes = extract_generic_nomenclature_codes(clean_name)
+    drawing_codes = [c for c in codes if is_drawing_or_part_code(c, clean_name)]
+
+    # 0. Приоритетный строгий поиск для позиций по чертежам и специализированным артикулам:
+    # Запросы ОБЯЗАНЫ содержать точный чертеж в кавычках во избежание омонимов и поиска по общим словам
+    if drawing_codes:
+        primary_code = drawing_codes[0]
+        if noun and noun.lower() != primary_code.lower():
+            if clean_city:
+                queries.append(f'"{primary_code}" {noun} {clean_city} купить цена')
+            queries.append(f'"{primary_code}" {noun} купить цена')
+            queries.append(f'"{primary_code}" {noun} производитель каталог')
+        queries.append(f'"{primary_code}" цена в наличии со склада')
+        queries.append(f'"{primary_code}" прайс лист')
+        seen = set()
+        unique_queries = []
+        for q in queries:
+            q_cln = " ".join(q.split())
+            if q_cln and q_cln.lower() not in seen:
+                seen.add(q_cln.lower())
+                unique_queries.append(q_cln)
+        return unique_queries
+
+    # 1. Приоритетные региональные запросы при наличии города поставки (для стандартных товаров)
     if clean_city:
         if norm_u and norm_u not in {"шт"}:
             queries.append(f"{clean_name} {clean_city} цена за {norm_u} купить в наличии")
@@ -134,21 +190,18 @@ def build_commercial_search_queries(clean_name: str, unit: str, city: str = "") 
             queries.append(f"{clean_name} {clean_city} купить цена в наличии")
         queries.append(f"{clean_name} {clean_city} поставщики оптовый прайс лист со склада")
 
-    # 1. Прямой коммерческий запрос с единицей измерения или без
+    # 2. Прямой коммерческий запрос с единицей измерения или без
     if norm_u and norm_u not in {"шт"}:
         queries.append(f"{clean_name} цена за {norm_u} купить в наличии")
     else:
         queries.append(f"{clean_name} купить цена в наличии")
 
-    # 2. Поставщики и прайс-листы со склада
+    # 3. Поставщики и прайс-листы со склада
     queries.append(f"{clean_name} прайс лист купить со склада")
     queries.append(f"{clean_name} стоимость каталог поставщики")
     queries.append(f"{clean_name} купить цена от производителя")
 
-    # 3. Универсальное выделение артикулов и маркировок
-    tokens = clean_name.split()
-    noun = tokens[0] if tokens else ""
-    codes = extract_generic_nomenclature_codes(clean_name)
+    # 4. Универсальное выделение общих артикулов и маркировок
     for art_code in codes[:2]:
         if noun and noun.lower() != art_code.lower():
             if clean_city:
@@ -178,6 +231,30 @@ def build_fallback_broad_queries(clean_name: str, unit: str, city: str = "") -> 
     norm_u = normalize_unit(unit)
     clean_city = str(city or "").strip()
 
+    codes = extract_generic_nomenclature_codes(clean_name)
+    drawing_codes = [c for c in codes if is_drawing_or_part_code(c, clean_name)]
+
+    # 0. Строгий режим для чертежей и специализированных артикулов:
+    # Запросы ОБЯЗАТЕЛЬНО должны сохранять чертеж в кавычках и не деградировать до общих слов
+    if drawing_codes:
+        primary_code = drawing_codes[0]
+        noun = clean_name.split()[0] if clean_name.split() else ""
+        if noun and noun.lower() != primary_code.lower():
+            if clean_city:
+                queries.append(f'"{primary_code}" {noun} {clean_city} купить цена')
+            queries.append(f'"{primary_code}" {noun} купить цена')
+            queries.append(f'"{primary_code}" {noun} поставщики склад')
+        queries.append(f'"{primary_code}" цена каталог производитель')
+        queries.append(f'"{primary_code}" стоимость прайс лист')
+        seen = set()
+        unique_queries = []
+        for q in queries:
+            q_cln = " ".join(q.split())
+            if q_cln and q_cln.lower() not in seen:
+                seen.add(q_cln.lower())
+                unique_queries.append(q_cln)
+        return unique_queries
+
     if clean_city:
         queries.append(f"{clean_name} {clean_city} купить со склада оптом")
         queries.append(f"{clean_name} {clean_city} дилеры каталог")
@@ -193,7 +270,6 @@ def build_fallback_broad_queries(clean_name: str, unit: str, city: str = "") -> 
     # 2. Выделение универсальных артикулов, чертежей и маркировок (Правило 14: без привязки к конкретным товарам)
     tokens = clean_no_punct.split()
     noun = tokens[0] if tokens else ""
-    codes = extract_generic_nomenclature_codes(clean_name)
     for code in codes[:3]:
         if noun and noun.lower() != code.lower():
             queries.append(f"{noun} {code} купить цена")

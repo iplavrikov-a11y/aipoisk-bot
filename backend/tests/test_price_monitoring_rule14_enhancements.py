@@ -277,3 +277,160 @@ async def test_compare_then_match_conflict_and_dummy_price(monkeypatch):
         settings=settings,
     )
     assert res_hallucinated is None
+
+
+def test_drawing_query_cascade_and_detection():
+    """Проверка универсального распознавания заводских чертежей и генерации точных запросов в кавычках (Правило 14)."""
+    from app.price_monitoring.cleaner import is_drawing_or_part_code, build_commercial_search_queries, build_fallback_broad_queries
+
+    # 1. Распознавание чертежей vs габаритов и стандартов
+    assert is_drawing_or_part_code("ЭГ.059.00.00-02") is True
+    assert is_drawing_or_part_code("SPGA4270-200-01") is True
+    assert is_drawing_or_part_code("1085.05.02") is True
+    assert is_drawing_or_part_code("130539") is True
+    assert is_drawing_or_part_code("3х2.5") is False  # геометрический размер
+    assert is_drawing_or_part_code("1000х2000") is False  # геометрический размер
+    assert is_drawing_or_part_code("7798-70", "ГОСТ 7798-70") is False  # ГОСТ
+
+    # 2. Формирование запросов: чертеж обязательно в строгих кавычках
+    queries = build_commercial_search_queries("Прокладка ЭГ.059.00.00-02", "шт")
+    assert any('"ЭГ.059.00.00-02"' in q for q in queries)
+    # Запрещены размытые запросы, где чертеж выброшен
+    assert not any(q == "Прокладка купить цена в наличии" for q in queries)
+
+    # 3. Фоллбэк волны 2: также строго сохраняет чертеж
+    fb_queries = build_fallback_broad_queries("Прокладка ЭГ.059.00.00-02", "шт")
+    assert any('"ЭГ.059.00.00-02"' in q for q in fb_queries)
+    assert not any(q == "Прокладка купить цена" for q in fb_queries)
+
+
+def test_deterministic_unit_math_engine():
+    """Проверка детерминированного математического движка пересчета единиц (Правило 14)."""
+    from app.price_monitoring.extractor import compute_deterministic_normalized_price, reconcile_quote_unit
+    from app.price_monitoring.models import SupplierQuote
+
+    # 1. Вес: кг <-> т
+    p_ton, u_ton, comm_ton = compute_deterministic_normalized_price(45.0, "кг", "т")
+    assert p_ton == 45000.0
+    assert u_ton == "т"
+    assert "Пересчитано в тонны (x1000)" in (comm_ton or "")
+
+    p_kg, u_kg, comm_kg = compute_deterministic_normalized_price(45000.0, "т", "кг")
+    assert p_kg == 45.0
+    assert u_kg == "кг"
+    assert "Пересчитано в кг (/1000)" in (comm_kg or "")
+
+    # 2. Объем: л <-> м³
+    p_m3, u_m3, comm_m3 = compute_deterministic_normalized_price(25.0, "л", "м3")
+    assert p_m3 == 25000.0
+    assert u_m3 == "м3"
+
+    p_l, u_l, comm_l = compute_deterministic_normalized_price(25000.0, "м3", "л")
+    assert p_l == 25.0
+    assert u_l == "л"
+
+    # 3. Тара / фасовка: бочка 200 л
+    p_drum, _, comm_drum = compute_deterministic_normalized_price(
+        raw_price=50601.0,
+        site_unit="бочка 200л",
+        target_unit="л",
+        pack_quantity=200.0,
+        pack_base_unit="л",
+        is_price_for_whole_pack=True,
+    )
+    assert p_drum == 253.01
+    assert "253.01 ₽/л" in (comm_drum or "")
+
+    # 4. Фасовка: пачка 5 кг
+    p_pack, _, comm_pack = compute_deterministic_normalized_price(
+        raw_price=1200.0,
+        site_unit="пачка 5 кг",
+        target_unit="кг",
+        pack_quantity=5.0,
+        pack_base_unit="кг",
+        is_price_for_whole_pack=True,
+    )
+    assert p_pack == 240.0
+    assert "240.00 ₽/кг" in (comm_pack or "")
+
+    # 5. Мешок 50 кг -> тонны (т)
+    p_bag, _, comm_bag = compute_deterministic_normalized_price(
+        raw_price=525.0,
+        site_unit="мешок 50 кг",
+        target_unit="т",
+        pack_quantity=50.0,
+        pack_base_unit="кг",
+        is_price_for_whole_pack=True,
+    )
+    assert p_bag == 10500.0
+    assert "10,500 ₽/т" in (comm_bag or "")
+
+    # 6. Проверка через reconcile_quote_unit без товарных ключевых слов
+    q = SupplierQuote(
+        company_name="Поставщик ТМЦ",
+        price_rub=55000.0,
+        raw_price_rub=55000.0,
+        site_unit="т",
+        unit="т",
+    )
+    # Любой произвольный товар X без слова 'сталь' или 'арматура'
+    reconciled = reconcile_quote_unit(q, target_item_name="Полимерные гранулы ПНД-273", target_unit="кг")
+    assert reconciled.price_rub == 55.0
+    assert reconciled.unit == "кг"
+
+
+def test_schema_org_offers_and_out_of_stock_guard():
+    """Проверка извлечения данных Schema.org JSON-LD и отсева отсутствующих/архивных товаров."""
+    from bs4 import BeautifulSoup
+    from app.price_monitoring.extractor import extract_schema_org_product_data, DISCONTINUED_PATTERN
+
+    # 1. Валидный товар в наличии
+    html_instock = """
+    <html><head>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Product",
+      "name": "Прокладка уплотнительная 1085.05.02",
+      "sku": "1085.05.02",
+      "offers": {
+        "@type": "Offer",
+        "price": "450.00",
+        "priceCurrency": "RUB",
+        "availability": "https://schema.org/InStock"
+      }
+    }
+    </script>
+    </head><body><h1>Каталог</h1></body></html>
+    """
+    soup1 = BeautifulSoup(html_instock, "html.parser")
+    prod1, is_oos1 = extract_schema_org_product_data(soup1)
+    assert prod1 is not None
+    assert prod1["price"] == 450.0
+    assert prod1["sku"] == "1085.05.02"
+    assert is_oos1 is False
+
+    # 2. Товар со статусом OutOfStock
+    html_oos = """
+    <html><head>
+    <script type="application/ld+json">
+    {
+      "@type": "Product",
+      "name": "Старый блок питания",
+      "offers": {
+        "price": "1200",
+        "priceCurrency": "RUB",
+        "availability": "http://schema.org/OutOfStock"
+      }
+    }
+    </script>
+    </head><body></body></html>
+    """
+    soup2 = BeautifulSoup(html_oos, "html.parser")
+    prod2, is_oos2 = extract_schema_org_product_data(soup2)
+    assert is_oos2 is True
+
+    # 3. Текстовый паттерн снятия с производства
+    assert bool(DISCONTINUED_PATTERN.search("Внимание: данный товар снят с производства!")) is True
+    assert bool(DISCONTINUED_PATTERN.search("Товар в архиве, заказ невозможен")) is True
+    assert bool(DISCONTINUED_PATTERN.search("Товар в наличии на складе")) is False

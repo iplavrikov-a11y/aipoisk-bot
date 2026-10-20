@@ -21,6 +21,8 @@ from .cleaner import (
     build_commercial_search_queries,
     build_fallback_broad_queries,
     clean_nomenclature_name,
+    extract_generic_nomenclature_codes,
+    is_drawing_or_part_code,
     normalize_unit,
 )
 from .excel_report import generate_price_monitoring_excel
@@ -387,12 +389,23 @@ async def generate_monitoring_queries_ai(
     clean_city = str(city or "").strip()
     city_context = f'\nРегион/город объекта поставки: "{clean_city}" (приоритет поставщикам, дилерам и складам с наличием или доставкой в этом регионе)' if clean_city else ""
 
+    nom_codes = extract_generic_nomenclature_codes(clean_name)
+    drawing_codes = [c for c in nom_codes if is_drawing_or_part_code(c, clean_name)]
+    drawing_instruction = ""
+    if drawing_codes:
+        primary_drawing = drawing_codes[0]
+        drawing_instruction = f"""
+ВНИМАНИЕ (ЧЕРТЕЖИ И АРТИКУЛЫ ДЕТАЛЕЙ):
+Позиция содержит специализированный номер чертежа/артикул: {drawing_codes}.
+Каждый поисковый запрос ОБЯЗАН содержать чертеж в строгих кавычках: '"{primary_drawing}"'.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО исключать чертеж из запросов во избежание омонимов и поиска по общим словам!"""
+
     prompt = f"""Ты — ведущий эксперт по корпоративным закупкам и поисковой оптимизации (ПРАВИЛО 14: СЕМАНТИЧЕСКИЙ АНАЛИЗ И ФОРМИРОВАНИЕ ПОИСКОВЫХ ЗАПРОСОВ БЕЗ ЖЕСТКИХ СЛОВАРЕЙ).
 Твоя задача — составить 3-5 естественных, высокоточных поисковых запросов для поисковой системы (Яндекс), чтобы найти актуальные коммерческие цены поставщиков и прайс-листы.
 
 Наименование позиции: "{clean_name}"
 Требуемая единица измерения: "{unit}"
-Цель запросов: {wave_desc} (волна #{wave}){city_context}
+Цель запросов: {wave_desc} (волна #{wave}){city_context}{drawing_instruction}
 
 ТРЕБОВАНИЯ (ПРАВИЛО 14):
 1. Семантически определи физическую суть товара, класс оборудования/материала, точную марку, артикул, ГОСТ или чертеж.
@@ -416,6 +429,11 @@ async def generate_monitoring_queries_ai(
                 if isinstance(q, str):
                     q_str = " ".join(q.strip(" \"'\t\r\n").split())
                     if q_str and len(q_str) >= 5 and q_str.lower() not in seen:
+                        # Если позиция по чертежу, запрос ОБЯЗАН содержать чертеж
+                        if drawing_codes:
+                            has_draw = any(re.search(re.escape(dc), q_str, re.I) for dc in drawing_codes)
+                            if not has_draw:
+                                continue
                         seen.add(q_str.lower())
                         res.append(q_str)
             if res:
@@ -448,6 +466,10 @@ async def process_single_item(
         clean_name=clean,
         unit=unit,
     )
+
+    nom_codes = extract_generic_nomenclature_codes(clean)
+    drawing_codes = [c for c in nom_codes if is_drawing_or_part_code(c, clean)]
+    has_drawing_spec = bool(drawing_codes)
 
     candidate_urls: list[str] = []
     url_to_meta: dict[str, YandexSearchResult] = {}
@@ -585,7 +607,7 @@ async def process_single_item(
 
     # ВОЛНА 2 (АДАПТИВНЫЙ ПОИСК ДЛЯ ДОСТИЖЕНИЯ ЦЕЛЕВОГО КОЛИЧЕСТВА ПОСТАВЩИКОВ):
     consensus_count = _get_consensus_count()
-    if consensus_count < target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
+    if not has_drawing_spec and consensus_count < target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
         fallback_queries: list[str] = []
         if settings.has_active_ai_provider:
             fallback_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=2, city=city)
@@ -615,7 +637,8 @@ async def process_single_item(
     # ВОЛНА 3 (СВЕРХШИРОКИЙ ДОБОР ДЛЯ ДОСТИЖЕНИЯ ЦЕЛЕВОГО КОЛИЧЕСТВА ПОСТАВЩИКОВ):
     has_any_price = any(q.price_rub > 0 for q in item_res.quotes)
     should_run_wave3 = (
-        consensus_count < target_suppliers
+        not has_drawing_spec
+        and consensus_count < target_suppliers
         and has_any_price
         and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM
     )
