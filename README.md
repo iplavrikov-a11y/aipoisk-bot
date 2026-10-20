@@ -12,6 +12,11 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 ## Production notes
 
+- Automated Client Password Reset & Instant Cabinet Login (2026-10-20):
+  - Self-Service Email Flow: client enters email in `/cabinet`, system issues cryptographically secure single-use token (`secrets.token_urlsafe(32)`, valid 2h, SHA-256 in SQLite `web_password_reset_tokens`) and sends reset link via email relay.
+  - Cabinet UI & Instant Session: customer clicks link, enters new password directly in cabinet, and on confirmation the backend revokes old sessions, updates password, sets new active session, and logs user into cabinet seamlessly.
+  - Verified with customer API unit tests, live email dispatch test, and deployed to production.
+
 - Home v3 and SEO release (2026-10-20):
   - Production homepage replaced with the five-step interactive ТЗ walkthrough (specification → extracted fields with source tracing → supplier candidates → analog differences → RFQ draft with self-check). Step state is shareable via `?step=1..5`; no-JS and reduced-motion fallbacks are covered.
   - SEO: per-article sitemap `lastmod` and TechArticle `datePublished`, `/v2` noindex + canonical `/`, 404 noindex, Organization contact data, 1200×630 OG image, `llms.txt` 91/91 sitemap URLs, HTTP/2, consent-gated Metrika fallback.
