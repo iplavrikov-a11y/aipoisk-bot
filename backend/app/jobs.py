@@ -9,6 +9,7 @@ import shutil
 import socket
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import and_, exists, func, or_, select, true
 from sqlalchemy.orm import Session, aliased
@@ -17,6 +18,7 @@ from . import document_parser
 from .ai import get_model_selection
 from .billing import (
     settle_exact_product_job,
+    finalize_internal_exact_product_job,
     BillingError,
     KIND_EXACT_PRODUCT,
     KIND_PRICE_MONITORING,
@@ -30,6 +32,7 @@ from .billing import (
     STATUS_DELIVERY_EXPIRED,
     charge_job_reservation,
     charge_price_monitoring_job,
+    finalize_internal_price_monitoring_job,
     reserve_price_monitoring_job,
     effective_job_unit_price_kopeks,
     release_job_kind_reservation,
@@ -38,7 +41,7 @@ from .billing import (
 )
 from .config import config
 from .db import SessionLocal
-from .models import BillingTransaction, Job, JobFile, JobSource, SupplierResult, now_utc
+from .models import BillingTransaction, Job, JobFile, JobSource, SupplierResult, SystemSettings, now_utc
 from .procurement_sources import (
     SOURCE_KIND_PROCUREMENT_URL,
     SOURCE_KIND_TENDERPLAN_NOTICE,
@@ -1325,12 +1328,15 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
 
     multi_item_mode = getattr(job, "multi_item_mode", "balanced") or "balanced"
     active_profile_dict = dobor_ctx.get("procurement_profile")
-    if multi_item_mode == "per_item" and active_profile_dict and dobor_ctx.get("selected_item_ids"):
-        selected_ids = set(dobor_ctx.get("selected_item_ids") or [])
+    if active_profile_dict and dobor_ctx.get("selected_item_ids") is not None:
+        chosen_ids = dobor_ctx["selected_item_ids"]
         items = active_profile_dict.get("items") or []
-        filtered_items = [it for it in items if str(it.get("id")) in selected_ids]
-        if filtered_items:
-            active_profile_dict = dict(active_profile_dict, items=filtered_items)
+        allowed_ids = {str(it.get("id") or f"item-{index}") for index, it in enumerate(items) if isinstance(it, dict)}
+        if not isinstance(chosen_ids, list) or not chosen_ids or len(set(chosen_ids)) != len(chosen_ids) or any(item_id not in allowed_ids for item_id in chosen_ids):
+            raise ValueError("Нет подтверждённых позиций для поиска поставщиков")
+        selected_ids = set(chosen_ids)
+        filtered_items = [it for index, it in enumerate(items) if isinstance(it, dict) and str(it.get("id") or f"item-{index}") in selected_ids]
+        active_profile_dict = dict(active_profile_dict, items=filtered_items)
     try:
         discovery_coro = discover_suppliers(
             settings,
@@ -1694,7 +1700,10 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     job.yandex_cost_rub = report.yandex_cost_rub
     _set_customer_job_title_from_subject(job, subject)
     job.message = f"Подбор завершён: подтверждено {job.verified_count} из {report.total_positions} выбранных позиций; остальные требуют проверки"
-    settle_exact_product_job(db, job, confirmed_count=job.verified_count)
+    if getattr(job, "is_admin_rerun", False):
+        finalize_internal_exact_product_job(db, job)
+    else:
+        settle_exact_product_job(db, job, confirmed_count=job.verified_count)
     _set_job(db, job, status="completed", progress=100, message=job.message)
     job.completed_at = now_utc()
     db.commit()
@@ -1756,9 +1765,15 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
     wb.save(buf)
     file_bytes = buf.getvalue()
 
-    price_kopeks = int(selection.get("price_kopeks")) if "price_kopeks" in selection else effective_job_unit_price_kopeks(db, job.client, KIND_PRICE_MONITORING, job=job)
+    price_kopeks = 0 if getattr(job, "is_admin_rerun", False) else (
+        int(selection.get("price_kopeks")) if "price_kopeks" in selection
+        else effective_job_unit_price_kopeks(db, job.client, KIND_PRICE_MONITORING, job=job)
+    )
     price_rub = round(price_kopeks / 100, 2)
-    reserve_price_monitoring_job(db, job, total_positions=len(items), price_per_item_kopeks=price_kopeks)
+    # An expert rerun is an internal quality-control job.  It must never make
+    # the original customer's balance a precondition for a fresh market run.
+    if not getattr(job, "is_admin_rerun", False):
+        reserve_price_monitoring_job(db, job, total_positions=len(items), price_per_item_kopeks=price_kopeks)
 
     out_dir = job_dir(job.id) / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1872,7 +1887,10 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
     _check_cancelled(job.id, db=db, job=job)
     msg = f"Готово: найдено цен для {batch_res.found_positions} из {batch_res.total_positions} позиций"
     job.message = msg
-    charge_price_monitoring_job(db, job, found_count=batch_res.found_positions, price_per_item_kopeks=price_kopeks)
+    if getattr(job, "is_admin_rerun", False):
+        finalize_internal_price_monitoring_job(db, job)
+    else:
+        charge_price_monitoring_job(db, job, found_count=batch_res.found_positions, price_per_item_kopeks=price_kopeks)
     _set_job(db, job, status="completed", progress=100, message=msg)
     job.completed_at = now_utc()
     db.commit()
@@ -1961,12 +1979,15 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
 
     multi_item_mode = getattr(job, "multi_item_mode", "balanced") or "balanced"
     active_profile_dict = dobor_ctx.get("procurement_profile")
-    if multi_item_mode == "per_item" and active_profile_dict and dobor_ctx.get("selected_item_ids"):
-        selected_ids = set(dobor_ctx.get("selected_item_ids") or [])
+    if active_profile_dict and dobor_ctx.get("selected_item_ids") is not None:
+        chosen_ids = dobor_ctx["selected_item_ids"]
         items = active_profile_dict.get("items") or []
-        filtered_items = [it for it in items if str(it.get("id")) in selected_ids]
-        if filtered_items:
-            active_profile_dict = dict(active_profile_dict, items=filtered_items)
+        allowed_ids = {str(it.get("id") or f"item-{index}") for index, it in enumerate(items) if isinstance(it, dict)}
+        if not isinstance(chosen_ids, list) or not chosen_ids or len(set(chosen_ids)) != len(chosen_ids) or any(item_id not in allowed_ids for item_id in chosen_ids):
+            raise ValueError("Нет подтверждённых позиций для поиска поставщиков")
+        selected_ids = set(chosen_ids)
+        filtered_items = [it for index, it in enumerate(items) if isinstance(it, dict) and str(it.get("id") or f"item-{index}") in selected_ids]
+        active_profile_dict = dict(active_profile_dict, items=filtered_items)
 
     async def progress_callback(progress: int, message: str) -> None:
         _check_cancelled(job.id)

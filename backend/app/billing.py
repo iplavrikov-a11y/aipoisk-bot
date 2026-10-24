@@ -1480,17 +1480,30 @@ def expire_stale_confirmations(db: Session, *, older_than: timedelta = timedelta
     jobs = (
         db.query(Job)
         .filter(Job.status.in_([STATUS_AWAITING_CUSTOMER_CONFIRMATION, "partial"]))
-        .filter(or_(Job.confirmation_kind.is_(None), Job.confirmation_kind == ""))
+        .filter(or_(Job.confirmation_kind.is_(None), Job.confirmation_kind == "", Job.confirmation_kind == "multi_item_strategy"))
         .filter(Job.updated_at < cutoff)
         .all()
     )
     expired_jobs: list[Job] = []
     for job in jobs:
-        if not job_has_unsettled_reservation(db, job):
+        is_strategy_confirmation = (
+            job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION
+            and job.confirmation_kind == "multi_item_strategy"
+        )
+        if not job_has_unsettled_reservation(db, job) and not is_strategy_confirmation:
             continue
-        release_job_reservation(db, job, note="Резерв возвращён: клиент не подтвердил неполный отчёт за 24 часа")
+        if job_has_unsettled_reservation(db, job):
+            release_job_reservation(
+                db,
+                job,
+                note="Резерв возвращён: клиент не подтвердил выбор стратегии за 24 часа"
+                if is_strategy_confirmation else "Резерв возвращён: клиент не подтвердил неполный отчёт за 24 часа",
+            )
         job.status = STATUS_CONFIRMATION_EXPIRED
-        job.message = "Неполный отчёт не был скачан за 24 часа, списания нет"
+        job.message = (
+            "Выбор стратегии не подтверждён за 24 часа, списания нет"
+            if is_strategy_confirmation else "Неполный отчёт не был скачан за 24 часа, списания нет"
+        )
         job.error = ""
         job.completed_at = now_utc()
         job.updated_at = now_utc()
@@ -1847,6 +1860,40 @@ def charge_price_monitoring_job(
         return total_amount
 
 
+def _finalize_internal_job(db: Session, job: Job, *, expected_mode: str) -> None:
+    """Publish an expert result and return any legacy hold in one transaction."""
+    with _billing_client_lock(str(job.client_id or job.id)):
+        current = _current_billing_job(db, job)
+        if current.mode != expected_mode or not current.is_admin_rerun:
+            raise BillingError("Бесплатное завершение доступно только внутренней экспертной задаче.")
+        if current.status == "completed":
+            return
+        try:
+            claimed = db.query(Job).filter(
+                Job.id == current.id, Job.status == "running",
+                Job.mode == expected_mode, Job.is_admin_rerun.is_(True),
+            ).update({Job.status: "settling", Job.updated_at: now_utc()}, synchronize_session=False)
+            if claimed != 1:
+                raise BillingError("Экспертная задача больше не выполняется; результат не публикуется.")
+            db.flush()
+            db.refresh(current, attribute_names=["status"])
+            if current.client_id:
+                _release_job_kind_reservation(db, current, expected_mode,
+                    note="Внутренний экспертный перезапуск: резерв возвращён")
+            current.status = "completed"
+            current.progress = 100
+            current.completed_at = now_utc()
+            current.updated_at = now_utc()
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+
+def finalize_internal_price_monitoring_job(db: Session, job: Job) -> None:
+    _finalize_internal_job(db, job, expected_mode=KIND_PRICE_MONITORING)
+
+
 
 def settle_exact_product_job(db: Session, job: Job, *, confirmed_count: int) -> bool:
     """Commit the output and the fixed task fee atomically, competing with cancellation."""
@@ -1882,6 +1929,11 @@ def settle_exact_product_job(db: Session, job: Job, *, confirmed_count: int) -> 
         except Exception:
             db.rollback()
             raise
+
+
+def finalize_internal_exact_product_job(db: Session, job: Job) -> None:
+    _finalize_internal_job(db, job, expected_mode=KIND_EXACT_PRODUCT)
+
 
 
 def cancel_exact_product_job(db: Session, job: Job, *, note: str, message: str) -> bool:

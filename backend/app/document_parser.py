@@ -481,13 +481,20 @@ def _extract_xlsx(path: Path) -> str:
 
     wb = load_workbook(path, read_only=True, data_only=True)
     blocks: list[str] = []
-    for ws in wb.worksheets:
-        blocks.append(f"\n=== SHEET: {ws.title} ===")
-        for row in ws.iter_rows(values_only=True):
-            cells = ["" if value is None else str(value).strip() for value in row]
-            if any(cells):
-                blocks.append(" | ".join(cells))
-    return "\n".join(blocks)
+    try:
+        for ws in wb.worksheets:
+            blocks.append(f"\n=== SHEET: {ws.title} ===")
+            for row in ws.iter_rows(values_only=True):
+                cells = ["" if value is None else str(value).strip() for value in row]
+                # Formatting may extend an otherwise small sheet to column XFD.
+                # Keep real values and interior gaps, without serializing empty tails.
+                while cells and not cells[-1]:
+                    cells.pop()
+                if cells:
+                    blocks.append(" | ".join(cells))
+        return "\n".join(blocks)
+    finally:
+        wb.close()
 
 
 SIGNATURE_AND_STAMP_PATTERNS = (

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import hashlib
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -19,7 +21,7 @@ import time
 import httpx
 import jwt
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlalchemy import func, or_
@@ -1462,16 +1464,20 @@ async def customer_choose_strategy_route(
     job_id: str,
     request: Request,
     multi_item_mode: str = Query(default="balanced"),
+    revision: str | None = Query(default=None),
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
     require_customer_csrf(request, context)
     selected_item_ids: list[str] | None = None
+    revision = revision if isinstance(revision, str) else None
     try:
         content_type = request.headers.get("content-type", "")
         if "application/json" in content_type:
             body = await request.json()
             if isinstance(body, dict):
+                if "revision" in body:
+                    revision = body["revision"]
                 if "multi_item_mode" in body:
                     multi_item_mode = str(body["multi_item_mode"] or multi_item_mode)
                 if "selected_item_ids" in body and isinstance(body["selected_item_ids"], list):
@@ -1482,6 +1488,7 @@ async def customer_choose_strategy_route(
         job_id,
         multi_item_mode=multi_item_mode,
         selected_item_ids=selected_item_ids,
+        revision=revision,
         context=context,
         db=db,
     )
@@ -3162,9 +3169,11 @@ def retry_job(
 def choose_admin_strategy(
     job_id: str,
     multi_item_mode: str = Query(default="balanced"),
+    selected_item_ids: list[str] | None = Query(default=None),
+    revision: str | None = Query(default=None),
     db: Session = Depends(db_session),
 ) -> dict:
-    return choose_admin_multi_item_strategy_api(job_id, multi_item_mode=multi_item_mode, db=db)
+    return choose_admin_multi_item_strategy_api(job_id, multi_item_mode=multi_item_mode, selected_item_ids=selected_item_ids, revision=revision if isinstance(revision, str) else None, db=db)
 
 
 @app.post("/api/jobs/{job_id}/admin-rerun", dependencies=[Depends(require_admin)])
@@ -3172,11 +3181,88 @@ def admin_rerun_job(
     job_id: str,
     policy: str | None = Query(default=None),
     multi_item_mode: str | None = Query(default=None),
+    revision: str | None = Query(default=None),
+    selected_item_ids: list[str] | None = Query(default=None),
+    selection_payload: dict | None = Body(default=None),
     db: Session = Depends(db_session),
 ) -> dict:
     parent_job = resolve_admin_job(job_id, db)
     if not parent_job:
         raise HTTPException(status_code=404, detail="Job not found")
+    # Direct service calls (including regression tests) receive FastAPI's
+    # parameter descriptors rather than their route-resolved defaults.
+    if not isinstance(revision, str):
+        revision = None
+    if not isinstance(selected_item_ids, list):
+        selected_item_ids = None
+    if isinstance(selection_payload, dict):
+        revision = revision or selection_payload.get("revision")
+        if selected_item_ids is None and isinstance(selection_payload.get("selected_item_ids"), list):
+            selected_item_ids = [str(item) for item in selection_payload["selected_item_ids"]]
+    explicit_selection_requested = revision is not None or selected_item_ids is not None or (
+        isinstance(selection_payload, dict) and any(key in selection_payload for key in ("revision", "selected_item_ids"))
+    )
+    if explicit_selection_requested and parent_job.mode not in {MODE_EXACT_PRODUCT, MODE_PRICE_MONITORING, MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        raise HTTPException(status_code=400, detail="Выбор позиций недоступен для этой задачи.")
+    if parent_job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION and parent_job.confirmation_kind == "multi_item_strategy" and revision is None and selected_item_ids is None:
+        raise HTTPException(status_code=409, detail="Сначала подтвердите стратегию поиска для исходной задачи.")
+
+    inherited_selection: dict | None = None
+    if parent_job.mode in {MODE_EXACT_PRODUCT, MODE_PRICE_MONITORING}:
+        inherited_selection = read_selection(parent_job)
+        if explicit_selection_requested:
+            if revision is None or selected_item_ids is None:
+                raise HTTPException(status_code=400, detail="Передайте актуальный список и выбранные позиции для экспертного перезапуска.")
+            try:
+                chosen_source_ids = validate_selected_ids(inherited_selection, revision, selected_item_ids)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            inherited_selection = dict(inherited_selection, selected_ids=chosen_source_ids, confirmed=True)
+        elif not inherited_selection.get("confirmed"):
+            if parent_job.status in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION} or inherited_selection.get("items"):
+                raise HTTPException(status_code=409, detail="Для экспертного перезапуска требуется подтверждённый выбор позиций исходной задачи.")
+        if inherited_selection.get("confirmed") and inherited_selection.get("items"):
+            source_selected_ids = set(inherited_selection.get("selected_ids") or [])
+            reissued = json.loads(build_selection_snapshot(
+                inherited_selection["items"],
+                price_kopeks=int(inherited_selection.get("price_kopeks") or 0),
+                mode=parent_job.mode,
+            ))
+            old_indexes = [index for index, item in enumerate(inherited_selection["items"]) if item.get("id") in source_selected_ids]
+            reissued["selected_ids"] = [reissued["items"][index]["id"] for index in old_indexes]
+            reissued["confirmed"] = True
+            inherited_selection = reissued
+        if inherited_selection.get("items") and not inherited_selection.get("selected_ids"):
+            raise HTTPException(status_code=409, detail="Для экспертного перезапуска требуется хотя бы одна выбранная позиция.")
+
+    inherited_strategy: dict | None = None
+    if parent_job.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        parent_context = read_dobor_context(parent_job)
+        profile = parent_context.get("procurement_profile")
+        source_items = profile.get("items") if isinstance(profile, dict) else None
+        if isinstance(source_items, list) and source_items:
+            explicit_selection = explicit_selection_requested
+            if explicit_selection:
+                if revision != _multi_item_selection_revision(parent_job, profile):
+                    raise HTTPException(status_code=400, detail="Список позиций изменился. Обновите задачу и повторите выбор.")
+                if selected_item_ids is None:
+                    raise HTTPException(status_code=400, detail="Выберите позиции для экспертного поиска.")
+                chosen_ids = _validated_multi_item_selection(source_items, "balanced", selected_item_ids)
+            elif parent_context.get("multi_item_confirmed"):
+                # A legacy None is a confirmed choice of all source rows. An
+                # explicit empty/invalid selection must never become all rows.
+                chosen_ids = _validated_multi_item_selection(source_items, "balanced", parent_context.get("selected_item_ids"))
+            else:
+                raise HTTPException(status_code=409, detail="Для экспертного перезапуска подтвердите выбор позиций исходной задачи.")
+            inherited_strategy = {
+                "multi_item_confirmed": True,
+                "selected_item_ids": chosen_ids,
+                "procurement_profile": profile,
+            }
+        elif revision is not None or selected_item_ids is not None:
+            raise HTTPException(status_code=400, detail="В исходной задаче нет списка позиций для подтверждения.")
+        elif isinstance(profile, dict):
+            raise HTTPException(status_code=409, detail="В исходной задаче нет подтверждённых позиций для экспертного поиска.")
 
     root_parent_id = parent_job.parent_job_id if getattr(parent_job, "parent_job_id", "") else parent_job.id
     with processing_retry_lock(root_parent_id):
@@ -3227,6 +3313,11 @@ def admin_rerun_job(
         new_input_dir.mkdir(parents=True, exist_ok=True)
         if parent_input_dir.exists():
             shutil.copytree(parent_input_dir, new_input_dir, dirs_exist_ok=True)
+        # Input files are reusable source material.  Search history, supplier
+        # exclusions and AI-derived context are not: every admin rerun searches
+        # the market anew and gets only the explicit selection below.
+        for transient_name in ("dobor_context.json", "excluded_suppliers.json"):
+            (new_input_dir / transient_name).unlink(missing_ok=True)
 
         for pf in parent_job.files:
             src_p = Path(pf.stored_path) if pf.stored_path else None
@@ -3263,6 +3354,11 @@ def admin_rerun_job(
                 error="",
             )
             db.add(new_source)
+
+        if inherited_selection is not None:
+            new_job.position_selection_json = json.dumps(inherited_selection, ensure_ascii=False)
+        if inherited_strategy is not None:
+            update_dobor_context_dict(new_job, inherited_strategy)
 
         db.commit()
         enqueue_job(new_job.id)
@@ -4395,6 +4491,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
     raw_items = profile_dict.get("items") or []
     if raw_items:
         multi_item_details = {
+            "revision": _multi_item_selection_revision(job, dobor_ctx["procurement_profile"]) if isinstance(dobor_ctx.get("procurement_profile"), dict) else None,
             "items": [
                 {
                     "id": str(it.get("id") or f"item-{idx}"),
@@ -4942,6 +5039,7 @@ def choose_customer_multi_item_strategy_api(
     *,
     multi_item_mode: str,
     selected_item_ids: list[str] | None = None,
+    revision: str | None = None,
     context: WebAuthContext,
     db: Session,
 ) -> dict:
@@ -4949,23 +5047,19 @@ def choose_customer_multi_item_strategy_api(
     if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION or job.confirmation_kind != "multi_item_strategy":
         raise HTTPException(status_code=409, detail="Выбор стратегии уже не актуален.")
     normalized = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
+    dobor_ctx = read_dobor_context(job)
+    profile_dict = dobor_ctx.get("procurement_profile") or {}
+    if revision is not None and revision != _multi_item_selection_revision(job, profile_dict):
+        raise HTTPException(status_code=400, detail="Список позиций изменился. Обновите задачу и повторите выбор.")
+    raw_items = profile_dict.get("items") or []
+    final_selected_ids = _validated_multi_item_selection(raw_items, normalized, selected_item_ids)
     job.multi_item_mode = normalized
     job.confirmation_kind = ""
     job.confirmation_outcome = "accepted"
     job.status = "pending"
     job.progress = 32
 
-    dobor_ctx = read_dobor_context(job)
-    profile_dict = dobor_ctx.get("procurement_profile") or {}
-    raw_items = profile_dict.get("items") or []
-
-    final_selected_ids: list[str] | None = None
     if normalized == "per_item":
-        if selected_item_ids:
-            all_ids = {str(it.get("id") or f"item-{i}") for i, it in enumerate(raw_items)}
-            valid_ids = [sid for sid in selected_item_ids if sid in all_ids]
-            if valid_ids:
-                final_selected_ids = valid_ids
         target_count = len(final_selected_ids) if final_selected_ids is not None else len(raw_items)
         if target_count > 1 and job.client:
             from .billing import reserve_additional_job_units, BillingError
@@ -4990,11 +5084,38 @@ def choose_customer_multi_item_strategy_api(
     return {"success": True, "job": customer_job_to_dict(job, db=db)}
 
 
+def _multi_item_selection_revision(job: Job, profile: dict) -> str:
+    """Bind human selection to this job's frozen source rows, never market results."""
+    source = json.dumps([job.id, profile], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _serialized_multi_item_selected_ids(context: dict, items: list) -> list[str]:
+    selected_ids = context.get("selected_item_ids")
+    if selected_ids is None and context.get("multi_item_confirmed"):
+        return [str(item.get("id") or f"item-{index}") for index, item in enumerate(items) if isinstance(item, dict)]
+    return selected_ids if isinstance(selected_ids, list) else []
+
+
+def _validated_multi_item_selection(raw_items: list, multi_item_mode: str, selected_item_ids: list[str] | None) -> list[str] | None:
+    """Keep the explicitly chosen source rows; never silently turn bad input into all rows."""
+    if selected_item_ids is None:
+        return None
+    if not isinstance(selected_item_ids, list):
+        raise HTTPException(status_code=400, detail="Выберите существующие позиции для поиска.")
+    allowed = {str(item.get("id") or f"item-{index}") for index, item in enumerate(raw_items) if isinstance(item, dict)}
+    chosen = [str(item_id).strip() for item_id in selected_item_ids if str(item_id).strip()]
+    if not chosen or len(chosen) != len(selected_item_ids) or len(set(chosen)) != len(chosen) or any(item_id not in allowed for item_id in chosen):
+        raise HTTPException(status_code=400, detail="Выберите существующие позиции для поиска.")
+    return chosen
+
+
 def choose_admin_multi_item_strategy_api(
     job_id: str,
     *,
     multi_item_mode: str,
     selected_item_ids: list[str] | None = None,
+    revision: str | None = None,
     db: Session,
 ) -> dict:
     job = db.get(Job, job_id)
@@ -5003,25 +5124,21 @@ def choose_admin_multi_item_strategy_api(
     if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION or job.confirmation_kind != "multi_item_strategy":
         raise HTTPException(status_code=409, detail="Выбор стратегии уже не актуален.")
     normalized = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
+    dobor_ctx = read_dobor_context(job)
+    profile_dict = dobor_ctx.get("procurement_profile") or {}
+    if revision is not None and revision != _multi_item_selection_revision(job, profile_dict):
+        raise HTTPException(status_code=400, detail="Список позиций изменился. Обновите задачу и повторите выбор.")
+    raw_items = profile_dict.get("items") or []
+    final_selected_ids = _validated_multi_item_selection(raw_items, normalized, selected_item_ids)
     job.multi_item_mode = normalized
     job.confirmation_kind = ""
     job.confirmation_outcome = "accepted"
     job.status = "pending"
     job.progress = 32
 
-    dobor_ctx = read_dobor_context(job)
-    profile_dict = dobor_ctx.get("procurement_profile") or {}
-    raw_items = profile_dict.get("items") or []
-
-    final_selected_ids: list[str] | None = None
     if normalized == "per_item":
-        if selected_item_ids:
-            all_ids = {str(it.get("id") or f"item-{i}") for i, it in enumerate(raw_items)}
-            valid_ids = [sid for sid in selected_item_ids if sid in all_ids]
-            if valid_ids:
-                final_selected_ids = valid_ids
         target_count = len(final_selected_ids) if final_selected_ids is not None else len(raw_items)
-        if target_count > 1 and job.client:
+        if target_count > 1 and job.client and not getattr(job, "is_admin_rerun", False):
             from .billing import reserve_additional_job_units, BillingError
             try:
                 reserve_additional_job_units(db, job.client, job, additional_units=target_count - 1)
@@ -6151,6 +6268,13 @@ def job_to_dict(
     confirmation_outcome = str(getattr(job, "confirmation_outcome", "") or "")
     offer_delivery_outcome = str(getattr(job, "offer_delivery_outcome", "") or "")
     result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
+    position_selection = read_selection(job)
+    selected_position_ids = position_selection.get("selected_ids") or []
+    available_positions = position_selection.get("items") or []
+    strategy_context = read_dobor_context(job) if job.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS} else {}
+    strategy_profile = strategy_context.get("procurement_profile") if isinstance(strategy_context.get("procurement_profile"), dict) else {}
+    strategy_items = strategy_profile.get("items") if isinstance(strategy_profile.get("items"), list) else []
+    strategy_selected_ids = _serialized_multi_item_selected_ids(strategy_context, strategy_items)
     client_email = ""
     client_web_users = getattr(job.client, "web_users", None) or [] if job.client else []
     if client_web_users:
@@ -6196,12 +6320,23 @@ def job_to_dict(
         "mode_label": mode_label(job.mode),
         "supplier_search_policy": getattr(job, "supplier_search_policy", None) or SUPPLIER_POLICY_NORMAL,
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", None) or SUPPLIER_RUN_INITIAL,
-        "exact_product_selection": read_selection(job) if job.mode == MODE_EXACT_PRODUCT else None,
-        "position_selection": read_selection(job) or None,
+        "exact_product_selection": position_selection if job.mode == MODE_EXACT_PRODUCT else None,
+        "position_selection": position_selection or None,
+        "selected_position_count": len(selected_position_ids),
+        "available_position_count": len(available_positions),
+        "multi_item_selection": {
+            "revision": _multi_item_selection_revision(job, strategy_profile),
+            "items": strategy_items,
+            "selected_ids": strategy_selected_ids,
+            "confirmed": bool(strategy_context.get("multi_item_confirmed")),
+            "mode": getattr(job, "multi_item_mode", "balanced") or "balanced",
+        } if strategy_items else None,
         "exact_product_positions": _customer_exact_product_positions(job),
         "multi_item_mode": getattr(job, "multi_item_mode", "balanced") or "balanced",
         "confirmation_kind": confirmation_kind,
         "confirmation_outcome": confirmation_outcome,
+        "confirmation_offered_at": job.confirmation_offered_at.isoformat() if getattr(job, "confirmation_offered_at", None) else None,
+        "confirmation_expires_at": job.confirmation_expires_at.isoformat() if getattr(job, "confirmation_expires_at", None) else None,
         "offer_delivery_outcome": offer_delivery_outcome,
         "result_offer": result_offer,
         "status": job.status,
@@ -6213,6 +6348,8 @@ def job_to_dict(
         "supplier_units": supplier_units,
         "procurement_report_units": report_units,
         "target_suppliers": job.target_suppliers,
+        "delivery_city": getattr(job, "delivery_city", "") or "",
+        "geo_radius_km": getattr(job, "geo_radius_km", None),
         "verified_count": job.verified_count,
         "file_count": job.file_count,
         "has_result": bool(result_files),
@@ -6257,7 +6394,22 @@ def job_to_dict(
                 "id": r.id,
                 "exact_product_selection": read_selection(r) if r.mode == MODE_EXACT_PRODUCT else None,
                 "position_selection": read_selection(r) or None,
+                "multi_item_selection": {
+                    "revision": _multi_item_selection_revision(r, read_dobor_context(r).get("procurement_profile") or {}),
+                    "items": ((read_dobor_context(r).get("procurement_profile") or {}).get("items") or []),
+                    "selected_ids": _serialized_multi_item_selected_ids(read_dobor_context(r), (read_dobor_context(r).get("procurement_profile") or {}).get("items") or []),
+                    "confirmed": bool(read_dobor_context(r).get("multi_item_confirmed")),
+                    "mode": getattr(r, "multi_item_mode", "balanced") or "balanced",
+                } if r.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS} else None,
+                "selected_position_count": len(read_selection(r).get("selected_ids") or []),
+                "available_position_count": len(read_selection(r).get("items") or []),
                 "job_number": getattr(r, "job_number", None),
+                "mode": r.mode,
+                "multi_item_mode": getattr(r, "multi_item_mode", "balanced") or "balanced",
+                "confirmation_kind": getattr(r, "confirmation_kind", "") or "",
+                "confirmation_expires_at": r.confirmation_expires_at.isoformat() if getattr(r, "confirmation_expires_at", None) else None,
+                "delivery_city": getattr(r, "delivery_city", "") or "",
+                "geo_radius_km": getattr(r, "geo_radius_km", None),
                 "status": r.status,
                 "progress": r.progress,
                 "message": r.message,

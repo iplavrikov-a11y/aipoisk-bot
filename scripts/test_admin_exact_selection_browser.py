@@ -20,6 +20,7 @@ async def main():
         browser=await p.chromium.launch(headless=True)
         page=await browser.new_page(viewport={'width':1440,'height':1000})
         page.on('pageerror',lambda e: errors.append(str(e)))
+        page.on('dialog', lambda dialog: dialog.accept())
         async def intercept(route):
             r=route.request; u=urlsplit(r.url)
             if u.netloc!=urlsplit(BASE).netloc: await route.abort(); return
@@ -30,7 +31,7 @@ async def main():
                 job['status']='running'
                 data={'ok':True,'job':job}
             else:
-                data=[job] if u.path=='/api/jobs' else payload(u.path+('?'+u.query if u.query else ''))
+                data=[job] if u.path=='/api/jobs' else job if u.path=='/api/jobs/fixture-exact' else payload(u.path+('?'+u.query if u.query else ''))
             await route.fulfill(status=200,content_type='application/json',body=json.dumps(data))
         await page.route('**/*',intercept)
         await page.goto(BASE,wait_until='networkidle')

@@ -172,6 +172,7 @@ TOOLS_DEFINITIONS = [
         "inputSchema": {"type": "object", "properties": {
             "job_id": {"type": "string"},
             "action": {"type": "string", "enum": ["strategy", "accept", "decline"]},
+            "revision": {"type": "string", "description": "Revision исходного списка из multi_item_details; передавайте при выборе стратегии."},
             "multi_item_mode": {"type": "string", "enum": ["balanced", "per_item"]},
             "selected_item_ids": {"type": "array", "items": {"type": "string"}},
         }, "required": ["job_id", "action"]},
@@ -513,6 +514,8 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
                 payload = {"multi_item_mode": mode}
                 if "selected_item_ids" in arguments:
                     payload["selected_item_ids"] = list(arguments["selected_item_ids"])
+                if "revision" in arguments:
+                    payload["revision"] = str(arguments["revision"])
             res = _http_request(f"/api/v1/mcp/jobs/{job_id}/{endpoint}", method="POST", payload=payload)
             return [{"type": "text", "text": json.dumps(res, ensure_ascii=False)}]
 

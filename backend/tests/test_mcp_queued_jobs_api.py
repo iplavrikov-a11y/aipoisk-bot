@@ -232,3 +232,27 @@ def test_job_routes_hide_another_clients_job_and_allow_owner_status(queued_api):
     own = client.get(f"/api/v1/mcp/jobs/{own_id}", headers=headers)
     assert own.status_code == 200
     assert own.json()["job"]["id"] == own_id
+
+
+@pytest.mark.parametrize('mode', ['supplier_search', 'analysis_and_suppliers'])
+def test_queued_supplier_strategy_preserves_input_revision_for_both_search_modes(queued_api, monkeypatch, mode):
+    import app.main as main
+    client, factory, raw_key, _ = queued_api
+    with factory() as db:
+        owner = db.query(ApiKey).filter(ApiKey.client_id.isnot(None)).first()
+        job = Job(client_id=owner.client_id, mode=mode, status='awaiting_customer_confirmation',
+                  confirmation_kind='multi_item_strategy')
+        db.add(job); db.commit(); job_id = job.id
+    calls = []
+    def choose(jid, **kwargs):
+        calls.append((jid, kwargs))
+        return {'job': {'id': jid, 'status': 'pending'}}
+    monkeypatch.setattr(main, 'choose_customer_multi_item_strategy_api', choose)
+
+    response = client.post(f'/api/v1/mcp/jobs/{job_id}/choose-strategy',
+        headers={'Authorization': f'Bearer {raw_key}'},
+        json={'multi_item_mode': 'balanced', 'selected_item_ids': ['item-2'], 'revision': 'source-revision'})
+
+    assert response.status_code == 200, response.json()
+    assert calls[0][1]['revision'] == 'source-revision'
+    assert calls[0][1]['selected_item_ids'] == ['item-2']

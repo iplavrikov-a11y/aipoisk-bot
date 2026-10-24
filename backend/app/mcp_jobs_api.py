@@ -52,6 +52,7 @@ class PositionSelectionRequest(BaseModel):
 
 
 class StrategyRequest(BaseModel):
+    revision: str | None = Field(default=None, min_length=1, max_length=128)
     multi_item_mode: str = Field(pattern="^(balanced|per_item)$")
     selected_item_ids: list[str] | None = Field(default=None, max_length=1000)
 
@@ -267,11 +268,11 @@ def choose_positions(job_id: str, payload: PositionSelectionRequest, api_key: Ap
 def choose_strategy(job_id: str, payload: StrategyRequest, api_key: ApiKey = Depends(get_api_key_auth), db: Session = Depends(db_session)) -> dict[str, Any]:
     client = _linked_client_or_403(api_key, db)
     job = _owned_job_or_404(db, api_key, job_id)
-    if job.mode != MODE_SUPPLIER_SEARCH:
+    if job.mode not in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
         raise HTTPException(status_code=409, detail="Выбор стратегии доступен только для поиска поставщиков.")
     _require_mode_permission(api_key, client, job.mode)
     from .main import choose_customer_multi_item_strategy_api
-    result = choose_customer_multi_item_strategy_api(job_id, multi_item_mode=payload.multi_item_mode, selected_item_ids=payload.selected_item_ids, context=_context_for_key(api_key, client), db=db)
+    result = choose_customer_multi_item_strategy_api(job_id, multi_item_mode=payload.multi_item_mode, selected_item_ids=payload.selected_item_ids, revision=payload.revision, context=_context_for_key(api_key, client), db=db)
     return {"ok": True, "job": result["job"]}
 
 

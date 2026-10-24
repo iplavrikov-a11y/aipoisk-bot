@@ -244,14 +244,17 @@ type GrantDraft = {
 }
 
 type ExactSelection = {
+  mode?: string
   pricing_mode?: string
   revision: string
   max_positions: number
   price_kopeks: number
   selected_ids: string[]
   confirmed: boolean
-  items: Array<{ id: string; position_no: number; name: string }>
+  items: Array<{ id: string; position_no: number; name: string; name_in_tz?: string }>
 }
+
+type MultiItemSelection = Pick<ExactSelection, 'items' | 'selected_ids' | 'confirmed'> & { mode?: string; revision?: string }
 
 type Job = {
   id: string
@@ -269,6 +272,9 @@ type Job = {
   supplier_search_policy: string
   supplier_search_run_type: string
   multi_item_mode?: string
+  delivery_city?: string
+  geo_radius_km?: number | null
+  confirmation_expires_at?: string | null
   confirmation_kind?: string
   confirmation_outcome?: string
   offer_delivery_outcome?: string
@@ -307,13 +313,18 @@ type Job = {
   parent_job_id?: string
   is_admin_rerun?: boolean
   position_selection?: ExactSelection | null
+  multi_item_selection?: MultiItemSelection | null
   exact_product_selection?: ExactSelection | null
   admin_rerun?: JobAdminRerunInfo | null
   admin_reruns?: JobAdminRerunInfo[]
 }
 
 type JobAdminRerunInfo = {
+  mode?: string
+  confirmation_kind?: string
+  multi_item_mode?: string
   position_selection?: ExactSelection | null
+  multi_item_selection?: MultiItemSelection | null
   exact_product_selection?: ExactSelection | null
   id: string
   job_number?: number | null
@@ -1772,7 +1783,13 @@ export function App() {
             clients={clients}
             selectedClientId={selectedClientForJobs}
             onClearSelectedClient={() => setSelectedClientForJobs('')}
-            onChange={loadAll}
+            onChange={async jobId => {
+              if (jobId) {
+                const updated = await api<Job>(`/api/jobs/${jobId}`)
+                setJobs(current => current.map(job => job.id === jobId ? updated : job))
+              }
+              await loadAll()
+            }}
             loading={jobsLoading}
           />
         )}
@@ -3738,6 +3755,34 @@ function getPrimaryReport(job: Job): { file: JobResultFile; isAdmin: boolean; jo
   return null
 }
 
+const selectionWaitingStatuses = ['awaiting_exact_selection', 'awaiting_position_selection']
+const activeExpertStatuses = ['pending', 'running', 'settling', ...selectionWaitingStatuses, 'awaiting_customer_confirmation']
+
+function jobSelection(job: Pick<Job, 'position_selection' | 'exact_product_selection' | 'multi_item_selection'>): ExactSelection | null | undefined {
+  if (job.position_selection || job.exact_product_selection) return job.position_selection || job.exact_product_selection
+  const strategy = job.multi_item_selection
+  if (!strategy) return null
+  const items = strategy.items.map((row, index) => ({ ...row, id: String(row.id || `item-${index}`),
+    position_no: row.position_no || index + 1, name: row.name || row.name_in_tz || `Позиция ${index + 1}` }))
+  return { ...strategy, items, selected_ids: strategy.selected_ids,
+    mode: 'supplier_search', revision: strategy.revision || '', max_positions: items.length, price_kopeks: 0 }
+}
+
+function needsAdminSelection(job: Pick<Job, 'status' | 'confirmation_kind' | 'position_selection' | 'exact_product_selection' | 'multi_item_selection'>) {
+  return selectionWaitingStatuses.includes(job.status) ||
+    (job.status === 'awaiting_customer_confirmation' && job.confirmation_kind === 'multi_item_strategy') ||
+    Boolean(jobSelection(job)?.items.length && !jobSelection(job)?.confirmed)
+}
+
+function expertScope(job: Job) {
+  const selection = jobSelection(job)
+  const rows = selection?.confirmed ? `Подтверждённые позиции: ${selection.selected_ids.length}. ` : ''
+  const geography = job.delivery_city ? `География: ${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''}. ` : ''
+  const strategy = ['supplier_search', 'analysis_and_suppliers'].includes(job.mode)
+    ? `Стратегия: ${job.multi_item_mode === 'per_item' ? 'попозиционный поиск' : 'сбалансированный поиск'}. ` : ''
+  return `${humanMode(job.mode)}. ${rows}${strategy}${geography}`
+}
+
 function JobsView({
   jobs,
   clients = [],
@@ -3750,7 +3795,7 @@ function JobsView({
   clients?: Client[]
   selectedClientId?: string
   onClearSelectedClient?: () => void
-  onChange: () => Promise<void>
+  onChange: (jobId?: string) => Promise<void>
   loading?: boolean
 }) {
   const [nowTs, setNowTs] = useState(() => Date.now())
@@ -3894,12 +3939,16 @@ function JobsView({
     { id: 'completed', label: 'Готово' },
     { id: 'partial', label: 'Частично готово' },
     { id: 'awaiting_customer_confirmation', label: 'Ожидает клиента' },
+    { id: 'awaiting_exact_selection', label: 'Ожидает выбора товаров' },
+    { id: 'awaiting_position_selection', label: 'Ожидает выбора позиций' },
+    { id: 'confirmation_expired', label: 'Срок выбора истёк' },
     { id: 'failed', label: 'Ошибка' },
     { id: 'cancelled', label: 'Отменено' },
   ], [])
   const modeOptions = useMemo(() => [
     { id: 'supplier_search', label: 'Поиск поставщиков' },
     { id: 'exact_product', label: 'Подбор товара и аналогов' },
+    { id: 'price_monitoring', label: 'Мониторинг цен' },
     { id: 'procurement_report', label: 'Анализ документации' },
     { id: 'analysis_and_suppliers', label: 'Анализ + поиск' },
   ], [])
@@ -3930,31 +3979,25 @@ function JobsView({
   }, [showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery])
 
   async function adminRerun(job: Job) {
-    if (job.admin_rerun && (job.admin_rerun.status === 'pending' || job.admin_rerun.status === 'running')) {
-      alert(`По задаче #${job.job_number || job.id} уже выполняется экспертный перерасчет (${job.admin_rerun.progress}%). Дождитесь завершения.`)
-      return
-    }
-    if (job.admin_rerun && job.admin_rerun.status === 'completed') {
-      const ok = window.confirm(
-        `По задаче #${job.job_number || job.id} уже есть готовый админ-итог (${job.admin_rerun.verified_count || 0} пост.).\n\nЗапустить новый перерасчет? В карточке отобразится самый свежий результат.`
-      )
-      if (!ok) return
-    }
+    if (needsAdminSelection(job) || (job.admin_rerun && activeExpertStatuses.includes(job.admin_rerun.status))) return
+    if (!window.confirm(
+      `Создать новый экспертный поиск по задаче #${job.job_number || job.id}?\n\n${expertScope(job)}\nСостав позиций и условия сохраняются. Баланс клиента не списывается. Результат не отправляется автоматически — используйте «Дополнить отчёт».`
+    )) return
     try {
       await api(`/api/jobs/${job.id}/admin-rerun`, { method: 'POST' })
-      await onChange()
+      await onChange(job.id)
     } catch (err: any) {
       alert(err.message || 'Ошибка перезапуска задачи')
     }
   }
   async function resolveJob(job: Job) {
     await api(`/api/jobs/${job.id}/resolve`, { method: 'POST' })
-    await onChange()
+    await onChange(job.id)
   }
   async function cancelJob(job: Job) {
     if (!window.confirm('Отменить задачу?')) return
     await api(`/api/jobs/${job.id}/cancel`, { method: 'POST' })
-    await onChange()
+    await onChange(job.id)
   }
   async function toggleJobDetails(job: Job) {
     const nextExpanded = !expandedJobs[job.id]
@@ -4139,6 +4182,11 @@ function JobsView({
           const supplierRunLabel = supplierRunTypeLabel(job)
           const fallbackOffer = registryFallbackOffer(job)
           const fallbackStatusLabel = registryFallbackStatusLabel(job)
+          const selection = jobSelection(job)
+          const awaitingSelection = selectionWaitingStatuses.includes(job.status) || (job.status === 'awaiting_customer_confirmation' && job.confirmation_kind === 'multi_item_strategy')
+          const expiredSelection = job.status === 'confirmation_expired' && Boolean(selection && !selection.confirmed)
+          const reruns = job.admin_reruns?.length ? job.admin_reruns : job.admin_rerun ? [job.admin_rerun] : []
+          const expertActive = reruns.some(rerun => activeExpertStatuses.includes(rerun.status))
           const isFinished = job.status === 'completed' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled'
           const showProgress = !isFinished || (job.status === 'running' || job.status === 'pending')
           const hasResult = job.has_result || (job.result_files && job.result_files.length > 0)
@@ -4253,7 +4301,7 @@ function JobsView({
                         className="meta-item"
                         title={job.multi_item_mode === 'per_item' ? 'Глубокий независимый поиск под каждую позицию спецификации' : 'Единая квота распределяется по всем позициям со вкладками в Excel'}
                       >
-                        {job.multi_item_mode === 'per_item' ? '🔍 Попозиционный' : '⚖️ Сбалансированный'}
+                        {awaitingSelection ? 'Стратегия ещё не подтверждена' : job.multi_item_mode === 'per_item' ? '🔍 Попозиционный' : '⚖️ Сбалансированный'}
                       </span>
                     </>
                   )}
@@ -4267,7 +4315,10 @@ function JobsView({
 
                   <span className="meta-sep">·</span>
                   <span className="meta-item count">
-                    {job.mode === 'procurement_report'
+                    {awaitingSelection ? 'Ожидает выбора позиций'
+                      : expiredSelection ? 'Срок выбора истёк · поиск не запущен'
+                      : !hasResult && ['pending', 'running', 'settling'].includes(job.status) ? 'Поиск ещё выполняется'
+                      : job.mode === 'procurement_report'
                       ? 'Анализ ТЗ'
                       : job.mode === 'exact_product'
                       ? `${job.verified_count || 0} тов.`
@@ -4275,6 +4326,10 @@ function JobsView({
                       ? `${job.verified_count || 0} поз.`
                       : `${supplierCountLabel(job)} пост.`}
                   </span>
+
+                  {selection && <span className="meta-item">Распознано: {selection.items.length} · Подтверждено: {selection.confirmed ? selection.selected_ids.length : 0}</span>}
+                  {awaitingSelection && job.confirmation_expires_at && <span className="meta-item">Подтвердить до: {formatDate(job.confirmation_expires_at)}</span>}
+                  {job.delivery_city && <span className="meta-item">{job.delivery_city}{job.geo_radius_km ? ` · ${job.geo_radius_km} км` : ''}</span>}
 
                   {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) ? (
                     <>
@@ -4559,15 +4614,11 @@ function JobsView({
                   type="button"
                   className={`icon-button small ${job.admin_rerun?.status === 'completed' ? 'has-rerun' : ''}`}
                   style={job.admin_rerun?.status === 'completed' ? { color: '#047857', borderColor: '#a7f3d0', background: '#ecfdf5' } : undefined}
-                  disabled={job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'}
+                  disabled={needsAdminSelection(job) || expertActive}
                   onClick={() => void adminRerun(job)}
-                  title={
-                    job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'
-                      ? `Идет экспертный перерасчет (${job.admin_rerun.progress}%)...`
-                      : job.admin_rerun?.status === 'completed'
-                      ? `Повторный экспертный перерасчет (уже есть итог: ${job.admin_rerun.verified_count || 0} пост.)`
-                      : 'Экспертный перезапуск администратора'
-                  }
+                  title={expertActive ? 'Экспертная задача уже активна; продолжите её в карточке'
+                    : needsAdminSelection(job) ? 'Сначала подтвердите позиции в карточке задачи'
+                    : 'Новый экспертный поиск без списания с клиента'}
                 >
                   {job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running' ? (
                     <Loader2 size={13} className="spin" />
@@ -4580,12 +4631,25 @@ function JobsView({
               </div>
             </div>
 
-            {['awaiting_exact_selection', 'awaiting_position_selection'].includes(job.status) && (job.position_selection || job.exact_product_selection) && (
-              <AdminExactSelection key={`${job.id}:${(job.position_selection || job.exact_product_selection)!.revision}`} jobId={job.id} selection={(job.position_selection || job.exact_product_selection)!} onChange={onChange} />
+            {(awaitingSelection || expiredSelection) && selection && !expertActive && (
+              <AdminExactSelection key={`${job.id}:${selection.revision}`} jobId={job.id} selection={selection}
+                mode={job.mode} multiItemMode={job.multi_item_mode} reissue={expiredSelection}
+                geography={job.delivery_city ? `${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''}` : ''} onChange={() => onChange(job.id)} />
             )}
-            {job.admin_rerun && ['awaiting_exact_selection', 'awaiting_position_selection'].includes(job.admin_rerun.status) && (job.admin_rerun.position_selection || job.admin_rerun.exact_product_selection) && (
-              <AdminExactSelection key={`${job.admin_rerun.id}:${(job.admin_rerun.position_selection || job.admin_rerun.exact_product_selection)!.revision}`} jobId={job.admin_rerun.id} selection={(job.admin_rerun.position_selection || job.admin_rerun.exact_product_selection)!} onChange={onChange} />
+            {job.admin_rerun && (selectionWaitingStatuses.includes(job.admin_rerun.status) ||
+              (job.admin_rerun.status === 'awaiting_customer_confirmation' && job.admin_rerun.confirmation_kind === 'multi_item_strategy')) && jobSelection(job.admin_rerun) && (
+              <AdminExactSelection key={`${job.admin_rerun.id}:${jobSelection(job.admin_rerun)!.revision}`} jobId={job.admin_rerun.id}
+                selection={jobSelection(job.admin_rerun)!} mode={job.admin_rerun.mode || job.mode} multiItemMode={job.admin_rerun.multi_item_mode}
+                internal onChange={() => onChange(job.id)} />
             )}
+
+            {reruns.length > 0 && <details style={{ marginTop: 8, fontSize: 12 }}>
+              <summary>Экспертные поиски: {reruns.length} · последний: {humanStatus(reruns[0].status)}</summary>
+              {reruns.slice(0, 5).map(rerun => <div key={rerun.id} style={{ marginTop: 4 }}>
+                #{rerun.job_number || rerun.id} · {humanStatus(rerun.status)} · {rerun.message || 'Нет описания'}
+              </div>)}
+              {reruns.length > 5 && <div>Ещё: {reruns.length - 5}. Готовые файлы доступны в списке отчётов.</div>}
+            </details>}
 
             {job.admin_rerun && (job.admin_rerun.status === 'pending' || job.admin_rerun.status === 'running') && (
               <div className="job-progress-compact" style={{ marginTop: 6, padding: '6px 10px', background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}>
@@ -4632,25 +4696,45 @@ function JobsView({
         <AdminSupplementModal
           job={supplementModalJob}
           onClose={() => setSupplementModalJob(null)}
-          onSuccess={onChange}
+          onSuccess={() => onChange(supplementModalJob.id)}
         />
       )}
     </section>
   )
 }
 
-function AdminExactSelection({ jobId, selection, onChange }: { jobId: string; selection: ExactSelection; onChange: () => Promise<void> }) {
+function AdminExactSelection({ jobId, selection, mode, multiItemMode, reissue = false, internal = false, geography = '', onChange }: {
+  jobId: string; selection: ExactSelection; mode?: string; multiItemMode?: string; reissue?: boolean; internal?: boolean; geography?: string; onChange: () => Promise<void>
+}) {
   const [selected, setSelected] = useState<string[]>(selection.selected_ids || [])
+  const [strategy, setStrategy] = useState(multiItemMode || 'balanced')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const maximum = selection.max_positions || 5
-  const monitoring = selection.pricing_mode === 'per_found_position'
+  const monitoring = mode === 'price_monitoring' || selection.pricing_mode === 'per_found_position'
+  const supplier = ['supplier_search', 'analysis_and_suppliers'].includes(mode || selection.mode || '')
+  const balanced = supplier && strategy === 'balanced'
+  const effectiveIds = selected
+  const noCharge = reissue || internal
+  const billing = noCharge ? 'Экспертная задача без списания с клиента. Результат не отправляется автоматически.'
+    : supplier ? 'Продолжение исходной задачи по тарифу клиента. Попозиционный режим может потребовать дополнительный резерв за позиции.'
+    : monitoring ? `За найденную позицию: ${formatMoney(selection.price_kopeks)}. Максимальный резерв: ${formatMoney(selection.price_kopeks * selected.length)}.`
+    : `Стоимость исходной задачи: ${formatMoney(selection.price_kopeks)} за выбор до ${maximum} товаров.`
   async function confirm() {
-    if (!selected.length || selected.length > maximum || busy) return
+    if (!effectiveIds.length || effectiveIds.length > maximum || busy) return
+    if (!window.confirm(`${reissue ? 'Создать новую экспертную задачу' : 'Подтвердить продолжение задачи'}?\n\nПозиций: ${effectiveIds.length}. ${supplier ? `Стратегия: ${balanced ? 'сбалансированная' : 'попозиционная'}. ` : ''}${geography ? `География: ${geography}. ` : ''}\n${billing}\n\n${selection.items.filter(row => effectiveIds.includes(row.id)).map(row => `${row.position_no}. ${row.name}`).join('\n')}`)) return
     setBusy(true)
     setError('')
     try {
-      await api(`/api/jobs/${jobId}/${monitoring ? 'position-selection' : 'exact-selection'}`, { method: 'POST', body: JSON.stringify({ revision: selection.revision, selected_item_ids: selected }) })
+      if (supplier && !reissue) {
+        const query = new URLSearchParams({ multi_item_mode: strategy, revision: selection.revision })
+        selected.forEach(id => query.append('selected_item_ids', id))
+        await api(`/api/jobs/${jobId}/choose-strategy?${query}`, { method: 'POST' })
+      } else {
+        await api(`/api/jobs/${jobId}/${reissue ? 'admin-rerun' : monitoring ? 'position-selection' : 'exact-selection'}${supplier ? `?multi_item_mode=${strategy}` : ''}`, {
+          method: 'POST', body: JSON.stringify({ revision: selection.revision, selected_item_ids: effectiveIds }),
+        })
+      }
       await onChange()
     } catch (err) {
       setError(formatError(err))
@@ -4658,19 +4742,25 @@ function AdminExactSelection({ jobId, selection, onChange }: { jobId: string; se
       setBusy(false)
     }
   }
-  return <section aria-label="Выбор товаров для подбора" style={{ border: '1px solid #a7c9bd', borderRadius: 10, padding: 14, marginTop: 12, minWidth: 0 }}>
-    <strong>{monitoring ? 'Выберите позиции для мониторинга цен' : `Выберите до ${maximum} товаров для подбора`}</strong>
-    <p>Выбрано: {selected.length} из {maximum}. {monitoring ? `За найденную позицию: ${formatMoney(selection.price_kopeks)}. Максимальный резерв: ${formatMoney(selection.price_kopeks * selected.length)}.` : `Стоимость задачи: ${formatMoney(selection.price_kopeks)}.`}</p>
+  return <section aria-label={supplier ? 'Выбор позиций и стратегии поставщиков' : monitoring ? 'Выбор позиций для мониторинга' : 'Выбор товаров для подбора'} style={{ border: '1px solid #a7c9bd', borderRadius: 10, padding: 14, marginTop: 12, minWidth: 0 }}>
+    <strong>{reissue ? 'Срок подтверждения истёк. Выберите позиции для новой экспертной задачи' : supplier ? 'Подтвердите позиции и стратегию поиска поставщиков' : monitoring ? 'Выберите позиции для мониторинга цен' : `Выберите до ${maximum} товаров для подбора`}</strong>
+    <p>Выбрано: {effectiveIds.length} из {maximum}. {billing}</p>
+    {supplier && <label style={{ display: 'block', marginBottom: 10 }}>Стратегия поиска поставщиков{' '}
+      <select aria-label="Стратегия поиска поставщиков" value={strategy} disabled={busy} onChange={event => setStrategy(event.target.value)}>
+        <option value="balanced">Сбалансированный — единая квота по отмеченным позициям</option>
+        <option value="per_item">Попозиционный — независимый поиск по отмеченным позициям</option>
+      </select>
+    </label>}
     <div style={{ maxHeight: 280, overflowY: 'auto', display: 'grid', gap: 10, marginBottom: 12 }}>
       {selection.items.map(row => <label key={row.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', overflowWrap: 'anywhere' }}>
-        <input type="checkbox" checked={selected.includes(row.id)} disabled={busy || (!selected.includes(row.id) && selected.length >= maximum)}
+        <input type="checkbox" checked={effectiveIds.includes(row.id)} disabled={busy || (!selected.includes(row.id) && selected.length >= maximum)}
           onChange={() => setSelected(current => current.includes(row.id) ? current.filter(id => id !== row.id) : [...current, row.id])} />
         <span>{row.position_no}. {row.name}</span>
       </label>)}
     </div>
     {error && <p role="alert">{error}</p>}
-    <button type="button" disabled={busy || !selected.length || selected.length > maximum} onClick={() => void confirm()}>
-      {busy ? 'Подтверждаем…' : 'Подтвердить выбор товаров'}
+    <button type="button" disabled={busy || !effectiveIds.length || effectiveIds.length > maximum} onClick={() => void confirm()}>
+      {busy ? 'Подтверждаем…' : reissue ? 'Создать экспертный поиск с выбранными позициями' : supplier ? 'Подтвердить позиции и стратегию' : monitoring ? 'Подтвердить позиции для мониторинга' : 'Подтвердить выбор товаров'}
     </button>
   </section>
 }
@@ -4829,7 +4919,7 @@ function AdminSupplementModal({
     <div className="server-modal-backdrop" onClick={onClose}>
       <div className="server-modal-card supplement-modal" style={{ maxWidth: 640 }} onClick={e => e.stopPropagation()}>
         <div className="server-modal-header">
-          <h3>ДОПОЛНИТЬ ОТЧЕТ ЭКСПЕРТОМ</h3>
+          <h3>ДОПОЛНИТЬ ОТЧЁТ: КОММЕНТАРИЙ И ФАЙЛЫ</h3>
           <button className="server-modal-close" onClick={onClose} title="Закрыть">
             <X size={16} />
           </button>
@@ -4837,6 +4927,7 @@ function AdminSupplementModal({
 
         <form onSubmit={handleSubmit} className="supplement-modal-form">
           <div className="supplement-modal-scroll-body">
+            <p style={{ fontSize: 12, margin: 0 }}>Прикрепите комментарий и готовые файлы к задаче клиента. Новый поиск не запускается. Доставка в Telegram зависит от отметки ниже.</p>
             <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', fontSize: 12 }}>
               <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: 2 }}>
                 {job.job_number ? `[#${job.job_number}] ` : ''}{job.human_title || job.title}
@@ -5047,7 +5138,7 @@ function AdminSupplementModal({
             </button>
             <button type="submit" className="primary" disabled={loading} style={{ background: '#0d9488', borderColor: '#0d9488', fontSize: 12, padding: '6px 16px' }}>
               {loading ? <Loader2 size={13} className="spin" /> : <Send size={13} />}
-              <span>{loading ? 'Отправка...' : 'Отправить клиенту'}</span>
+              <span>{loading ? 'Сохранение...' : notifyTelegram ? 'Сохранить и отправить в Telegram' : 'Сохранить дополнение в кабинете'}</span>
             </button>
           </div>
         </form>

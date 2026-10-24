@@ -78,3 +78,13 @@ def test_mcp_exact_report_uses_customer_facing_comparison_heading(client_module,
     text = '\n'.join(row['text'] for row in output)
     assert 'Сверка ключевых параметров под ТЗ' in text
     assert '(Форма 2)' not in text
+
+
+def test_mcp_strategy_forwards_source_revision(client_module, monkeypatch):
+    calls = []
+    monkeypatch.setattr(client_module, '_http_request', lambda path, **kwargs: calls.append(kwargs) or {'job': {}})
+    client_module.handle_tool_call('tenderlex_update_queued_job', {
+        'job_id': 'job-1', 'action': 'strategy', 'multi_item_mode': 'balanced',
+        'selected_item_ids': ['item-2'], 'revision': 'source-revision',
+    })
+    assert calls[0]['payload']['revision'] == 'source-revision'

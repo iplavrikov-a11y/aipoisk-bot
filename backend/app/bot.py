@@ -20,6 +20,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, ForceReply, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, MenuButtonDefault, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from fastapi import HTTPException
+from sqlalchemy.orm import Session
 
 from .account_linking import (
     TELEGRAM_TO_WEB,
@@ -93,7 +94,7 @@ from .legal import (
     TERMS_URL,
     record_legal_acceptance,
 )
-from .models import BillingTransaction, Client, Job, now_utc
+from .models import BillingTransaction, Client, Job, SystemSettings, now_utc
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import client_access_error, get_client_by_telegram_id, get_or_create_settings, get_or_create_trial_client_by_telegram_id, seed_owner_client, supplier_target_for_client
 from .result_offers import (
@@ -937,7 +938,7 @@ def _mode_to_billing_kind(mode: str) -> str:
         return KIND_EXACT_PRODUCT
     if mode in (MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS):
         return KIND_PROCUREMENT_REPORT
-    if mode == MODE_SUPPLIER_SEARCH_EXTRA:
+    if mode == KIND_SUPPLIER_SEARCH_EXTRA:
         return KIND_SUPPLIER_SEARCH_EXTRA
     return KIND_SUPPLIER_SEARCH
 
@@ -4172,14 +4173,14 @@ async def find_more_suppliers_accept(callback: CallbackQuery) -> None:
             pitch = ""
             if callback.message:
                 pitch = await _send_client_low_balance_notification(
-                    callback.message, client, settings, error=detail, mode=MODE_SUPPLIER_SEARCH_EXTRA, job_title=job_title
+                    callback.message, client, settings, error=detail, mode=KIND_SUPPLIER_SEARCH_EXTRA, job_title=job_title
                 )
             await _alert_owner_about_low_balance(
                 _message_bot(callback.message) if callback.message else None,
                 client,
                 reason="Попытка запуска дополнительного поиска без средств",
                 job_title=job_title,
-                mode=MODE_SUPPLIER_SEARCH_EXTRA,
+                mode=KIND_SUPPLIER_SEARCH_EXTRA,
                 ai_pitch=pitch,
             )
         else:
@@ -4865,7 +4866,7 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
             kind = KIND_EXACT_PRODUCT
         elif mode_val in (MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS):
             kind = KIND_PROCUREMENT_REPORT
-        elif mode_val == MODE_SUPPLIER_SEARCH_EXTRA:
+        elif mode_val == KIND_SUPPLIER_SEARCH_EXTRA:
             kind = KIND_SUPPLIER_SEARCH_EXTRA
 
         price_kopeks = effective_price_kopeks(db, client, kind) or 9900

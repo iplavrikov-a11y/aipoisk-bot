@@ -86,7 +86,7 @@ def confirm_position_selection(db: Session, job: Job, revision: str, item_ids: l
         if chosen == selection.get("selected_ids") and job.status in {"pending", "running", "completed"}:
             return False
         raise ValueError("Выбор этой задачи уже подтверждён. Для другого состава создайте новый подбор.")
-    if job.mode == "price_monitoring" and job.client_id:
+    if job.mode == "price_monitoring" and job.client_id and not getattr(job, "is_admin_rerun", False):
         client = db.get(Client, job.client_id)
         if client is not None:
             db.refresh(client, attribute_names=["money_balance_kopeks", "money_reserved_kopeks"])

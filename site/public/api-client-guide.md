@@ -80,8 +80,14 @@ POST /api/v1/mcp/jobs/{job_id}/position-selection
 
 ```json
 POST /api/v1/mcp/jobs/{job_id}/choose-strategy
-{"multi_item_mode":"per_item","selected_item_ids":["..."]}
+{"revision":"...","multi_item_mode":"per_item","selected_item_ids":["..."]}
 ```
+
+Передавайте актуальную `multi_item_details.revision` из состояния задачи и ID
+исходных строк. Стратегии `balanced` и `per_item` доступны для
+`supplier_search` и `analysis_and_suppliers`; обе учитывают явный состав
+выбранных позиций. Устаревшая revision отклоняется до запуска и резервирования;
+получите состояние заново и повторно подтвердите выбор.
 
 Доступны также `POST /{job_id}/cancel`, `POST /{job_id}/accept` и
 `POST /{job_id}/decline`. Результаты описываются в `result_files`; скачать их
