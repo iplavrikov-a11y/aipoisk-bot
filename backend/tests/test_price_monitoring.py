@@ -417,9 +417,8 @@ def test_divergent_prices_suppressed_when_no_consensus_cluster(tmp_path):
     ws = wb["Пример отчета"]
 
     # When no homogeneous consensus exists, report displays honest missing status
-    assert ws["C5"].value == "-"
+    assert ws["C5"].value == "По запросу"
     assert "Цены не образуют сопоставимую группу" in str(ws["D5"].value)
-    assert ws["C5"].value != "разброс цен"
 
 
 def test_circular_reference_prevention_and_row_height_and_no_address(tmp_path):

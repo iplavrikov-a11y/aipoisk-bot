@@ -485,6 +485,40 @@ async def generate_monitoring_queries_ai(
     return []
 
 
+async def synthesize_missing_reason_ai(
+    item_name: str,
+    unit: str,
+    status: str,
+    snippets: list[str],
+    quotes_summary: str,
+    settings: Any,
+) -> str:
+    """
+    Формирует с помощью ИИ реальную, объективную причину отсутствия открытой цены
+    для конкретной позиции спецификации с практической рекомендацией для заказчика.
+    """
+    if not getattr(settings, "has_active_ai_provider", False):
+        return ""
+    snip_text = "\n".join(f"- {s}" for s in snippets[:4]) if snippets else "Результатов в выдаче нет"
+    prompt = f"""Ты — старший эксперт по закупкам ТМЦ и расчету НМЦК (44-ФЗ, 223-ФЗ).
+Позиция спецификации: {item_name} ({unit}).
+Статус поиска: {status}.
+{quotes_summary}
+Фрагменты поисковой выдачи:
+{snip_text}
+
+Сформулируй краткую (до 130 символов) профессиональную причину, почему открытой рыночной цены нет в интернет-магазинах, и деловую рекомендацию для заказчика.
+Пиши емко, строго по факту этого товара, без кавычек и вводных слов."""
+    try:
+        ans = await call_llm(settings, prompt, tier="light")
+        ans = ans.strip(" \"'\t\r\n")
+        if ans and len(ans) >= 10:
+            return ans[:160]
+    except Exception as exc:
+        logger.debug("Failed to synthesize missing reason via AI: %s", exc)
+    return ""
+
+
 async def process_single_item(
     item_tuple: tuple[int, str, str],
     engine: YandexSearchEngine,
@@ -898,6 +932,26 @@ async def process_single_item(
             item_res.not_found_reason = "network"
         else:
             item_res.not_found_reason = "all_rejected"
+
+    # Если цена не найдена или группа неоднородна, формулируем реальную причину через ИИ
+    if confirmed_count == 0 and getattr(settings, "has_active_ai_provider", False):
+        snips = [f"{r.title}: {r.snippet}" for r in list(url_to_meta.values())[:4] if r.snippet or r.title]
+        q_summary = ""
+        if item_res.quotes:
+            valid_p = [q.price_rub for q in item_res.quotes if q.price_rub > 0]
+            if valid_p:
+                q_summary = f"Найдено {len(valid_p)} предложений с ценами от {min(valid_p):,.0f} до {max(valid_p):,.0f} ₽ (вариация > 33%)"
+        ai_ans = await synthesize_missing_reason_ai(
+            clean,
+            unit,
+            item_res.status,
+            snips,
+            q_summary,
+            settings,
+        )
+        if ai_ans:
+            item_res.ai_reason = ai_ans
+            diagnostics["ai_reason"] = ai_ans
     all_candidate_urls = candidate_urls + wave2_urls + wave3_urls
     diagnostics["unique_candidate_urls"] = len(dict.fromkeys(all_candidate_urls))
     diagnostics["distinct_domains"] = len(

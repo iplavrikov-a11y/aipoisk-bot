@@ -56,6 +56,15 @@ def _missing_price_status_and_note(item: ItemPriceResult) -> tuple[str, str]:
             "Технический сбой при обработке страницы поставщика. Рекомендуется перезапустить поиск.",
         )
 
+    # 0. Если реальная причина сформулирована искусственным интеллектом для этой позиции:
+    ai_reason = (
+        getattr(item, "ai_reason", "")
+        or (getattr(item, "search_diagnostics", {}) or {}).get("ai_reason", "")
+    )
+    if ai_reason and len(ai_reason.strip()) >= 10:
+        clean_ai = ai_reason.strip()
+        return (clean_ai, clean_ai)
+
     # 1. Вариация цен превысила порог сопоставимости 44-ФЗ
     if (
         any(q.price_rub > 0 and q.is_outlier for q in item.quotes)
@@ -511,24 +520,19 @@ def generate_price_monitoring_excel(
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
 
         if not display_quotes:
-            missing_label, missing_note = _missing_price_status_and_note(item)
+            missing_label, _ = _missing_price_status_and_note(item)
 
-            cell_p1 = ws.cell(row=current_row, column=3, value="-")
+            cell_p1 = ws.cell(row=current_row, column=3, value="По запросу")
             cell_p1.border = thin_border
             cell_p1.alignment = align_center
-            cell_p1.font = font_missing_badge
+            cell_p1.font = Font(name="Calibri", size=10, bold=True, color="64748B")
             cell_p1.fill = row_fill
 
             cell_l1 = ws.cell(row=current_row, column=4, value=missing_label)
             cell_l1.border = thin_border
-            cell_l1.font = font_missing_badge
+            cell_l1.font = font_calibri_regular
             cell_l1.fill = missing_badge_fill
             cell_l1.alignment = align_left
-            if missing_note:
-                comm_missing = Comment(f"Причина отсутствия открытой цены:\n{missing_note}", "TenderLex")
-                comm_missing.width = 340
-                comm_missing.height = 110
-                cell_l1.comment = comm_missing
 
             for s_idx in range(2, max_suppliers + 1):
                 col_start = 3 + (s_idx - 1) * 2
@@ -733,10 +737,10 @@ def generate_price_monitoring_excel(
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
         if display_quotes:
             status_text = _price_sources_status(display_quotes)
-            status_note = ""
+            best_p = min(q.price_rub for q in display_quotes)
         else:
-            status_text, status_note = _missing_price_status_and_note(item)
-        best_p = min(q.price_rub for q in display_quotes) if display_quotes else "-"
+            status_text, _ = _missing_price_status_and_note(item)
+            best_p = "По запросу"
 
         row_vals = [
             item.source_position_no or item.row_number,
@@ -781,11 +785,6 @@ def generate_price_monitoring_excel(
                 strong_sources = len(display_quotes) >= 3 and all(q.evidence_level == "page_content" for q in display_quotes)
                 cell.font = Font(name="Calibri", bold=True, color="047857" if strong_sources else "B45309" if display_quotes else "64748B")
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-                if not display_quotes and status_note:
-                    comm_st = Comment(f"Анализ позиции:\n{status_note}", "TenderLex")
-                    comm_st.width = 340
-                    comm_st.height = 110
-                    cell.comment = comm_st
             elif col_idx > 5 and (col_idx - 5) % 10 == 0:  # Ссылка
                 val = str(cell.value or "")
                 if val.startswith("http"):

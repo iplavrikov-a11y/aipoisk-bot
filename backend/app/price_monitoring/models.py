@@ -40,6 +40,7 @@ class ItemPriceResult:
     quotes: List[SupplierQuote] = field(default_factory=list)
     status: str = "pending"  # "found", "not_found", "error"
     not_found_reason: str = ""
+    ai_reason: str = ""
     search_diagnostics: Dict[str, Any] = field(default_factory=dict)
     position_id: str = ""
     source_position_no: Optional[int] = None
