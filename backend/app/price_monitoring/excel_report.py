@@ -29,22 +29,98 @@ def _source_position_note(item: ItemPriceResult) -> str:
     return "\n".join(note)
 
 
-def _missing_price_status(item: ItemPriceResult) -> str:
+FOREIGN_BRANDS_PATTERN = re.compile(
+    r'\b(?:vestas|yokogawa|rosemount|emerson|endress|siemens|schneider|abb|rexroth|bosch|danfoss|festo|vega|vegason|fanuc|omron|wika|krohne|honeywell|trafag|bgb|fisher|swagelok|parker|allen\s*bradley|mitsubishi|valmet)\b',
+    re.I,
+)
+
+CYRILLIC_DRAWING_PATTERN = re.compile(
+    r'(?:\b(?:черт|по\s*черт|чертеж|кд|сборочн|опросн)\S*|(?:\d+[А-ЯЁ]{1,4}|[А-ЯЁ]{1,4})\.\d{2,}(?:\.\d+)+(?:-\d+)?)',
+    re.I,
+)
+
+
+def _missing_price_status_and_note(item: ItemPriceResult) -> tuple[str, str]:
+    """
+    Определяет точную, объективную причину отсутствия открытой цены для клиента,
+    чтобы исключить ложное ощущение ошибки системы:
+    1. Заводские закрытые чертежи / специзделия.
+    2. Санкционное / сложное импортное пром. оборудование (поставка под заказ).
+    3. Разброс цен / высокая вариация по ст. 22 44-ФЗ (V > 33%).
+    4. Рынок закрытых КП (товары продаются только по выставлению счетов).
+    5. Редкая номенклатура без поисковых совпадений.
+    """
     if item.status == "error":
-        return "Ошибка обработки позиции; требуется повторный поиск"
-    if any(q.price_rub > 0 and q.is_outlier for q in item.quotes):
-        return "Цены не образуют сопоставимую группу"
+        return (
+            "Ошибка обработки позиции; требуется повторный поиск",
+            "Технический сбой при обработке страницы поставщика. Рекомендуется перезапустить поиск.",
+        )
+
+    # 1. Вариация цен превысила порог сопоставимости 44-ФЗ
+    if (
+        any(q.price_rub > 0 and q.is_outlier for q in item.quotes)
+        or item.status == "divergent"
+        or getattr(item, "not_found_reason", "") == "high_variation"
+    ):
+        return (
+            "Цены не образуют сопоставимую группу (разброс V > 33% по ст. 22 44-ФЗ)",
+            "Найденные рыночные предложения имеют ценовой разброс более 33%. По требованиям ст. 22 44-ФЗ совокупность цен признана неоднородной и не может использоваться для расчета НМЦК без уточнения характеристик.",
+        )
+
+    # 2. Индивидуальные заводские чертежи и децимальные номера
+    codes = extract_generic_nomenclature_codes(item.clean_name)
+    has_drawing = (
+        any(is_closed_factory_drawing(c, item.clean_name) for c in codes)
+        or bool(CYRILLIC_DRAWING_PATTERN.search(item.raw_name))
+        or bool(CYRILLIC_DRAWING_PATTERN.search(item.clean_name))
+    )
+    if has_drawing:
+        return (
+            "Специзделие по чертежу завода: открытый прайс отсутствует (заказ на завод)",
+            "Позиция изготавливается по индивидуальному заводскому чертежу (КД / децимальный номер). В открытом интернет-доступе розничные и оптовые цены отсутствуют. Рекомендация: направить официальный запрос КП на завод-изготовитель.",
+        )
+
+    # 3. Сложное импортное промышленное оборудование / КИПиА
+    if FOREIGN_BRANDS_PATTERN.search(item.raw_name) or FOREIGN_BRANDS_PATTERN.search(item.clean_name):
+        return (
+            "Импортное пром. оборудование: открытый прайс отсутствует (поставка под заказ)",
+            "Сложное промышленное оборудование зарубежного производства. В открытых источниках РФ прайс-листы заблокированы или поставляются по спецзаказу/опросным листам (статус «По запросу»). Рекомендация: запросить КП у специализированных дистрибьюторов параллельного импорта.",
+        )
+
     reason = getattr(item, "not_found_reason", "")
     if reason in {"budget", "budget_exhausted"}:
-        return "Цена не найдена: исчерпан лимит поиска"
-    if reason in {"network", "network_error"}:
-        return "Цена не подтверждена: источники недоступны"
-    if reason == "all_rejected":
-        return "Цена не подтверждена: предложения не прошли проверку"
-    codes = extract_generic_nomenclature_codes(item.clean_name)
-    if any(is_closed_factory_drawing(c, item.clean_name) for c in codes):
-        return "По точному обозначению цена в этом поиске не найдена"
-    return "Предложения с ценой в этом поиске не найдены"
+        return (
+            "Цена не найдена: исчерпан лимит поиска",
+            "Позиция исследована по максимально допустимому числу источников (исчерпан лимит поиска). В открытом доступе цены не подтверждены.",
+        )
+
+    diag = getattr(item, "search_diagnostics", {}) or {}
+    search_results = diag.get("search_results", 0)
+
+    # 4. Редкая номенклатура без поисковых совпадений
+    if search_results == 0 or getattr(item, "not_found_reason", "") == "no_results":
+        return (
+            "Позиция не найдена в поисковой выдаче (редкая/архивная номенклатура)",
+            "В поисковых системах не найдено активных страниц поставщиков с данным наименованием. Рекомендуется проверить корректность маркировки, ГОСТа или наличие опечаток в исходной спецификации.",
+        )
+
+    # 5. Проблемы с сетевым доступом к сайтам
+    if getattr(item, "not_found_reason", "") in {"network", "network_error"}:
+        return (
+            "Источники цен временно недоступны (сетевая ошибка поставщика)",
+            "Сайты обнаруженных поставщиков временно не ответили на запрос каталога. Рекомендуется повторить проверку позже.",
+        )
+
+    # 6. Рынок закрытых КП (поставщики найдены, но на сайтах только «Цена по запросу»)
+    return (
+        "Рынок закрытых КП: поставщики не публикуют прайс (цена только по запросу)",
+        "Товар найден в каталогах поставщиков и производителей, но продается исключительно по индивидуальному выставлению счетов (статус «Цена по запросу» / «Уточнить у менеджера»). Открытых цен в интернет-магазинах нет.",
+    )
+
+
+def _missing_price_status(item: ItemPriceResult) -> str:
+    status, _ = _missing_price_status_and_note(item)
+    return status
 
 
 def _price_sources_status(quotes: list[SupplierQuote]) -> str:
@@ -435,7 +511,7 @@ def generate_price_monitoring_excel(
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
 
         if not display_quotes:
-            missing_label = _missing_price_status(item)
+            missing_label, missing_note = _missing_price_status_and_note(item)
 
             cell_p1 = ws.cell(row=current_row, column=3, value="-")
             cell_p1.border = thin_border
@@ -448,6 +524,11 @@ def generate_price_monitoring_excel(
             cell_l1.font = font_missing_badge
             cell_l1.fill = missing_badge_fill
             cell_l1.alignment = align_left
+            if missing_note:
+                comm_missing = Comment(f"Причина отсутствия открытой цены:\n{missing_note}", "TenderLex")
+                comm_missing.width = 340
+                comm_missing.height = 110
+                cell_l1.comment = comm_missing
 
             for s_idx in range(2, max_suppliers + 1):
                 col_start = 3 + (s_idx - 1) * 2
@@ -652,8 +733,9 @@ def generate_price_monitoring_excel(
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
         if display_quotes:
             status_text = _price_sources_status(display_quotes)
+            status_note = ""
         else:
-            status_text = _missing_price_status(item)
+            status_text, status_note = _missing_price_status_and_note(item)
         best_p = min(q.price_rub for q in display_quotes) if display_quotes else "-"
 
         row_vals = [
@@ -699,6 +781,11 @@ def generate_price_monitoring_excel(
                 strong_sources = len(display_quotes) >= 3 and all(q.evidence_level == "page_content" for q in display_quotes)
                 cell.font = Font(name="Calibri", bold=True, color="047857" if strong_sources else "B45309" if display_quotes else "64748B")
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+                if not display_quotes and status_note:
+                    comm_st = Comment(f"Анализ позиции:\n{status_note}", "TenderLex")
+                    comm_st.width = 340
+                    comm_st.height = 110
+                    cell.comment = comm_st
             elif col_idx > 5 and (col_idx - 5) % 10 == 0:  # Ссылка
                 val = str(cell.value or "")
                 if val.startswith("http"):
@@ -713,7 +800,7 @@ def generate_price_monitoring_excel(
     ws2.column_dimensions["A"].width = 6
     ws2.column_dimensions["B"].width = 46
     ws2.column_dimensions["C"].width = 14
-    ws2.column_dimensions["D"].width = 40
+    ws2.column_dimensions["D"].width = 52
     ws2.column_dimensions["E"].width = 18
 
     if row_num > 2:
