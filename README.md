@@ -1,6 +1,6 @@
 # TenderLex Bot
 
-Актуальный выпуск 24 октября 2026: [исправление XLSX №968 и попозиционной админки](docs/JOB968_ADMIN_POSITIONAL_RELEASE_2026-10-24.md), а также [санитизация клиентских ошибок и понятные инструкции при пустых спецификациях](docs/PROJECT_STATUS.md) — 1 322 серверных теста и 54 подтеста, безопасный выпуск и проверки работающих сервисов. Предыдущий выпуск 23 октября: [API, правило 14 и география](docs/API_RULE14_GEO_RELEASE_2026-10-23.md), [руководство клиентского API](docs/API_CLIENT_GUIDE.md), [оставшиеся улучшения](docs/SITE_REMAINING_IMPROVEMENTS_2026-10-21.md). Выбор исходных товаров, расчёты мониторинга и стабильность кабинета описаны в [выпуске 22 октября](docs/POSITIONAL_SELECTION_RELEASE_2026-10-22.md); разбор ошибочных 243 позиций — в [отчёте задач 954–956](docs/SELECTION_INVENTORY_FIX_954_956_2026-10-22.md).
+Актуальный выпуск 24 октября 2026 (поздний вечер): [выделенная колонка локации в Excel и полнономенклатурный гео-поиск](docs/GEO_RADIUS_EXCEL_COLUMNS_RELEASE_2026-10-24.md), а также [исправление XLSX №968 и попозиционной админки](docs/JOB968_ADMIN_POSITIONAL_RELEASE_2026-10-24.md), [санитизация клиентских ошибок](docs/PROJECT_STATUS.md) — 1 325 серверных тестов и 54 подтеста, 5 E2E реальных задач с ТЗ (10/10), деплой на боевой сервер. Предыдущий выпуск 23 октября: [API, правило 14 и география](docs/API_RULE14_GEO_RELEASE_2026-10-23.md), [руководство клиентского API](docs/API_CLIENT_GUIDE.md), [оставшиеся улучшения](docs/SITE_REMAINING_IMPROVEMENTS_2026-10-21.md). Выбор исходных товаров, расчёты мониторинга и стабильность кабинета описаны в [выпуске 22 октября](docs/POSITIONAL_SELECTION_RELEASE_2026-10-22.md); разбор ошибочных 243 позиций — в [отчёте задач 954–956](docs/SELECTION_INVENTORY_FIX_954_956_2026-10-22.md).
 
 Серверный прогон выпуска 23 октября: 1221 тест и 54 подтеста; после публикации проверены 97 сценариев кабинета и сохранность SEO-контрактов 92 уникальных страниц. Браузерные API подменялись тестовыми ответами; платный рыночный поиск не запускался. Это результаты локальной проверки выпуска, а не GitHub CI.
 
@@ -17,6 +17,12 @@ Public product domain: `https://tenderlex.ru`
 Admin/internal domain: `https://admin.tenderlex.ru`
 
 ## Production notes
+
+- Dedicated City/Distance Columns & Full-Inventory Multi-Item Geo Search (2026-10-24):
+  - Supplier Search Excel Reports (`backend/app/report_builder.py`): added dedicated 6th column "Город и расстояние" between "Комментарий" and "Реестр Минпромторга" (7 columns total). Completely stripped location text pollution from the "Комментарий" column, leaving purely technical specifications and matching notes. Formatted in-radius (emerald), out-of-radius (red with explicit `(вне радиуса)` tag), and unknown distances (`—`).
+  - Price Monitoring Excel Reports (`backend/app/price_monitoring/excel_report.py`): added dedicated "Город и расстояние {N}" column to Sheet 2 ("Детализированный реестр", 10 columns per supplier). Cleaned "Пересчет / Примечание" column of all geo-strings. Placed `📍 {City} (~{dist} км)` badges in supplier card headers on Sheet 1.
+  - Full-Inventory Multi-Item Geo Search (`backend/app/supplier_search.py`): eliminated `items[:3]` query bottleneck; all specification positions now receive geo-tailored queries in per-item mode.
+  - Verified with 1,325 backend tests passing, 5 real procurement E2E tasks (10/10 quality score), and deployed live to production.
 
 - Automated Client Password Reset & Instant Cabinet Login (2026-10-20):
   - Self-Service Email Flow: client enters email in `/cabinet`, system issues cryptographically secure single-use token (`secrets.token_urlsafe(32)`, valid 2h, SHA-256 in SQLite `web_password_reset_tokens`) and sends reset link via email relay.
