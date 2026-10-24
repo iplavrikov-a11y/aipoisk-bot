@@ -722,6 +722,31 @@ async def process_single_item(
                             if not quote.contacts:
                                 quote.contacts = kdata["contacts"]
                             break
+
+                    # Если ИНН поставщика всё ещё не найден, выполняем быстрый целевой добор по домену через поиск
+                    if not quote.inn and isinstance(engine, YandexSearchEngine):
+                        try:
+                            inn_query = f'"{domain}" ИНН'
+                            async with search_semaphore:
+                                inn_res = await engine.search(inn_query, max_results=3, enrich_query=False, filter_marketplaces=False)
+                            for ir in inn_res:
+                                text_c = f"{ir.title} {ir.snippet}"
+                                m_inns = re.findall(r'(?:ИНН|инн)[\s:№#«"\'\xa0]{0,10}(\d{10}|\d{12})\b', text_c)
+                                if m_inns:
+                                    quote.inn = m_inns[0]
+                                    from ..dadata_client import enrich_company_by_inn
+                                    d_info = await enrich_company_by_inn(quote.inn)
+                                    if d_info:
+                                        if d_info.get("company_name"):
+                                            quote.company_name = d_info["company_name"]
+                                        if not quote.kpp and d_info.get("kpp"):
+                                            quote.kpp = d_info["kpp"]
+                                        city_or_addr = d_info.get("city") or d_info.get("legal_address")
+                                        if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                                            quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                                    break
+                        except Exception as e_inn:
+                            logger.debug("Fallback domain INN search failed for %s: %s", domain, e_inn)
                     if quote.inn and quote.inn in seen_inns:
                         diagnostics["duplicate_suppliers"] += 1
                         logger.debug("Skip duplicate supplier INN %s for %s", quote.inn, url)

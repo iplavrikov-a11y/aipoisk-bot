@@ -205,35 +205,59 @@ def generate_price_monitoring_excel(
     ws = wb.active
     ws.title = "Пример отчета"
 
-    # Стили
-    font_calibri_bold = Font(name="Calibri", size=11, bold=True)
-    font_calibri_regular = Font(name="Calibri", size=11)
-    font_header_bold = Font(name="Calibri", size=10, bold=True)
-    font_header_regular = Font(name="Calibri", size=10)
-    font_link = Font(name="Calibri", size=10, color="0563C1", underline="single")
-    font_price_bold = Font(name="Calibri", size=11, bold=True, color="166534")
+    # Стили - Премиальная палитра Slate & Emerald
+    font_calibri_bold = Font(name="Calibri", size=11, bold=True, color="0F172A")
+    font_calibri_regular = Font(name="Calibri", size=11, color="1E293B")
+    font_main_hdr = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    font_sub_hdr_white = Font(name="Calibri", size=9, color="F8FAFC")
+    font_col_name = Font(name="Calibri", size=10, bold=True, color="0F172A")
+    font_col_src = Font(name="Calibri", size=10, bold=True, color="475569")
+    font_summary_hdr = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    font_link = Font(name="Calibri", size=10, color="2563EB", underline="single")
+    font_price_bold = Font(name="Calibri", size=11, bold=True, color="047857")
+    font_summary_min = Font(name="Calibri", size=11, bold=True, color="047857")
+    font_summary_avg = Font(name="Calibri", size=11, bold=True, color="065F46")
+    font_summary_var = Font(name="Calibri", size=10, bold=True, color="065F46")
     font_price_outlier = Font(name="Calibri", size=11, bold=True, color="B45309")
+    font_missing_badge = Font(name="Calibri", size=10, italic=True, color="64748B")
     font_rich_regular = InlineFont(rFont="Calibri", sz=10, color="1E293B")
-    font_rich_link = InlineFont(rFont="Calibri", sz=10, color="0563C1", u="single")
+    font_rich_link = InlineFont(rFont="Calibri", sz=10, color="2563EB", u="single")
 
     thin_border = Border(
-        left=Side(style="thin", color="D9D9D9"),
-        right=Side(style="thin", color="D9D9D9"),
-        top=Side(style="thin", color="D9D9D9"),
-        bottom=Side(style="thin", color="D9D9D9"),
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
     )
-    header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-    sup_header_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    summary_border = Border(
+        left=Side(style="thin", color="A7F3D0"),
+        right=Side(style="thin", color="A7F3D0"),
+        top=Side(style="thin", color="A7F3D0"),
+        bottom=Side(style="thin", color="A7F3D0"),
+    )
+
+    hdr_dark_slate = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    hdr_slate_700 = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
+    hdr_slate_600 = PatternFill(start_color="475569", end_color="475569", fill_type="solid")
+    hdr_slate_500 = PatternFill(start_color="64748B", end_color="64748B", fill_type="solid")
+    hdr_col_fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+    hdr_summary_fill = PatternFill(start_color="0F766E", end_color="0F766E", fill_type="solid")
+    summary_data_fill = PatternFill(start_color="F0FDF4", end_color="F0FDF4", fill_type="solid")
+    missing_badge_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
 
     align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     align_left = Alignment(horizontal="left", vertical="center", wrap_text=True)
     align_right = Alignment(horizontal="right", vertical="center")
 
+    # Закрепление областей (Freeze Panes): строки 1-4 и колонки A-B зафиксированы при прокрутке
+    ws.freeze_panes = "C5"
+
     # Колонки A и B
     ws.merge_cells("A1:A4")
     cell_a = ws["A1"]
     cell_a.value = "Номенклатура"
-    cell_a.font = font_calibri_bold
+    cell_a.font = font_main_hdr
+    cell_a.fill = hdr_dark_slate
     cell_a.alignment = align_center
     if delivery_city:
         clean_city = str(delivery_city).strip()
@@ -246,7 +270,8 @@ def generate_price_monitoring_excel(
     ws.merge_cells("B1:B4")
     cell_b = ws["B1"]
     cell_b.value = "Ед. изм."
-    cell_b.font = font_calibri_bold
+    cell_b.font = font_main_hdr
+    cell_b.fill = hdr_dark_slate
     cell_b.alignment = align_center
 
     # Определяем основных поставщиков по массиву позиций
@@ -310,33 +335,38 @@ def generate_price_monitoring_excel(
         ws.merge_cells(f"{col_start_let}1:{col_end_let}1")
         cell_sup = ws[f"{col_start_let}1"]
         cell_sup.value = sup_name_text
-        cell_sup.font = font_header_bold
+        cell_sup.font = font_main_hdr
+        cell_sup.fill = hdr_slate_700
         cell_sup.alignment = align_center
 
         # Строка 2: ИНН/КПП
         ws.merge_cells(f"{col_start_let}2:{col_end_let}2")
         cell_inn = ws[f"{col_start_let}2"]
         cell_inn.value = inn_kpp_text
-        cell_inn.font = font_header_regular
+        cell_inn.font = font_sub_hdr_white
+        cell_inn.fill = hdr_slate_600
         cell_inn.alignment = align_center
 
         # Строка 3: контакты
         ws.merge_cells(f"{col_start_let}3:{col_end_let}3")
         cell_cont = ws[f"{col_start_let}3"]
         cell_cont.value = contacts_text
-        cell_cont.font = font_header_regular
+        cell_cont.font = font_sub_hdr_white
+        cell_cont.fill = hdr_slate_500
         cell_cont.alignment = align_center
 
         # Строка 4: Цена руб./ед.
         cell_p = ws[f"{col_start_let}4"]
         cell_p.value = "Цена руб./ед."
-        cell_p.font = font_header_bold
+        cell_p.font = font_col_name
+        cell_p.fill = hdr_col_fill
         cell_p.alignment = align_center
 
         # Строка 4: источник (ссылка)
         cell_src = ws[f"{col_end_let}4"]
         cell_src.value = "источник (ссылка)"
-        cell_src.font = font_header_regular
+        cell_src.font = font_col_src
+        cell_src.fill = hdr_col_fill
         cell_src.alignment = align_center
 
     # Сводные колонки: Мин. цена, Средняя цена и Коэффициент вариации
@@ -350,31 +380,34 @@ def generate_price_monitoring_excel(
     ws.merge_cells(f"{col_min_let}1:{col_min_let}4")
     cell_min_hdr = ws[f"{col_min_let}1"]
     cell_min_hdr.value = "Мин. цена, руб."
-    cell_min_hdr.font = font_calibri_bold
+    cell_min_hdr.font = font_summary_hdr
+    cell_min_hdr.fill = hdr_summary_fill
     cell_min_hdr.alignment = align_center
 
     ws.merge_cells(f"{col_avg_let}1:{col_avg_let}4")
     cell_avg_hdr = ws[f"{col_avg_let}1"]
     cell_avg_hdr.value = "Средняя цена, руб."
-    cell_avg_hdr.font = font_calibri_bold
+    cell_avg_hdr.font = font_summary_hdr
+    cell_avg_hdr.fill = hdr_summary_fill
     cell_avg_hdr.alignment = align_center
 
     ws.merge_cells(f"{col_var_let}1:{col_var_let}4")
     cell_var_hdr = ws[f"{col_var_let}1"]
     cell_var_hdr.value = "Коэффициент вариации"
-    cell_var_hdr.font = font_calibri_bold
+    cell_var_hdr.font = font_summary_hdr
+    cell_var_hdr.fill = hdr_summary_fill
     cell_var_hdr.alignment = align_center
 
-    # Применяем границы и фон к заголовкам
+    # Применяем границы ко всем ячейкам шапки
     max_col = col_var_idx
     for r in range(1, 5):
         for c in range(1, max_col + 1):
             cell = ws.cell(row=r, column=c)
             cell.border = thin_border
-            if r == 4 or c <= 2 or c >= col_min_idx:
-                cell.fill = header_fill
-            else:
-                cell.fill = sup_header_fill
+            if c <= 2:
+                cell.fill = hdr_dark_slate
+            elif c >= col_min_idx:
+                cell.fill = hdr_summary_fill
 
     # Список колонок с ценами для формул MIN и AVERAGE
     price_col_letters = [get_column_letter(3 + (s - 1) * 2) for s in range(1, max_suppliers + 1)]
@@ -382,18 +415,22 @@ def generate_price_monitoring_excel(
     # Заполняем строки данными
     current_row = 5
     for item in items:
+        row_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid") if (current_row % 2 == 1) else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
         # A: Номенклатура
         cell_nom = ws.cell(row=current_row, column=1, value=item.raw_name)
         cell_nom.comment = Comment(_source_position_note(item), "TenderLex")
         cell_nom.font = font_calibri_regular
         cell_nom.alignment = align_left
         cell_nom.border = thin_border
+        cell_nom.fill = row_fill
 
         # B: Ед. изм.
         cell_unit = ws.cell(row=current_row, column=2, value=item.unit)
         cell_unit.font = font_calibri_regular
         cell_unit.alignment = align_center
         cell_unit.border = thin_border
+        cell_unit.fill = row_fill
 
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
 
@@ -403,11 +440,13 @@ def generate_price_monitoring_excel(
             cell_p1 = ws.cell(row=current_row, column=3, value="-")
             cell_p1.border = thin_border
             cell_p1.alignment = align_center
-            cell_p1.font = font_calibri_regular
+            cell_p1.font = font_missing_badge
+            cell_p1.fill = row_fill
 
             cell_l1 = ws.cell(row=current_row, column=4, value=missing_label)
             cell_l1.border = thin_border
-            cell_l1.font = Font(name="Calibri", size=10, italic=True, color="64748B")
+            cell_l1.font = font_missing_badge
+            cell_l1.fill = missing_badge_fill
             cell_l1.alignment = align_left
 
             for s_idx in range(2, max_suppliers + 1):
@@ -415,15 +454,20 @@ def generate_price_monitoring_excel(
                 col_end = col_start + 1
                 c_p = ws.cell(row=current_row, column=col_start, value="")
                 c_p.border = thin_border
+                c_p.fill = row_fill
                 c_l = ws.cell(row=current_row, column=col_end, value="")
                 c_l.border = thin_border
+                c_l.fill = row_fill
 
             cell_min = ws.cell(row=current_row, column=col_min_idx, value="")
-            cell_min.border = thin_border
+            cell_min.border = summary_border
+            cell_min.fill = summary_data_fill
             cell_avg = ws.cell(row=current_row, column=col_avg_idx, value="")
-            cell_avg.border = thin_border
+            cell_avg.border = summary_border
+            cell_avg.fill = summary_data_fill
             cell_var = ws.cell(row=current_row, column=col_var_idx, value="")
-            cell_var.border = thin_border
+            cell_var.border = summary_border
+            cell_var.fill = summary_data_fill
 
             current_row += 1
             continue
@@ -436,10 +480,12 @@ def generate_price_monitoring_excel(
             cell_price = ws.cell(row=current_row, column=col_start)
             cell_price.border = thin_border
             cell_price.alignment = align_right
+            cell_price.fill = row_fill
 
             cell_link = ws.cell(row=current_row, column=col_end)
             cell_link.border = thin_border
             cell_link.alignment = align_left
+            cell_link.fill = row_fill
 
             if s_idx <= len(display_quotes):
                 q = display_quotes[s_idx - 1]
@@ -499,21 +545,24 @@ def generate_price_monitoring_excel(
         ]
 
         cell_min = ws.cell(row=current_row, column=col_min_idx)
-        cell_min.border = thin_border
+        cell_min.border = summary_border
+        cell_min.fill = summary_data_fill
         cell_min.alignment = align_right
         cell_min.number_format = "#,##0.00"
-        cell_min.font = font_price_bold
+        cell_min.font = font_summary_min
 
         cell_avg = ws.cell(row=current_row, column=col_avg_idx)
-        cell_avg.border = thin_border
+        cell_avg.border = summary_border
+        cell_avg.fill = summary_data_fill
         cell_avg.alignment = align_right
         cell_avg.number_format = "#,##0.00"
-        cell_avg.font = font_calibri_bold
+        cell_avg.font = font_summary_avg
 
         cell_var = ws.cell(row=current_row, column=col_var_idx)
-        cell_var.border = thin_border
+        cell_var.border = summary_border
+        cell_var.fill = summary_data_fill
         cell_var.alignment = align_center
-        cell_var.font = font_calibri_regular
+        cell_var.font = font_summary_var
 
         if clean_col_letters:
             args_str = ",".join(f"{col_let}{current_row}" for col_let in clean_col_letters)
@@ -566,8 +615,14 @@ def generate_price_monitoring_excel(
     ws.column_dimensions[col_avg_let].width = 18
     ws.column_dimensions[col_var_let].width = 24
 
+    # Включаем автоматический фильтр на Листе 1
+    if current_row > 5:
+        ws.auto_filter.ref = f"A4:{col_var_let}{current_row - 1}"
+
     # --- ЛИСТ 2: Подробный детализированный реестр для закупщика/1С ---
     ws2 = wb.create_sheet(title="Детализированный реестр")
+    ws2.freeze_panes = "C2"
+
     headers_reg = ["№", "Номенклатура", "Ед. изм. заявки", "Статус", "Мин. цена (руб)"]
     for s_idx in range(1, max_suppliers + 1):
         headers_reg.extend([
@@ -586,13 +641,14 @@ def generate_price_monitoring_excel(
     ws2.append(headers_reg)
     for col_idx in range(1, len(headers_reg) + 1):
         cell = ws2.cell(row=1, column=col_idx)
-        cell.font = font_calibri_bold
-        cell.fill = header_fill
+        cell.font = font_main_hdr
+        cell.fill = hdr_dark_slate
         cell.alignment = align_center
         cell.border = thin_border
 
     row_num = 2
     for idx, item in enumerate(items, 1):
+        r_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid") if (row_num % 2 == 1) else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
         if display_quotes:
             status_text = _price_sources_status(display_quotes)
@@ -638,9 +694,10 @@ def generate_price_monitoring_excel(
             cell = ws2.cell(row=row_num, column=col_idx)
             cell.font = font_calibri_regular
             cell.border = thin_border
+            cell.fill = r_fill
             if col_idx == 4:
                 strong_sources = len(display_quotes) >= 3 and all(q.evidence_level == "page_content" for q in display_quotes)
-                cell.font = Font(name="Calibri", bold=True, color="166534" if strong_sources else "92400E" if display_quotes else "64748B")
+                cell.font = Font(name="Calibri", bold=True, color="047857" if strong_sources else "B45309" if display_quotes else "64748B")
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
             elif col_idx > 5 and (col_idx - 5) % 10 == 0:  # Ссылка
                 val = str(cell.value or "")
@@ -650,7 +707,7 @@ def generate_price_monitoring_excel(
         row_num += 1
 
     # Высота и ширина колонок листа 2
-    ws2.row_dimensions[1].height = 26
+    ws2.row_dimensions[1].height = 28
     for r in range(2, row_num):
         ws2.row_dimensions[r].height = 42
     ws2.column_dimensions["A"].width = 6
@@ -658,6 +715,9 @@ def generate_price_monitoring_excel(
     ws2.column_dimensions["C"].width = 14
     ws2.column_dimensions["D"].width = 40
     ws2.column_dimensions["E"].width = 18
+
+    if row_num > 2:
+        ws2.auto_filter.ref = f"A1:{get_column_letter(len(headers_reg))}{row_num - 1}"
 
     wb.save(output_path)
     logger.info("Saved price monitoring excel to %s", output_path)
