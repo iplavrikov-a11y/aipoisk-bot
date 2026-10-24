@@ -40,6 +40,7 @@ from .models import (
 )
 from .pipeline import (
     analyze_exact_product,
+    prepare_exact_product_positions,
     auto_rotate_clean_analogs,
     drop_nonconforming_analogs,
     sanitize_shops_from_positions,
@@ -79,6 +80,7 @@ __all__ = [
     "MAX_YANDEX_QUERIES_PER_JOB",
     # Main pipeline
     "analyze_exact_product",
+    "prepare_exact_product_positions",
     "auto_rotate_clean_analogs",
     "drop_nonconforming_analogs",
     "sanitize_shops_from_positions",

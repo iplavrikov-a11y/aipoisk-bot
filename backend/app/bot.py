@@ -20,6 +20,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, ForceReply, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, MenuButtonDefault, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from fastapi import HTTPException
+from sqlalchemy.orm import Session
 
 from .account_linking import (
     TELEGRAM_TO_WEB,
@@ -38,6 +39,8 @@ from .billing import (
     KIND_SUPPLIER_SEARCH,
     KIND_SUPPLIER_SEARCH_EXTRA,
     BillingError,
+    cancel_price_monitoring_job,
+    cancel_exact_product_job,
     charge_job_reservation,
     client_uses_trial_access,
     client_service_balance_summary,
@@ -52,6 +55,13 @@ from .billing import (
     tariff_to_dict,
 )
 from .config import config
+from .position_selection import (
+    AWAITING_EXACT_SELECTION,
+    AWAITING_POSITION_SELECTION,
+    confirm_position_selection,
+    read_selection,
+    toggle_exact_draft_position,
+)
 from .db import SessionLocal, init_db
 from .document_parser import sanitize_filename
 from .jobs import (
@@ -70,6 +80,7 @@ from .jobs import (
     job_dir,
     package_job_output_files,
     package_job_output_items,
+    sanitize_customer_error,
     update_dobor_context_dict,
 )
 from .main import create_additional_supplier_search_for_client, create_supplier_search_from_exact_product, job_can_find_more_suppliers
@@ -84,7 +95,7 @@ from .legal import (
     TERMS_URL,
     record_legal_acceptance,
 )
-from .models import BillingTransaction, Client, Job, now_utc
+from .models import BillingTransaction, Client, Job, SystemSettings, now_utc
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import client_access_error, get_client_by_telegram_id, get_or_create_settings, get_or_create_trial_client_by_telegram_id, seed_owner_client, supplier_target_for_client
 from .result_offers import (
@@ -111,6 +122,8 @@ group_safety_router.callback_query.filter(F.message.chat.type != ChatType.PRIVAT
 logger = logging.getLogger(__name__)
 PENDING_MODES: dict[int, str] = {}
 PENDING_SUPPLIER_POLICIES: dict[int, str] = {}
+PENDING_GEO: dict[int, tuple[str, int | None]] = {}
+PENDING_GEO_INPUT: set[int] = set()
 SCENARIO_SUPPLIERS = "supplier_search"
 SCENARIO_REPORT = "report"
 SCENARIO_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
@@ -168,7 +181,11 @@ BOT_PAYMENT_INSTRUCTIONS = (
 )
 OWNER_ALERT_STATUSES = {"failed", "needs_review"}
 OWNER_ALERTED_KEYS: set[tuple[str, str]] = set()
-BOT_TERMINAL_JOB_STATUSES = set(TERMINAL_JOB_STATUSES) | {"delivery_expired"}
+BOT_TERMINAL_JOB_STATUSES = set(TERMINAL_JOB_STATUSES) | {
+    "delivery_expired",
+    AWAITING_EXACT_SELECTION,
+    AWAITING_POSITION_SELECTION,
+}
 
 
 @dataclass
@@ -178,6 +195,8 @@ class PendingBatch:
     files: list[tuple[str, bytes]]
     sources: list[dict] = field(default_factory=list)
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL
+    delivery_city: str = ""
+    geo_radius_km: int | None = None
 
 
 @dataclass
@@ -265,11 +284,17 @@ def _clear_pending_state(chat_id: int) -> bool:
     PENDING_UPLOADS.pop(chat_id, None)
     PENDING_MODES.pop(chat_id, None)
     PENDING_SUPPLIER_POLICIES.pop(chat_id, None)
+    PENDING_GEO.pop(chat_id, None)
+    PENDING_GEO_INPUT.discard(chat_id)
     return had_state
 
 
 def _select_scenario(chat_id: int, scenario: str) -> bool:
     expected_mode = _scenario_job_mode(scenario)
+    from .geo_policy import GEO_SUPPORTED_MODES
+    PENDING_GEO_INPUT.discard(chat_id)
+    if expected_mode not in GEO_SUPPORTED_MODES:
+        PENDING_GEO.pop(chat_id, None)
     pending = PENDING_UPLOADS.get(chat_id)
     cleared_incompatible = bool(pending and pending.mode != expected_mode)
     if cleared_incompatible:
@@ -433,6 +458,9 @@ def batch_inline_keyboard(pending: PendingBatch) -> InlineKeyboardMarkup:
         sub_row.append(InlineKeyboardButton(text="⚙️ Режим поиска", callback_data="batch:policy"))
     sub_row.append(InlineKeyboardButton(text="🗑 Очистить", callback_data="batch:cancel"))
     rows.append(sub_row)
+    if pending.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        geo_label = f"📍 {pending.delivery_city} · {pending.geo_radius_km} км" if pending.geo_radius_km else "📍 Приоритет доставки"
+        rows.append([InlineKeyboardButton(text=geo_label, callback_data="batch:geo")])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -665,6 +693,7 @@ def _supplier_multi_intro_text() -> str:
 
 def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources: int = 0) -> str:
     policy_label = _supplier_policy_label(pending.supplier_search_policy)
+    geo_note = f"\n📍 Приоритет: {html_escape(pending.delivery_city)}, до {pending.geo_radius_km} км. Вне радиуса и неизвестные адреса помечаются отдельно.\n" if pending.geo_radius_km else ""
     if pending.mode == MODE_SUPPLIER_SEARCH:
         lines = [
             "✅ ТЗ добавлено",
@@ -680,7 +709,7 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
         else:
             lines.append("Если одно ТЗ состоит из нескольких файлов, загрузите эти файлы одним архивом.")
         lines.append("👇 Добавьте ещё ТЗ через скрепку 📎 или нажмите «▶️ Запустить поиск» под сообщением:")
-        return "\n".join(lines)
+        return "\n".join(lines) + geo_note
     lines = [
         "✅ Материалы добавлены",
         f"• Файлов: {len(pending.files)}/{max_files}",
@@ -690,7 +719,7 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
     if pending.mode == MODE_ANALYSIS_AND_SUPPLIERS:
         lines.append(f"• Режим поиска: {policy_label}")
     lines.extend(["", "👇 Добавьте ещё материалы через скрепку 📎 или нажмите кнопку «▶️ Запустить» под сообщением:"])
-    return "\n".join(lines)
+    return "\n".join(lines) + geo_note
 
 
 def _source_added_text(pending: PendingBatch) -> str:
@@ -812,7 +841,7 @@ def _chat_has_processing_job(chat_id: int) -> bool:
         return bool(
             db.query(Job.id)
             .filter(Job.created_by_telegram_id == str(chat_id))
-            .filter(Job.status.in_(["pending", "running"]))
+            .filter(Job.status.in_(["pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION]))
             .first()
         )
     except Exception:
@@ -828,15 +857,28 @@ def _active_processing_jobs_for_chat(db, chat_id: int) -> list[Job]:
     return (
         db.query(Job)
         .filter(Job.created_by_telegram_id == str(chat_id))
-        .filter(Job.status.in_(["pending", "running"]))
+        .filter(Job.status.in_(["pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION]))
         .order_by(Job.created_at.desc())
         .all()
     )
 
 
 def _cancel_processing_job(db, job: Job, *, note: str, message: str) -> bool:
-    if job.status not in {"pending", "running"}:
+    if job.status not in {
+        "pending",
+        "running",
+        AWAITING_EXACT_SELECTION,
+        AWAITING_POSITION_SELECTION,
+        STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+    }:
         return False
+    if job.mode in {"price_monitoring", MODE_EXACT_PRODUCT}:
+        cancel_atomic = cancel_price_monitoring_job if job.mode == "price_monitoring" else cancel_exact_product_job
+        if not cancel_atomic(db, job, note=note, message=message):
+            return False
+        cancel_running_job(str(job.id))
+        BOT_CANCEL_NOTIFIED_JOBS.add(str(job.id))
+        return True
     release_job_reservation(db, job, note=note)
     now = now_utc()
     job.status = "cancelled"
@@ -897,7 +939,7 @@ def _mode_to_billing_kind(mode: str) -> str:
         return KIND_EXACT_PRODUCT
     if mode in (MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS):
         return KIND_PROCUREMENT_REPORT
-    if mode == MODE_SUPPLIER_SEARCH_EXTRA:
+    if mode == KIND_SUPPLIER_SEARCH_EXTRA:
         return KIND_SUPPLIER_SEARCH_EXTRA
     return KIND_SUPPLIER_SEARCH
 
@@ -941,6 +983,10 @@ def _progress_heading(snapshot: JobProgressSnapshot) -> str:
         return f"⛔ Задача отменена{num_suffix}"
     if snapshot.status == "failed":
         return f"⚠️ Не удалось подготовить файл{num_suffix}"
+    if snapshot.status == AWAITING_EXACT_SELECTION:
+        return f"Выберите товары для подбора{num_suffix}"
+    if snapshot.status == AWAITING_POSITION_SELECTION:
+        return f"Выберите позиции для мониторинга цен{num_suffix}"
     if snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         return f"⚠️ Нужно подтвердить выдачу отчёта{num_suffix}"
     if snapshot.status == STATUS_CUSTOMER_DECLINED:
@@ -1092,26 +1138,23 @@ def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None 
     if snapshot.status == "failed":
         err_lower = (snapshot.error or "").lower()
         msg_lower = (snapshot.message or "").lower()
+        friendly_err = sanitize_customer_error(snapshot.error, message=snapshot.message)
         if (
-            "нет содержимого" in err_lower
-            or "шаблон" in err_lower
-            or "пустой" in err_lower
-            or "нет содержимого" in msg_lower
-            or "нет позиций" in err_lower
+            "нет позиций" in friendly_err.lower()
+            or "не найдены" in friendly_err.lower()
+            or "шаблон" in friendly_err.lower()
+            or "пустой" in friendly_err.lower()
             or "нет позиций" in msg_lower
+            or "нет позиций" in err_lower
+            or "0 items" in err_lower
             or "пустая форма" in err_lower
             or "нет закупаемых позиций" in err_lower
         ):
-            title = (
-                "⚠️ В файле нет позиций для поиска"
-                if ("нет позиций" in msg_lower or "нет позиций" in err_lower or "пустая форма" in err_lower or "нет закупаемых позиций" in err_lower)
-                else "⚠️ В документе нет содержимого"
-            )
             return "\n".join(
                 [
-                    title,
+                    "⚠️ В файле нет позиций для поиска",
                     "",
-                    snapshot.error or "В загруженном файле отсутствует текст ТЗ или закупаемые позиции.",
+                    friendly_err,
                     "",
                     "💳 Баланс не списан (0 ₽).",
                     "Пожалуйста, загрузите файл со спецификацией/перечнем товаров или отправьте характеристики текстом прямо в этот чат.",
@@ -1668,7 +1711,9 @@ async def watch_job_progress(
             last_key = key
             last_heartbeat = now
 
-    if snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+    if snapshot.status in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION}:
+        await _send_exact_selection(message, job_id)
+    elif snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         await _edit_or_send_status(
             status_message,
             _partial_confirmation_text(snapshot),
@@ -2092,6 +2137,105 @@ def _registry_fallback_confirmation_text(snapshot: JobProgressSnapshot) -> str:
     )
 
 
+def _exact_selection_view(job: Job, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
+    selection = read_selection(job)
+    items = selection.get("items") or []
+    selected = set(selection.get("selected_ids") or [])
+    page_count = max(1, (len(items) + 6) // 7)
+    page = max(0, min(int(page), page_count - 1))
+    rows = []
+    for index in range(page * 7, min(len(items), (page + 1) * 7)):
+        item = items[index]
+        checked = "☑" if item["id"] in selected else "☐"
+        rows.append([InlineKeyboardButton(text=f"{checked} №{item.get('position_no', index + 1)} {item['name']}"[:64],
+                                         callback_data=f"exact_toggle:{job.id}:{index}")])
+    navigation = []
+    if page > 0:
+        navigation.append(InlineKeyboardButton(text="← Назад", callback_data=f"exact_page:{job.id}:{page - 1}"))
+    if page + 1 < page_count:
+        navigation.append(InlineKeyboardButton(text="Далее →", callback_data=f"exact_page:{job.id}:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([InlineKeyboardButton(text=f"Подтвердить выбор ({len(selected)})", callback_data=f"exact_confirm:{job.id}")])
+    rows.append([InlineKeyboardButton(text="Отменить задачу", callback_data=f"cancel_job:{job.id}")])
+    if job.mode == "price_monitoring":
+        maximum = max(1, int(selection.get("max_positions") or len(items) or 1))
+        unit_price = max(0, int(selection.get("price_kopeks") or 0))
+        text = (
+            f"Выберите позиции для мониторинга цен — {len(selected)} из {maximum}.\n"
+            f"Страница {page + 1} из {page_count}, всего позиций: {len(items)}.\n"
+            f"Стоимость: {unit_price / 100:.2f} ₽ за позицию с подтверждённой ценой.\n"
+            f"Максимум при выборе: {maximum * unit_price / 100:.2f} ₽. Итоговое списание — только за найденные цены.\n"
+            "Мониторинг начнётся после подтверждения.")
+    else:
+        text = (f"Выберите товары для подбора — {len(selected)} из 5.\n"
+                f"Страница {page + 1} из {page_count}, всего позиций: {len(items)}.\n"
+                f"Стоимость всей задачи: {int(selection.get('price_kopeks') or 0) / 100:.2f} ₽.\n"
+                "Подбор начнётся после подтверждения. Результат — общий Word-отчёт по выбранным строкам.")
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _send_exact_selection(message: Message, job_id: str, page: int = 0) -> None:
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job or job.status not in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION}:
+            return
+        text, keyboard = _exact_selection_view(job, page)
+    finally:
+        db.close()
+    await message.answer(text, reply_markup=keyboard, parse_mode=None)
+
+
+@router.callback_query(F.data.startswith("exact_toggle:"))
+@router.callback_query(F.data.startswith("exact_page:"))
+@router.callback_query(F.data.startswith("exact_confirm:"))
+async def exact_selection_callback(callback: CallbackQuery) -> None:
+    parts = str(callback.data or "").split(":")
+    if len(parts) < 2 or not callback.message:
+        return
+    action, job_id = parts[:2]
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
+    db = SessionLocal()
+    confirmed = False
+    try:
+        job = db.get(Job, job_id)
+        if not job or job.mode not in {MODE_EXACT_PRODUCT, "price_monitoring"}:
+            raise ValueError("Задача не найдена.")
+        page = 0
+        if action == "exact_toggle":
+            index = int(parts[2])
+            toggle_exact_draft_position(db, job, index)
+            page = index // 7
+        elif action == "exact_page":
+            page = int(parts[2])
+        else:
+            selection = read_selection(job)
+            confirmed = confirm_position_selection(db, job, selection.get("revision"), selection.get("selected_ids"))
+        text, keyboard = _exact_selection_view(job, page)
+    except (ValueError, IndexError) as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    finally:
+        db.close()
+    await callback.answer("Выбор подтверждён" if confirmed else "Выбор обновлён")
+    if confirmed:
+        enqueue_job(job_id)
+        started_text = (
+            "Мониторинг выбранных позиций запущен."
+            if job.mode == "price_monitoring"
+            else "Подбор выбранных товаров запущен."
+        )
+        await callback.message.edit_text(started_text, reply_markup=None, parse_mode=None)
+        snapshot = await watch_job_progress(callback.message, job_id, status_message=callback.message)
+        if snapshot and snapshot.status == "completed":
+            await _send_job_outputs(callback.message, job_id, snapshot)
+    else:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
+
+
 def _partial_confirmation_keyboard(job_id: str, confirmation_kind: str = "") -> InlineKeyboardMarkup:
     if confirmation_kind == "multi_item_strategy":
         return InlineKeyboardMarkup(
@@ -2380,6 +2524,7 @@ async def show_status(message: Message) -> None:
     partial_confirmations: list[tuple[str, JobProgressSnapshot]] = []
     recoverable_result_offers: list[tuple[str, JobProgressSnapshot]] = []
     recoverable_outputs: list[tuple[str, JobProgressSnapshot]] = []
+    position_selections: list[str] = []
     db = SessionLocal()
     try:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
@@ -2418,6 +2563,8 @@ async def show_status(message: Message) -> None:
         for job in jobs:
             snapshot = _job_snapshot(job, db)
             job_id = str(job.id)
+            if job.status in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION}:
+                position_selections.append(job_id)
             if (
                 snapshot.confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK
                 and snapshot.confirmation_outcome == "accepted"
@@ -2435,6 +2582,8 @@ async def show_status(message: Message) -> None:
         db.close()
     for job_id, snapshot in partial_confirmations:
         await _send_partial_confirmation(message, job_id, snapshot)
+    for job_id in position_selections:
+        await _send_exact_selection(message, job_id)
     for job_id, _snapshot in recoverable_result_offers:
         await message.answer("✅ Вы уже согласились получить вариант без подтверждения реестра. Повторяю выдачу файла.")
         try:
@@ -2718,6 +2867,80 @@ async def policy_button(message: Message) -> None:
     )
 
 
+def _parse_delivery_input(text: str, *, mode: str) -> tuple[str, int | None]:
+    if text.strip().casefold() in {"выкл", "off"}:
+        return "", None
+    city, separator, radius = text.rpartition(";")
+    if not separator:
+        raise ValueError("Введите город и радиус через точку с запятой: Москва; 300. Для отключения: выкл.")
+    from .geo_policy import validate_geo_request
+    return validate_geo_request(city, radius.strip(), mode=mode)
+
+
+async def _apply_delivery_choice(message: Message, value: str) -> None:
+    chat_id = int(message.chat.id)
+    mode = _scenario_job_mode(PENDING_MODES.get(chat_id, SCENARIO_SUPPLIERS))
+    try:
+        city, radius = _parse_delivery_input(value, mode=mode)
+    except ValueError as exc:
+        await message.answer(html_escape(str(exc)))
+        return
+    with SessionLocal() as db:
+        client = get_client_by_telegram_id(db, str(message.from_user.id if message.from_user else ""))
+        settings = get_or_create_settings(db)
+        allowed = bool(getattr(settings, "geo_radius_search_enabled_global", False) or (client and client.allowed_geo_radius))
+        if radius and not allowed:
+            await message.answer("Приоритет доставки пока не подключён для вашего аккаунта.")
+            return
+        surcharge = float(getattr(settings, "geo_radius_surcharge_pct", 30) or 0)
+    PENDING_GEO_INPUT.discard(chat_id)
+    if radius:
+        PENDING_GEO[chat_id] = (city, radius)
+    else:
+        PENDING_GEO.pop(chat_id, None)
+    pending = PENDING_UPLOADS.get(chat_id)
+    if pending:
+        pending.delivery_city, pending.geo_radius_km = city, radius
+    note = (f"📍 Приоритет: {html_escape(city)}, до {radius} км. Надбавка: {surcharge:g}%. "
+            "Ближайшие поставщики идут первыми; варианты вне радиуса и без подтверждённого адреса помечаются отдельно. "
+            "Расстояние приблизительное. Для отключения: /delivery выкл.") if radius else "Приоритет доставки отключён."
+    await message.answer(note, reply_markup=batch_inline_keyboard(pending) if pending else main_menu())
+
+
+@router.message(Command("delivery"))
+async def delivery_command(message: Message, command: CommandObject) -> None:
+    if await _reject_if_chat_processing(message):
+        return
+    mode = _scenario_job_mode(PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS))
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        await message.answer("Приоритет доставки доступен в поиске поставщиков и в режиме «Анализ + поиск».")
+        return
+    if command.args:
+        await _apply_delivery_choice(message, command.args)
+    else:
+        PENDING_GEO_INPUT.add(int(message.chat.id))
+        await message.answer("Введите город и радиус: Москва; 300. Диапазон — от 10 до 5000 км. Для отключения: выкл.")
+
+
+@router.callback_query(F.data == "batch:geo")
+async def delivery_prompt_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.")
+        return
+    mode = _scenario_job_mode(PENDING_MODES.get(callback.message.chat.id, SCENARIO_SUPPLIERS))
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        await callback.answer("Выберите поиск поставщиков или анализ + поиск.", show_alert=True)
+        return
+    PENDING_GEO_INPUT.add(int(callback.message.chat.id))
+    await callback.answer()
+    await callback.message.answer("Введите город и радиус: Москва; 300. Ближайшие поставщики будут первыми, варианты вне радиуса помечаются отдельно. Для отключения: выкл.")
+
+
+@router.message(lambda message: message.chat.id in PENDING_GEO_INPUT and bool(message.text) and not message.text.startswith("/"))
+async def delivery_text_input(message: Message) -> None:
+    await _apply_delivery_choice(message, str(message.text or ""))
+
+
 @router.message(F.text == BUTTON_STATUS)
 async def status_button(message: Message) -> None:
     await show_status(message)
@@ -2763,16 +2986,24 @@ async def cancel_job_callback(callback: CallbackQuery) -> None:
         if not job:
             await callback.answer("Задача не найдена.", show_alert=True)
             return
-        if job.status not in {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION}:
+        if job.status not in {
+            "pending",
+            "running",
+            AWAITING_EXACT_SELECTION,
+            AWAITING_POSITION_SELECTION,
+            STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+        }:
             await callback.answer("Эту задачу уже нельзя отменить.", show_alert=True)
             await _edit_or_send_status(callback.message, _format_job_progress(_job_snapshot(job)), clear_reply_markup=True)
             return
-        _cancel_processing_job(
+        if not _cancel_processing_job(
             db,
             job,
             note="Резерв возвращён: задача отменена в Telegram",
             message="Задача отменена в Telegram",
-        )
+        ):
+            await callback.answer("Задача уже завершена; отменить её нельзя.", show_alert=True)
+            return
         snapshot = _job_snapshot(job)
     finally:
         db.close()
@@ -2862,6 +3093,7 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
             pending.mode,
             incoming_file_count=len(pending.files),
             supplier_search_count=supplier_search_count,
+            geo_radius_km=pending.geo_radius_km,
         )
         if error:
             if client:
@@ -2903,6 +3135,8 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
                     files=files,
                     sources=[],
                     supplier_search_policy=pending.supplier_search_policy,
+                    delivery_city=pending.delivery_city,
+                    geo_radius_km=pending.geo_radius_km,
                     initial_status="draft",
                 )
                 created_batch_entities.append(created)
@@ -2944,6 +3178,8 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
                 files=pending.files,
                 sources=pending.sources,
                 supplier_search_policy=pending.supplier_search_policy,
+                delivery_city=pending.delivery_city,
+                geo_radius_km=pending.geo_radius_km,
                 initial_status="draft",
             )
             reserve_error = _reserve_created_job(db, client, job)
@@ -3794,6 +4030,7 @@ async def help_button(message: Message) -> None:
         "📋 Что нужно для запуска:\n"
         "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n"
         "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n\n"
+        "📍 Приоритет доставки: после добавления ТЗ нажмите кнопку географии или /delivery Москва; 300. Ближайшие поставщики идут первыми, дальние и неизвестные адреса отмечаются отдельно; действует надбавка по вашему тарифу.\n\n"
         "💳 Списание средств происходит только после успешной выдачи готового результата.\n"
         "📊 Баланс и история доступны в разделе «Кабинет» на сайте https://tenderlex.ru/cabinet\n\n"
         f"⚖️ Правовая информация: {LEGAL_INDEX_URL}"
@@ -3820,6 +4057,7 @@ async def open_help_callback(callback: CallbackQuery) -> None:
         "📋 Что нужно для запуска:\n"
         "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n"
         "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n\n"
+        "📍 Приоритет доставки: после добавления ТЗ нажмите кнопку географии или /delivery Москва; 300. Ближайшие поставщики идут первыми, дальние и неизвестные адреса отмечаются отдельно; действует надбавка по вашему тарифу.\n\n"
         "💳 Списание средств происходит только после успешной выдачи готового результата.\n"
         "📊 Баланс и история доступны в разделе «Кабинет» на сайте https://tenderlex.ru/cabinet\n\n"
         f"⚖️ Правовая информация: {LEGAL_INDEX_URL}"
@@ -3933,14 +4171,14 @@ async def find_more_suppliers_accept(callback: CallbackQuery) -> None:
             pitch = ""
             if callback.message:
                 pitch = await _send_client_low_balance_notification(
-                    callback.message, client, settings, error=detail, mode=MODE_SUPPLIER_SEARCH_EXTRA, job_title=job_title
+                    callback.message, client, settings, error=detail, mode=KIND_SUPPLIER_SEARCH_EXTRA, job_title=job_title
                 )
             await _alert_owner_about_low_balance(
                 _message_bot(callback.message) if callback.message else None,
                 client,
                 reason="Попытка запуска дополнительного поиска без средств",
                 job_title=job_title,
-                mode=MODE_SUPPLIER_SEARCH_EXTRA,
+                mode=KIND_SUPPLIER_SEARCH_EXTRA,
                 ai_pitch=pitch,
             )
         else:
@@ -4320,6 +4558,8 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
                 mode=mode,
                 files=[],
                 supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+                delivery_city=PENDING_GEO.get(message.chat.id, ("", None))[0],
+                geo_radius_km=PENDING_GEO.get(message.chat.id, ("", None))[1],
             )
             PENDING_UPLOADS[message.chat.id] = pending
         if client_uses_trial_access(db, client) and mode == MODE_SUPPLIER_SEARCH:
@@ -4414,6 +4654,8 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
                 mode=mode,
                 files=[],
                 supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+                delivery_city=PENDING_GEO.get(message.chat.id, ("", None))[0],
+                geo_radius_km=PENDING_GEO.get(message.chat.id, ("", None))[1],
             )
             PENDING_UPLOADS[message.chat.id] = pending
         if client_uses_trial_access(db, client) and mode == MODE_SUPPLIER_SEARCH and pending.files:
@@ -4503,6 +4745,8 @@ async def _handle_source_text(message: Message) -> bool:
                 mode=mode,
                 files=[],
                 supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+                delivery_city=PENDING_GEO.get(message.chat.id, ("", None))[0],
+                geo_radius_km=PENDING_GEO.get(message.chat.id, ("", None))[1],
             )
             PENDING_UPLOADS[message.chat.id] = pending
         _add_pending_sources(pending, sources)
@@ -4620,7 +4864,7 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
             kind = KIND_EXACT_PRODUCT
         elif mode_val in (MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS):
             kind = KIND_PROCUREMENT_REPORT
-        elif mode_val == MODE_SUPPLIER_SEARCH_EXTRA:
+        elif mode_val == KIND_SUPPLIER_SEARCH_EXTRA:
             kind = KIND_SUPPLIER_SEARCH_EXTRA
 
         price_kopeks = effective_price_kopeks(db, client, kind) or 9900

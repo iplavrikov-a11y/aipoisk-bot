@@ -777,6 +777,8 @@ async def call_llm(
                 )
             return result
         except Exception as exc:
+            if type(exc).__name__ == "EmptyProcurementProfileError":
+                raise
             last_error = exc
             if isinstance(exc, TimeoutError):
                 status = "timeout"

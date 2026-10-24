@@ -3,6 +3,8 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Страница не найдена",
   description: "Запрошенная страница не существует или была перемещена.",
+  robots: { index: false, follow: false },
+  alternates: { canonical: "/" },
 };
 
 export default function NotFound() {

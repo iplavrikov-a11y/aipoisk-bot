@@ -12,14 +12,30 @@ def clean_nomenclature_name(raw_name: str) -> str:
         return ""
     text = str(raw_name).strip()
 
-    # Убираем служебные пометки 1C: /НЕ ИСП, /НЕ_ИСП, /не исп, НЕ ИСП
-    text = re.sub(r'[/\\_]?(НЕ\s*ИСП|не\s*исп|НЕ_ИСП|не_исп)\b', '', text, flags=re.IGNORECASE)
+    # Убираем ведущие служебные символы 1С/ERP (#, №, *, !, ~, =)
+    text = re.sub(r'^[#№*!~=\s\-_/]+', '', text)
+
+    # Убираем служебные статусные пометки 1C/ERP: /НЕ ИСП, /СНЯТ, /АРХИВ, /УСТАР, /ДУБЛЬ, /ОШИБКА и их формы
+    text = re.sub(r'[/\\_]?(?:НЕ\s*ИСП\w*|СНЯТ\w*|АРХИВ\w*|УСТАР\w*|ДУБЛ\w*|ОШИБК\w*)\b', '', text, flags=re.IGNORECASE)
 
     # Убираем явные дублирования единиц в скобках в конце строки, например "(кг)", "(м3)", "(т)"
     text = re.sub(r'\s*\((кг|м3|м2|шт|т|уп|компл|л)\)\s*$', '', text, flags=re.IGNORECASE)
 
-    # Убираем лишние слэши на концах
-    text = text.strip(" /\\-")
+    # Убираем лишние слэши, тире и спецсимволы на концах
+    text = text.strip(" /\\-_#№*!~=")
+
+    # Разделяем склеенные точки сокращений 1C/ERP: "оцин.D101-110" -> "оцин. D101-110", "давл.EJX" -> "давл. EJX", "вакуум.10" -> "вакуум. 10"
+    # Сохраняем десятичные дроби (1.5, 0.05) и децимальные номера чертежей (059.00)
+    text = re.sub(r'([а-яА-ЯёЁ]{3,}|[а-яё]{2,})\.([a-zA-Z0-9а-яА-ЯёЁ])', r'\1. \2', text)
+
+    # Нормализуем инженерные технические формулы характеристик в естественные слова (г/п 1т -> 1т, H=3м -> 3м, L=70 -> 70мм)
+    text = re.sub(r'\bг[/\\]п\s*(\d+(?:[.,]\d+)?\s*[тt])\b', r'\1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b[hHвВ]\s*=\s*(\d+(?:[.,]\d+)?\s*(?:[мm]|мм|см))\b', r'\1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b[lLдД]\s*=\s*(\d+(?:[.,]\d+)?\s*(?:[мm]|мм|см))\b', r'\1', text, flags=re.IGNORECASE)
+
+    # В номенклатуре нижний регистр `д/` перед заглавенной маркировкой —
+    # сокращение «для», а не часть кода. Саму маркировку сохраняем.
+    text = re.sub(r'(?<![A-Za-zА-Яа-яЁё0-9])д/\s*(?=[A-ZА-ЯЁ]{2,}(?:[-_/]?\d))', '', text)
 
     # Схлопываем множественные пробелы
     text = re.sub(r'\s+', ' ', text).strip()
@@ -47,35 +63,12 @@ def normalize_unit(unit: str) -> str:
 
 
 def extract_package_hints(raw_name: str, target_unit: str) -> dict:
-    """Извлекает подсказки фасовки/объема из наименования ТМЦ (баллоны, упаковки по N шт, пачки по N кг)."""
+    """Extract only explicit, product-neutral packaging facts from source text."""
     hints: dict = {
-        "cylinder_volume_l": None,
         "pack_pieces": None,
         "pack_weight_kg": None,
-        "gas_type": None,
     }
     text_lower = raw_name.lower()
-
-    # Проверка газов и баллонов
-    if "пропан" in text_lower:
-        hints["gas_type"] = "propane"
-    elif "кислород" in text_lower:
-        hints["gas_type"] = "oxygen"
-    elif "ацетилен" in text_lower:
-        hints["gas_type"] = "acetylene"
-    elif "углекислот" in text_lower or "углекислый" in text_lower:
-        hints["gas_type"] = "co2"
-    elif "аргон" in text_lower:
-        hints["gas_type"] = "argon"
-    elif "азот" in text_lower:
-        hints["gas_type"] = "nitrogen"
-
-    # Объем баллона: "бал.50л", "баллон 50 л", "50л"
-    m_cyl = re.search(r'(?:бал[\.\s]*|баллон[\s]*)?(\d{1,3})\s*л\b', text_lower)
-    if m_cyl:
-        vol = int(m_cyl.group(1))
-        if vol in (5, 10, 12, 20, 27, 40, 50):
-            hints["cylinder_volume_l"] = vol
 
     # Штук в упаковке: "100шт", "100 шт", "50шт"
     m_pcs = re.search(r'(\d+)\s*(?:шт|штук)\b', text_lower)
@@ -90,6 +83,23 @@ def extract_package_hints(raw_name: str, target_unit: str) -> dict:
     return hints
 
 
+_MEASUREMENT_UNIT = r'(?:мкм|µm|μm|um|мм|см|км|кг|мг|мл|квт|вт|ма|м?а(?:[/·⋅*]?ч)?|mah|ah|гц|hz|kw|м|т|л|шт|в|v|w)'
+
+
+def _is_measurement_or_descriptor_token(token: str) -> bool:
+    """Keep dimensions and count-based descriptors out of strict SKU searches."""
+    compact = re.sub(r'\s+', '', str(token or '').lower())
+    number = r'\d+(?:[.,]\d+)?'
+    component = rf'{number}{_MEASUREMENT_UNIT}'
+    if re.fullmatch(rf'{number}{_MEASUREMENT_UNIT}', compact, re.IGNORECASE):
+        return True
+    if re.fullmatch(rf'{component}(?:[xх*]{component}){{1,2}}', compact, re.IGNORECASE):
+        return True
+    # `4-рядн`, `3-полюсный` and similar tokens describe configuration,
+    # whereas product identifiers begin with their model/series letters.
+    return bool(re.fullmatch(r'\d+(?:[-–][а-яё]+)+', compact, re.IGNORECASE))
+
+
 def extract_generic_nomenclature_codes(name: str) -> list[str]:
     """
     Универсальное извлечение артикулов, номеров чертежей, ГОСТов и буквенно-цифровых маркировок (Правило 14).
@@ -102,6 +112,8 @@ def extract_generic_nomenclature_codes(name: str) -> list[str]:
     seen: set[str] = set()
     for t in tokens:
         t_clean = t.strip(" -_./")
+        if _is_measurement_or_descriptor_token(t_clean):
+            continue
         # Артикул/код должен содержать цифры или специфические разделители (чертеж/модель/серия)
         has_digit = any(c.isdigit() for c in t_clean)
         has_hyphen_code = ("-" in t_clean or "." in t_clean or "/" in t_clean) and len(t_clean) >= 4
@@ -111,6 +123,69 @@ def extract_generic_nomenclature_codes(name: str) -> list[str]:
                 seen.add(tl)
                 codes.append(t_clean)
     return codes
+
+
+def is_drawing_or_part_code(token: str, full_text: str = "") -> bool:
+    """
+    Определяет, является ли токен специализированным номером заводского чертежа или артикулом детали (Правило 14).
+    Отличает чертежи от геометрических размеров (3х2.5, 1000х2000) и стандартов (ГОСТ 7798-70, DIN 912).
+    """
+    token = token.strip("()[]{}<>\"'*#№!, ")
+    if len(token) < 4:
+        return False
+    if _is_measurement_or_descriptor_token(token):
+        return False
+    # Геометрические габариты (3х2.5, 50х150, 1000х2000) - это характеристики, а не чертежи
+    if re.fullmatch(r'\d+(?:[.,]\d+)?\s*[xхXХ*]\s*\d+(?:[.,]\d+)?(?:\s*[xхXХ*]\s*\d+(?:[.,]\d+)?)?', token):
+        return False
+    # Инженерные геометрические параметры и диапазоны (D101-110, D21-24, L70, H=3м, DN50-100, PN10-16, ДУ100)
+    if re.fullmatch(r'(?:[dDдДlLлЛhHвВwWшШ]|dn|pn|ду|ру)\s*=?\s*\d+(?:[.,]\d+)?\s*(?:[мm]|мм|см|г|кг|т|л|мл)?(?:[-–/]\d+(?:[.,]\d+)?)?', token, re.IGNORECASE):
+        return False
+    # Физические величины с единицами измерения (200г, 3мм, 50м, 1т, 6-5м, 50л)
+    if re.fullmatch(r'\d+(?:[.,]\d+)?(?:[-–/]\d+(?:[.,]\d+)?)?\s*(?:г|кг|мг|т|л|мл|м|см|мм|км|шт|в|вт|квт|м?а(?:[/·⋅*]?ч)?|v|w|kw|hz|гц|m?ah)\b', token, re.IGNORECASE):
+        return False
+    # Общепринятые стандарты (ГОСТ, ОСТ, ТУ, DIN, ISO) - публичные нормативные документы, а не закрытые чертежи
+    if full_text and re.search(r'\b(?:гост|ост|ту|din|iso)\s*' + re.escape(token), full_text, re.I):
+        return False
+    # Десятичные дроби и соотношения двух чисел (40/20, 2.5, 3/4)
+    if re.fullmatch(r'\d+(?:[.,/]\d+)+', token) and not re.search(r'\d{1,4}\.\d{2,}\.\d{1,}', token):
+        return False
+    # Децимальный чертеж с цифрами и точками/дефисами (например 1085.05.02, 059.00.00-02, 2.607.019.435)
+    if re.search(r'\d{1,4}\.\d{2,}\.\d{1,}', token) or re.search(r'\d+[.\-_/]\d+[.\-_/]\d+', token):
+        return True
+    # Чертеж с буквенным префиксом серии (например ЭГ.059.00.00-02, ВР30.02.000-01)
+    if re.search(r'[a-zA-Zа-яА-ЯёЁ]+[.\-_/]\d+[.\-_/]', token):
+        return True
+    # Буквенно-цифровой артикул узла/детали (например SPGA4270-200-01, ИП43хВх10х35х7, D-08660, ЦЧ-4)
+    has_letters = bool(re.search(r'[a-zA-Zа-яА-ЯёЁ]', token))
+    has_digits = bool(re.search(r'\d', token))
+    if has_letters and has_digits and len(token) >= 4:
+        return True
+    # Числовой артикул детали (5-8 цифр, например 130539, 26038)
+    if re.fullmatch(r'\d{5,8}', token):
+        return True
+    return False
+
+
+def is_closed_factory_drawing(token: str, full_text: str = "") -> bool:
+    """
+    Отличает явную ссылку на чертёж и децимальную маркировку от серийного SKU.
+    Эта эвристика задаёт точность поиска, но не доказывает отсутствие рыночной цены.
+    """
+    token = token.strip("()[]{}<>\"'*#№!, ")
+    if len(token) < 5:
+        return False
+    # Общепринятые стандарты (ГОСТ, ОСТ, ТУ, DIN, ISO) - публичные нормативные документы, а не чертежи
+    if full_text and re.search(r'\b(?:гост|ост|ту|din|iso)\s*' + re.escape(token), full_text, re.I):
+        return False
+    # Кириллический префикс и числовые децимальные сегменты: 5ВК.568.007.2,
+    # ЭГ.059.00.00-02. Произвольные точки/дефисы встречаются и в серийных моделях.
+    if re.fullmatch(r'(?:\d+[А-ЯЁ]{1,4}|[А-ЯЁ]{1,4})\.\d{2,}(?:\.\d+)+(?:-\d+)?', token, re.I):
+        return True
+    # Прямое указание чертежа в тексте
+    if full_text and re.search(r'\b(?:черт|по черт|чертеж|кд|сборочн)\S*\s*' + re.escape(token), full_text, re.I):
+        return True
+    return False
 
 
 def build_commercial_search_queries(clean_name: str, unit: str, city: str = "") -> list[str]:
@@ -123,7 +198,57 @@ def build_commercial_search_queries(clean_name: str, unit: str, city: str = "") 
     norm_u = normalize_unit(unit)
     clean_city = str(city or "").strip()
 
-    # 0. Приоритетные региональные запросы при наличии города поставки
+    tokens = clean_name.split()
+    noun = tokens[0] if tokens else ""
+    codes = extract_generic_nomenclature_codes(clean_name)
+    drawing_codes = [c for c in codes if is_drawing_or_part_code(c, clean_name)]
+    closed_drawings = [c for c in codes if is_closed_factory_drawing(c, clean_name)]
+
+    # 0. Строгий поиск для закрытых децимальных чертежей завода (уникальные заказные детали):
+    # Требуются строгие кавычки для отсечки омонимов бытовой техники
+    if closed_drawings:
+        primary_code = closed_drawings[0]
+        context_tokens = [
+            t for t in tokens
+            if t != primary_code and not is_drawing_or_part_code(t, clean_name) and len(t) >= 2
+        ]
+        context_words = " ".join(context_tokens[:4]) if context_tokens else noun
+        if context_words:
+            if clean_city:
+                queries.append(f'"{primary_code}" {context_words} {clean_city} купить цена')
+            queries.append(f'"{primary_code}" {context_words} купить цена')
+            queries.append(f'{context_words} "{primary_code}" купить со склада')
+            queries.append(f'"{primary_code}" {context_words} производитель каталог')
+        queries.append(f'"{primary_code}" цена в наличии со склада')
+        queries.append(f'"{primary_code}" прайс лист')
+        seen = set()
+        unique_queries = []
+        for q in queries:
+            q_cln = " ".join(q.split())
+            if q_cln and q_cln.lower() not in seen:
+                seen.add(q_cln.lower())
+                unique_queries.append(q_cln)
+        return unique_queries
+
+    # Для коммерческих артикулов (например Makita D-08660, Bosch 2.607.019.435, СТП1-2/3000, ЦЧ-4):
+    # Формируем естественные поисковые запросы БЕЗ жестких кавычек в приоритете, плюс кавычки как резерв
+    if drawing_codes:
+        primary_code = drawing_codes[0]
+        context_tokens = [
+            t for t in tokens
+            if t != primary_code and not is_drawing_or_part_code(t, clean_name) and len(t) >= 2
+        ]
+        context_words = " ".join(context_tokens[:4]) if context_tokens else noun
+        if context_words:
+            if clean_city:
+                queries.append(f"{context_words} {primary_code} {clean_city} купить цена")
+            queries.append(f"{context_words} {primary_code} купить цена")
+            queries.append(f"{primary_code} {context_words} купить со склада")
+            queries.append(f'"{primary_code}" {context_words} купить цена')
+        queries.append(f"{clean_name} купить цена")
+        queries.append(f"{primary_code} цена в наличии")
+
+    # 1. Приоритетные региональные запросы при наличии города поставки (для стандартных товаров)
     if clean_city:
         if norm_u and norm_u not in {"шт"}:
             queries.append(f"{clean_name} {clean_city} цена за {norm_u} купить в наличии")
@@ -131,21 +256,18 @@ def build_commercial_search_queries(clean_name: str, unit: str, city: str = "") 
             queries.append(f"{clean_name} {clean_city} купить цена в наличии")
         queries.append(f"{clean_name} {clean_city} поставщики оптовый прайс лист со склада")
 
-    # 1. Прямой коммерческий запрос с единицей измерения или без
+    # 2. Прямой коммерческий запрос с единицей измерения или без
     if norm_u and norm_u not in {"шт"}:
         queries.append(f"{clean_name} цена за {norm_u} купить в наличии")
     else:
         queries.append(f"{clean_name} купить цена в наличии")
 
-    # 2. Поставщики и прайс-листы со склада
+    # 3. Поставщики и прайс-листы со склада
     queries.append(f"{clean_name} прайс лист купить со склада")
     queries.append(f"{clean_name} стоимость каталог поставщики")
     queries.append(f"{clean_name} купить цена от производителя")
 
-    # 3. Универсальное выделение артикулов и маркировок
-    tokens = clean_name.split()
-    noun = tokens[0] if tokens else ""
-    codes = extract_generic_nomenclature_codes(clean_name)
+    # 4. Универсальное выделение общих артикулов и маркировок
     for art_code in codes[:2]:
         if noun and noun.lower() != art_code.lower():
             if clean_city:
@@ -175,6 +297,30 @@ def build_fallback_broad_queries(clean_name: str, unit: str, city: str = "") -> 
     norm_u = normalize_unit(unit)
     clean_city = str(city or "").strip()
 
+    codes = extract_generic_nomenclature_codes(clean_name)
+    drawing_codes = [c for c in codes if is_drawing_or_part_code(c, clean_name)]
+
+    # 0. Строгий режим для чертежей и специализированных артикулов:
+    # Запросы ОБЯЗАТЕЛЬНО должны сохранять чертеж в кавычках и не деградировать до общих слов
+    if drawing_codes:
+        primary_code = drawing_codes[0]
+        noun = clean_name.split()[0] if clean_name.split() else ""
+        if noun and noun.lower() != primary_code.lower():
+            if clean_city:
+                queries.append(f'"{primary_code}" {noun} {clean_city} купить цена')
+            queries.append(f'"{primary_code}" {noun} купить цена')
+            queries.append(f'"{primary_code}" {noun} поставщики склад')
+        queries.append(f'"{primary_code}" цена каталог производитель')
+        queries.append(f'"{primary_code}" стоимость прайс лист')
+        seen = set()
+        unique_queries = []
+        for q in queries:
+            q_cln = " ".join(q.split())
+            if q_cln and q_cln.lower() not in seen:
+                seen.add(q_cln.lower())
+                unique_queries.append(q_cln)
+        return unique_queries
+
     if clean_city:
         queries.append(f"{clean_name} {clean_city} купить со склада оптом")
         queries.append(f"{clean_name} {clean_city} дилеры каталог")
@@ -190,7 +336,6 @@ def build_fallback_broad_queries(clean_name: str, unit: str, city: str = "") -> 
     # 2. Выделение универсальных артикулов, чертежей и маркировок (Правило 14: без привязки к конкретным товарам)
     tokens = clean_no_punct.split()
     noun = tokens[0] if tokens else ""
-    codes = extract_generic_nomenclature_codes(clean_name)
     for code in codes[:3]:
         if noun and noun.lower() != code.lower():
             queries.append(f"{noun} {code} купить цена")
@@ -325,8 +470,15 @@ def extract_items_from_files_or_text(
     """
     Извлекает перечень номенклатурных позиций (номенклатура, единица_измерения) из переданных файлов
     (.xlsx, .xls, .docx, .pdf, .txt, .csv) и/или текстового контекста.
-    Корректно поддерживает несколько файлов за раз, объединяет и дедуплицирует позиции.
+    Структурированные таблицы сохраняют каждую исходную строку; свободные списки
+    используют прежний текстовый разбор при отсутствии достоверной структуры.
     """
+    from ..product_inventory import extract_structured_product_inventory
+    structured = extract_structured_product_inventory(file_paths, context=context)
+    if structured is not None:
+        # Distinct physical source rows must not collapse by name alone.
+        return [(clean_nomenclature_name(row["name"]), normalize_unit(row.get("unit") or "шт")) for row in structured]
+
     items: list[tuple[str, str]] = []
     seen: set[str] = set()
 

@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import Iterator
 
 from sqlalchemy import func, not_, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import config
-from .models import BillingTransaction, Client, ClientTariffOverride, Job, SystemSettings, TariffPackage, now_utc
+from .models import BillingTransaction, Client, ClientTariffOverride, Job, SystemSettings, TariffPackage, configured_geo_surcharge_pct, now_utc
 
 KIND_SUPPLIER_SEARCH = "supplier_search"
 KIND_PROCUREMENT_REPORT = "procurement_report"
@@ -42,6 +43,8 @@ STATUS_AWAITING_CUSTOMER_CONFIRMATION = "awaiting_customer_confirmation"
 STATUS_CUSTOMER_DECLINED = "customer_declined"
 STATUS_CONFIRMATION_EXPIRED = "confirmation_expired"
 STATUS_DELIVERY_EXPIRED = "delivery_expired"
+STATUS_AWAITING_EXACT_SELECTION = "awaiting_exact_selection"
+STATUS_AWAITING_POSITION_SELECTION = "awaiting_position_selection"
 
 LOW_BALANCE_THRESHOLD = 1
 
@@ -693,7 +696,7 @@ def reserve_additional_job_units(
         error = access_error_for_units(db, client, units_to_reserve)
         if error:
             raise BillingError(error)
-        amount = _reservable_amount_for_kind(db, client, kind, additional_units)
+        amount = _reservable_amount_for_kind(db, client, kind, additional_units, job=job)
         if amount > 0:
             client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0)) + amount
         existing_tx = (
@@ -729,6 +732,31 @@ def reserve_additional_job_units(
         db.commit()
 
 
+def effective_job_unit_price_kopeks(
+    db: Session,
+    client: Client,
+    kind: str,
+    *,
+    job: Job | None = None,
+    geo_radius_km: int | None = None,
+) -> int:
+    """Resolve the unit price, including the configured delivery-radius surcharge."""
+    price = effective_price_kopeks(db, client, kind)
+    radius = int(getattr(job, "geo_radius_km", 0) or geo_radius_km or 0)
+    if radius > 0 and kind in {KIND_SUPPLIER_SEARCH, KIND_SUPPLIER_SEARCH_EXTRA, KIND_PRICE_MONITORING}:
+        if job is not None:
+            from .geo_policy import validate_geo_request
+            try:
+                validate_geo_request(job.delivery_city, radius, mode=job.mode)
+            except ValueError as exc:
+                raise BillingError(str(exc)) from exc
+        settings = db.query(SystemSettings).first()
+        surcharge_pct = configured_geo_surcharge_pct(settings)
+        if surcharge_pct > 0:
+            price = int(round(price * (1.0 + surcharge_pct / 100.0)))
+    return price
+
+
 def _reservable_amount_for_kind(
     db: Session,
     client: Client,
@@ -737,12 +765,7 @@ def _reservable_amount_for_kind(
     *,
     job: Job | None = None,
 ) -> int:
-    price = effective_price_kopeks(db, client, kind)
-    if job and getattr(job, "geo_radius_km", None) and int(job.geo_radius_km or 0) > 0 and kind in {KIND_SUPPLIER_SEARCH, KIND_SUPPLIER_SEARCH_EXTRA, KIND_PRICE_MONITORING}:
-        settings = db.query(SystemSettings).first()
-        surcharge_pct = float(getattr(settings, "geo_radius_surcharge_pct", 30.0) or 30.0)
-        if surcharge_pct > 0:
-            price = int(round(price * (1.0 + surcharge_pct / 100.0)))
+    price = effective_job_unit_price_kopeks(db, client, kind, job=job)
     amount = price * max(0, int(count or 0))
     if amount <= 0:
         return 0
@@ -1452,27 +1475,248 @@ def recent_billing_transactions(db: Session, client: Client, *, limit: int = 8) 
 
 def expire_stale_confirmations(db: Session, *, older_than: timedelta = timedelta(hours=24)) -> int:
     cutoff = now_utc() - older_than
+    expired_exact = _expire_exact_selections(db, cutoff)
+    expired_price_monitoring = _expire_price_monitoring_selections(db, cutoff)
     jobs = (
         db.query(Job)
         .filter(Job.status.in_([STATUS_AWAITING_CUSTOMER_CONFIRMATION, "partial"]))
-        .filter(or_(Job.confirmation_kind.is_(None), Job.confirmation_kind == ""))
+        .filter(or_(Job.confirmation_kind.is_(None), Job.confirmation_kind == "", Job.confirmation_kind == "multi_item_strategy"))
         .filter(Job.updated_at < cutoff)
         .all()
     )
     expired_jobs: list[Job] = []
     for job in jobs:
-        if not job_has_unsettled_reservation(db, job):
+        is_strategy_confirmation = (
+            job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION
+            and job.confirmation_kind == "multi_item_strategy"
+        )
+        if not job_has_unsettled_reservation(db, job) and not is_strategy_confirmation:
             continue
-        release_job_reservation(db, job, note="Резерв возвращён: клиент не подтвердил неполный отчёт за 24 часа")
+        if job_has_unsettled_reservation(db, job):
+            release_job_reservation(
+                db,
+                job,
+                note="Резерв возвращён: клиент не подтвердил выбор стратегии за 24 часа"
+                if is_strategy_confirmation else "Резерв возвращён: клиент не подтвердил неполный отчёт за 24 часа",
+            )
         job.status = STATUS_CONFIRMATION_EXPIRED
-        job.message = "Неполный отчёт не был скачан за 24 часа, списания нет"
+        job.message = (
+            "Выбор стратегии не подтверждён за 24 часа, списания нет"
+            if is_strategy_confirmation else "Неполный отчёт не был скачан за 24 часа, списания нет"
+        )
         job.error = ""
         job.completed_at = now_utc()
         job.updated_at = now_utc()
         expired_jobs.append(job)
     if expired_jobs:
         db.commit()
-    return len(expired_jobs)
+    return len(expired_jobs) + expired_exact + expired_price_monitoring
+
+
+_PRICE_MONITORING_RESERVABLE_STATUSES = {"draft", "pending", "running"}
+_PRICE_MONITORING_SETTLING_STATUS = "settling"
+
+
+def _price_monitoring_transaction(
+    db: Session,
+    job_id: str,
+    operation: str,
+) -> BillingTransaction | None:
+    return (
+        db.query(BillingTransaction)
+        .filter(
+            BillingTransaction.job_id == job_id,
+            BillingTransaction.kind == KIND_PRICE_MONITORING,
+            BillingTransaction.operation == operation,
+        )
+        .first()
+    )
+
+
+def _current_billing_job(db: Session, job: Job) -> Job:
+    current = db.get(Job, job.id)
+    if current is None:
+        raise BillingError("Задача мониторинга цен не найдена.")
+    db.refresh(current, attribute_names=["status", "client_id", "mode"])
+    return current
+
+
+def _claim_price_monitoring_settlement(db: Session, job: Job) -> bool:
+    """Claim a running monitoring job before it can be cancelled.
+
+    The conditional update is deliberately performed in the same database
+    transaction as the balance mutation below.  A stale cancellation request
+    is therefore unable to overwrite a settled result after it read the old
+    ``running`` status.
+
+    Returns ``True`` when this call owns the running-job transition.  Older
+    already-completed jobs remain chargeable for backward-compatible recovery.
+    """
+    status = str(job.status or "")
+    if status == "cancelled":
+        raise BillingError("Задача мониторинга цен отменена; списание запрещено.")
+    if status == "running":
+        claimed = (
+            db.query(Job)
+            .filter(Job.id == job.id, Job.status == "running")
+            .update(
+                {
+                    Job.status: _PRICE_MONITORING_SETTLING_STATUS,
+                    Job.updated_at: now_utc(),
+                },
+                synchronize_session=False,
+            )
+        )
+        db.flush()
+        if claimed == 1:
+            # Do not expire the caller's pending output/evidence fields: the
+            # worker commits them together with this settlement below.
+            db.refresh(job, attribute_names=["status"])
+            return True
+
+        db.refresh(job, attribute_names=["status"])
+        if job.status == "cancelled":
+            raise BillingError("Задача мониторинга цен отменена; списание запрещено.")
+        raise BillingError(f"Нельзя начать списание мониторинга цен в статусе «{job.status}».")
+    if status == _PRICE_MONITORING_SETTLING_STATUS:
+        raise BillingError("Мониторинг цен уже рассчитывает списание; повторите запрос позже.")
+    if status not in {"completed", "done", "partial"}:
+        raise BillingError(f"Нельзя списать мониторинг цен в статусе «{status}».")
+    return False
+
+
+def reserve_price_monitoring_job(
+    db: Session,
+    job: Job,
+    *,
+    total_positions: int,
+    price_per_item_kopeks: int,
+) -> int:
+    """Reserve the maximum monitoring budget after the exact input row count is known."""
+    positions = int(total_positions or 0)
+    unit_price = int(price_per_item_kopeks or 0)
+    if positions <= 0:
+        raise BillingError("В задаче мониторинга цен нет позиций для резервирования.")
+    if unit_price <= 0:
+        raise BillingError("Для мониторинга цен не настроена стоимость позиции.")
+    if not getattr(job, "client_id", None):
+        raise BillingError("У задачи мониторинга цен не указан клиент.")
+
+    expected_amount = positions * unit_price
+    with _billing_client_lock(str(job.client_id)):
+        current = _current_billing_job(db, job)
+        if current.mode != MODE_PRICE_MONITORING:
+            raise BillingError("Резерв мониторинга цен недоступен для этого типа задачи.")
+
+        existing = _price_monitoring_transaction(db, current.id, OP_RESERVE)
+        if existing is not None:
+            if int(existing.units or 0) != positions or int(existing.amount_kopeks or 0) != expected_amount:
+                raise BillingError("Параметры повторного резервирования мониторинга цен не совпадают с исходными.")
+            return int(existing.amount_kopeks or 0)
+
+        if str(current.status or "") not in _PRICE_MONITORING_RESERVABLE_STATUSES:
+            raise BillingError(f"Нельзя зарезервировать мониторинг цен в статусе «{current.status}».")
+
+        client = db.get(Client, current.client_id)
+        if client is None:
+            raise BillingError("Клиент задачи мониторинга цен не найден.")
+        db.refresh(client)
+        available = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
+        if available < expected_amount:
+            raise BillingError(
+                "Недостаточно средств для мониторинга цен: "
+                f"доступно {available / 100:.2f} ₽, нужно {expected_amount / 100:.2f} ₽."
+            )
+
+        client.money_reserved_kopeks = int(client.money_reserved_kopeks or 0) + expected_amount
+        db.add(
+            BillingTransaction(
+                client_id=client.id,
+                job_id=current.id,
+                kind=KIND_PRICE_MONITORING,
+                operation=OP_RESERVE,
+                units=positions,
+                amount_kopeks=expected_amount,
+                balance_after_kopeks=int(client.money_balance_kopeks or 0),
+                reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
+                note=f"Резерв мониторинга цен: до {positions} поз. по {unit_price / 100:.2f} ₽",
+                created_by="system",
+            )
+        )
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing = _price_monitoring_transaction(db, current.id, OP_RESERVE)
+            if (
+                existing is not None
+                and int(existing.units or 0) == positions
+                and int(existing.amount_kopeks or 0) == expected_amount
+            ):
+                return int(existing.amount_kopeks or 0)
+            raise
+        except Exception:
+            db.rollback()
+            raise
+        return expected_amount
+
+
+def cancel_price_monitoring_job(
+    db: Session,
+    job: Job,
+    *,
+    note: str,
+    message: str,
+) -> bool:
+    """Cancel a monitoring job and release its reserve in one transaction.
+
+    The conditional status update is the cancellation side of the settlement
+    protocol.  It intentionally refuses ``settling`` and terminal jobs so a
+    request which read an old ``running`` object cannot undo a completed bill.
+    """
+    if not getattr(job, "client_id", None):
+        return False
+
+    with _billing_client_lock(str(job.client_id)):
+        current = _current_billing_job(db, job)
+        if current.mode != MODE_PRICE_MONITORING:
+            raise BillingError("Отмена мониторинга цен недоступна для этого типа задачи.")
+
+        cancelled = (
+            db.query(Job)
+            .filter(
+                Job.id == current.id,
+                Job.status.in_((
+                    "pending",
+                    "running",
+                    STATUS_AWAITING_POSITION_SELECTION,
+                    STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+                )),
+            )
+            .update(
+                {
+                    Job.status: "cancelled",
+                    Job.progress: 100,
+                    Job.message: message,
+                    Job.error: "",
+                    Job.completed_at: now_utc(),
+                    Job.updated_at: now_utc(),
+                },
+                synchronize_session=False,
+            )
+        )
+        if cancelled != 1:
+            db.rollback()
+            return False
+
+        try:
+            db.refresh(current, attribute_names=["status"])
+            _release_job_kind_reservation(db, current, KIND_PRICE_MONITORING, note=note)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return True
 
 
 def charge_price_monitoring_job(
@@ -1482,30 +1726,324 @@ def charge_price_monitoring_job(
     found_count: int,
     price_per_item_kopeks: int,
 ) -> int:
-    """Списывает средства за фактически найденные позиции мониторинга цен."""
-    if not job.client_id or found_count <= 0 or price_per_item_kopeks <= 0:
-        return 0
-    total_amount_kopeks = found_count * price_per_item_kopeks
-    with _billing_client_lock(job.client_id):
-        client = db.get(Client, job.client_id)
-        if not client:
-            return 0
-        db.refresh(client)
-        client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - total_amount_kopeks)
-        db.add(
-            BillingTransaction(
-                client_id=client.id,
-                job_id=job.id,
-                kind=KIND_PRICE_MONITORING,
-                operation=OP_CHARGE,
-                units=found_count,
-                amount_kopeks=total_amount_kopeks,
-                balance_after_kopeks=client.money_balance_kopeks,
-                reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
-                note=f"Мониторинг цен: найдено {found_count} поз. по {round(price_per_item_kopeks / 100, 2)} ₽",
-                created_by="system",
-            )
-        )
-        db.commit()
-    return total_amount_kopeks
+    """Settle a monitoring reservation for found rows and release the unused maximum.
 
+    price_per_item_kopeks фиксируется обработчиком до поиска; повторно надбавку здесь не применяем.
+    Legacy jobs without a reservation are charged only when unreserved money is sufficient.
+    """
+    found = max(0, int(found_count or 0))
+    unit_price = int(price_per_item_kopeks or 0)
+    if not getattr(job, "client_id", None):
+        return 0
+    if unit_price <= 0:
+        if found <= 0:
+            return 0
+        raise BillingError("Для мониторинга цен не настроена стоимость позиции.")
+
+    with _billing_client_lock(str(job.client_id)):
+        current = _current_billing_job(db, job)
+        if current.mode != MODE_PRICE_MONITORING:
+            raise BillingError("Списание мониторинга цен недоступно для этого типа задачи.")
+        if str(current.status or "") == "cancelled":
+            raise BillingError("Задача мониторинга цен отменена; списание запрещено.")
+
+        existing_charge = _price_monitoring_transaction(db, current.id, OP_CHARGE)
+        if existing_charge is not None:
+            return int(existing_charge.amount_kopeks or 0)
+
+        client = db.get(Client, current.client_id)
+        if client is None:
+            raise BillingError("Клиент задачи мониторинга цен не найден.")
+        db.refresh(client)
+
+        reserve = _price_monitoring_transaction(db, current.id, OP_RESERVE)
+        release = _price_monitoring_transaction(db, current.id, OP_RELEASE)
+        total_amount = found * unit_price
+
+        if reserve is not None:
+            reserve_units = max(0, int(reserve.units or 0))
+            reserve_amount = max(0, int(reserve.amount_kopeks or 0))
+            if release is not None:
+                if total_amount == 0 and str(current.status or "") in {"completed", "done", "partial"}:
+                    return 0
+                raise BillingError("Резерв мониторинга цен уже возвращён; повторное списание запрещено.")
+            if found > reserve_units or total_amount > reserve_amount:
+                raise BillingError("Сумма списания мониторинга цен превышает исходный резерв.")
+            if reserve_units > 0 and reserve_amount != reserve_units * unit_price:
+                raise BillingError("Цена позиции не совпадает с зафиксированной ценой резерва.")
+            if int(client.money_reserved_kopeks or 0) < reserve_amount:
+                raise BillingError("Резерв клиента меньше резерва задачи мониторинга цен.")
+            if int(client.money_balance_kopeks or 0) < total_amount:
+                raise BillingError("Недостаточно средств для завершения мониторинга цен.")
+        else:
+            if found > 0:
+                available = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
+                if available < total_amount:
+                    raise BillingError(
+                        "Недостаточно средств для мониторинга цен: "
+                        f"доступно {available / 100:.2f} ₽, нужно {total_amount / 100:.2f} ₽."
+                    )
+        settlement_claimed = _claim_price_monitoring_settlement(db, current)
+
+        if reserve is not None:
+            unused_units = reserve_units - found
+            unused_amount = reserve_amount - total_amount
+            client.money_reserved_kopeks = int(client.money_reserved_kopeks or 0) - reserve_amount
+            client.money_balance_kopeks = int(client.money_balance_kopeks or 0) - total_amount
+            if total_amount > 0:
+                db.add(
+                    BillingTransaction(
+                        client_id=client.id,
+                        job_id=current.id,
+                        kind=KIND_PRICE_MONITORING,
+                        operation=OP_CHARGE,
+                        units=found,
+                        amount_kopeks=total_amount,
+                        balance_after_kopeks=int(client.money_balance_kopeks or 0),
+                        reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
+                        note=f"Мониторинг цен: найдено {found} поз. по {unit_price / 100:.2f} ₽",
+                        created_by="system",
+                    )
+                )
+            if unused_amount > 0 or unused_units > 0:
+                db.add(
+                    BillingTransaction(
+                        client_id=client.id,
+                        job_id=current.id,
+                        kind=KIND_PRICE_MONITORING,
+                        operation=OP_RELEASE,
+                        units=unused_units,
+                        amount_kopeks=unused_amount,
+                        balance_after_kopeks=int(client.money_balance_kopeks or 0),
+                        reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
+                        note="Возврат неиспользованного резерва мониторинга цен",
+                        created_by="system",
+                    )
+                )
+        elif found > 0:
+            client.money_balance_kopeks = int(client.money_balance_kopeks or 0) - total_amount
+            db.add(
+                BillingTransaction(
+                    client_id=client.id,
+                    job_id=current.id,
+                    kind=KIND_PRICE_MONITORING,
+                    operation=OP_CHARGE,
+                    units=found,
+                    amount_kopeks=total_amount,
+                    balance_after_kopeks=int(client.money_balance_kopeks or 0),
+                    reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
+                    note=f"Мониторинг цен: найдено {found} поз. по {unit_price / 100:.2f} ₽",
+                    created_by="system",
+                )
+            )
+
+        if settlement_claimed:
+            current.status = "completed"
+            current.progress = 100
+            current.completed_at = now_utc()
+            current.updated_at = now_utc()
+
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing_charge = _price_monitoring_transaction(db, current.id, OP_CHARGE)
+            if existing_charge is not None:
+                return int(existing_charge.amount_kopeks or 0)
+            existing_release = _price_monitoring_transaction(db, current.id, OP_RELEASE)
+            if found <= 0 and existing_release is not None:
+                return 0
+            raise
+        except Exception:
+            db.rollback()
+            raise
+        return total_amount
+
+
+def _finalize_internal_job(db: Session, job: Job, *, expected_mode: str) -> None:
+    """Publish an expert result and return any legacy hold in one transaction."""
+    with _billing_client_lock(str(job.client_id or job.id)):
+        current = _current_billing_job(db, job)
+        if current.mode != expected_mode or not current.is_admin_rerun:
+            raise BillingError("Бесплатное завершение доступно только внутренней экспертной задаче.")
+        if current.status == "completed":
+            return
+        try:
+            claimed = db.query(Job).filter(
+                Job.id == current.id, Job.status == "running",
+                Job.mode == expected_mode, Job.is_admin_rerun.is_(True),
+            ).update({Job.status: "settling", Job.updated_at: now_utc()}, synchronize_session=False)
+            if claimed != 1:
+                raise BillingError("Экспертная задача больше не выполняется; результат не публикуется.")
+            db.flush()
+            db.refresh(current, attribute_names=["status"])
+            if current.client_id:
+                _release_job_kind_reservation(db, current, expected_mode,
+                    note="Внутренний экспертный перезапуск: резерв возвращён")
+            current.status = "completed"
+            current.progress = 100
+            current.completed_at = now_utc()
+            current.updated_at = now_utc()
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+
+def finalize_internal_price_monitoring_job(db: Session, job: Job) -> None:
+    _finalize_internal_job(db, job, expected_mode=KIND_PRICE_MONITORING)
+
+
+
+def settle_exact_product_job(db: Session, job: Job, *, confirmed_count: int) -> bool:
+    """Commit the output and the fixed task fee atomically, competing with cancellation."""
+    with _billing_client_lock(str(job.client_id or job.id)):
+        current = _current_billing_job(db, job)
+        if current.mode != KIND_EXACT_PRODUCT:
+            raise BillingError("Это не задача подбора товара.")
+        if current.status == "completed":
+            return _job_has_operation(db, current.id, KIND_EXACT_PRODUCT, OP_CHARGE)
+        if current.status != "running":
+            raise BillingError("Задача подбора больше не выполняется; списание запрещено.")
+        claimed = db.query(Job).filter(Job.id == current.id, Job.status == "running").update(
+            {Job.status: "settling", Job.updated_at: now_utc()}, synchronize_session=False)
+        if claimed != 1:
+            db.rollback()
+            raise BillingError("Состояние подбора изменилось; списание не выполнено.")
+        try:
+            db.flush()
+            db.refresh(current, attribute_names=["status"])
+            charge = int(confirmed_count) > 0
+            if charge and current.client_id:
+                _charge_job_kind_reservation_locked(db, current, KIND_EXACT_PRODUCT,
+                    note="Подбор выбранных товаров и аналогов завершён")
+            elif current.client_id:
+                _release_job_kind_reservation(db, current, KIND_EXACT_PRODUCT,
+                    note="Подтверждённая модель не найдена: резерв подбора возвращён")
+            current.status = "completed"
+            current.progress = 100
+            current.completed_at = now_utc()
+            current.updated_at = now_utc()
+            db.commit()
+            return charge
+        except Exception:
+            db.rollback()
+            raise
+
+
+def finalize_internal_exact_product_job(db: Session, job: Job) -> None:
+    _finalize_internal_job(db, job, expected_mode=KIND_EXACT_PRODUCT)
+
+
+
+def cancel_exact_product_job(db: Session, job: Job, *, note: str, message: str) -> bool:
+    """A stale request cannot cancel a settled exact-product report."""
+    with _billing_client_lock(str(job.client_id or job.id)):
+        current = _current_billing_job(db, job)
+        if current.mode != KIND_EXACT_PRODUCT:
+            raise BillingError("Это не задача подбора товара.")
+        cancelled = db.query(Job).filter(Job.id == current.id,
+            Job.status.in_(["draft", "pending", "running", STATUS_AWAITING_EXACT_SELECTION, STATUS_AWAITING_CUSTOMER_CONFIRMATION])).update(
+            {Job.status: "cancelled", Job.progress: 100, Job.error: "", Job.message: message,
+             Job.completed_at: now_utc(), Job.updated_at: now_utc()}, synchronize_session=False)
+        if cancelled != 1:
+            db.rollback()
+            return False
+        try:
+            db.refresh(current, attribute_names=["status"])
+            if current.client_id:
+                _release_job_kind_reservation(db, current, KIND_EXACT_PRODUCT, note=note)
+            db.commit()
+            return True
+        except Exception:
+            db.rollback()
+            raise
+
+
+def _expire_exact_selections(db: Session, cutoff: datetime) -> int:
+    import json
+    candidates = db.query(Job).filter(Job.mode == KIND_EXACT_PRODUCT,
+        Job.status == STATUS_AWAITING_EXACT_SELECTION, Job.updated_at < cutoff).all()
+    expired = 0
+    for job in candidates:
+        with _billing_client_lock(str(job.client_id or job.id)):
+            db.refresh(job, attribute_names=["status", "position_selection_json"])
+            try:
+                snapshot = json.loads(job.position_selection_json or "{}")
+            except (ValueError, TypeError):
+                snapshot = {}
+            if isinstance(snapshot, dict) and snapshot.get("confirmed"):
+                continue
+            changed = db.query(Job).filter(Job.id == job.id, Job.status == STATUS_AWAITING_EXACT_SELECTION,
+                Job.updated_at < cutoff).update({Job.status: STATUS_CONFIRMATION_EXPIRED,
+                    Job.message: "Выбор товаров не подтверждён за 24 часа; резерв возвращён, списания нет",
+                    Job.error: "", Job.completed_at: now_utc(), Job.updated_at: now_utc()}, synchronize_session=False)
+            if changed != 1:
+                db.rollback()
+                continue
+            try:
+                if job.client_id:
+                    _release_job_kind_reservation(db, job, KIND_EXACT_PRODUCT, note="Резерв возвращён: товары не выбраны за 24 часа")
+                db.commit()
+                expired += 1
+            except Exception:
+                db.rollback()
+                raise
+    return expired
+
+
+def _expire_price_monitoring_selections(db: Session, cutoff: datetime) -> int:
+    """Expire an unconfirmed monitoring preview without racing its confirmation.
+
+    A preview normally has no reserve, but old or resumed jobs can have one.  The
+    status compare-and-set and release are therefore kept under the same client
+    lock and transaction as cancellation and settlement.
+    """
+    import json
+
+    candidates = db.query(Job).filter(
+        Job.mode == MODE_PRICE_MONITORING,
+        Job.status == STATUS_AWAITING_POSITION_SELECTION,
+        Job.updated_at < cutoff,
+    ).all()
+    expired = 0
+    for job in candidates:
+        with _billing_client_lock(str(job.client_id or job.id)):
+            db.refresh(job, attribute_names=["status", "position_selection_json", "updated_at"])
+            try:
+                snapshot = json.loads(job.position_selection_json or "{}")
+            except (ValueError, TypeError):
+                snapshot = {}
+            if isinstance(snapshot, dict) and snapshot.get("confirmed"):
+                continue
+            changed = db.query(Job).filter(
+                Job.id == job.id,
+                Job.status == STATUS_AWAITING_POSITION_SELECTION,
+                Job.updated_at < cutoff,
+            ).update(
+                {
+                    Job.status: STATUS_CONFIRMATION_EXPIRED,
+                    Job.message: "Выбор позиций для мониторинга не подтверждён за 24 часа; списания нет",
+                    Job.error: "",
+                    Job.completed_at: now_utc(),
+                    Job.updated_at: now_utc(),
+                },
+                synchronize_session=False,
+            )
+            if changed != 1:
+                db.rollback()
+                continue
+            try:
+                if job.client_id:
+                    _release_job_kind_reservation(
+                        db,
+                        job,
+                        KIND_PRICE_MONITORING,
+                        note="Резерв возвращён: позиции для мониторинга не выбраны за 24 часа",
+                    )
+                db.commit()
+                expired += 1
+            except Exception:
+                db.rollback()
+                raise
+    return expired

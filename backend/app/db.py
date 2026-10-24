@@ -63,13 +63,14 @@ def init_db() -> None:
     _ensure_schema()
     _ensure_legacy_client_accounts()
     _ensure_default_tariffs()
-    _ensure_master_api_key()
 
 
 def _ensure_schema() -> None:
     with engine.begin() as connection:
         if "job_sources" in Base.metadata.tables:
             Base.metadata.tables["job_sources"].create(bind=connection, checkfirst=True)
+        if "web_password_reset_tokens" in Base.metadata.tables:
+            Base.metadata.tables["web_password_reset_tokens"].create(bind=connection, checkfirst=True)
         inspector = inspect(connection)
         system_settings_existing = _existing_columns(inspector, "system_settings")
         system_settings_additions = {
@@ -148,6 +149,7 @@ def _ensure_schema() -> None:
             "multi_item_mode": "VARCHAR(40) DEFAULT 'balanced'",
             "delivery_city": "VARCHAR(255) DEFAULT ''",
             "geo_radius_km": "INTEGER NULL",
+            "position_selection_json": "TEXT DEFAULT ''",
             "filter_marketplaces": "BOOLEAN NULL",
             "filter_foreign": "BOOLEAN NULL",
             "max_suppliers": "INTEGER NULL",
@@ -389,10 +391,24 @@ def _ensure_schema() -> None:
         api_keys_existing = _existing_columns(inspector, "api_keys")
         api_keys_additions = {
             "secret_token": "VARCHAR(120) NULL",
+            "reserved_supplier_search": "INTEGER DEFAULT 0",
+            "reserved_exact_product": "INTEGER DEFAULT 0",
+            "reserved_procurement_report": "INTEGER DEFAULT 0",
+            "allowed_price_monitoring": "BOOLEAN DEFAULT 0",
+            "quota_price_monitoring": "INTEGER DEFAULT 0",
+            "spent_price_monitoring": "INTEGER DEFAULT 0",
+            "reserved_price_monitoring": "INTEGER DEFAULT 0",
         }
         for column, definition in api_keys_additions.items():
             if api_keys_existing and column not in api_keys_existing:
                 connection.execute(text(f"ALTER TABLE api_keys ADD COLUMN {column} {definition}"))
+        # Hashes are sufficient for authentication.  Remove legacy plaintext
+        # secrets without rotating or invalidating existing API keys.
+        if api_keys_existing and "secret_token" in api_keys_existing:
+            connection.execute(text("UPDATE api_keys SET secret_token = NULL WHERE secret_token IS NOT NULL"))
+        api_operations_existing = _existing_columns(inspector, "api_operations")
+        if api_operations_existing and "job_ids_json" not in api_operations_existing:
+            connection.execute(text("ALTER TABLE api_operations ADD COLUMN job_ids_json TEXT DEFAULT '[]'"))
         tariff_packages_existing = _existing_columns(inspector, "tariff_packages")
         tariff_package_additions = {
             "bonus_kopeks": "INTEGER DEFAULT 0",
@@ -534,51 +550,6 @@ def _ensure_default_tariffs() -> None:
                     )
                 )
             db.commit()
-    finally:
-        db.close()
-
-
-def _ensure_master_api_key() -> None:
-    from .models import ApiKey
-    import hashlib
-    import secrets
-
-    Session = sessionmaker(bind=engine)
-    db = Session()
-    try:
-        master = db.query(ApiKey).filter(ApiKey.is_admin == True, ApiKey.is_active == True).first()
-        if not master:
-            raw_key = f"tl_admin_{secrets.token_urlsafe(32)}"
-            key_hash = hashlib.sha256(raw_key.strip().encode("utf-8")).hexdigest()
-            key_prefix = f"{raw_key[:12]}...{raw_key[-4:]}"
-            master = ApiKey(
-                key_hash=key_hash,
-                key_prefix=key_prefix,
-                secret_token=raw_key,
-                name="Главный Master-ключ Администратора",
-                is_admin=True,
-                is_active=True,
-                allowed_supplier_search=True,
-                allowed_exact_product=True,
-                allowed_procurement_report=True,
-                quota_supplier_search=999999,
-                quota_exact_product=999999,
-                quota_procurement_report=999999,
-                rate_limit_per_minute=120,
-                notes="Мастер-ключ с полным безлимитным доступом ко всем модулям TenderLex",
-            )
-            db.add(master)
-            db.commit()
-        elif not master.secret_token:
-            raw_key = f"tl_admin_{secrets.token_urlsafe(32)}"
-            key_hash = hashlib.sha256(raw_key.strip().encode("utf-8")).hexdigest()
-            key_prefix = f"{raw_key[:12]}...{raw_key[-4:]}"
-            master.key_hash = key_hash
-            master.key_prefix = key_prefix
-            master.secret_token = raw_key
-            db.commit()
-    except Exception:
-        db.rollback()
     finally:
         db.close()
 

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import formataddr
+from urllib.parse import quote
 
 import httpx
 from fastapi import Depends, HTTPException, Request, Response, status
@@ -27,6 +28,8 @@ from .models import (
     Client,
     ClientTelegramAccount,
     WebEmailVerificationToken,
+    WebPasswordResetRequest,
+    WebPasswordResetToken,
     WebSession,
     WebUser,
     new_id,
@@ -235,6 +238,34 @@ def email_verification_url(token: str, *, public_base_url: str = "") -> str:
     return f"{base_url}/api/customer/auth/verify-email/confirm?token={token}"
 
 
+def create_password_reset_token(
+    db: Session,
+    user: WebUser,
+    *,
+    request: Request | object | None = None,
+) -> tuple[str, WebPasswordResetToken]:
+    token = secrets.token_urlsafe(48)
+    headers = getattr(request, "headers", {}) or {}
+    client = getattr(request, "client", None)
+    record = WebPasswordResetToken(
+        user_id=user.id,
+        email=user.email,
+        token_hash=_token_hash(token),
+        requested_ip=str(getattr(client, "host", "") or "")[:80],
+        user_agent=str(headers.get("user-agent", ""))[:1000] if hasattr(headers, "get") else "",
+        expires_at=now_utc() + timedelta(hours=2),
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return token, record
+
+
+def password_reset_url(token: str, *, public_base_url: str = "") -> str:
+    base_url = str(public_base_url or config.public_base_url or "https://tenderlex.ru").strip().rstrip("/")
+    return f"{base_url}/cabinet?reset_token={quote(token, safe='')}"
+
+
 def _verification_sender_name() -> str:
     return str(config.email_from_name or "TenderLex").strip() or "TenderLex"
 
@@ -392,6 +423,136 @@ def send_email_verification(
     if _send_email_verification_via_relay(user, subject, html_body):
         return True
     return _send_email_verification_via_smtp(user, subject, text_body, html_body)
+
+
+def _password_reset_email_text(link: str) -> str:
+    return "\n".join(
+        [
+            "Здравствуйте!",
+            "",
+            "Вы запросили сброс пароля для входа в личный кабинет сервиса TenderLex.",
+            "Для установки нового пароля перейдите по ссылке:",
+            link,
+            "",
+            "Ссылка действительна в течение 2 часов.",
+            "Если вы не запрашивали сброс пароля, просто проигнорируйте это письмо — ваш пароль останется прежним.",
+            "",
+            "— Команда TenderLex (https://tenderlex.ru)",
+        ]
+    )
+
+
+def _password_reset_email_html(link: str) -> str:
+    safe_link = html_lib.escape(link, quote=True)
+    return (
+        '<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
+        '<title>Сброс пароля TenderLex</title></head>'
+        '<body style="margin:0;padding:0;background:#ffffff;font-family:Arial,Helvetica,sans-serif;color:#1e293b;">'
+        '<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">'
+        '<tr><td align="center" style="padding:16px 8px;">'
+        '<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:580px;border-collapse:collapse;text-align:left;">'
+        '<tr><td style="padding-bottom:12px;border-bottom:2px solid #0f766e;">'
+        '<div style="font-size:22px;font-weight:bold;color:#0f766e;line-height:1.2;">TenderLex</div>'
+        '<div style="font-size:12px;color:#64748b;margin-top:2px;">Сервис подбора поставщиков и анализа ТЗ</div>'
+        '</td></tr>'
+        '<tr><td style="padding-top:16px;padding-bottom:8px;">'
+        '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Восстановление доступа к кабинету</div>'
+        '</td></tr>'
+        '<tr><td style="padding-bottom:8px;">'
+        '<div style="font-size:14px;line-height:1.5;color:#334155;">Здравствуйте!</div>'
+        '</td></tr>'
+        '<tr><td style="padding-bottom:18px;">'
+        '<div style="font-size:14px;line-height:1.5;color:#334155;">Вы запросили сброс пароля для входа в кабинет <b>TenderLex</b>. '
+        'Нажмите кнопку ниже, чтобы задать новый пароль:</div>'
+        '</td></tr>'
+        '<tr><td align="center" style="padding-bottom:18px;">'
+        '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
+        '<tr><td align="center" bgcolor="#0f766e" style="border-radius:8px;">'
+        f'<a href="{safe_link}" target="_blank" style="display:inline-block;padding:12px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:8px;line-height:1.2;text-align:center;">Задать новый пароль</a>'
+        '</td></tr></table>'
+        '</td></tr>'
+        '<tr><td style="padding-bottom:14px;">'
+        '<div style="background-color:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 12px;">'
+        '<div style="font-size:11px;color:#64748b;margin-bottom:4px;font-weight:bold;">Прямая ссылка для перехода:</div>'
+        f'<a href="{safe_link}" target="_blank" style="color:#0f766e;font-size:11px;line-height:1.4;word-break:break-all;font-family:monospace;text-decoration:underline;">{safe_link}</a>'
+        '</div></td></tr>'
+        '<tr><td style="padding-bottom:4px;">'
+        '<div style="font-size:11px;color:#64748b;line-height:1.4;">• Ссылка действительна в течение 2 часов.</div>'
+        '</td></tr>'
+        '<tr><td style="padding-bottom:16px;">'
+        '<div style="font-size:11px;color:#94a3b8;line-height:1.4;">• Если вы не запрашивали сброс пароля на сайте <a href="https://tenderlex.ru" target="_blank" style="color:#64748b;text-decoration:none;">tenderlex.ru</a>, просто проигнорируйте это письмо — ваш аккаунт в безопасности.</div>'
+        '</td></tr>'
+        '<tr><td style="border-top:1px solid #e2e8f0;padding-top:12px;">'
+        '<div style="font-size:11px;color:#94a3b8;line-height:1.4;">© TenderLex • Сервис снабжения и аудита 44-ФЗ / 223-ФЗ • <a href="https://tenderlex.ru" target="_blank" style="color:#0f766e;text-decoration:none;font-weight:bold;">tenderlex.ru</a></div>'
+        '</td></tr></table>'
+        '</td></tr></table></body></html>'
+    )
+
+
+def send_password_reset_email(
+    user: WebUser,
+    token: str,
+    *,
+    public_base_url: str = "",
+) -> bool:
+    link = password_reset_url(token, public_base_url=public_base_url)
+    subject = "Восстановление доступа к TenderLex"
+    text_body = _password_reset_email_text(link)
+    html_body = _password_reset_email_html(link)
+    if _send_email_verification_via_relay(user, subject, html_body):
+        return True
+    return _send_email_verification_via_smtp(user, subject, text_body, html_body)
+
+
+def verify_and_consume_password_reset_token(db: Session, token: str, new_password: str) -> WebUser:
+    clean_pass = str(new_password or "").strip()
+    if len(clean_pass) < 8:
+        raise ValueError("Пароль должен содержать не менее 8 символов.")
+    if len(clean_pass) > 256:
+        raise ValueError("Пароль слишком длинный.")
+
+    record = db.query(WebPasswordResetToken).filter(WebPasswordResetToken.token_hash == _token_hash(token)).first()
+    if not record or record.used_at is not None:
+        raise ValueError("Ссылка сброса пароля недействительна или уже была использована.")
+    if _as_aware_utc(record.expires_at) < now_utc():
+        raise ValueError("Срок действия ссылки сброса пароля истёк. Запросите сброс ещё раз.")
+    user = record.user
+    if not user or not user.is_active:
+        raise ValueError("Пользователь не найден или отключён.")
+
+    user.password_hash = hash_password(clean_pass)
+    now = now_utc()
+    record.used_at = now
+
+    # Invalidate existing sessions
+    db.query(WebSession).filter(WebSession.user_id == user.id, WebSession.revoked_at.is_(None)).update(
+        {WebSession.revoked_at: now},
+        synchronize_session=False,
+    )
+    # Also mark all other reset tokens for this user as used
+    db.query(WebPasswordResetToken).filter(
+        WebPasswordResetToken.user_id == user.id,
+        WebPasswordResetToken.used_at.is_(None),
+    ).update({WebPasswordResetToken.used_at: now}, synchronize_session=False)
+
+    # Also resolve any open WebPasswordResetRequest
+    db.query(WebPasswordResetRequest).filter(
+        WebPasswordResetRequest.user_id == user.id,
+        WebPasswordResetRequest.status == "open",
+    ).update(
+        {
+            WebPasswordResetRequest.status: "completed",
+            WebPasswordResetRequest.resolved_by: "self_service",
+            WebPasswordResetRequest.resolved_at: now,
+            WebPasswordResetRequest.admin_note: "Сброшен клиентом по ссылке из email",
+        },
+        synchronize_session=False,
+    )
+
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 def _as_aware_utc(value: datetime) -> datetime:

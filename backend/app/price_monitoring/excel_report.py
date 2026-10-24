@@ -13,9 +13,152 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .cleaner import extract_generic_nomenclature_codes, is_closed_factory_drawing
 from .models import ItemPriceResult, SupplierQuote
 
 logger = logging.getLogger(__name__)
+
+
+def _source_position_note(item: ItemPriceResult) -> str:
+    note = [f"Позиция исходного перечня: {item.source_position_no or item.row_number}"]
+    for label, value in (("ID", item.position_id), ("Файл", item.source_file), ("Лист", item.source_sheet),
+                         ("Строка", item.source_row), ("Количество", item.quantity)):
+        if value:
+            note.append(f"{label}: {value}")
+    note.extend(f"{requirement.get('param_name')}: {requirement.get('tz_requirement')}" for requirement in item.requirements)
+    return "\n".join(note)
+
+
+FOREIGN_BRANDS_PATTERN = re.compile(
+    r'\b(?:vestas|yokogawa|rosemount|emerson|endress|siemens|schneider|abb|rexroth|bosch|danfoss|festo|vega|vegason|fanuc|omron|wika|krohne|honeywell|trafag|bgb|fisher|swagelok|parker|allen\s*bradley|mitsubishi|valmet)\b',
+    re.I,
+)
+
+CYRILLIC_DRAWING_PATTERN = re.compile(
+    r'(?:\b(?:черт|по\s*черт|чертеж|кд|сборочн|опросн)\S*|(?:\d+[А-ЯЁ]{1,4}|[А-ЯЁ]{1,4})\.\d{2,}(?:\.\d+)+(?:-\d+)?)',
+    re.I,
+)
+
+
+def _missing_price_status_and_note(item: ItemPriceResult) -> tuple[str, str]:
+    """
+    Определяет точную, объективную причину отсутствия открытой цены для клиента,
+    чтобы исключить ложное ощущение ошибки системы:
+    1. Заводские закрытые чертежи / специзделия.
+    2. Санкционное / сложное импортное пром. оборудование (поставка под заказ).
+    3. Разброс цен / высокая вариация по ст. 22 44-ФЗ (V > 33%).
+    4. Рынок закрытых КП (товары продаются только по выставлению счетов).
+    5. Редкая номенклатура без поисковых совпадений.
+    """
+    if item.status == "error":
+        return (
+            "Ошибка обработки позиции; требуется повторный поиск",
+            "Технический сбой при обработке страницы поставщика. Рекомендуется перезапустить поиск.",
+        )
+
+    # 0. Если реальная причина сформулирована искусственным интеллектом для этой позиции:
+    ai_reason = (
+        getattr(item, "ai_reason", "")
+        or (getattr(item, "search_diagnostics", {}) or {}).get("ai_reason", "")
+    )
+    if ai_reason and len(ai_reason.strip()) >= 10:
+        clean_ai = ai_reason.strip()
+        return (clean_ai, clean_ai)
+
+    # 1. Вариация цен превысила порог сопоставимости 44-ФЗ
+    if (
+        any(q.price_rub > 0 and q.is_outlier for q in item.quotes)
+        or item.status == "divergent"
+        or getattr(item, "not_found_reason", "") == "high_variation"
+    ):
+        return (
+            "Цены не образуют сопоставимую группу (разброс V > 33% по ст. 22 44-ФЗ)",
+            "Найденные рыночные предложения имеют ценовой разброс более 33%. По требованиям ст. 22 44-ФЗ совокупность цен признана неоднородной и не может использоваться для расчета НМЦК без уточнения характеристик.",
+        )
+
+    # 2. Индивидуальные заводские чертежи и децимальные номера
+    codes = extract_generic_nomenclature_codes(item.clean_name)
+    has_drawing = (
+        any(is_closed_factory_drawing(c, item.clean_name) for c in codes)
+        or bool(CYRILLIC_DRAWING_PATTERN.search(item.raw_name))
+        or bool(CYRILLIC_DRAWING_PATTERN.search(item.clean_name))
+    )
+    if has_drawing:
+        return (
+            "Специзделие по чертежу завода: открытый прайс отсутствует (заказ на завод)",
+            "Позиция изготавливается по индивидуальному заводскому чертежу (КД / децимальный номер). В открытом интернет-доступе розничные и оптовые цены отсутствуют. Рекомендация: направить официальный запрос КП на завод-изготовитель.",
+        )
+
+    # 3. Сложное импортное промышленное оборудование / КИПиА
+    if FOREIGN_BRANDS_PATTERN.search(item.raw_name) or FOREIGN_BRANDS_PATTERN.search(item.clean_name):
+        return (
+            "Импортное пром. оборудование: открытый прайс отсутствует (поставка под заказ)",
+            "Сложное промышленное оборудование зарубежного производства. В открытых источниках РФ прайс-листы заблокированы или поставляются по спецзаказу/опросным листам (статус «По запросу»). Рекомендация: запросить КП у специализированных дистрибьюторов параллельного импорта.",
+        )
+
+    reason = getattr(item, "not_found_reason", "")
+    if reason in {"budget", "budget_exhausted"}:
+        return (
+            "Цена не найдена: исчерпан лимит поиска",
+            "Позиция исследована по максимально допустимому числу источников (исчерпан лимит поиска). В открытом доступе цены не подтверждены.",
+        )
+
+    diag = getattr(item, "search_diagnostics", {}) or {}
+    search_results = diag.get("search_results", 0)
+
+    # 4. Редкая номенклатура без поисковых совпадений
+    if search_results == 0 or getattr(item, "not_found_reason", "") == "no_results":
+        return (
+            "Позиция не найдена в поисковой выдаче (редкая/архивная номенклатура)",
+            "В поисковых системах не найдено активных страниц поставщиков с данным наименованием. Рекомендуется проверить корректность маркировки, ГОСТа или наличие опечаток в исходной спецификации.",
+        )
+
+    # 5. Проблемы с сетевым доступом к сайтам
+    if getattr(item, "not_found_reason", "") in {"network", "network_error"}:
+        return (
+            "Источники цен временно недоступны (сетевая ошибка поставщика)",
+            "Сайты обнаруженных поставщиков временно не ответили на запрос каталога. Рекомендуется повторить проверку позже.",
+        )
+
+    # 6. Рынок закрытых КП (поставщики найдены, но на сайтах только «Цена по запросу»)
+    return (
+        "Рынок закрытых КП: поставщики не публикуют прайс (цена только по запросу)",
+        "Товар найден в каталогах поставщиков и производителей, но продается исключительно по индивидуальному выставлению счетов (статус «Цена по запросу» / «Уточнить у менеджера»). Открытых цен в интернет-магазинах нет.",
+    )
+
+
+def _missing_price_status(item: ItemPriceResult) -> str:
+    status, _ = _missing_price_status_and_note(item)
+    return status
+
+
+def _price_sources_status(quotes: list[SupplierQuote]) -> str:
+    count = len(quotes)
+    if count == 1:
+        return "Найдена цена: 1 источник; требуется проверка"
+    if count == 2:
+        return "Найдены цены: 2 источника; мало данных"
+    return f"Найдены цены: {count} источников"
+
+
+def _quote_evidence_note(q: SupplierQuote) -> str:
+    level = {
+        "page_content": "Цена найдена в тексте страницы",
+        "search_snippet": "Источник цены: поисковый сниппет; требуется проверка страницы",
+    }.get(q.evidence_level, "Способ подтверждения источника не указан")
+    return level + (f"; получено: {q.retrieved_at}" if q.retrieved_at else "")
+
+
+def _quote_geo_note(q: SupplierQuote) -> str:
+    status = q.supplier_distance_radius_status
+    source_note = "; расчёт между городами по контактному адресу" if q.supplier_location_source == "contact_address_city" else ""
+    if status == "within_radius":
+        return f"География: {q.supplier_city or 'город указан'}; {q.supplier_distance_km} км, в радиусе{source_note}"
+    if status == "outside_radius":
+        return f"География: {q.supplier_city or 'город указан'}; {q.supplier_distance_km} км, вне радиуса (добор по РФ){source_note}"
+    if status == "unknown_distance":
+        return "География: адрес поставщика не подтверждён; расстояние не определено"
+    return ""
 
 
 def format_short_url(url: str) -> str:
@@ -67,6 +210,10 @@ def _extract_phones_and_emails(contacts: Optional[str]) -> tuple[str, str]:
 
         if "@" in clean_p and "." in clean_p:
             clean_email = re.sub(r'^(?:email[\.:]?|e-mail[\.:]?|эл\.?\s*почта[\.:]?)\s*', '', clean_p, flags=re.IGNORECASE).strip()
+            # Исключаем технические и сервисные адреса (sentry, noreply, mailer-daemon, abuse, postmaster)
+            em_low = clean_email.lower()
+            if any(tech in em_low for tech in ("sentry", "noreply", "no-reply", "mailer-daemon", "postmaster", "abuse")):
+                continue
             emails.append(clean_email)
         elif any(c.isdigit() for c in clean_p) and (len(re.sub(r'\D', '', clean_p)) in (10, 11) or "800" in clean_p or "+7" in clean_p or "tel" in clean_p.lower()):
             clean_phone = re.sub(r'^(?:тел[\.:]?|tel[\.:]?|телефон[\.:]?)\s*', '', clean_p, flags=re.IGNORECASE).strip()
@@ -109,12 +256,18 @@ def _build_cell_comment(q: SupplierQuote, item_unit: str) -> Comment:
         lines.append(f"Пересчет: {q.conversion_comment}")
     if q.comment:
         lines.append(f"Примечание: {q.comment}")
+    geo_note = _quote_geo_note(q)
+    if geo_note:
+        lines.append(geo_note)
+    lines.append(_quote_evidence_note(q))
+    if q.source_excerpt:
+        lines.append(f"Фрагмент источника: {q.source_excerpt}")
     lines.append(f"Полная ссылка: {q.url}")
 
     text = "\n".join(lines)
     comm = Comment(text, "TenderLex")
     comm.width = 380
-    comm.height = 140
+    comm.height = 240
     return comm
 
 
@@ -133,39 +286,63 @@ def generate_price_monitoring_excel(
     """
     wb = Workbook()
 
-    # --- ЛИСТ 1: 'Пример отчета' по шаблону заказчика ---
+    # --- ЛИСТ 1: Сводный расчет НМЦК (по шаблону заказчика 'Пример отчета') ---
     ws = wb.active
     ws.title = "Пример отчета"
 
-    # Стили
-    font_calibri_bold = Font(name="Calibri", size=11, bold=True)
-    font_calibri_regular = Font(name="Calibri", size=11)
-    font_header_bold = Font(name="Calibri", size=10, bold=True)
-    font_header_regular = Font(name="Calibri", size=10)
-    font_link = Font(name="Calibri", size=10, color="0563C1", underline="single")
-    font_price_bold = Font(name="Calibri", size=11, bold=True, color="166534")
+    # Стили - Премиальная палитра Slate & Emerald
+    font_calibri_bold = Font(name="Calibri", size=11, bold=True, color="0F172A")
+    font_calibri_regular = Font(name="Calibri", size=11, color="1E293B")
+    font_main_hdr = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    font_sub_hdr_white = Font(name="Calibri", size=9, color="F8FAFC")
+    font_col_name = Font(name="Calibri", size=10, bold=True, color="0F172A")
+    font_col_src = Font(name="Calibri", size=10, bold=True, color="475569")
+    font_summary_hdr = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    font_link = Font(name="Calibri", size=10, color="2563EB", underline="single")
+    font_price_bold = Font(name="Calibri", size=11, bold=True, color="047857")
+    font_summary_min = Font(name="Calibri", size=11, bold=True, color="047857")
+    font_summary_avg = Font(name="Calibri", size=11, bold=True, color="065F46")
+    font_summary_var = Font(name="Calibri", size=10, bold=True, color="065F46")
     font_price_outlier = Font(name="Calibri", size=11, bold=True, color="B45309")
+    font_missing_badge = Font(name="Calibri", size=10, italic=True, color="64748B")
     font_rich_regular = InlineFont(rFont="Calibri", sz=10, color="1E293B")
-    font_rich_link = InlineFont(rFont="Calibri", sz=10, color="0563C1", u="single")
+    font_rich_link = InlineFont(rFont="Calibri", sz=10, color="2563EB", u="single")
 
     thin_border = Border(
-        left=Side(style="thin", color="D9D9D9"),
-        right=Side(style="thin", color="D9D9D9"),
-        top=Side(style="thin", color="D9D9D9"),
-        bottom=Side(style="thin", color="D9D9D9"),
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
     )
-    header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-    sup_header_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    summary_border = Border(
+        left=Side(style="thin", color="A7F3D0"),
+        right=Side(style="thin", color="A7F3D0"),
+        top=Side(style="thin", color="A7F3D0"),
+        bottom=Side(style="thin", color="A7F3D0"),
+    )
+
+    hdr_dark_slate = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    hdr_slate_700 = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
+    hdr_slate_600 = PatternFill(start_color="475569", end_color="475569", fill_type="solid")
+    hdr_slate_500 = PatternFill(start_color="64748B", end_color="64748B", fill_type="solid")
+    hdr_col_fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+    hdr_summary_fill = PatternFill(start_color="064E3B", end_color="064E3B", fill_type="solid")
+    summary_data_fill = PatternFill(start_color="F0FDF4", end_color="F0FDF4", fill_type="solid")
+    missing_badge_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
 
     align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     align_left = Alignment(horizontal="left", vertical="center", wrap_text=True)
     align_right = Alignment(horizontal="right", vertical="center")
 
+    # Закрепление областей (Freeze Panes): строки 1-4 и колонки A-B зафиксированы при прокрутке
+    ws.freeze_panes = "C5"
+
     # Колонки A и B
     ws.merge_cells("A1:A4")
     cell_a = ws["A1"]
     cell_a.value = "Номенклатура"
-    cell_a.font = font_calibri_bold
+    cell_a.font = font_main_hdr
+    cell_a.fill = hdr_dark_slate
     cell_a.alignment = align_center
     if delivery_city:
         clean_city = str(delivery_city).strip()
@@ -178,7 +355,8 @@ def generate_price_monitoring_excel(
     ws.merge_cells("B1:B4")
     cell_b = ws["B1"]
     cell_b.value = "Ед. изм."
-    cell_b.font = font_calibri_bold
+    cell_b.font = font_main_hdr
+    cell_b.fill = hdr_dark_slate
     cell_b.alignment = align_center
 
     # Определяем основных поставщиков по массиву позиций
@@ -233,42 +411,51 @@ def generate_price_monitoring_excel(
                 inn_parts.append(f"КПП {sup_quote.kpp}")
             inn_kpp_text = " / ".join(inn_parts) if inn_parts else "ИНН: уточняется"
             contacts_text = _format_contacts_multiline(sup_quote.contacts)
+
+            # Строка 1: Поставщик N (наименование)
+            ws.merge_cells(f"{col_start_let}1:{col_end_let}1")
+            cell_sup = ws[f"{col_start_let}1"]
+            cell_sup.value = sup_name_text
+            cell_sup.font = font_main_hdr
+            cell_sup.fill = hdr_slate_700
+            cell_sup.alignment = align_center
+
+            # Строка 2: ИНН/КПП
+            ws.merge_cells(f"{col_start_let}2:{col_end_let}2")
+            cell_inn = ws[f"{col_start_let}2"]
+            cell_inn.value = inn_kpp_text
+            cell_inn.font = font_sub_hdr_white
+            cell_inn.fill = hdr_slate_600
+            cell_inn.alignment = align_center
+
+            # Строка 3: контакты
+            ws.merge_cells(f"{col_start_let}3:{col_end_let}3")
+            cell_cont = ws[f"{col_start_let}3"]
+            cell_cont.value = contacts_text
+            cell_cont.font = font_sub_hdr_white
+            cell_cont.fill = hdr_slate_500
+            cell_cont.alignment = align_center
         else:
-            sup_name_text = f"Поставщик {s_idx} ( наименование )"
-            inn_kpp_text = "ИНН/КПП"
-            contacts_text = "контакты"
+            # Когда поставщики меняются в каждой строке, объединяем строки 1..3 в единый цельный стильный блок
+            ws.merge_cells(f"{col_start_let}1:{col_end_let}3")
+            cell_sup = ws[f"{col_start_let}1"]
+            cell_sup.value = f"Поставщик {s_idx}"
+            cell_sup.font = font_main_hdr
+            cell_sup.fill = hdr_slate_700
+            cell_sup.alignment = align_center
 
-        # Строка 1: Поставщик N (наименование)
-        ws.merge_cells(f"{col_start_let}1:{col_end_let}1")
-        cell_sup = ws[f"{col_start_let}1"]
-        cell_sup.value = sup_name_text
-        cell_sup.font = font_header_bold
-        cell_sup.alignment = align_center
-
-        # Строка 2: ИНН/КПП
-        ws.merge_cells(f"{col_start_let}2:{col_end_let}2")
-        cell_inn = ws[f"{col_start_let}2"]
-        cell_inn.value = inn_kpp_text
-        cell_inn.font = font_header_regular
-        cell_inn.alignment = align_center
-
-        # Строка 3: контакты
-        ws.merge_cells(f"{col_start_let}3:{col_end_let}3")
-        cell_cont = ws[f"{col_start_let}3"]
-        cell_cont.value = contacts_text
-        cell_cont.font = font_header_regular
-        cell_cont.alignment = align_center
-
-        # Строка 4: Цена руб./ед.
+        # Строка 4: Цена, руб./ед.
         cell_p = ws[f"{col_start_let}4"]
-        cell_p.value = "Цена руб./ед."
-        cell_p.font = font_header_bold
+        cell_p.value = "Цена, руб./ед."
+        cell_p.font = font_col_name
+        cell_p.fill = hdr_col_fill
         cell_p.alignment = align_center
 
         # Строка 4: источник (ссылка)
         cell_src = ws[f"{col_end_let}4"]
-        cell_src.value = "источник (ссылка)"
-        cell_src.font = font_header_regular
+        cell_src.value = "Поставщик / ссылка"
+        cell_src.font = font_col_src
+        cell_src.fill = hdr_col_fill
         cell_src.alignment = align_center
 
     # Сводные колонки: Мин. цена, Средняя цена и Коэффициент вариации
@@ -282,31 +469,34 @@ def generate_price_monitoring_excel(
     ws.merge_cells(f"{col_min_let}1:{col_min_let}4")
     cell_min_hdr = ws[f"{col_min_let}1"]
     cell_min_hdr.value = "Мин. цена, руб."
-    cell_min_hdr.font = font_calibri_bold
+    cell_min_hdr.font = font_summary_hdr
+    cell_min_hdr.fill = hdr_summary_fill
     cell_min_hdr.alignment = align_center
 
     ws.merge_cells(f"{col_avg_let}1:{col_avg_let}4")
     cell_avg_hdr = ws[f"{col_avg_let}1"]
     cell_avg_hdr.value = "Средняя цена, руб."
-    cell_avg_hdr.font = font_calibri_bold
+    cell_avg_hdr.font = font_summary_hdr
+    cell_avg_hdr.fill = hdr_summary_fill
     cell_avg_hdr.alignment = align_center
 
     ws.merge_cells(f"{col_var_let}1:{col_var_let}4")
     cell_var_hdr = ws[f"{col_var_let}1"]
-    cell_var_hdr.value = "Коэффициент вариации"
-    cell_var_hdr.font = font_calibri_bold
+    cell_var_hdr.value = "Коэфф. вариации (V)"
+    cell_var_hdr.font = font_summary_hdr
+    cell_var_hdr.fill = hdr_summary_fill
     cell_var_hdr.alignment = align_center
 
-    # Применяем границы и фон к заголовкам
+    # Применяем границы ко всем ячейкам шапки
     max_col = col_var_idx
     for r in range(1, 5):
         for c in range(1, max_col + 1):
             cell = ws.cell(row=r, column=c)
             cell.border = thin_border
-            if r == 4 or c <= 2 or c >= col_min_idx:
-                cell.fill = header_fill
-            else:
-                cell.fill = sup_header_fill
+            if c <= 2:
+                cell.fill = hdr_dark_slate
+            elif c >= col_min_idx:
+                cell.fill = hdr_summary_fill
 
     # Список колонок с ценами для формул MIN и AVERAGE
     price_col_letters = [get_column_letter(3 + (s - 1) * 2) for s in range(1, max_suppliers + 1)]
@@ -314,30 +504,38 @@ def generate_price_monitoring_excel(
     # Заполняем строки данными
     current_row = 5
     for item in items:
+        row_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid") if (current_row % 2 == 1) else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
         # A: Номенклатура
         cell_nom = ws.cell(row=current_row, column=1, value=item.raw_name)
+        cell_nom.comment = Comment(_source_position_note(item), "TenderLex")
         cell_nom.font = font_calibri_regular
         cell_nom.alignment = align_left
         cell_nom.border = thin_border
+        cell_nom.fill = row_fill
 
         # B: Ед. изм.
         cell_unit = ws.cell(row=current_row, column=2, value=item.unit)
         cell_unit.font = font_calibri_regular
         cell_unit.alignment = align_center
         cell_unit.border = thin_border
+        cell_unit.fill = row_fill
 
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
 
         if not display_quotes:
-            # Честно отражаем отсутствие товара в открытых источниках без выдуманных цен
-            cell_p1 = ws.cell(row=current_row, column=3, value="-")
+            missing_label, _ = _missing_price_status_and_note(item)
+
+            cell_p1 = ws.cell(row=current_row, column=3, value="По запросу")
             cell_p1.border = thin_border
             cell_p1.alignment = align_center
-            cell_p1.font = font_calibri_regular
+            cell_p1.font = Font(name="Calibri", size=10, bold=True, color="64748B")
+            cell_p1.fill = row_fill
 
-            cell_l1 = ws.cell(row=current_row, column=4, value="В открытых источниках цена отсутствует (заказная позиция / по чертежу)")
+            cell_l1 = ws.cell(row=current_row, column=4, value=missing_label)
             cell_l1.border = thin_border
-            cell_l1.font = Font(name="Calibri", size=10, italic=True, color="64748B")
+            cell_l1.font = font_calibri_regular
+            cell_l1.fill = missing_badge_fill
             cell_l1.alignment = align_left
 
             for s_idx in range(2, max_suppliers + 1):
@@ -345,15 +543,20 @@ def generate_price_monitoring_excel(
                 col_end = col_start + 1
                 c_p = ws.cell(row=current_row, column=col_start, value="")
                 c_p.border = thin_border
+                c_p.fill = row_fill
                 c_l = ws.cell(row=current_row, column=col_end, value="")
                 c_l.border = thin_border
+                c_l.fill = row_fill
 
             cell_min = ws.cell(row=current_row, column=col_min_idx, value="")
-            cell_min.border = thin_border
+            cell_min.border = summary_border
+            cell_min.fill = summary_data_fill
             cell_avg = ws.cell(row=current_row, column=col_avg_idx, value="")
-            cell_avg.border = thin_border
+            cell_avg.border = summary_border
+            cell_avg.fill = summary_data_fill
             cell_var = ws.cell(row=current_row, column=col_var_idx, value="")
-            cell_var.border = thin_border
+            cell_var.border = summary_border
+            cell_var.fill = summary_data_fill
 
             current_row += 1
             continue
@@ -366,10 +569,12 @@ def generate_price_monitoring_excel(
             cell_price = ws.cell(row=current_row, column=col_start)
             cell_price.border = thin_border
             cell_price.alignment = align_right
+            cell_price.fill = row_fill
 
             cell_link = ws.cell(row=current_row, column=col_end)
             cell_link.border = thin_border
             cell_link.alignment = align_left
+            cell_link.fill = row_fill
 
             if s_idx <= len(display_quotes):
                 q = display_quotes[s_idx - 1]
@@ -396,6 +601,9 @@ def generate_price_monitoring_excel(
                 runs: list[TextBlock] = []
                 line1 = c_display + (f" | ИНН {q.inn}" if q.inn else "")
                 header_text = line1 + "\n"
+                if q.supplier_city:
+                    dist_info = f" (~{q.supplier_distance_km} км)" if q.supplier_distance_km is not None else ""
+                    header_text += f"📍 {q.supplier_city}{dist_info}\n"
                 if phone_str:
                     header_text += phone_str + "\n"
                 runs.append(TextBlock(font_rich_regular, header_text))
@@ -410,10 +618,9 @@ def generate_price_monitoring_excel(
                 if q.url.startswith("http"):
                     cell_link.hyperlink = q.url
 
-                # Формируем информативную всплывающую подсказку в ячейке
+                # Формируем информативную всплывающую подсказку только на источнике (без дублирования на цену)
                 comment_obj = _build_cell_comment(q, item.unit)
                 cell_link.comment = comment_obj
-                cell_price.comment = comment_obj
             else:
                 cell_price.value = ""
                 cell_link.value = ""
@@ -426,27 +633,31 @@ def generate_price_monitoring_excel(
         ]
 
         cell_min = ws.cell(row=current_row, column=col_min_idx)
-        cell_min.border = thin_border
+        cell_min.border = summary_border
+        cell_min.fill = summary_data_fill
         cell_min.alignment = align_right
         cell_min.number_format = "#,##0.00"
-        cell_min.font = font_price_bold
+        cell_min.font = font_summary_min
 
         cell_avg = ws.cell(row=current_row, column=col_avg_idx)
-        cell_avg.border = thin_border
+        cell_avg.border = summary_border
+        cell_avg.fill = summary_data_fill
         cell_avg.alignment = align_right
         cell_avg.number_format = "#,##0.00"
-        cell_avg.font = font_calibri_bold
+        cell_avg.font = font_summary_avg
 
         cell_var = ws.cell(row=current_row, column=col_var_idx)
-        cell_var.border = thin_border
+        cell_var.border = summary_border
+        cell_var.fill = summary_data_fill
         cell_var.alignment = align_center
-        cell_var.font = font_calibri_regular
+        cell_var.font = font_summary_var
+        cell_var.number_format = "0.0%"
 
         if clean_col_letters:
             args_str = ",".join(f"{col_let}{current_row}" for col_let in clean_col_letters)
             cell_min.value = f"=MIN({args_str})"
             cell_avg.value = f"=AVERAGE({args_str})"
-            cell_var.value = f'=_xlfn.IFS(COUNTA({args_str})>=3,_xlfn.STDEV.S({args_str})/AVERAGE({args_str})*100,COUNTA({args_str})<3,"недостаточно данных")'
+            cell_var.value = f'=_xlfn.IFS(COUNTA({args_str})>=3,_xlfn.STDEV.S({args_str})/{cell_avg.coordinate},COUNTA({args_str})<3,"мало данных")'
         else:
             cell_min.value = ""
             cell_avg.value = ""
@@ -455,22 +666,22 @@ def generate_price_monitoring_excel(
         current_row += 1
 
     # Настройка высоты строк шапки
-    ws.row_dimensions[1].height = 28  # Поставщик N
-    ws.row_dimensions[2].height = 22  # ИНН / КПП
-    ws.row_dimensions[3].height = 36  # Контакты
-    ws.row_dimensions[4].height = 24  # Заголовки колонок "Цена руб./ед.", "источник (ссылка)"
+    ws.row_dimensions[1].height = 24  # Поставщик N
+    ws.row_dimensions[2].height = 18  # ИНН / КПП
+    ws.row_dimensions[3].height = 24  # Контакты
+    ws.row_dimensions[4].height = 26  # Заголовки колонок "Цена, руб./ед.", "Поставщик / ссылка"
 
     # Динамическая подгонка высоты строк под фактический объем текста (исключает обрезание контактов и ссылок)
     for r in range(5, current_row):
         max_lines_in_row = 1
 
-        # Колонка A (Номенклатура, ширина 48)
+        # Колонка A (Номенклатура, ширина 46)
         nom_val = str(ws.cell(row=r, column=1).value or "").strip()
         if nom_val:
             nom_lines = sum(max(1, (len(p) + 41) // 42) for p in nom_val.split("\n"))
             max_lines_in_row = max(max_lines_in_row, nom_lines)
 
-        # Колонки поставщиков (ширина 42)
+        # Колонки поставщиков (ширина 44)
         for s_idx in range(1, max_suppliers + 1):
             col_link_idx = 4 + (s_idx - 1) * 2
             cell_val = str(ws.cell(row=r, column=col_link_idx).value or "").strip()
@@ -481,20 +692,26 @@ def generate_price_monitoring_excel(
         ws.row_dimensions[r].height = max(36, max_lines_in_row * 17 + 10)
 
     # Настройка ширины колонок Листа 1
-    ws.column_dimensions["A"].width = 48
-    ws.column_dimensions["B"].width = 12
+    ws.column_dimensions["A"].width = 46
+    ws.column_dimensions["B"].width = 11
     for s_idx in range(1, max_suppliers + 1):
         col_start_let = get_column_letter(3 + (s_idx - 1) * 2)
         col_end_let = get_column_letter(4 + (s_idx - 1) * 2)
-        ws.column_dimensions[col_start_let].width = 16
-        ws.column_dimensions[col_end_let].width = 42
+        ws.column_dimensions[col_start_let].width = 18
+        ws.column_dimensions[col_end_let].width = 44
 
     ws.column_dimensions[col_min_let].width = 18
     ws.column_dimensions[col_avg_let].width = 18
     ws.column_dimensions[col_var_let].width = 24
 
+    # Включаем автоматический фильтр на Листе 1
+    if current_row > 5:
+        ws.auto_filter.ref = f"A4:{col_var_let}{current_row - 1}"
+
     # --- ЛИСТ 2: Подробный детализированный реестр для закупщика/1С ---
     ws2 = wb.create_sheet(title="Детализированный реестр")
+    ws2.freeze_panes = "C2"
+
     headers_reg = ["№", "Номенклатура", "Ед. изм. заявки", "Статус", "Мин. цена (руб)"]
     for s_idx in range(1, max_suppliers + 1):
         headers_reg.extend([
@@ -502,6 +719,7 @@ def generate_price_monitoring_excel(
             f"ИНН {s_idx}",
             f"КПП {s_idx}",
             f"Контакты {s_idx}",
+            f"Город и расстояние {s_idx}",
             f"Цена {s_idx} (руб)",
             f"Исходная цена на сайте {s_idx}",
             f"Ед. на сайте {s_idx}",
@@ -512,19 +730,24 @@ def generate_price_monitoring_excel(
     ws2.append(headers_reg)
     for col_idx in range(1, len(headers_reg) + 1):
         cell = ws2.cell(row=1, column=col_idx)
-        cell.font = font_calibri_bold
-        cell.fill = header_fill
+        cell.font = font_main_hdr
+        cell.fill = hdr_dark_slate
         cell.alignment = align_center
         cell.border = thin_border
 
     row_num = 2
     for idx, item in enumerate(items, 1):
+        r_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid") if (row_num % 2 == 1) else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
-        status_text = "Подтверждено" if display_quotes else "В открытых источниках цена отсутствует"
-        best_p = min(q.price_rub for q in display_quotes) if display_quotes else "-"
+        if display_quotes:
+            status_text = _price_sources_status(display_quotes)
+            best_p = min(q.price_rub for q in display_quotes)
+        else:
+            status_text, _ = _missing_price_status_and_note(item)
+            best_p = "По запросу"
 
         row_vals = [
-            idx,
+            item.source_position_no or item.row_number,
             item.raw_name,
             item.unit,
             status_text,
@@ -533,27 +756,40 @@ def generate_price_monitoring_excel(
         for s_idx in range(1, max_suppliers + 1):
             if s_idx <= len(display_quotes):
                 q = display_quotes[s_idx - 1]
+                loc_val = "—"
+                if q.supplier_city and q.supplier_distance_km is not None:
+                    loc_val = f"{q.supplier_city} (~{q.supplier_distance_km} км)"
+                    if q.supplier_distance_radius_status == "outside_radius":
+                        loc_val += " (вне радиуса)"
+                elif q.supplier_city:
+                    loc_val = q.supplier_city
+
                 row_vals.extend([
                     q.company_name or "-",
                     q.inn or "-",
                     q.kpp or "-",
                     q.contacts or "-",
+                    loc_val,
                     q.price_rub if q.price_rub > 0 else "по запросу",
                     q.raw_price_rub if q.raw_price_rub > 0 else "-",
                     q.site_unit or "-",
-                    q.conversion_comment or q.comment or "-",
+                    "; ".join(filter(None, [q.conversion_comment, q.comment, _quote_evidence_note(q)])),
                     q.url,
                 ])
             else:
-                row_vals.extend(["-", "-", "-", "-", "-", "-", "-", "-", "-"])
+                row_vals.extend(["-", "-", "-", "-", "-", "-", "-", "-", "-", "-"])
         ws2.append(row_vals)
+        ws2.cell(row=row_num, column=2).comment = Comment(_source_position_note(item), "TenderLex")
         for col_idx in range(1, len(headers_reg) + 1):
             cell = ws2.cell(row=row_num, column=col_idx)
             cell.font = font_calibri_regular
             cell.border = thin_border
+            cell.fill = r_fill
             if col_idx == 4:
-                cell.font = Font(name="Calibri", bold=True, color="166534" if display_quotes else "64748B")
-            elif col_idx > 5 and (col_idx - 5) % 9 == 0:  # Ссылка
+                strong_sources = len(display_quotes) >= 3 and all(q.evidence_level == "page_content" for q in display_quotes)
+                cell.font = Font(name="Calibri", bold=True, color="047857" if strong_sources else "B45309" if display_quotes else "64748B")
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+            elif col_idx > 5 and (col_idx - 5) % 10 == 0:  # Ссылка
                 val = str(cell.value or "")
                 if val.startswith("http"):
                     cell.hyperlink = val
@@ -561,14 +797,17 @@ def generate_price_monitoring_excel(
         row_num += 1
 
     # Высота и ширина колонок листа 2
-    ws2.row_dimensions[1].height = 26
+    ws2.row_dimensions[1].height = 28
     for r in range(2, row_num):
-        ws2.row_dimensions[r].height = 24
+        ws2.row_dimensions[r].height = 42
     ws2.column_dimensions["A"].width = 6
     ws2.column_dimensions["B"].width = 46
     ws2.column_dimensions["C"].width = 14
-    ws2.column_dimensions["D"].width = 12
+    ws2.column_dimensions["D"].width = 52
     ws2.column_dimensions["E"].width = 18
+
+    if row_num > 2:
+        ws2.auto_filter.ref = f"A1:{get_column_letter(len(headers_reg))}{row_num - 1}"
 
     wb.save(output_path)
     logger.info("Saved price monitoring excel to %s", output_path)

@@ -305,6 +305,10 @@ class MinpromRegistryContext:
     error: str = ""
 
 
+class EmptyProcurementProfileError(RuntimeError):
+    pass
+
+
 SUPPLIER_POLICY_NORMAL = "normal"
 SUPPLIER_POLICY_MINPROM_ONLY = "minprom_registry_only"
 SUPPLIER_POLICY_MINPROM_PRIORITY = "minprom_registry_priority"
@@ -1592,7 +1596,14 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
             )
             profile = _normalize_procurement_profile(parse_json_object(raw))
             return profile
+        except EmptyProcurementProfileError:
+            raise
         except Exception as exc:
+            if isinstance(exc, EmptyProcurementProfileError) or "0 items" in str(exc) or "не найдены" in str(exc):
+                raise EmptyProcurementProfileError(
+                    "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+                    "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров текстом."
+                ) from exc
             last_error = exc
             continue
     raise RuntimeError(f"AI procurement profile extraction failed: {last_error}") from last_error
@@ -1712,19 +1723,26 @@ async def build_supplier_queries(
                     queries = revised
             if delivery_city:
                 nearby = get_cities_within_radius(delivery_city, geo_radius_km or 300)
-                target_items = [it.name for it in profile.items[:3]] if (profile and profile.items) else [_clean_query_item(context[:100])]
+                if profile and profile.items:
+                    items_limit = len(profile.items) if multi_item_mode == 'per_item' else min(6, len(profile.items))
+                    target_items = [it.name for it in profile.items[:items_limit]]
+                else:
+                    target_items = [_clean_query_item(context[:100])]
                 geo_injections = []
                 for item_name in target_items:
-                    clean_it = " ".join(item_name.split()[:4])
-                    geo_injections.append(f"{clean_it} {delivery_city} официальный дилер")
-                    geo_injections.append(f"{clean_it} {delivery_city} купить оптом склад")
+                    clean_it = ' '.join(item_name.split()[:4])
+                    geo_injections.append(f'{clean_it} {delivery_city} официальный дилер')
+                    geo_injections.append(f'{clean_it} {delivery_city} купить оптом склад')
                     for n_city in nearby[:2]:
                         if n_city != delivery_city.lower():
-                            geo_injections.append(f"{clean_it} {n_city} поставщик опт")
+                            geo_injections.append(f'{clean_it} {n_city} поставщик опт')
                 queries = _clean_supplier_queries(geo_injections + queries)
-            max_queries = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == "per_item") else 28
+            base_cap = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == 'per_item') else 28
             if delivery_city:
-                max_queries += 6
+                geo_extra = min(24, 4 * len(target_items)) if (profile and profile.items) else 6
+                max_queries = base_cap + geo_extra
+            else:
+                max_queries = base_cap
             return queries[:max_queries]
         except Exception as exc:
             last_error = exc
@@ -2175,7 +2193,7 @@ async def _discover_suppliers_impl(
         annotate_contacts_radius_status(accepted, delivery_city, geo_radius_km)
         def _final_geo_sort(item: dict):
             within = item.get("supplier_distance_within_radius")
-            rad_rank = 0 if within is True else (1 if within is False else 2)
+            rad_rank = 0 if within is True else (1 if within is None else 2)
             dist = item.get("supplier_distance_km")
             effective_dist = dist if (dist is not None and dist > 0) else 999999
             base_key = _supplier_result_sort_key(item)
@@ -2961,7 +2979,10 @@ normalize_procurement_profile = _normalize_procurement_profile
 def _validate_procurement_profile_response(raw: str) -> None:
     profile = _normalize_procurement_profile(parse_json_object(raw))
     if not profile.items:
-        raise RuntimeError(f"AI returned profile with 0 items (raw keys: {list(parse_json_object(raw).keys())})")
+        raise EmptyProcurementProfileError(
+            "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+            "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров текстом."
+        )
 
 
 def _validate_minprom_requirement_response(raw: str) -> None:
@@ -6018,15 +6039,6 @@ def _deterministic_queries(context: str) -> list[str]:
     phrase_text = " ".join(product_phrases).lower()
     product_has_mine_context = not product_phrases or any(word in phrase_text for word in ("шахт", "горно", "горн", "вгсч"))
     product_has_fire_context = not product_phrases or any(word in phrase_text for word in ("пожар", "рукав", "гм 70", "гм-70"))
-    if "сверло шахтное" in lowered or "сшу" in lowered:
-        queries.extend(
-            [
-                '"Сверло шахтное универсальное" поставщик',
-                '"СШУ-22" "сверло шахтное"',
-                '"СШУ-22" купить',
-                '"сверло шахтное" "пожарных рукавов"',
-            ]
-        )
     if product_has_mine_context and any(word in lowered for word in ("шахт", "горно", "горн")):
         queries.extend(
             [
@@ -6262,56 +6274,16 @@ def _is_strong_product_phrase(phrase: str) -> bool:
         )
     ):
         return False
-    if lowered.startswith("работы") or "швеллер" in lowered:
+    if lowered.startswith("работы"):
         return False
     if len(lowered) > 100 and re.search(r"\bшт\b|кол-во|количество", lowered):
+        return False
+    if re.search(r"\b(?:ооо|пао|зао|ао|ип)\b", lowered):
         return False
     meaningful = [word for word in re.findall(r"[а-яёa-z0-9\-]{5,}", lowered) if word not in _supplier_anchor_stopwords()]
     if len(meaningful) < 2:
         return False
-    return any(
-        marker in lowered
-        for marker in (
-            "система",
-            "контрол",
-            "кабель",
-            "жгут",
-            "измер",
-            "испыт",
-            "приспособ",
-            "рукав",
-            "шахт",
-            "пожар",
-            "трубопровод",
-            "арматур",
-            "датчик",
-            "станок",
-            "установка",
-            "комплекс",
-            "поликарбон",
-            "вермикулит",
-            "оргстекл",
-            "панел",
-            "профил",
-            "свар",
-            "полуавтомат",
-            "скрайб",
-            "скалыв",
-            "холодильн",
-            "камера",
-            "камер",
-            "кладов",
-            "пенообраз",
-            "преобраз",
-            "электролиз",
-            "толкател",
-            "вагонет",
-            "газорегулятор",
-            "гидро",
-            "кальматрон",
-            "ультрабанд",
-        )
-    )
+    return True
 
 
 def _is_generic_supplier_anchor(value: str) -> bool:
@@ -6515,16 +6487,6 @@ def _exact_match_terms(context: str) -> list[str]:
         for code in _exact_codes(context)
         if not re.fullmatch(r"ГМ-\d+", code)
     )
-    lowered_context = context.lower()
-    if "сверло шахтное универсальное" in lowered_context:
-        result.extend(["сверло шахтное универсальное", "сверло шахтное", "сшу-22", "сшу 22"])
-    if "промежуточного подсоединения пожарных рукавов" in lowered_context:
-        result.extend(
-            [
-                "приспособление для промежуточного подсоединения",
-                "промежуточного подсоединения пожарных рукавов",
-            ]
-        )
     return [item for item in dict.fromkeys(re.sub(r"\s+", " ", term).strip(" .,:;") for term in result) if len(item) >= 5]
 
 

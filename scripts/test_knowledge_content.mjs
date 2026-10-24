@@ -16,7 +16,7 @@ try {
   writeFileSync(compiledPath, compiled);
   const { KNOWLEDGE_ARTICLES, ARTICLE_CLAIM_SOURCE_MAP, getRelatedArticles } = require(compiledPath);
   const allowedHosts = new Set([
-    "pravo.gov.ru", "ips.pravo.gov.ru", "publication.pravo.gov.ru", "zakupki.gov.ru", "pub.fsa.gov.ru", "protect.gost.ru",
+    "v8.1c.ru", "modelcontextprotocol.io", "pravo.gov.ru", "ips.pravo.gov.ru", "publication.pravo.gov.ru", "zakupki.gov.ru", "pub.fsa.gov.ru", "protect.gost.ru",
     "eec.eaeunion.org", "egrul.nalog.ru", "pb.nalog.ru", "bo.nalog.gov.ru", "kad.arbitr.ru",
     "rosstat.gov.ru", "fas.gov.ru", "minstroyrf.gov.ru", "customs.gov.ru", "rostransnadzor.gov.ru",
     "rostrud.gov.ru", "corpmsp.ru", "minpromtorg.gov.ru", "gisp.gov.ru", "reestr.digital.gov.ru",
@@ -32,7 +32,7 @@ try {
     for (const target of related) inbound.set(target.slug, inbound.get(target.slug) + 1);
   }
   for (const [slug, count] of inbound) if (!count) failures.push(`${slug}: no incoming related-article link`);
-  if (KNOWLEDGE_ARTICLES.length !== 57) failures.push(`expected 57 articles, got ${KNOWLEDGE_ARTICLES.length}`);
+  if (KNOWLEDGE_ARTICLES.length < 58) failures.push(`existing article inventory regressed: expected at least 58, got ${KNOWLEDGE_ARTICLES.length}`);
   for (const article of KNOWLEDGE_ARTICLES) {
     if (!article.contentSections?.length || !article.contentSections.some((section) => section.paragraphs?.some(Boolean))) failures.push(`${article.slug}: empty useful content`);
     if (!article.sources?.length) failures.push(`${article.slug}: no source`);

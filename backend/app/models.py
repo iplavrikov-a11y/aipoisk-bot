@@ -112,7 +112,7 @@ class SystemSettings(Base):
             "allow_partial_supplier_reports": self.allow_partial_supplier_reports,
             "logistics_enabled": self.logistics_enabled,
             "geo_radius_search_enabled_global": getattr(self, "geo_radius_search_enabled_global", False),
-            "geo_radius_surcharge_pct": getattr(self, "geo_radius_surcharge_pct", 30.0) or 30.0,
+            "geo_radius_surcharge_pct": configured_geo_surcharge_pct(self),
             "trial_enabled": self.trial_enabled,
             "trial_supplier_search_limit": self.trial_supplier_search_limit,
             "trial_procurement_report_limit": self.trial_procurement_report_limit,
@@ -178,6 +178,11 @@ class SystemSettings(Base):
             if str(item.get("apiKey") or "").strip() and str(item.get("baseUrl") or "").strip():
                 return True
         return False
+
+
+def configured_geo_surcharge_pct(settings: SystemSettings | None) -> float:
+    value = getattr(settings, "geo_radius_surcharge_pct", None)
+    return 30.0 if value is None else float(value)
 
 
 class Client(Base):
@@ -271,6 +276,10 @@ class WebUser(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    password_reset_tokens: Mapped[list["WebPasswordResetToken"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     email_verification_tokens: Mapped[list["WebEmailVerificationToken"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
@@ -310,6 +319,22 @@ class WebPasswordResetRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     user: Mapped[WebUser] = relationship(back_populates="password_reset_requests")
+
+
+class WebPasswordResetToken(Base):
+    __tablename__ = "web_password_reset_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("web_users.id"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    requested_ip: Mapped[str] = mapped_column(String(80), default="")
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+    user: Mapped[WebUser] = relationship(back_populates="password_reset_tokens")
 
 
 class WebEmailVerificationToken(Base):
@@ -420,6 +445,7 @@ class Job(Base):
     supplier_search_policy: Mapped[str] = mapped_column(String(40), default="normal")
     supplier_search_run_type: Mapped[str] = mapped_column(String(40), default="initial")
     multi_item_mode: Mapped[str] = mapped_column(String(40), default="balanced")
+    position_selection_json: Mapped[str] = mapped_column(Text, default="")
     delivery_city: Mapped[str] = mapped_column(String(255), default="")
     geo_radius_km: Mapped[int | None] = mapped_column(Integer, nullable=True)
     filter_marketplaces: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
@@ -616,14 +642,25 @@ class ApiKey(Base):
     allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_exact_product: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_price_monitoring: Mapped[bool] = mapped_column(Boolean, default=False)
 
     quota_supplier_search: Mapped[int] = mapped_column(Integer, default=10)
     quota_exact_product: Mapped[int] = mapped_column(Integer, default=10)
     quota_procurement_report: Mapped[int] = mapped_column(Integer, default=10)
+    quota_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
 
     spent_supplier_search: Mapped[int] = mapped_column(Integer, default=0)
     spent_exact_product: Mapped[int] = mapped_column(Integer, default=0)
     spent_procurement_report: Mapped[int] = mapped_column(Integer, default=0)
+    spent_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Standalone keys reserve a slot before a synchronous request starts.  Keeping
+    # this separately from spent counters prevents concurrent requests from both
+    # passing the same quota check.
+    reserved_supplier_search: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_exact_product: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_procurement_report: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
 
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=30)
     notes: Mapped[str] = mapped_column(Text, default="")
@@ -633,6 +670,33 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     client: Mapped[Client | None] = relationship(back_populates="api_keys", foreign_keys=[client_id])
+
+
+class ApiOperation(Base):
+    """Persistent retry identity; deliberately stores no market result payload."""
+    __tablename__ = "api_operations"
+    __table_args__ = (UniqueConstraint("api_key_id", "idempotency_key", name="uq_api_operation_key"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    service: Mapped[str] = mapped_column(String(64))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="processing")
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
+    # Batch API requests retain only their own job identities, never market data.
+    job_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class ApiRateLimitEvent(Base):
+    """Durable sliding-window event used across all API worker processes."""
+    __tablename__ = "api_rate_limit_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
 
 
 class PartnerPayoutRequest(Base):

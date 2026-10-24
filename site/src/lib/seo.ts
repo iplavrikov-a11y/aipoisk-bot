@@ -111,7 +111,13 @@ export function buildBreadcrumbJsonLd(items: BreadcrumbItem[]) {
   };
 }
 
-export function buildOrganizationJsonLd({ botUrl }: { botUrl?: string } = {}) {
+export function buildOrganizationJsonLd({
+  botUrl,
+  contacts,
+}: {
+  botUrl?: string;
+  contacts?: { email?: string; phone?: string; phone_url?: string };
+} = {}) {
   const siteUrl = normalizedSiteUrl();
   return {
     "@context": "https://schema.org",
@@ -120,6 +126,8 @@ export function buildOrganizationJsonLd({ botUrl }: { botUrl?: string } = {}) {
     name: "TenderLex",
     alternateName: ["ТендерЛекс", "TenderLex B2B"],
     url: siteUrl,
+    ...(contacts?.email ? { email: contacts.email } : {}),
+    ...(contacts?.phone ? { telephone: contacts.phone } : {}),
     logo: {
       "@type": "ImageObject",
       url: `${siteUrl}/icon.png`,
@@ -166,12 +174,16 @@ export function buildOrganizationJsonLd({ botUrl }: { botUrl?: string } = {}) {
         name: "Самарская область",
       },
     ],
-    ...(botUrl ? { contactPoint: {
-      "@type": "ContactPoint",
-      contactType: "customer support",
-      url: botUrl,
-      availableLanguage: ["Russian"],
-    } } : {}),
+    ...(botUrl || contacts?.email || contacts?.phone ? {
+      contactPoint: {
+        "@type": "ContactPoint",
+        contactType: "customer support",
+        ...(botUrl ? { url: botUrl } : {}),
+        ...(contacts?.email ? { email: contacts.email } : {}),
+        ...(contacts?.phone ? { telephone: contacts.phone } : {}),
+        availableLanguage: ["Russian"],
+      },
+    } : {}),
     sameAs: [...(botUrl ? [botUrl] : []), "https://productradar.ru/product/tenderlex"],
     knowsAbout: [
       "Поиск поставщиков по ТЗ",

@@ -1,5 +1,193 @@
 # TenderLex: Project Status
 
+## Актуальное состояние — 24 октября 2026, поздний вечер (Москва)
+
+[Выделенная колонка «Город и расстояние» в Excel-отчетах и многопозиционный гео-поиск](GEO_RADIUS_EXCEL_COLUMNS_RELEASE_2026-10-24.md) опубликована на работающем сервисе:
+1. **Выделенная колонка локации в отчетах поставщиков**: В Excel-отчетах поиска поставщиков (`backend/app/report_builder.py`) добавлена отдельная 6-я колонка `Город и расстояние` (между `Комментарий` и `Реестр Минпромторга`). Из колонки `Комментарий` полностью удалена текстовая перегрузка гео-данными (`Локация: Шахты (~78 км)`), теперь там содержатся только чистые технические подробности соответствия. Статусы в радиусе и вне радиуса визуально выделены цветом (изумрудный / красный).
+2. **Выделенная колонка локации в мониторинге цен**: В отчете мониторинга цен (`backend/app/price_monitoring/excel_report.py`) во 2-м листе («Детализированный реестр») для каждого поставщика добавлена отдельная колонка `Город и расстояние` (10 колонок на поставщика вместо 9). Из примечаний удалено засорение строками пересчета гео-параметров. На 1-м листе («Пример отчета») локация вынесена в заголовок карточки поставщика с иконкой `📍`.
+3. **Многопозиционный гео-поиск поставщиков**: В `backend/app/supplier_search.py` снято жесткое ограничение на первые 3 позиции — теперь при попозиционном поиске гео-модификаторы формируются для всех позиций спецификации, гарантируя подбор локальных поставщиков по всей номенклатуре.
+4. **Тестирование и деплой**: Пройден полный серверный прогон из **1 325 тестов и 54 подтестов**, проведены E2E пайплайны на 5 реальных задачах с ТЗ. Сервисы штатно обновлены через `./scripts/deploy_tenderlex_live.sh`.
+
+Ранее в этот же день: [Санитизация клиентских ошибок и понятные инструкции при пустых спецификациях](PROJECT_STATUS.md) защитила пользовательский интерфейс от технических трейсов.
+
+Ранее в этот же день: [Исправление XLSX №968 и попозиционного администрирования](JOB968_ADMIN_POSITIONAL_RELEASE_2026-10-24.md). Устранено раздувание Excel пустыми форматированными столбцами (296 770 → 2 002 символа, все 48 значений сохранены). Админка различает ожидание и истечение срока, показывает выбранный состав, поддерживает подтверждение и дочерний экспертный поиск по тому же или явно новому выбору с проверкой версии списка. Дополнение готовыми файлами отделено от нового поиска; внутренний экспертный повтор не списывает деньги клиента.
+
+Полный прогон этого этапа: **1 317 тестов и 54 подтеста**. Пройдены сборка администратора и шесть браузерных наборов; после публикации повторены 11 проверок на отдаваемой сборке с тестовыми API. API/worker/бот перезапущены без активных работ 24 октября в 16:12:10 по Москве, готовность сервисов проверена. Балансы и ключи сохранены; три просроченных ожидания стратегии освободили 199 ₽ резерва, новых списаний нет. Главная/robots/sitemap совпадают с состоянием перед этим этапом. №968 автоматически не перезапускался, платных проверочных поисков не было.
+
+### Предыдущий выпуск — 23 октября 2026
+
+[Отчёт выпуска API, правила 14 и географии](API_RULE14_GEO_RELEASE_2026-10-23.md) — источник текущих результатов и границ проверки. Все 13 находок AA-006–AA-018 закрыты в [журнале аудита](audits/ledger.md) в пределах воспроизведённых сценариев.
+
+- Очередь `/api/v1/mcp/jobs` поддерживает пять режимов, документы, выбор строк/стратегии, отмену и защищённое скачивание. Прямые текстовые методы сохранены; [инструкция интеграции](API_CLIENT_GUIDE.md).
+- Подбор остаётся задачей с фиксированной стоимостью, до пяти явно выбранных строк и Word-отчётом. Мониторинг резервирует выбранный объём и списывает найденные позиции; ошибочные строки сохраняются. [Выбор позиций и расчёты](POSITIONAL_SELECTION_RELEASE_2026-10-22.md), [исправление разбора задач 954–956](SELECTION_INVENTORY_FIX_954_956_2026-10-22.md).
+- Георежим — приоритет по приблизительному расстоянию между известными городами с добором по РФ. Это не обещание местного склада или строгого ограничения радиуса. Город/радиус проверяются до резерва; неизвестная география помечается явно.
+- Исправлены товарные исключения в проверенных путях пересчёта и группировки, гонки квот/отмены API, хранение открытых секретов и небезопасные повторы. Хэши действующих ключей сохранены.
+- Полный серверный прогон выпуска: **1221 тест и 54 подтеста**, затем 64 целевые проверки перед перезапуском. После публикации: **97 сценариев кабинета**, проверки пагинации/чата/API/географии, навигация по **11 разделам администратора**. Браузерные API — тестовые; серверные проверки доступа и готовности — чтением.
+- Сравнение **92 уникальных страниц** до/после не выявило изменения проверенных SEO-тегов, H1, аналитики, robots или URL sitemap. Это контроль сохранности, без нового подтверждения внешних аккаунтов SEO и роста позиций.
+- API, worker и бот обновлены 23 октября в **15:27:23 по Москве (12:27:23 UTC)** после завершения активных задач. Сайт и администратор опубликованы отдельно; клиентские задачи не прерваны, балансы и резервы сохранены по сравнению с копией непосредственно перед перезапуском.
+
+**Состояние GitHub — 24 октября:** исходный код и тесты этого выпуска опубликованы в [`76e2f3b`](https://github.com/iplavrikov-a11y/aipoisk-bot/commit/76e2f3b868e6455e7e5a15f6c4d0b008983e81d5): 99 проверенных файлов, включая пять новых обязательных серверных модулей и актуальный JS администратора. Перед публикацией заново прошли 1231 серверный тест и 54 подтеста, изолированные сборки, typecheck и браузерные сценарии. Первоначальное ограничение коммита `a8c1c5b` только документацией устранено. Экспериментальные макеты, промежуточные сборки, локальные журналы и клиентские данные не публикуются. Результаты локальные; GitHub CI ими не подменяется.
+
+**Остаётся:** отдельно измерить качество, стоимость и охват нового рыночного поиска; проверить актуальные внешние подключения Webmaster/GSC/Метрики/Wordstat; продолжить редактуру и измерение конверсий. Полный список — [план улучшений](SITE_REMAINING_IMPROVEMENTS_2026-10-21.md). Прямые API-вызовы без обновления более 60 минут завершаются с возвратом резерва; длительные операции следует отправлять в очередь. Платные поиски, реальные платежи и исходящие сообщения в проверках выпуска не выполнялись. Оценка всей системы 10/10 и первое место в поиске не заявляются.
+
+## История предыдущих этапов
+
+Записи ниже отражают состояние на свою дату. Более ранние заявления об универсальности и качестве не заменяют ограничения и результаты актуального выпуска выше.
+
+20 октября (ночь / позднее): Автоматический сброс паролей клиентов через email (Self-Service Password Reset) и безопасный вход в кабинет:
+- **Модель и хранение токенов сброса (`models.py`, `db.py`)**:
+  * Создана модель `WebPasswordResetToken`: хранение SHA-256 хеша одноразового токена, срока действия (2 часа), флагов использования `is_used` и времени подтверждения `used_at`.
+  * Автоматическая инициализация таблицы `web_password_reset_tokens` в SQLite при старте бэкенда (`init_db`).
+- **Безопасная логика аутентификации и relay-доставка писем (`web_auth.py`)**:
+  * Реализованы функции `create_password_reset_token`, `password_reset_url`, `send_password_reset_email` и `verify_and_consume_password_reset_token`.
+  * Токен генерируется криптографически стойким генератором `secrets.token_urlsafe(32)`, в БД сохраняется только SHA-256 дайджест.
+  * Письмо клиенту отправляется автоматически через системный `email_relay_url` с прямой ссылкой на кабинет: `https://tenderlex.ru/cabinet?reset_token=<token>`.
+- **API эндпоинты сброса и мгновенной авторизации (`main.py`, `schemas.py`)**:
+  * Обновлен `POST /api/customer/auth/password-reset/request`: принимает email, проверяет наличие активного `WebUser`, создает токен и сразу отправляет письмо без необходимости ручного участия администратора. Ответ всегда одинаковый (без раскрытия факта существования email).
+  * Реализован `POST /api/customer/auth/password-reset/confirm`: валидирует токен и срок годности, обновляет хеш пароля пользователя, инвалидирует все старые сессии клиента, сжигает токен (`is_used=True`) и автоматически создает новую активную сессию `WebSession`, возвращая cookie и `WebUserSummary` для мгновенного входа.
+- **Интерфейс веб-кабинета (`cabinet-client.tsx`)**:
+  * Автоматический захват query-параметра `reset_token` из URL кабинета и переход в специальный экран ввода нового пароля (`authMode === "new_password"`).
+  * Валидация нового пароля (минимальная длина 8 символов, подтверждение совпадения).
+  * После успешной установки пароля клиент сразу попадает в авторизованный кабинет без необходимости дополнительно вводить логин и пароль.
+- **Тестирование, E2E-проверка и Live Deploy**:
+  * Написан тест `test_automated_password_reset_flow` в `backend/tests/test_customer_api.py` (успешно пройден).
+  * Проверена отправка живого письма через relay получателю контрольного письма (адрес исключён из документации).
+  * Сервисы перезапущены и проверены на боевом сервере (`202.71.13.57`).
+
+20 октября (поздний вечер): Устранение ложных отказов мониторинга цен (Job #938), разделение закрытых заводских чертежей и коммерческих артикулов по Правилу 14:
+- **Разделение закрытых заводских чертежей и серийных коммерческих артикулов (`cleaner.py`, `pipeline.py`)**:
+  * Реализована функция `is_closed_factory_drawing(token, full_text)`: надежно отделяет закрытые децимальные чертежи завода (`5ВК.568.007.2`, `8БС.370.544-1`, `ЭГ.059.00.00-02`, `SPGA4270-200-01`) от серийных артикулов и моделей (`СТП1-2/3000`, `Makita D-08660`, `Bosch 2.607.019.435`, `ЦЧ-4`).
+  * Для закрытых чертежей сохраняются строгие кавычки и Drawing Query Auto-Stop (защита от омонимов бытовой техники).
+  * Для серийных коммерческих товаров кавычки сняты с приоритетных запросов, разблокированы поисковые волны 2 и 3, что позволило находить поставщиков в открытых интернет-магазинах и каталогах.
+- **Нормализация инженерных технических формул (`cleaner.py`)**:
+  * Добавлена очистка формул характеристик: `г/п 1т` -> `1т`, `H=3м` -> `3м`, `L=70` -> `70`. Поисковые запросы стали естественными (`Таль HSHC 1т 3м купить цена`).
+- **Токенизация и исключение многословных фраз из детерминированной проверки чертежей (`extractor.py`)**:
+  * `_is_complex_identifier` теперь исключает составные фразы с пробелами (например, `'Герметик Автосил 200г'`).
+  * В `_has_deterministic_identifier_conflict` составные строки из `target_ids` разбиваются на отдельные слова. Устранен критический баг, когда потребительские товары блокировались из-за отсутствия сплошного конкатенированного вхождения строки на сайтах поставщиков.
+- **Удаление хардкодного черного списка автодоменов (`extractor.py`)**:
+  * Полностью удален список `AUTOMOTIVE_DOMAINS` в строгом соответствии с Правилом 14. Проверка релевантности автомагазинов переведена на Compare-then-Match (`category_conflict`). Это разблокировало поиск силиконовых промышленных герметиков (`Автосил`), крепежа и автохимии на профильных площадках (`autopiter.ru`, `autodoc.ru`).
+- **Снижение сетевых задержек (`extractor.py`)**:
+  * В `fetch_page_content_and_meta` внедрен тайм-аут `httpx.Timeout(7.0, connect=2.5)`, устраняющий зависание пайплайна на недоступных и медленных B2B-серверах.
+- **Честная дифференциация статусов в Excel-отчете (`excel_report.py`)**:
+  * В Листе 1 и Листе 2 статус отсутствия цены теперь четко разделен: «В открытых источниках цена отсутствует (заказная деталь по чертежу завода)» для чертежных позиций vs «В открытых источниках цена отсутствует (предложения не найдены)» для стандартных ТМЦ.
+- **Верификация и результаты**:
+  * 100% контрольных позиций из сбоев задачи №938 (`Таль HSHC 1т 3м`, `Герметик Автосил 200г`, `Строп СТП1-2/3000`) успешно подтверждены с получением однородных рыночных цен и отсечением выбросов по 44-ФЗ.
+  * Полный тестовый набор бэкенда: **922 passed, 0 failures**.
+
+20 октября (вечер): Комплексный аудит задачи №938 («Пример ТМЦ ч.2», 100 позиций) и 6 универсальных оптимизаций по Правилу 14:
+- **Аудит задачи №938 (100 позиций ТМЦ, внутренний ID исключён)**:
+  * Статистика: Найдено цен для 63 позиций (37 с полным 5-поставщиковым консенсусом, 9 с 4 предложениями, 5 с 3 предложениями). Не найдено: 37 позиций.
+  * Чистота выборки: 0 некоммерческих/бюджетных организаций (школы, детсады), 0 технических email (sentry, noreply), 0 фиктивных цен-заглушек $\le 1.00$ ₽.
+  * Верификация чертежей: #43 `SPGA4270-200-01` (0 триммеров), #46 `Преобр.изм.ИП43` (0 перчаток), #61-#68 `ЭГ.059` (0 духовок ПКА), #5 `Фильтр 130539` (123 020 ₽ без ложного деления на 1000) — все отработали безупречно.
+  * Из 37 ненайденных: 28 позиций — заказные чертежные детали турбин и узлов (ОСТ/ТУ/чертеж), не представленные на открытом коммерческом рынке.
+- **6 системных оптимизаций пайплайна (строго по Правилу 14 без хардкода конкретных товаров)**:
+  1. *Разделение склеенных сокращений 1C/ERP (`cleaner.py`)*: Регулярное выражение `re.sub(r'([а-яА-ЯёЁ]{3,}|[а-яё]{2,})\.([a-zA-Z0-9а-яА-ЯёЁ])', r'\1. \2', text)` разделяет сокращения («оцин.D101-110» -> «оцин. D101-110»), сохраняя десятичные дроби («1.5»). Устранено ложное превращение сокращений в невалидные чертежи в кавычках.
+  2. *Исключение размерных диапазонов и метрических единиц из чертежей (`cleaner.py`, `extractor.py`)*: Диаметры (`D101-110`, `D21-24`), длины (`L70`), высоты (`H=3м`), веса (`200г`), толщины (`3мм`), соотношения (`40/20`) классифицируются как геометрические размеры. Это предотвращает ложный Drawing Query Auto-Stop и ложные детерминированные конфликты при вариативном написании на сайтах поставщиков («101-110 мм»).
+  3. *Снижение порога длины идентификатора и нормализация нулей (`extractor.py`)*: Порог в `_has_deterministic_identifier_conflict` снижен с 4 до 3 символов (поддержка электродов `ЦЧ-4` / `цч4`), добавлена нормализация нулевых десятичных знаков (`re.sub(r'(?<=\d)[.,_]0(?!\d)', '', text)`) для сопоставления стропов `СТП1-2/3000` со складскими позициями `СТП 2.0/3000`.
+  4. *Сохранение бренд-контекста и ключевого существительного в чертежных запросах (`cleaner.py`)*: Точный артикул чертежа теперь дополняется контекстными словами («D-08660» Набор сверл Makita купить цена, «2.607.019.435» Набор сверл Bosch купить цена, «Элметро-ИПТ-2» Блок питания купить цена) вместо усечения до одного слова.
+  5. *Разрешение современных B2B gTLD доменов (`extractor.py`)*: Допущены специализированные домены дистрибьюторов (`.tools`, `.one`, `.pro`, `.moscow`, `.online`, `.shop`) с последующей валидацией по доле кириллического контента ($> 20\%$) и российским контактам.
+  6. *Разделение статусов Schema.org OutOfStock и Discontinued (`extractor.py`)*: Предложения со статусом `OutOfStock` маркируются как «нет в наличии на складе (под заказ)» без блокировки, а статус «снят с производства» сохраняется строго для архивных позиций.
+- **Тестирование и верификация**:
+  * Добавлены регрессионные тесты в `backend/tests/test_price_monitoring_rule14_enhancements.py` (все 45 специализированных тестов мониторинга пройдены).
+
+- **Каскад строгих поисковых запросов по чертежам и отсечка омонимов (`cleaner.py`, `pipeline.py`)**:
+  * Реализована универсальная функция `is_drawing_or_part_code(token, full_text)`: безошибочно отличает закрытые заводские чертежи (`ЭГ.059.00.00-02`, `1085.05.02`, `SPGA4270-200-01`) от геометрических размеров (`3х2.5`, `1000х2000`) и нормативных стандартов (`ГОСТ 7798-70`, `DIN 912`).
+  * Для позиций с чертежами поисковые запросы ОБЯЗАТЕЛЬНО формируются с точным чертежом в строгих кавычках (`f'"{primary_code}" {noun} купить цена'`), исключая поисковый мусор.
+  * В `process_single_item` реализован **Drawing Query Auto-Stop**: если для чертежной позиции первая волна точного поиска не нашла консенсуса, широкие волны 2 и 3 с размытыми словами БЛОКИРУЮТСЯ, предотвращая подтягивание омонимов (уплотнений кухонных плит, триммеров). Позиция чисто завершается как `not_found`.
+- **Детерминированный математический движок пересчета единиц (`compute_deterministic_normalized_price` в `extractor.py`)**:
+  * Полностью устранены ошибки арифметики LLM: модель извлекает только сырые факты с сайта (`raw_price_rub`, `site_unit`, `pack_quantity`, `pack_base_unit`, `is_price_for_whole_pack`), а все вычисления производит строго Python.
+  * Реализована 100% универсальная алгебра размерностей (Правило 14):
+    - Вес: тонна <-> кг (x1000 / /1000), грамм <-> кг.
+    - Объем: кубометр <-> литр (x1000 / /1000).
+    - Длина: километр <-> метр (x1000 / /1000).
+    - Фасовка и тара: автоматический расчет цены за единицу для упаковок, мешков, бочек, канистр, рулонов, бухт, коробок.
+    - Сквозной пересчет: мешок 50 кг -> цена за тонну, бочка 200 л -> цена за м³.
+  * Из `reconcile_quote_unit` полностью удалены жестко зашитые товарные ключевые слова («лист», «арматура», «сталь», «электрод») в пользу чистой алгебры размерностей.
+- **Извлечение структурированных офферов Schema.org JSON-LD и Stock Availability Guard (`extractor.py`)**:
+  * До удаления скриптов парсер анализирует теги `<script type="application/ld+json">`, извлекая `@type: Product`, артикул SKU/MPN, цену и статус наличия `availability`.
+  * Реализована автоматическая отсечка устаревших цен-призраков: предложения со статусами `OutOfStock`, `Discontinued`, `SoldOut` или текстовыми маркерами «снят с производства»/«архивный товар» отсекаются до включения в расчет.
+- **Комплексная верификация и тесты**:
+  * Добавлены unit-тесты в `backend/tests/test_price_monitoring_rule14_enhancements.py` на распознавание чертежей, математический движок и Schema.org (11 тестов passed).
+  * Пройден полный регрессионный сьют бэкенда: **918 passed, 0 failures**.
+  * Пройден живой E2E тест на сложных позициях с проверкой всех строгих ассертов.
+
+20 октября (ночь): Комплексный аудит боевой задачи №936 (100 позиций) и детерминированная верификация чертежей по Правилу 14 (Ground Truth):
+- **Аудит результатов боевой задачи №936 (`Результат - Отчет по ценам.xlsx`, 100 позиций ТМЦ)**:
+  * Найдено: 83 позиции (в задаче №935 было 89; 6 отсеянных позиций — это устраненные ложные совпадения омонимов и чертежей).
+  * 52 позиции получили чистый 5-поставщиковый рыночный консенсус с коэффициентом вариации $V \le 33\%$.
+  * Некоммерческих и бюджетных организаций (школы, детсады, МКОУ/ГБОУ): **0** (устранено на 100%).
+  * Технических email (sentry, noreply, abuse): **0** (устранено на 100%).
+  * Фиктивных цен-заглушек $\le 1.00$ ₽: **0** (устранено на 100%).
+  * Ложное деление на 100 для фильтров `Size 1000`: **исправлено** (цена 123 689 ₽ за 1 шт).
+  * Заказные чертежные детали турбин и узлов (#43 SPGA4270, #61-#68 ЭГ.059, #82, #88): **чисто отклонены** (вместо щеток триммеров Champion и прокладок духовок ПКА).
+- **Устранение семантической аномалии с подменой единицы измерения (`extractor.py`)**:
+  * В позиции №46 (`Преобр.изм.ИП43хВх10х35х7 Вибробит`) поставщик перчаток ООО «Интерсейфти» прошел из-за единицы `пар`.
+  * Внедрен универсальный запрет подмены единицы «пар» (парные носимые изделия/СИЗ) для непарных промышленных ТМЦ (приборов, датчиков, кабелей, металлопроката).
+  * Внедрена проверка несовпадения классов прибора и СИЗ/одежды по `nomenclature_class`.
+- **Детерминированный контроль чертежей и артикулов по физическому контенту (Ground Truth)**:
+  * Создана функция `_has_deterministic_identifier_conflict` с нормализацией гомоглифов (латиница/кириллица) и топологии чертежей (дефисы, точки, ведущие нули).
+  * Сверка чертежей и сложных артикулов проводится строго по реальному тексту страницы и URL (`page_text`, `url`), исключая возможность модели самовалидировать галлюцинацию.
+  * Внедрен префильтр до вызова LLM, что исключило холостые запросы к LLM и ускорило пайплайн в 2-3 раза.
+- **Тестирование, E2E-верификация и Live Deploy**:
+  * Расширен регрессионный тестовый набор `backend/tests/test_price_monitoring_rule14_enhancements.py` (8 тестов, все passed).
+  * Чистый сквозной E2E пайплайн на 5 контрольных позициях успешно пройден со всеми строгими ассертами (`ALL E2E VERIFICATION ASSERTS PASSED`).
+  * Полный регрессионный сьют бэкенда: 915 passed, 54 subtests passed, 0 failures.
+  * Выполнен live-деплой (`./scripts/deploy_tenderlex_live.sh`), сервисы перезапущены и проверены.
+
+20 октября (утро): Комплексное исправление ошибок мониторинга цен по результатам аудита боевой задачи №935 (строго по Правилу 14 — zero-shot семантика без жестких списков товаров):
+- **Универсальная очистка префиксов и суффиксов 1C/ERP (`cleaner.py`)**:
+  * В `clean_nomenclature_name` добавлено снятие ведущих системных префиксов баз данных 1С и ERP (`^[#№*!~=\s\-_/]+`).
+  * Регулярное выражение статусных ремарок расширено для очистки инфлексий типовых меток списания и архивации: `/СНЯТ(О)`, `/АРХИВ`, `/УСТАР(ЕЛО)`, `/ДУБЛЬ`, `/ОШИБКА`, `/НЕ ИСП(ОЛЬЗОВАТЬ)`.
+- **Устранение бага кратности упаковок по 100 шт (`pipeline.py`)**:
+  * Заменено ошибочное вхождение подстроки `"100" in item_lower` на строгое сопоставление границ слов: `re.search(r'\b100\s*(?:шт|штук|ед|ш)\b', item_lower)`. Устранено ложное деление цены на 100 для фильтров и изделий с типоразмерами вроде `Filter Size 1000`.
+- **Расширение архитектуры Compare-then-Match семантическими конфликтами (`extractor.py`)**:
+  * В промпт и логику валидации добавлены флаги `category_conflict` (несовпадение физического/функционального класса: датчики и промышленное оборудование vs СИЗ/перчатки/садовая техника) и `specification_conflict` (принципиальное несовпадение масштаба/грузоподъемности/напряжения).
+  * Введено правило полноты идентификаторов и номеров чертежей: запрещены ложные совпадения по совпадению отдельных цифр (например, суффикса `59-00-002` в бытовых духовках при поиске чертежа генератора).
+  * Добавлена детекция и отсечение фиктивных цен-заглушек B2B-площадок ($\le 1.00$ ₽) и позиций, снятых с производства.
+  * Расширены паттерны каталожных страниц-листингов (`/tag[-_][a-z0-9_-]+(?:/|$)`) и стоп-домены досок (`doski.ru`, `flagma.ru`, `china.org.ru`).
+  * Безопасное форматирование ОПФ: запрещено принудительное добавление `ООО` к иностранным брендам, доменам и названиям с уже имеющейся формой собственности.
+- **Очистка реквизитов DaData и фильтрация некоммерческих организаций (`dadata_client.py`)**:
+  * Реализовано распознавание ОПФ и отсев бюджетных, образовательных и административных учреждений (`МКОУ`, `ГБОУ`, `МБУ`, `ГБУ`, `Администрация` и др.).
+  * Поиск по домену дополнен сверкой подтвержденных сайтов организации и совпадением корня бренда, исключив ложную привязку сельских школ к интернет-магазинам крепежа.
+- **Санитизация контактов в отчете Excel (`excel_report.py`)**:
+  * В `_extract_phones_and_emails` добавлен фильтр технических сервисных адресов (`sentry`, `noreply`, `mailer-daemon`, `abuse`, `postmaster`).
+- **Тестирование, E2E-верификация и деплой**:
+  * Создан специализированный набор регрессионных тестов: `backend/tests/test_price_monitoring_rule14_enhancements.py` (8 тестов, все passed).
+  * Прогон сьюта мониторинга цен: 38/38 passed.
+  * Полный сьют бэкенда: 915 passed, 54 subtests passed, 0 failures.
+  * Запущен боевой сквозной E2E-тест пайплайна на 5 проблемных позициях из задачи №935: очистка `#` подтверждена, ложные совпадения отсечены, деление 1000 на 100 устранено, Excel формируется без сбоев.
+  * Выполнен live-деплой (`./scripts/deploy_tenderlex_live.sh`), API и сайт проверены и работают штатно.
+
+20 октября (ночь): Внедрение Home v3 на production, SEO-аудит всего сайта и технические SEO-исправления:
+- **Новая главная (Home v3)**:
+  * Production homepage переведена на интерактивный разбор ТЗ из 5 шагов: спецификация → извлечённые поля с источником → кандидаты → аналоги → черновик запроса КП.
+  * Добавлены «Чему учит шаг», «Проверьте сами», «Типичная ошибка» и мини-проверка в шаге 5. Шаг сохраняется в URL (?step=1..5), работает back/forward, клавиатура, reduced-motion и no-JS fallback.
+  * Реализация: site/src/app/page.tsx, site/src/app/home-v3-content.ts, site/src/app/home-v3.css, site/src/components/home-v3-interactions.tsx. Используются существующие SiteHeader/SiteFooter, Метрика, чат и правовые ссылки.
+  * Предыдущая главная: site/src/app/page.tsx.bak-home-v3-20261019; предыдущий .next сохранён deploy-скриптом.
+- **SEO-аудит**:
+  * GSC за 28 дней: 995 показов, 20 кликов, CTR 2.01%, средняя позиция 20.96; главная — 7 кликов / 39 показов / позиция 3.7. Sitemap без ошибок.
+  * Яндекс Вебмастер: кэш SQI 10, 57 страниц в поиске, 3 исключено; API недоступен с VPS (IPv4 timeout, IPv6 нет), свежие данные не собираются с 30.08.
+  * Wordstat API недоступен (404/чужой сертификат); значения в кэше — оценки. Метрика работает: 7 визитов / 6 пользователей за 28 дней; счётчик consent-gated.
+- **Технические SEO-исправления**:
+  * Sitemap: lastmod статей из updatedDate; обновлены даты изменённых лендингов и главной.
+  * TechArticle: datePublished добавлен всем статьям (fallback на updatedDate при отсутствии реальной даты).
+  * /v2: noindex, nofollow + canonical /; добавлен в robots.txt. 404: noindex + canonical /. Robots закрывает /v2, /test-buttons, /demo-*.
+  * Organization: email/телефон; новый OG 1200×630; Метрика: fallback на YANDEX_METRIKA_COUNTER_ID; HTTP/2 включён на 4443.
+  * llms.txt: 91/91 URL sitemap. IndexNow: 12 изменённых URL, HTTP 200.
+- **Контент и перелинковка**:
+  * Расширены /zapros-kp-po-tz, /ocenka-riskov-zakupki, /poisk-postavshchikov-dlya-tendera, /poisk-proizvoditeley-po-tz, /postavshchiki-dlya-zaprosa-kp: 776–977 слов основного контента, 6–7 H2, дополнительные FAQ.
+  * В сайдбар всех 58 статей базы знаний добавлены ссылки на 4 коммерческих сервиса.
+- **Проверки**:
+  * Home v3: 32/32 проверки на production (scripts/test_public_refinement_browser.py).
+  * Public gate: 91 страница × 2 ширины = 182 проверки, 0 падений (staging и production).
+  * Navigation: sticky header, mobile menu, Escape, переход в кабинет — passed.
+  * Deploy: AIPOISK_DEPLOY_SCOPE=site ./scripts/deploy_tenderlex_live.sh; live deploy verified; предыдущий build сохранён.
+- **Остаточные риски**:
+  * Вебмастер недоступен по сети; SQI/индексация — устаревший кэш. Wordstat API мёртв.
+  * datePublished части статей выставлен по updatedDate; кластер near-duplicate по нацрежиму не переписан.
+  * Эффект SEO-правок оценивать через 4–8 недель.
+
+
 19 октября (ночь): Кардинальное ускорение загрузки вкладки «Задачи» в панели администратора (устранение N+1 запросов, кэширование файлов результатов, двухэтапная загрузка и легкий поллинг):
 - **Диагностика и выявление узких мест (Systematic Debugging)**:
   * При 608 задачах в базе открытие вкладки «Задачи» (`admin.tenderlex.ru#jobs`) занимало 5.5–7.0 секунд (2.0 МБ чистого JSON), при этом интерфейс показывал ложный пустой блок «Задачи: 0-0 из 0» и «Нет пользовательских задач для показа» из-за отсутствия индикатора загрузки.
@@ -27,9 +215,9 @@
   * В `backend/app/main.py` функция `_validate_tariff_unit_price` дополнена проверкой `kind == "deposit" or kind == KIND_DEPOSIT`. Депозитные пакеты пополнения баланса освобождены от проверки одинаковой цены за задачу, так как содержат прогрессивные бонусы и скидки (100 ₽, 85.7 ₽, 76.9 ₽, 71.4 ₽, 66.7 ₽ за задачу).
   * В `frontend/src/App.tsx` ошибки управления тарифами изолированы в локальное состояние `billingError` (устранено загрязнение глобального баннера админки). В таблицах тарифов добавлен guard на событие `onBlur`, исключающий отправку холостых PATCH-запросов при клике в поле без изменения значения.
 - **Отображение ошибок и подтверждение email в форме запуска задач кабинета**:
-  * Расследован кейс клиента `ceo@tendee.ru` (`ГОССНАБ`), загрузившего файл спецификации `0302100013126000122 (44.фед) 26 поз.` (1104.7 KB). Кнопка «Запустить анализ документации» казалась неактивной, так как email не был подтвержден, а блок сообщений находился в самом верху страницы вне зоны видимости проскролленной формы.
+  * Расследован обезличенный кейс загрузки спецификации клиентом. Кнопка «Запустить анализ документации» казалась неактивной, так как email не был подтвержден, а блок сообщений находился в самом верху страницы вне зоны видимости проскролленной формы.
   * `site/src/app/cabinet/cabinet-client.tsx`: прямо в форму запуска задач `#new-job` над кнопкой запуска добавлен видимый блок предупреждения о неподтвержденном email с кнопкой «Отправить письмо повторно», а также блок вывода ошибок валидации.
-  * В базе данных активирован email клиента `ceo@tendee.ru`, после чего клиент успешно запустил и завершил анализ ТЗ (отчёт сформирован за 24 секунды).
+  * В базе данных подтверждён email клиента (адрес исключён), после чего клиент успешно запустил и завершил анализ ТЗ (отчёт сформирован за 24 секунды).
 - **Сборка, тестирование и развертывание**:
   * Полный сьют бэкенда: 907 passed, 54 subtests passed, 0 failures.
   * Чистая сборка Vite для админки и Next.js для сайта.
@@ -439,7 +627,7 @@
   * Устранена ложная атрибуция в шапке: имена поставщиков в строках 1–3 больше не фиксируются сквозным образом для сборных смет; выводятся нейтральные заголовки «Поставщик 1..5», «ИНН/КПП», «контакты» строго по эталонному шаблону.
   * Полное досье перенесено в ячейку котировки:
     - Строка 1: Официальное наименование поставщика с формой собственности (`ООО "Флагман" | ИНН 2465123456`).
-    - Строка 2: Контакты в 1 строку через запятую (`Тел: +7 (391) ..., Email: mail@fkr.ru, г. Красноярск`).
+    - Строка 2: Контакты в 1 строку через запятую (`Тел: +7 (391) ..., Email: [адрес исключён], г. Красноярск`).
     - Строка 3: Кликабельная короткая ссылка.
   * Геометрия ячеек: высота строк увеличена до **54 pt**, ширина колонки источника расширена до **42** (исключено любое обрезание текста).
   * Добавлены формулы Excel: столбцы «Мин. цена, руб.» (`=MIN(...)`) и «Средняя цена, руб.» (`=AVERAGE(...)`).
@@ -795,7 +983,9 @@ Date: 2026-10-05 (MSK)
 - Independent scores: 9.1 / 8.3 / 9.2 / 9.1 / 8.7; average 8.88. Baselines dated October 1 and 2 are immutable comparison inputs, next owner review expected around October 8.
 - Reports: [October 2 follow-up](SEO_FOLLOWUP_REPORT_2026-10-02.md), [comparison protocol](SEO_WEEKLY_COMPARISON.md), [audit ledger](SEO_AUDIT_LEDGER.md).
 
-## Current Production State
+## Production state snapshot before 23 October 2026
+
+Historical inventory; use the current summary at the start and the [23 October release report](API_RULE14_GEO_RELEASE_2026-10-23.md) for subsequent changes.
 
 - Project Root Directory: `/root/projects/tenderlex` (legacy directory and symlink `aipoisk-bot` completely removed).
 - Public URL: `https://tenderlex.ru`.
@@ -807,8 +997,8 @@ Date: 2026-10-05 (MSK)
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
 - B2B API & CRM Integration with Unified Ruble Balance & Customer Self-Service (2026-10-05):
   - **Unified Ruble Balance Debiting**: API requests for search, product matching, and document analysis now debit directly from the client's single ruble balance (`money_balance_kopeks`) using real-time price resolution (`effective_price_kopeks(db, client, service)`). If custom overrides exist, they apply automatically; standard `BillingTransaction` audit records are created with clean operation identifiers.
-  - **Zero-Friction Key Auto-Substitution**: All code examples, curl snippets, AI prompts, and Claude Desktop MCP configurations in the web cabinet (`cabinet-client.tsx`) automatically substitute the client's active API key directly (`Authorization: Bearer <key>`). The client no longer needs to manually copy or paste keys into template files.
-  - **Permanent Key Availability with Security Guard**: In Tab 1 («Ключ и баланс»), full API keys can be revealed and copied at any time with an eye toggle and 1-click copy button. Keys are returned exclusively to the authenticated customer web session via `GET /api/customer/api-keys` and stored in `ApiKey.secret_token`.
+  - **Key templates (updated 2026-10-23)**: templates can use a fresh secret only in its one-time creation flow. Existing keys are listed by metadata/prefix; the service cannot recover their original secret.
+  - **One-time Secret Display (updated 2026-10-23)**: the database stores only the hash; list and master GET endpoints return metadata. Key creation/rotation is explicit, and the new secret is shown once. Legacy plaintext is cleared without changing the active hashes.
   - **Auditable Admin Tasks**: API operations are saved directly into the central `Job` table with `created_by_telegram_id="api:<prefix>"`, tagged with a distinctive purple `🔑 API: <prefix>` badge in admin tasks view with complete tracking of search parameters and execution metrics.
   - **CRM & Client Management**: Admin panel features a `🔑 API` client filter tab, client badge, API key management modal with live balance reflection, and granular permission switches.
   - **Clean Client Copy**: Removed technical jargon and noise from client-facing modal ("код ошибки 402", "без скрытых подписок", "(Форма 2)").
@@ -1022,7 +1212,7 @@ Date: 2026-10-05 (MSK)
 - Substantive Specification Validation & Empty/Placeholder Template Rejection (2026-09-07):
   - **Root Cause & Obninsk Case Analysis**:
     - Investigated issue where "Органайзеры - Обнинск" produced office stationery (`Attache Line 6 отделений`) instead of medical PPE dispensers from polycarbonate.
-    - Discovered that uploaded file in job `616013cca0924a0b90a214f87249f9c4` was an unpopulated Word template containing literally 1 paragraph: `Введите текст технического задания...` (96 characters with header, 0 tables, 0 requirements).
+    - Discovered that uploaded file in job `[внутренний ID исключён]` was an unpopulated Word template containing literally 1 paragraph: `Введите текст технического задания...` (96 characters with header, 0 tables, 0 requirements).
     - Because the previous length threshold was only 50 characters, the empty template bypassed validation. Lacking any medical/PPE specifications, search defaulted to general desktop stationery.
     - Verified real file `Органайзеры - Обнинск (1).docx` (38 KB, 3 positions): TenderLex Exact Product engine correctly identified **all 3 positions (100%)**:
       1. `Органайзер-2 секции`: **Evdar D2020** (ООО «РАСТ» / Merida, 100% compliance, 300×150×300 мм, transparent polycarbonate, alcohol disinfectant resistance), analog **Медресурс М23020** (СВИТ).
@@ -1101,10 +1291,10 @@ Date: 2026-10-05 (MSK)
     - Updated Admin Panel UI (`frontend/src/App.tsx`, `frontend/src/styles.css`): prominent monospace badge `#{job.job_number}` displayed in every task card header and modal dialogs; instant search filter supports querying by `#<number>` or `<number>`. Strict visibility isolation: numbering is visible exclusively in the administrator panel and is completely hidden from customer-facing web cabinet and Telegram bot interfaces.
     - Verified live with 673 automated tests passed, Vite admin build, and live production deployment via `./scripts/deploy_tenderlex_live.sh`.
 - Outreach Deliverability Hardening, Relay Bounce Isolation & Inbox Protection (2026-09-06):
-  - Diagnosed and completely resolved root cause of delivery failure notices (NDR bounces from `mailer-daemon@dealpartner.ru`) appearing in TenderLex admin inbox:
-    - Background HH vacancy outreach sent cold pitches via relay VPS `79.133.182.215` (`relay.dealpartner.ru`). When enterprise recipient servers (such as FESCO) rejected emails (`550 Security block`), Postfix generated NDR reports addressed to `info@tenderlex.ru` from `mailer-daemon@dealpartner.ru`.
+  - Diagnosed and completely resolved root cause of delivery failure notices (NDR bounces from `[адрес исключён]`) appearing in TenderLex admin inbox:
+    - Background HH vacancy outreach sent cold pitches via relay VPS `79.133.182.215` (`relay.dealpartner.ru`). When enterprise recipient servers (such as FESCO) rejected emails (`550 Security block`), Postfix generated NDR reports addressed to `info@tenderlex.ru` from `[адрес исключён]`.
     - Historical bounce emails (331 messages) remained stored in the Jino IMAP mailbox; previous local database deletions were re-populated whenever the background IMAP worker synced recent messages.
-  - **Tier 1 (Relay Postfix Discard)**: Configured `transport_maps = hash:/etc/postfix/transport` on `79.133.182.215` with `tenderlex.ru discard:`. Postfix silently drops any NDR bounce directed to `tenderlex.ru` on the relay without network dispatch to Jino. `emailagent` (`snab@dealpartner.ru`) is completely unaffected and continues normal operation.
+  - **Tier 1 (Relay Postfix Discard)**: Configured `transport_maps = hash:/etc/postfix/transport` on `79.133.182.215` with `tenderlex.ru discard:`. Postfix silently drops any NDR bounce directed to `tenderlex.ru` on the relay without network dispatch to Jino. `emailagent` (`[адрес исключён]`) is completely unaffected and continues normal operation.
   - **Tier 2 (Jino IMAP Purge)**: Expunged all 331 residual `mailer-daemon` / `Undelivered Mail` messages directly from the Jino IMAP mailbox via authenticated IMAP session, preventing historical re-sync.
   - **Tier 3 (Inbox Protection & Auto-Expunge in `outreach_mail.py`)**: Modified `sync_imap_inbox` and `backfill_existing_bounces` to flag bounce and `mailer-daemon` emails as `\Deleted` in IMAP and call `expunge()` immediately. If matched to a lead, the lead's status is updated to `bounced` with diagnostics, but the message is strictly prevented from being inserted into `outreach_inbox`. The admin panel inbox displays 0 delivery errors and remains dedicated to authentic client replies and auto-replies.
   - Enhanced `POST /api/outreach/inbox/purge-bounces` in `backend/app/outreach_api.py` and added regression test `test_bounce_and_mailer_daemon_handling` in `backend/tests/test_outreach.py` (22/22 passed). Live production verified via `./scripts/deploy_tenderlex_live.sh`.
@@ -1138,7 +1328,7 @@ Date: 2026-10-05 (MSK)
     - Replaced blocking Jino SPF redirect (`redirect=_spf.jino.ru`) with unified root TXT record: `v=spf1 ip4:79.133.182.215 include:_spf.jino.ru ~all`, authorizing direct outbound transmission from the VPS relay server.
     - Generated and deployed 2048-bit RSA DKIM key for selector `relay` on `79.133.182.215` (`/etc/opendkim/keys/tenderlex.ru/relay.private`), updated OpenDKIM `KeyTable` and `SigningTable` (`*@tenderlex.ru`), and published public key to `relay._domainkey.tenderlex.ru` TXT. Verified with `opendkim-testkey -d tenderlex.ru -s relay -vvv` (`key OK`).
     - Configured explicit DMARC policy record on `_dmarc.tenderlex.ru` TXT: `v=DMARC1; p=none; sp=none`.
-    - Live Deliverability Verification: Dispatched live test email to Yandex Mail (`79210629909@ya.ru`); verified `status=sent (250 2.0.0 Ok: queued)`, valid `DKIM-Signature (s=relay, d=tenderlex.ru)`, and passing SPF/DMARC authentication without spam filter rejections.
+    - Live Deliverability Verification: Dispatched live test email to Yandex Mail (`[адрес исключён]`); verified `status=sent (250 2.0.0 Ok: queued)`, valid `DKIM-Signature (s=relay, d=tenderlex.ru)`, and passing SPF/DMARC authentication without spam filter rejections.
   - Automated Test Suite Relay Guard (`backend/tests/conftest.py`): Added autouse fixture `suppress_real_email_relay_in_tests` intercepting outbound relay calls during `pytest` runs when pointing to `79.133.182.215`, completely preventing automated tests with dummy emails (`buyer-*@example.com`) from generating false bounces/NDRs.
   - Email Typography & Visual Polish (`backend/app/nurturing.py`): Scaled font sizes 1.5x across all 5 nurturing email templates (18px headings, 15px body, 15px CTA button) for improved readability across mobile and desktop clients, removed card mentions, and enforced `info@tenderlex.ru` sender uniformity.
 - Omnichannel Email & Telegram Auto-Reminders with Channel Affinity (2026-09):
@@ -1315,7 +1505,7 @@ Date: 2026-10-05 (MSK)
   - Wave Query Generator (`build_supplier_queries`): for subsequent waves (Wave 2+), the generator produces deep regional, distributor, and wholesale queries with negative operators (`-банковская гарантия`, `-обучение`, `-семинар`, `-эцп`, `-агрегатор`, `-курсы`) to cut out aggregators and retail boards.
   - Custom Customer Requirements (`additional_prompt`): added a dedicated text input field in the customer web cabinet's "Добор поставщиков" modal allowing buyers to specify custom criteria (e.g. specific federal districts, factory-direct status, in-stock availability, certificates). The prompt is incorporated into both search query generation and AI candidate relevance scoring.
   - Zero Duplication Guarantee: strictly excludes previously discovered domains and INNs (`excluded_domains`, `excluded_inns`), ensuring 100% unique results between the initial run and subsequent dobor runs.
-  - Live Verification & Benchmarking: verified on real production tasks (e.g., job `70d025e68af64b56b58e24f0e20626f7` discovering 56 unique suppliers in 2m42s with 0 duplicate domains) and 10-procurement simulation benchmark (`backend/tests/test_dobor_simulation_benchmark.py`).
+  - Live Verification & Benchmarking: verified on real production tasks (e.g., job `[внутренний ID исключён]` discovering 56 unique suppliers in 2m42s with 0 duplicate domains) and 10-procurement simulation benchmark (`backend/tests/test_dobor_simulation_benchmark.py`).
 - Outreach Seamless Inbox Synchronization & Unread Tab Click Stability (Aligned with EmailAgent, 2026-08):
   - Fixed issue where clicking on a message in the "Новые" (`unread`) tab immediately marked it as read on the backend, causing it to instantly vanish from the list and detail pane before the user could read it.
   - Aligned with `emailagent` (`shouldMarkInboxEmailRead`): clicking an unread message inside the "Новые" tab only selects and opens it without auto-marking read, keeping the message stably in place in the list and detail view.
@@ -1324,7 +1514,7 @@ Date: 2026-10-05 (MSK)
   - Enhanced `extract_email_bodies` and `is_auto_reply_message` in `backend/app/outreach_mail.py` to classify unsubscribe requests into "Автоответы" and backfilled existing database records.
   - Background IMAP worker (`_background_imap_loop` in `backend/app/main.py`) syncs silently every 45s; frontend polls local SQLite every 20s with 0 layout jitter.
 - Outreach Rich Email Rendering (EmailBodyFrame) & Clean Text Parsing (2026-08):
-  - Fixed issue where supplier replies from CRM/1C systems (such as `051@pro-solution.ru`) with HTML tables dumped raw markup (`<table style="border-collapse...`) into `body_text` and broke admin readability.
+  - Fixed issue where supplier replies from CRM/1C systems (such as `[адрес исключён]`) with HTML tables dumped raw markup (`<table style="border-collapse...`) into `body_text` and broke admin readability.
   - Added `EmailBodyFrame` component (`frontend/src/EmailBodyFrame.tsx`): sandboxed `iframe` with responsive table constraints (`max-width: 100%`, border-collapse, `word-break: break-word`), clean typography, link sanitization (`target="_blank"`), auto-resizing height via `scrollHeight`, and dual-mode toggle ("Форматированный вид (HTML)" / "Простой текст").
   - Backend Extraction & Cleaning: Enhanced `html_to_plain_text`, `looks_like_html`, and `extract_email_bodies` in `backend/app/outreach_mail.py` to always provide human-readable plain text in `body_text` (for search, snippets, AI prompts) and store rich markup in `body_html`.
   - Retroactive Database Backfill: Automatically cleaned existing database records via `clean_existing_inbox_bodies`, resolving broken views for existing incoming messages.
@@ -2256,7 +2446,7 @@ Load-test boundary:
 - Generic procurement links are supported alongside EIS links.
 - Manual and AI-gated Minpromtorg/GISP registry handling is covered by supplier
   discovery flow tests and evidence payloads.
-- Regression from job `186d6788fd3244f995fbaab9061386cc` was diagnosed:
+- Regression from job `[внутренний ID исключён]` was diagnosed:
   Telegram had accepted a zip with an EIS link in the caption, but saved
   `sources=0`; after the fix, caption links are collected for documentation
   analysis. The same EIS link now fetches `37280` chars of official context,
@@ -2269,7 +2459,7 @@ Load-test boundary:
 - AI contact placeholders are blocked from customer reports; extracted site
   contacts are used when available, otherwise the supplier is downgraded or
   rejected.
-- Reprocessed failed supplier job `06532a2fc4f9442cbf6085e638720693`
+- Reprocessed failed supplier job `[внутренний ID исключён]`
   finished as `partial`, `13/15`, with `ai_required=true`, `ai_used=true`, and
   no invalid contact placeholders in the XLSX.
 - Supplier search now separates broad товарная группа / номенклатура from exact

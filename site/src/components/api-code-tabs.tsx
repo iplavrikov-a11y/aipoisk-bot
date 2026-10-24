@@ -9,9 +9,13 @@ const CODE_EXAMPLES: Record<CodeLang, { label: string; icon: string; code: strin
   curl: {
     label: "cURL",
     icon: "terminal",
-    code: `# 1. Поиск поставщиков по ТЗ
+    code: `# Каждая новая операция имеет свой Idempotency-Key.
+# При повторе после таймаута сохраните прежний ключ и тело.
+# Задайте собственный уникальный ключ для каждой операции.
+# 1. Поиск поставщиков по ТЗ
 curl -X POST https://tenderlex.ru/api/v1/mcp/suppliers/search \\
   -H "Authorization: Bearer tl_live_YOUR_API_KEY" \\
+  -H "Idempotency-Key: REPLACE_WITH_UNIQUE_OPERATION_ID" \\
   -H "Content-Type: application/json" \\
   -d '{
     "specification": "Кабель ВВГнг-LS 3х2.5 ГОСТ 31996-2012, 1200 м",
@@ -23,6 +27,7 @@ curl -X POST https://tenderlex.ru/api/v1/mcp/suppliers/search \\
 # 2. Подбор товара и аналогов по ТЗ
 curl -X POST https://tenderlex.ru/api/v1/mcp/products/exact-analogs \\
   -H "Authorization: Bearer tl_live_YOUR_API_KEY" \\
+  -H "Idempotency-Key: REPLACE_WITH_UNIQUE_OPERATION_ID" \\
   -H "Content-Type: application/json" \\
   -d '{
     "specification": "Насос центробежный консольный подача 50 м3/ч напор 32м",
@@ -32,6 +37,7 @@ curl -X POST https://tenderlex.ru/api/v1/mcp/products/exact-analogs \\
 # 3. Анализ документации и рисков закупки
 curl -X POST https://tenderlex.ru/api/v1/mcp/procurements/analyze \\
   -H "Authorization: Bearer tl_live_YOUR_API_KEY" \\
+  -H "Idempotency-Key: REPLACE_WITH_UNIQUE_OPERATION_ID" \\
   -H "Content-Type: application/json" \\
   -d '{
     "document_text": "Проект контракта: срок поставки 5 рабочих дней, штраф 0.5% в день..."
@@ -41,16 +47,18 @@ curl -X POST https://tenderlex.ru/api/v1/mcp/procurements/analyze \\
     label: "Python",
     icon: "code",
     code: `import httpx
+import uuid
 
 API_KEY = "tl_live_YOUR_API_KEY"
 BASE_URL = "https://tenderlex.ru/api/v1/mcp"
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
     "Content-Type": "application/json",
+    "Idempotency-Key": str(uuid.uuid4()),
 }
 
 # Поиск поставщиков и заводов по ТЗ
-with httpx.Client(timeout=60.0) as client:
+with httpx.Client(timeout=300.0) as client:
     response = client.post(
         f"{BASE_URL}/suppliers/search",
         headers=HEADERS,
@@ -72,7 +80,9 @@ with httpx.Client(timeout=60.0) as client:
   nodejs: {
     label: "Node.js",
     icon: "code",
-    code: `const API_KEY = "tl_live_YOUR_API_KEY";
+    code: `import { randomUUID } from "node:crypto";
+
+const API_KEY = "tl_live_YOUR_API_KEY";
 const BASE_URL = "https://tenderlex.ru/api/v1/mcp";
 
 async function findSuppliers() {
@@ -81,6 +91,7 @@ async function findSuppliers() {
     headers: {
       "Authorization": \`Bearer \${API_KEY}\`,
       "Content-Type": "application/json",
+      "Idempotency-Key": randomUUID(),
     },
     body: JSON.stringify({
       specification: "Кабель ВВГнг-LS 3х2.5 ГОСТ 31996-2012, 1200 м",
@@ -117,6 +128,7 @@ findSuppliers().catch(console.error);`,
     Заголовки = Новый Соответствие();
     Заголовки.Вставить("Authorization", "Bearer " + Токен);
     Заголовки.Вставить("Content-Type", "application/json; charset=utf-8");
+    Заголовки.Вставить("Idempotency-Key", Строка(Новый УникальныйИдентификатор()));
     
     // Формируем тело запроса
     ТелоСтруктура = Новый Структура();

@@ -19,12 +19,29 @@ from app.supplier_search import (
     _parse_yandex_xml,
     _provider_order,
     _product_phrases,
+    _is_strong_product_phrase,
     assess_candidate_match,
     extract_company_name,
 )
 
 
 class SearchSourceTests(unittest.TestCase):
+    def test_strong_product_phrase_is_semantic_not_a_named_product_whitelist(self) -> None:
+        for phrase in (
+            "швеллер горячекатаный строительный",
+            "реагент химический лабораторный",
+            "программное обеспечение серверное",
+        ):
+            self.assertTrue(_is_strong_product_phrase(phrase), phrase)
+
+        for phrase in (
+            "Наименование параметра",
+            "Функциональные характеристики",
+            "далее оборудование",
+            "ООО Поставщик генеральный директор",
+        ):
+            self.assertFalse(_is_strong_product_phrase(phrase), phrase)
+
     def test_provider_order_defaults_to_yandex_google_then_auxiliary_sources(self) -> None:
         settings = SimpleNamespace(supplier_search_provider_order="")
 

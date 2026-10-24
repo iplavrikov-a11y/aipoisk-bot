@@ -100,6 +100,11 @@ class WebPasswordResetComplete(BaseModel):
     note: str = ""
 
 
+class WebPasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+    new_password: str = Field(min_length=8, max_length=256)
+
+
 class ClientCreate(BaseModel):
     telegram_id: str = ""
     name: str = ""
