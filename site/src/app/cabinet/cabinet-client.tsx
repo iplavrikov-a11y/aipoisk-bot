@@ -459,7 +459,7 @@ const modeCopy: Record<Scenario, {
     mode: "price_monitoring",
     formSubtitle: "Загрузите файл спецификации или ТЗ (XLSX, DOCX, PDF) либо вставьте список позиций текстом для поиска актуальных цен поставщиков.",
     uploadTitle: "Загрузить спецификацию или ТЗ",
-    uploadText: "Перетащите файлы сюда или нажмите для выбора (XLSX, DOCX, PDF, TXT, ZIP)",
+    uploadText: "Перетащите файлы сюда или нажмите для выбора (XLSX, DOCX, PDF, TXT, ZIP). Оптимально до 1 000 строк в файле.",
     multipleFiles: true,
     textLabel: "Или вставьте список позиций текстом",
     textPlaceholder: "Например:\n1. Кислород газообразный технический, м3\n2. Подшипник 13630, шт\n3. Печь для бани Атмосфера М",
@@ -687,13 +687,26 @@ function pluralizeRu(value: number, [one, few, many]: [string, string, string]) 
 }
 
 function parseError(raw: string) {
+  const str = String(raw || "").trim();
+  if (str.includes("502 Bad Gateway")) {
+    return "Сервер временно обновляется или перезагружается (502 Bad Gateway). Пожалуйста, подождите пару секунд и повторите.";
+  }
+  if (str.includes("504 Gateway Time-out") || str.includes("504 Gateway Timeout")) {
+    return "Время ожидания ответа сервера истекло (504 Gateway Timeout). Попробуйте разбить файл на части или повторите попытку.";
+  }
+  if (str.includes("500 Internal Server Error")) {
+    return "Внутренняя ошибка сервера (500). Пожалуйста, повторите попытку позже.";
+  }
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(str);
     if (typeof parsed?.detail === "string") return parsed.detail;
   } catch {
-    return raw;
+    if (/<html|<!DOCTYPE|<head|<body/i.test(str)) {
+      return "Ошибка связи с сервером. Пожалуйста, повторите попытку через несколько секунд.";
+    }
+    return str || "Ошибка запроса";
   }
-  return raw || "Ошибка запроса";
+  return str || "Ошибка запроса";
 }
 
 function filenameFromResponse(response: Response, fallback: string) {
@@ -1221,6 +1234,8 @@ export function CabinetClient() {
   const [exactSelectionSubmittingJobId, setExactSelectionSubmittingJobId] = useState<string | null>(null);
   const dismissedExactSelectionJobIdsRef = useRef<Set<string>>(new Set());
   const exactSelectionStateRef = useRef<Map<string, string[]>>(new Map());
+  const [selectionSearchQuery, setSelectionSearchQuery] = useState("");
+  const [selectionVisibleLimit, setSelectionVisibleLimit] = useState(50);
 
   function markStrategyDismissed(jobId: string) {
     dismissedStrategyJobIdsRef.current.add(jobId);
@@ -1268,6 +1283,8 @@ export function CabinetClient() {
     const initial = (remembered || selection.selected_ids || []).filter((id) => itemIds.has(id));
     setSelectedExactItemIds(initial);
     setExactSelectionError("");
+    setSelectionSearchQuery("");
+    setSelectionVisibleLimit(50);
     setExactSelectionJob(job);
   }
 
@@ -3710,15 +3727,17 @@ export function CabinetClient() {
           <div className="hidden md:grid grid-cols-12 gap-4 pb-3 border-b border-slate-200 text-[11px] font-bold text-slate-400 uppercase tracking-wider px-4">
             <span className="col-span-3">Задача</span>
             <span className="col-span-2">Режим</span>
-            <span className="col-span-1">Статус</span>
+            <span className="col-span-2">Статус</span>
             <span className="col-span-2">Прогресс</span>
-            <span className="col-span-4 text-right">Результат</span>
+            <span className="col-span-3 text-right">Результат</span>
           </div>
 
           {jobs.length ? (
             jobs.map((job) => {
               const offer = (job as unknown as { result_offer?: { kind?: string; can_accept?: boolean; can_decline?: boolean } }).result_offer;
               const isFailed = job.status === "failed" || job.status === "error";
+              const isCancelledOrDeclined = job.status === "cancelled" || job.status === "customer_declined";
+              const isExpired = job.status === "confirmation_expired" || job.status === "delivery_expired";
               const isPending = job.status === "pending" || job.status === "running";
               const isAwaiting = job.status === "awaiting_customer_confirmation";
               const isAwaitingExactSelection = isAwaitingPositionSelection(job);
@@ -3776,13 +3795,17 @@ export function CabinetClient() {
                     ) : null}
                   </div>
 
-                  <div className="col-span-6 md:col-span-1 flex flex-col gap-1 min-w-0">
+                  <div className="col-span-6 md:col-span-2 flex flex-col items-start gap-1 min-w-0">
                     <span
-                      className={`inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-bold border w-max max-w-full ${
+                      className={`inline-flex items-center justify-center text-center px-2.5 py-0.5 rounded-full text-[11px] font-bold border whitespace-nowrap leading-tight w-max max-w-full ${
                         job.status_label === "нет в реестре"
                           ? "bg-slate-100 text-slate-700 border-slate-300"
                           : isFailed
                           ? "bg-rose-50 text-rose-700 border-rose-200"
+                          : isCancelledOrDeclined
+                          ? "bg-slate-100 text-slate-600 border-slate-200"
+                          : isExpired
+                          ? "bg-amber-50 text-amber-700 border-amber-200"
                           : isPending
                           ? "bg-amber-50 text-amber-800 border-amber-200 animate-pulse"
                           : isAwaiting || isAwaitingExactSelection
@@ -3812,8 +3835,8 @@ export function CabinetClient() {
                     <span className="text-[11px] text-slate-600 leading-snug truncate">{job.message || `${job.progress}%`}</span>
                   </div>
 
-                  <div className="col-span-12 md:col-span-4 flex flex-wrap items-center gap-1.5 md:justify-end min-w-0">
-                    {isFailed ? (
+                  <div className="col-span-12 md:col-span-3 flex flex-wrap items-center gap-1.5 md:justify-end min-w-0">
+                    {isFailed || isExpired || isCancelledOrDeclined ? (
                       <>
                         {job.mode === "supplier_search" && (job.supplier_search_policy === "minprom_registry_only" || job.error?.toLowerCase().includes("реестр") || job.message?.toLowerCase().includes("реестр")) ? (
                           <button
@@ -5133,6 +5156,31 @@ export function CabinetClient() {
         const groupCount = selectionGroups.length;
         const canSelectAll = selection.items.length <= selection.max_positions;
         const submitting = exactSelectionSubmittingJobId === exactSelectionJob.id;
+
+        const searchNorm = selectionSearchQuery.trim().toLowerCase();
+        const matchesSearch = (item: PositionSelection["items"][number]) => {
+          if (!searchNorm) return true;
+          if (item.name?.toLowerCase().includes(searchNorm)) return true;
+          if (item.source_excerpt?.toLowerCase().includes(searchNorm)) return true;
+          const reqText = selectionRequirementsText(item.requirements).toLowerCase();
+          return reqText.includes(searchNorm);
+        };
+
+        const filteredGroups = selectionGroups
+          .map((g) => ({ ...g, items: g.items.filter(matchesSearch) }))
+          .filter((g) => g.items.length > 0);
+
+        const totalFilteredItems = filteredGroups.reduce((acc, g) => acc + g.items.length, 0);
+
+        let runningCount = 0;
+        const visibleGroups = filteredGroups
+          .map((g) => {
+            if (runningCount >= selectionVisibleLimit) return null;
+            const sliceEnd = Math.min(g.items.length, selectionVisibleLimit - runningCount);
+            runningCount += sliceEnd;
+            return { ...g, items: g.items.slice(0, sliceEnd) };
+          })
+          .filter((g): g is NonNullable<typeof g> => g !== null && g.items.length > 0);
         return (
           <div
             className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
@@ -5180,9 +5228,57 @@ export function CabinetClient() {
                   </p>
                 </div>
 
+                {/* Поиск по позициям */}
+                {selection.items.length > 8 ? (
+                  <div className="relative">
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
+                    <input
+                      type="text"
+                      value={selectionSearchQuery}
+                      onChange={(e) => setSelectionSearchQuery(e.target.value)}
+                      placeholder="Быстрый поиск по названию, характеристикам или фрагменту ТЗ..."
+                      className="w-full pl-8.5 pr-8 py-2 bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 focus:border-teal-500 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/20 transition-all"
+                    />
+                    {selectionSearchQuery ? (
+                      <button
+                        type="button"
+                        onClick={() => setSelectionSearchQuery("")}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs p-1"
+                        aria-label="Очистить поиск"
+                      >
+                        ✕
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                  <span className="font-semibold text-slate-600">В ТЗ: {selection.items.length} товарных строк · Единицы: {units.size ? Array.from(units).join(", ") : "не указаны"}{groupCount ? ` · Категорий: ${groupCount}` : ""}</span>
-                  <div className="flex items-center gap-2">
+                  <span className="font-semibold text-slate-600">
+                    В ТЗ: {selection.items.length} товарных строк
+                    {selectionSearchQuery ? ` · Найдено: ${totalFilteredItems}` : ""}
+                    · Единицы: {units.size ? Array.from(units).join(", ") : "не указаны"}
+                    {groupCount ? ` · Категорий: ${groupCount}` : ""}
+                  </span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {!canSelectAll ? (
+                      <>
+                        <button
+                          type="button"
+                          className="font-bold text-teal-700 hover:text-teal-900 underline cursor-pointer disabled:text-slate-400 disabled:no-underline"
+                          onClick={() => {
+                            const next = selection.items.slice(0, selection.max_positions).map((item) => item.id);
+                            setSelectedExactItemIds(next);
+                            exactSelectionStateRef.current.set(exactSelectionKey(exactSelectionJob), next);
+                            setExactSelectionError("");
+                          }}
+                          disabled={submitting}
+                          title={`Выбрать первые ${selection.max_positions} позиций по порядку`}
+                        >
+                          Выбрать первые {selection.max_positions}
+                        </button>
+                        <span className="text-slate-300">·</span>
+                      </>
+                    ) : null}
                     <button
                       type="button"
                       className="font-bold text-teal-700 hover:text-teal-900 disabled:text-slate-400 disabled:no-underline underline cursor-pointer disabled:cursor-not-allowed"
@@ -5213,10 +5309,10 @@ export function CabinetClient() {
                     </button>
                   </div>
                 </div>
-                {!canSelectAll ? <p className="-mt-2 text-[11px] text-amber-800">В спецификации больше {selection.max_positions} позиций, поэтому выберите нужные вручную. Скрытого автоматического выбора нет.</p> : null}
+                {!canSelectAll ? <p className="-mt-2 text-[11px] text-amber-800">В спецификации больше {selection.max_positions} позиций, поэтому выберите нужные вручную или нажмите «Выбрать первые {selection.max_positions}».</p> : null}
 
                 <div className="space-y-3" role="group" aria-label={isPriceMonitoring ? "Позиции для мониторинга цен" : "Позиции для подбора"}>
-                  {selectionGroups.map((group) => {
+                  {visibleGroups.map((group) => {
                     const groupItemIds = group.items.map((item) => item.id);
                     const groupSelected = groupItemIds.length > 0 && groupItemIds.every((itemId) => selectedExactItemIds.includes(itemId));
                     const wouldExceedLimit = !groupSelected && new Set([...selectedExactItemIds, ...groupItemIds]).size > selection.max_positions;
@@ -5263,6 +5359,29 @@ export function CabinetClient() {
                     );
                   })}
                 </div>
+
+                {/* Пагинация и подгрузка при большом количестве строк */}
+                {totalFilteredItems > runningCount ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-slate-100 rounded-2xl text-xs text-slate-600">
+                    <span>Показано {runningCount} из {totalFilteredItems} позиций</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="px-3 py-1.5 bg-white border border-slate-300 hover:border-teal-500 rounded-lg font-bold text-teal-800 hover:bg-slate-50 cursor-pointer text-xs transition-colors"
+                        onClick={() => setSelectionVisibleLimit((v) => v + 50)}
+                      >
+                        Показать ещё 50
+                      </button>
+                      <button
+                        type="button"
+                        className="px-3 py-1.5 bg-white border border-slate-300 hover:border-teal-500 rounded-lg font-bold text-teal-800 hover:bg-slate-50 cursor-pointer text-xs transition-colors"
+                        onClick={() => setSelectionVisibleLimit(totalFilteredItems)}
+                      >
+                        Показать все ({totalFilteredItems})
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               {exactSelectionError ? <div role="alert" className="mx-6 mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 flex items-center gap-2"><AlertTriangle size={15} aria-hidden="true" /><span>{exactSelectionError}</span></div> : null}
@@ -5306,6 +5425,8 @@ export function CabinetClient() {
                       ? "Повторить подбор товара и аналогов?"
                       : retryConfirmJob.mode === "procurement_report"
                       ? "Повторить анализ документации?"
+                      : retryConfirmJob.mode === "price_monitoring"
+                      ? "Повторить мониторинг цен?"
                       : "Повторить поиск поставщиков?"}
                   </h2>
                   <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5 max-w-md">
@@ -5436,6 +5557,16 @@ export function CabinetClient() {
                   </div>
                   <p className="text-slate-600 leading-relaxed font-normal">
                     Система заново проверит техническое задание, нормативные требования (ГОСТ/ТУ) и сформирует готовый отчёт в формате Word (.docx).
+                  </p>
+                </div>
+              ) : retryConfirmJob.mode === "price_monitoring" ? (
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-700 space-y-2">
+                  <div className="flex items-center gap-2 font-bold text-slate-900">
+                    <Sparkles size={16} className="text-teal-600 shrink-0" aria-hidden="true" />
+                    <span>Повторный мониторинг цен поставщиков</span>
+                  </div>
+                  <p className="text-slate-600 leading-relaxed font-normal">
+                    Система заново выделит позиции спецификации и откроет окно выбора строк для мониторинга цен.
                   </p>
                 </div>
               ) : (
