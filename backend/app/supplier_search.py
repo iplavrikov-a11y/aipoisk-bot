@@ -1723,19 +1723,26 @@ async def build_supplier_queries(
                     queries = revised
             if delivery_city:
                 nearby = get_cities_within_radius(delivery_city, geo_radius_km or 300)
-                target_items = [it.name for it in profile.items[:3]] if (profile and profile.items) else [_clean_query_item(context[:100])]
+                if profile and profile.items:
+                    items_limit = len(profile.items) if multi_item_mode == 'per_item' else min(6, len(profile.items))
+                    target_items = [it.name for it in profile.items[:items_limit]]
+                else:
+                    target_items = [_clean_query_item(context[:100])]
                 geo_injections = []
                 for item_name in target_items:
-                    clean_it = " ".join(item_name.split()[:4])
-                    geo_injections.append(f"{clean_it} {delivery_city} официальный дилер")
-                    geo_injections.append(f"{clean_it} {delivery_city} купить оптом склад")
+                    clean_it = ' '.join(item_name.split()[:4])
+                    geo_injections.append(f'{clean_it} {delivery_city} официальный дилер')
+                    geo_injections.append(f'{clean_it} {delivery_city} купить оптом склад')
                     for n_city in nearby[:2]:
                         if n_city != delivery_city.lower():
-                            geo_injections.append(f"{clean_it} {n_city} поставщик опт")
+                            geo_injections.append(f'{clean_it} {n_city} поставщик опт')
                 queries = _clean_supplier_queries(geo_injections + queries)
-            max_queries = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == "per_item") else 28
+            base_cap = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == 'per_item') else 28
             if delivery_city:
-                max_queries += 6
+                geo_extra = min(24, 4 * len(target_items)) if (profile and profile.items) else 6
+                max_queries = base_cap + geo_extra
+            else:
+                max_queries = base_cap
             return queries[:max_queries]
         except Exception as exc:
             last_error = exc

@@ -97,7 +97,7 @@ def test_report_discloses_snippet_evidence_and_retrieval_time(tmp_path):
     path = tmp_path / "provenance.xlsx"
     generate_price_monitoring_excel([item], str(path))
     wb = openpyxl.load_workbook(path)
-    notes = wb["Детализированный реестр"]["M2"].value
+    notes = wb["Детализированный реестр"]["N2"].value
     assert "сниппет" in notes.lower()
     assert "2026-10-21" in notes
     comments = [cell.comment.text for row in wb["Пример отчета"] for cell in row if cell.comment]

@@ -249,8 +249,8 @@ def test_12_positions_e2e_pipeline_and_report():
 
         # Check suppliers columns populated in row 2
         assert ws_details.cell(row=2, column=6).value == "ООО ПромПоставка 1"
-        assert ws_details.cell(row=2, column=15).value == "ЗАО ЗаводСнаб 1"
-        assert ws_details.cell(row=2, column=24).value == "ТД ОптТорг 1"
+        assert ws_details.cell(row=2, column=16).value == "ЗАО ЗаводСнаб 1"
+        assert ws_details.cell(row=2, column=26).value == "ТД ОптТорг 1"
 
 
 def test_city_aware_price_monitoring():

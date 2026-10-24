@@ -466,6 +466,9 @@ def generate_price_monitoring_excel(
                 runs: list[TextBlock] = []
                 line1 = c_display + (f" | ИНН {q.inn}" if q.inn else "")
                 header_text = line1 + "\n"
+                if q.supplier_city:
+                    dist_info = f" (~{q.supplier_distance_km} км)" if q.supplier_distance_km is not None else ""
+                    header_text += f"📍 {q.supplier_city}{dist_info}\n"
                 if phone_str:
                     header_text += phone_str + "\n"
                 runs.append(TextBlock(font_rich_regular, header_text))
@@ -572,6 +575,7 @@ def generate_price_monitoring_excel(
             f"ИНН {s_idx}",
             f"КПП {s_idx}",
             f"Контакты {s_idx}",
+            f"Город и расстояние {s_idx}",
             f"Цена {s_idx} (руб)",
             f"Исходная цена на сайте {s_idx}",
             f"Ед. на сайте {s_idx}",
@@ -606,19 +610,28 @@ def generate_price_monitoring_excel(
         for s_idx in range(1, max_suppliers + 1):
             if s_idx <= len(display_quotes):
                 q = display_quotes[s_idx - 1]
+                loc_val = "—"
+                if q.supplier_city and q.supplier_distance_km is not None:
+                    loc_val = f"{q.supplier_city} (~{q.supplier_distance_km} км)"
+                    if q.supplier_distance_radius_status == "outside_radius":
+                        loc_val += " (вне радиуса)"
+                elif q.supplier_city:
+                    loc_val = q.supplier_city
+
                 row_vals.extend([
                     q.company_name or "-",
                     q.inn or "-",
                     q.kpp or "-",
                     q.contacts or "-",
+                    loc_val,
                     q.price_rub if q.price_rub > 0 else "по запросу",
                     q.raw_price_rub if q.raw_price_rub > 0 else "-",
                     q.site_unit or "-",
-                    "; ".join(filter(None, [q.conversion_comment, q.comment, _quote_geo_note(q), _quote_evidence_note(q)])),
+                    "; ".join(filter(None, [q.conversion_comment, q.comment, _quote_evidence_note(q)])),
                     q.url,
                 ])
             else:
-                row_vals.extend(["-", "-", "-", "-", "-", "-", "-", "-", "-"])
+                row_vals.extend(["-", "-", "-", "-", "-", "-", "-", "-", "-", "-"])
         ws2.append(row_vals)
         ws2.cell(row=row_num, column=2).comment = Comment(_source_position_note(item), "TenderLex")
         for col_idx in range(1, len(headers_reg) + 1):
@@ -629,7 +642,7 @@ def generate_price_monitoring_excel(
                 strong_sources = len(display_quotes) >= 3 and all(q.evidence_level == "page_content" for q in display_quotes)
                 cell.font = Font(name="Calibri", bold=True, color="166534" if strong_sources else "92400E" if display_quotes else "64748B")
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-            elif col_idx > 5 and (col_idx - 5) % 9 == 0:  # Ссылка
+            elif col_idx > 5 and (col_idx - 5) % 10 == 0:  # Ссылка
                 val = str(cell.value or "")
                 if val.startswith("http"):
                     cell.hyperlink = val
