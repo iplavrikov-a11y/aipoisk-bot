@@ -813,11 +813,107 @@ def _process_job_sync(job_id: str) -> None:
         if job:
             release_job_reservation(db, job, note="Резерв возвращён: задача завершилась ошибкой")
             _persist_failure_evidence(db, job, exc, stage=stage)
-            _set_job(db, job, status="failed", progress=100, message="Ошибка обработки", error=str(exc))
+            fail_msg = (
+                "В файле нет позиций для поиска"
+                if (
+                    "не найдены" in str(exc).lower()
+                    or "нет закупаемых позиций" in str(exc).lower()
+                    or "0 items" in str(exc).lower()
+                    or "пустой бланк" in str(exc).lower()
+                    or "пустая форма" in str(exc).lower()
+                )
+                else "Ошибка обработки"
+            )
+            _set_job(db, job, status="failed", progress=100, message=fail_msg, error=str(exc))
             job.completed_at = now_utc()
             db.commit()
     finally:
         db.close()
+
+
+def sanitize_customer_error(error: str, *, mode: str = "", message: str = "") -> str:
+    raw = str(error or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    msg_lowered = str(message or "").lower()
+
+    if (
+        "0 items" in lowered
+        or "нет закупаемых позиций" in lowered
+        or "не найдены закупаемые позиции" in lowered
+        or "не найдены товары" in lowered
+        or "нет позиций" in lowered
+        or "нет позиций" in msg_lowered
+        or "пустой бланк" in lowered
+        or "пустая форма" in lowered
+        or "шаблон" in lowered
+        or "нет содержательного текста" in lowered
+        or "в загруженных документах отсутствует текст" in lowered
+        or "procurement profile" in lowered
+    ):
+        return (
+            "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+            "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров текстом."
+        )
+
+    if "реестр" in lowered or "реестр" in msg_lowered:
+        return (
+            "В реестре Минпромторга (ГИСП) подтверждённые производители не найдены. "
+            "Вы можете запустить обычный поиск поставщиков по открытому рынку."
+        )
+
+    if (
+        "не удалось прочитать" in lowered
+        or "поврежден" in lowered
+        or "corrupt" in lowered
+        or "bad zip" in lowered
+        or "pdf_type" in lowered
+        or "cannot read" in lowered
+    ):
+        return (
+            "Не удалось прочитать загруженный файл. Убедитесь, что файл не повреждён и не защищён паролем, "
+            "или загрузите файл в формате Excel, Word или PDF."
+        )
+
+    if "candidate reranking" in lowered or "reranker" in lowered:
+        return (
+            "Не удалось надёжно отобрать подходящие сайты поставщиков. Баланс не списан (0 ₽). "
+            "Пожалуйста, повторите попытку через пару минут."
+        )
+
+    if "supplier query generation" in lowered:
+        return (
+            "Не удалось подготовить поисковые запросы для поставщиков. Баланс не списан (0 ₽). "
+            "Пожалуйста, повторите попытку через пару минут."
+        )
+
+    if (
+        "timeout" in lowered
+        or "timed out" in lowered
+        or "deadline exceeded" in lowered
+        or "ai provider" in lowered
+        or "tried models:" in lowered
+        or "rate limit" in lowered
+        or "overloaded" in lowered
+        or "503" in lowered
+        or "502" in lowered
+    ):
+        return (
+            "Временная задержка сервиса анализа. Баланс не списан (0 ₽). "
+            "Пожалуйста, повторите попытку через пару минут."
+        )
+
+    if any(k in lowered for k in ("traceback", "runtimeerror", "keyerror", "valueerror", "syntaxerror", "exception", "{", "}", "['")):
+        return (
+            "Не удалось обработать задачу из-за технического сбоя. Баланс не списан (0 ₽). "
+            "Пожалуйста, попробуйте перезапустить задачу."
+        )
+
+    if len(raw) <= 300 and not any(ch in raw for ch in ("{", "}", "[", "]", ":/", "\\", "models:", "raw keys")):
+        return raw
+
+    return "Не удалось обработать задачу. Пожалуйста, проверьте файл или попробуйте перезапустить задачу."
 
 
 def build_failure_evidence(job: Job, exc: Exception, *, stage: str) -> dict:

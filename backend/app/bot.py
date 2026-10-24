@@ -80,6 +80,7 @@ from .jobs import (
     job_dir,
     package_job_output_files,
     package_job_output_items,
+    sanitize_customer_error,
     update_dobor_context_dict,
 )
 from .main import create_additional_supplier_search_for_client, create_supplier_search_from_exact_product, job_can_find_more_suppliers
@@ -1137,26 +1138,23 @@ def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None 
     if snapshot.status == "failed":
         err_lower = (snapshot.error or "").lower()
         msg_lower = (snapshot.message or "").lower()
+        friendly_err = sanitize_customer_error(snapshot.error, message=snapshot.message)
         if (
-            "нет содержимого" in err_lower
-            or "шаблон" in err_lower
-            or "пустой" in err_lower
-            or "нет содержимого" in msg_lower
-            or "нет позиций" in err_lower
+            "нет позиций" in friendly_err.lower()
+            or "не найдены" in friendly_err.lower()
+            or "шаблон" in friendly_err.lower()
+            or "пустой" in friendly_err.lower()
             or "нет позиций" in msg_lower
+            or "нет позиций" in err_lower
+            or "0 items" in err_lower
             or "пустая форма" in err_lower
             or "нет закупаемых позиций" in err_lower
         ):
-            title = (
-                "⚠️ В файле нет позиций для поиска"
-                if ("нет позиций" in msg_lower or "нет позиций" in err_lower or "пустая форма" in err_lower or "нет закупаемых позиций" in err_lower)
-                else "⚠️ В документе нет содержимого"
-            )
             return "\n".join(
                 [
-                    title,
+                    "⚠️ В файле нет позиций для поиска",
                     "",
-                    snapshot.error or "В загруженном файле отсутствует текст ТЗ или закупаемые позиции.",
+                    friendly_err,
                     "",
                     "💳 Баланс не списан (0 ₽).",
                     "Пожалуйста, загрузите файл со спецификацией/перечнем товаров или отправьте характеристики текстом прямо в этот чат.",

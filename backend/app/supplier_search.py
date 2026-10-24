@@ -305,6 +305,10 @@ class MinpromRegistryContext:
     error: str = ""
 
 
+class EmptyProcurementProfileError(RuntimeError):
+    pass
+
+
 SUPPLIER_POLICY_NORMAL = "normal"
 SUPPLIER_POLICY_MINPROM_ONLY = "minprom_registry_only"
 SUPPLIER_POLICY_MINPROM_PRIORITY = "minprom_registry_priority"
@@ -1592,7 +1596,14 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
             )
             profile = _normalize_procurement_profile(parse_json_object(raw))
             return profile
+        except EmptyProcurementProfileError:
+            raise
         except Exception as exc:
+            if isinstance(exc, EmptyProcurementProfileError) or "0 items" in str(exc) or "не найдены" in str(exc):
+                raise EmptyProcurementProfileError(
+                    "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+                    "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров текстом."
+                ) from exc
             last_error = exc
             continue
     raise RuntimeError(f"AI procurement profile extraction failed: {last_error}") from last_error
@@ -2961,7 +2972,10 @@ normalize_procurement_profile = _normalize_procurement_profile
 def _validate_procurement_profile_response(raw: str) -> None:
     profile = _normalize_procurement_profile(parse_json_object(raw))
     if not profile.items:
-        raise RuntimeError(f"AI returned profile with 0 items (raw keys: {list(parse_json_object(raw).keys())})")
+        raise EmptyProcurementProfileError(
+            "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+            "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров текстом."
+        )
 
 
 def _validate_minprom_requirement_response(raw: str) -> None:
