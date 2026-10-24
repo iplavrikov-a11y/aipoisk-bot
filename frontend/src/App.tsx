@@ -243,6 +243,16 @@ type GrantDraft = {
   debit_amount_rub?: string
 }
 
+type ExactSelection = {
+  pricing_mode?: string
+  revision: string
+  max_positions: number
+  price_kopeks: number
+  selected_ids: string[]
+  confirmed: boolean
+  items: Array<{ id: string; position_no: number; name: string }>
+}
+
 type Job = {
   id: string
   job_number?: number | null
@@ -296,11 +306,15 @@ type Job = {
   sources?: JobSource[]
   parent_job_id?: string
   is_admin_rerun?: boolean
+  position_selection?: ExactSelection | null
+  exact_product_selection?: ExactSelection | null
   admin_rerun?: JobAdminRerunInfo | null
   admin_reruns?: JobAdminRerunInfo[]
 }
 
 type JobAdminRerunInfo = {
+  position_selection?: ExactSelection | null
+  exact_product_selection?: ExactSelection | null
   id: string
   job_number?: number | null
   status: string
@@ -743,6 +757,9 @@ const statusLabels: Record<string, string> = {
   failed: 'ошибка',
   cancelled: 'отменено',
   awaiting_customer_confirmation: 'ожидает клиента',
+  awaiting_exact_selection: 'ожидает выбора товаров',
+  awaiting_position_selection: 'ожидает выбора позиций',
+  settling: 'сохраняется результат',
   customer_declined: 'отклонено',
   confirmation_expired: 'истёк срок',
   delivery_expired: 'срок выдачи истёк',
@@ -4253,7 +4270,7 @@ function JobsView({
                     {job.mode === 'procurement_report'
                       ? 'Анализ ТЗ'
                       : job.mode === 'exact_product'
-                      ? `${job.verified_count || 1} тов.`
+                      ? `${job.verified_count || 0} тов.`
                       : job.mode === 'price_monitoring'
                       ? `${job.verified_count || 0} поз.`
                       : `${supplierCountLabel(job)} пост.`}
@@ -4563,6 +4580,13 @@ function JobsView({
               </div>
             </div>
 
+            {['awaiting_exact_selection', 'awaiting_position_selection'].includes(job.status) && (job.position_selection || job.exact_product_selection) && (
+              <AdminExactSelection key={`${job.id}:${(job.position_selection || job.exact_product_selection)!.revision}`} jobId={job.id} selection={(job.position_selection || job.exact_product_selection)!} onChange={onChange} />
+            )}
+            {job.admin_rerun && ['awaiting_exact_selection', 'awaiting_position_selection'].includes(job.admin_rerun.status) && (job.admin_rerun.position_selection || job.admin_rerun.exact_product_selection) && (
+              <AdminExactSelection key={`${job.admin_rerun.id}:${(job.admin_rerun.position_selection || job.admin_rerun.exact_product_selection)!.revision}`} jobId={job.admin_rerun.id} selection={(job.admin_rerun.position_selection || job.admin_rerun.exact_product_selection)!} onChange={onChange} />
+            )}
+
             {job.admin_rerun && (job.admin_rerun.status === 'pending' || job.admin_rerun.status === 'running') && (
               <div className="job-progress-compact" style={{ marginTop: 6, padding: '6px 10px', background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}>
                 <div style={{ fontSize: 12, color: '#166534', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
@@ -4613,6 +4637,42 @@ function JobsView({
       )}
     </section>
   )
+}
+
+function AdminExactSelection({ jobId, selection, onChange }: { jobId: string; selection: ExactSelection; onChange: () => Promise<void> }) {
+  const [selected, setSelected] = useState<string[]>(selection.selected_ids || [])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const maximum = selection.max_positions || 5
+  const monitoring = selection.pricing_mode === 'per_found_position'
+  async function confirm() {
+    if (!selected.length || selected.length > maximum || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/api/jobs/${jobId}/${monitoring ? 'position-selection' : 'exact-selection'}`, { method: 'POST', body: JSON.stringify({ revision: selection.revision, selected_item_ids: selected }) })
+      await onChange()
+    } catch (err) {
+      setError(formatError(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <section aria-label="Выбор товаров для подбора" style={{ border: '1px solid #a7c9bd', borderRadius: 10, padding: 14, marginTop: 12, minWidth: 0 }}>
+    <strong>{monitoring ? 'Выберите позиции для мониторинга цен' : `Выберите до ${maximum} товаров для подбора`}</strong>
+    <p>Выбрано: {selected.length} из {maximum}. {monitoring ? `За найденную позицию: ${formatMoney(selection.price_kopeks)}. Максимальный резерв: ${formatMoney(selection.price_kopeks * selected.length)}.` : `Стоимость задачи: ${formatMoney(selection.price_kopeks)}.`}</p>
+    <div style={{ maxHeight: 280, overflowY: 'auto', display: 'grid', gap: 10, marginBottom: 12 }}>
+      {selection.items.map(row => <label key={row.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', overflowWrap: 'anywhere' }}>
+        <input type="checkbox" checked={selected.includes(row.id)} disabled={busy || (!selected.includes(row.id) && selected.length >= maximum)}
+          onChange={() => setSelected(current => current.includes(row.id) ? current.filter(id => id !== row.id) : [...current, row.id])} />
+        <span>{row.position_no}. {row.name}</span>
+      </label>)}
+    </div>
+    {error && <p role="alert">{error}</p>}
+    <button type="button" disabled={busy || !selected.length || selected.length > maximum} onClick={() => void confirm()}>
+      {busy ? 'Подтверждаем…' : 'Подтвердить выбор товаров'}
+    </button>
+  </section>
 }
 
 function cleanItemNameForComment(rawTitle: string): string {

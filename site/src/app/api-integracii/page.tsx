@@ -74,6 +74,10 @@ const pagePath = "/api-integracii";
 
 const faqItems: FaqItem[] = [
   {
+    question: "Можно ли передать файл и выбрать позиции перед запуском?",
+    answer: "Да. Очередь задач API принимает файлы и текст для поиска поставщиков, подбора товара, анализа документации и мониторинга цен. После разбора ТЗ можно проверить и выбрать позиции, запросить состояние, отменить задачу и скачать отчёт. Перед запуском ознакомьтесь с тарифами. Используйте Idempotency-Key, чтобы повтор запроса после потери связи не создавал новую задачу.",
+  },
+  {
     question: "Как начать работу с TenderLex API?",
     answer:
       "Зарегистрируйтесь в личном кабинете tenderlex.ru, откройте раздел «API» и создайте персональный ключ. Перед использованием проверьте доступные методы, баланс и актуальные условия в кабинете.",
@@ -174,7 +178,7 @@ export default function ApiIntegrationsPage() {
               <p className="text-base sm:text-lg text-slate-300 leading-relaxed font-normal">
                 Встройте алгоритмы TenderLex в <strong>1С:Предприятие</strong>, корпоративную ERP или CRM.
                 Поиск поставщиков, подбор товара и аналогов и анализ закупочной документации
-                через REST API. Доступные методы и условия показаны в личном кабинете.
+                через REST API. Для файлов и длительных проверок используйте очередь задач: загрузите ТЗ, проверьте распознанные позиции, выберите нужные и получите результат. Мониторинг цен и приоритет в радиусе доставки доступны с учётом прав аккаунта. Методы и условия показаны в личном кабинете.
               </p>
 
               <div className="flex flex-wrap items-center gap-3.5 pt-3">
@@ -185,6 +189,14 @@ export default function ApiIntegrationsPage() {
                   <Key size={16} />
                   <span>Получить API-ключ в кабинете</span>
                 </Link>
+
+                <a
+                  href="/api-client-guide.md"
+                  className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-200 text-sm font-bold border border-slate-700 transition-colors"
+                >
+                  <FileText size={15} />
+                  <span>Полное руководство API</span>
+                </a>
 
                 <a
                   href="#methods"

@@ -4,7 +4,7 @@ import { TenderLexLogo } from "@/components/logo";
 
 export function SiteFooter() {
   return (
-    <footer className="bg-white text-slate-600 text-xs border-t border-slate-200">
+    <footer className="tl-site-footer bg-white text-slate-600 text-xs border-t border-slate-200">
       {/* Main navigation columns */}
       <div className="container max-w-6xl mx-auto px-4 sm:px-6 py-12 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
         {/* Brand Column */}

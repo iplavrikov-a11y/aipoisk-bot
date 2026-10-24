@@ -445,6 +445,7 @@ class Job(Base):
     supplier_search_policy: Mapped[str] = mapped_column(String(40), default="normal")
     supplier_search_run_type: Mapped[str] = mapped_column(String(40), default="initial")
     multi_item_mode: Mapped[str] = mapped_column(String(40), default="balanced")
+    position_selection_json: Mapped[str] = mapped_column(Text, default="")
     delivery_city: Mapped[str] = mapped_column(String(255), default="")
     geo_radius_km: Mapped[int | None] = mapped_column(Integer, nullable=True)
     filter_marketplaces: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
@@ -641,14 +642,25 @@ class ApiKey(Base):
     allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_exact_product: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_price_monitoring: Mapped[bool] = mapped_column(Boolean, default=False)
 
     quota_supplier_search: Mapped[int] = mapped_column(Integer, default=10)
     quota_exact_product: Mapped[int] = mapped_column(Integer, default=10)
     quota_procurement_report: Mapped[int] = mapped_column(Integer, default=10)
+    quota_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
 
     spent_supplier_search: Mapped[int] = mapped_column(Integer, default=0)
     spent_exact_product: Mapped[int] = mapped_column(Integer, default=0)
     spent_procurement_report: Mapped[int] = mapped_column(Integer, default=0)
+    spent_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Standalone keys reserve a slot before a synchronous request starts.  Keeping
+    # this separately from spent counters prevents concurrent requests from both
+    # passing the same quota check.
+    reserved_supplier_search: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_exact_product: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_procurement_report: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
 
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=30)
     notes: Mapped[str] = mapped_column(Text, default="")
@@ -658,6 +670,33 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     client: Mapped[Client | None] = relationship(back_populates="api_keys", foreign_keys=[client_id])
+
+
+class ApiOperation(Base):
+    """Persistent retry identity; deliberately stores no market result payload."""
+    __tablename__ = "api_operations"
+    __table_args__ = (UniqueConstraint("api_key_id", "idempotency_key", name="uq_api_operation_key"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    service: Mapped[str] = mapped_column(String(64))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="processing")
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
+    # Batch API requests retain only their own job identities, never market data.
+    job_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class ApiRateLimitEvent(Base):
+    """Durable sliding-window event used across all API worker processes."""
+    __tablename__ = "api_rate_limit_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
 
 
 class PartnerPayoutRequest(Base):

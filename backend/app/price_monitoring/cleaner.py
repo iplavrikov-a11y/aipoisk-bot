@@ -33,6 +33,10 @@ def clean_nomenclature_name(raw_name: str) -> str:
     text = re.sub(r'\b[hHвВ]\s*=\s*(\d+(?:[.,]\d+)?\s*(?:[мm]|мм|см))\b', r'\1', text, flags=re.IGNORECASE)
     text = re.sub(r'\b[lLдД]\s*=\s*(\d+(?:[.,]\d+)?\s*(?:[мm]|мм|см))\b', r'\1', text, flags=re.IGNORECASE)
 
+    # В номенклатуре нижний регистр `д/` перед заглавенной маркировкой —
+    # сокращение «для», а не часть кода. Саму маркировку сохраняем.
+    text = re.sub(r'(?<![A-Za-zА-Яа-яЁё0-9])д/\s*(?=[A-ZА-ЯЁ]{2,}(?:[-_/]?\d))', '', text)
+
     # Схлопываем множественные пробелы
     text = re.sub(r'\s+', ' ', text).strip()
     return text
@@ -59,35 +63,12 @@ def normalize_unit(unit: str) -> str:
 
 
 def extract_package_hints(raw_name: str, target_unit: str) -> dict:
-    """Извлекает подсказки фасовки/объема из наименования ТМЦ (баллоны, упаковки по N шт, пачки по N кг)."""
+    """Extract only explicit, product-neutral packaging facts from source text."""
     hints: dict = {
-        "cylinder_volume_l": None,
         "pack_pieces": None,
         "pack_weight_kg": None,
-        "gas_type": None,
     }
     text_lower = raw_name.lower()
-
-    # Проверка газов и баллонов
-    if "пропан" in text_lower:
-        hints["gas_type"] = "propane"
-    elif "кислород" in text_lower:
-        hints["gas_type"] = "oxygen"
-    elif "ацетилен" in text_lower:
-        hints["gas_type"] = "acetylene"
-    elif "углекислот" in text_lower or "углекислый" in text_lower:
-        hints["gas_type"] = "co2"
-    elif "аргон" in text_lower:
-        hints["gas_type"] = "argon"
-    elif "азот" in text_lower:
-        hints["gas_type"] = "nitrogen"
-
-    # Объем баллона: "бал.50л", "баллон 50 л", "50л"
-    m_cyl = re.search(r'(?:бал[\.\s]*|баллон[\s]*)?(\d{1,3})\s*л\b', text_lower)
-    if m_cyl:
-        vol = int(m_cyl.group(1))
-        if vol in (5, 10, 12, 20, 27, 40, 50):
-            hints["cylinder_volume_l"] = vol
 
     # Штук в упаковке: "100шт", "100 шт", "50шт"
     m_pcs = re.search(r'(\d+)\s*(?:шт|штук)\b', text_lower)
@@ -102,6 +83,23 @@ def extract_package_hints(raw_name: str, target_unit: str) -> dict:
     return hints
 
 
+_MEASUREMENT_UNIT = r'(?:мкм|µm|μm|um|мм|см|км|кг|мг|мл|квт|вт|ма|м?а(?:[/·⋅*]?ч)?|mah|ah|гц|hz|kw|м|т|л|шт|в|v|w)'
+
+
+def _is_measurement_or_descriptor_token(token: str) -> bool:
+    """Keep dimensions and count-based descriptors out of strict SKU searches."""
+    compact = re.sub(r'\s+', '', str(token or '').lower())
+    number = r'\d+(?:[.,]\d+)?'
+    component = rf'{number}{_MEASUREMENT_UNIT}'
+    if re.fullmatch(rf'{number}{_MEASUREMENT_UNIT}', compact, re.IGNORECASE):
+        return True
+    if re.fullmatch(rf'{component}(?:[xх*]{component}){{1,2}}', compact, re.IGNORECASE):
+        return True
+    # `4-рядн`, `3-полюсный` and similar tokens describe configuration,
+    # whereas product identifiers begin with their model/series letters.
+    return bool(re.fullmatch(r'\d+(?:[-–][а-яё]+)+', compact, re.IGNORECASE))
+
+
 def extract_generic_nomenclature_codes(name: str) -> list[str]:
     """
     Универсальное извлечение артикулов, номеров чертежей, ГОСТов и буквенно-цифровых маркировок (Правило 14).
@@ -114,6 +112,8 @@ def extract_generic_nomenclature_codes(name: str) -> list[str]:
     seen: set[str] = set()
     for t in tokens:
         t_clean = t.strip(" -_./")
+        if _is_measurement_or_descriptor_token(t_clean):
+            continue
         # Артикул/код должен содержать цифры или специфические разделители (чертеж/модель/серия)
         has_digit = any(c.isdigit() for c in t_clean)
         has_hyphen_code = ("-" in t_clean or "." in t_clean or "/" in t_clean) and len(t_clean) >= 4
@@ -133,6 +133,8 @@ def is_drawing_or_part_code(token: str, full_text: str = "") -> bool:
     token = token.strip("()[]{}<>\"'*#№!, ")
     if len(token) < 4:
         return False
+    if _is_measurement_or_descriptor_token(token):
+        return False
     # Геометрические габариты (3х2.5, 50х150, 1000х2000) - это характеристики, а не чертежи
     if re.fullmatch(r'\d+(?:[.,]\d+)?\s*[xхXХ*]\s*\d+(?:[.,]\d+)?(?:\s*[xхXХ*]\s*\d+(?:[.,]\d+)?)?', token):
         return False
@@ -140,7 +142,7 @@ def is_drawing_or_part_code(token: str, full_text: str = "") -> bool:
     if re.fullmatch(r'(?:[dDдДlLлЛhHвВwWшШ]|dn|pn|ду|ру)\s*=?\s*\d+(?:[.,]\d+)?\s*(?:[мm]|мм|см|г|кг|т|л|мл)?(?:[-–/]\d+(?:[.,]\d+)?)?', token, re.IGNORECASE):
         return False
     # Физические величины с единицами измерения (200г, 3мм, 50м, 1т, 6-5м, 50л)
-    if re.fullmatch(r'\d+(?:[-–/]\d+)?\s*(?:г|кг|мг|т|л|мл|м|см|мм|км|шт|в|вт|квт|а|ма|v|w|kw|hz|гц)\b', token, re.IGNORECASE):
+    if re.fullmatch(r'\d+(?:[.,]\d+)?(?:[-–/]\d+(?:[.,]\d+)?)?\s*(?:г|кг|мг|т|л|мл|м|см|мм|км|шт|в|вт|квт|м?а(?:[/·⋅*]?ч)?|v|w|kw|hz|гц|m?ah)\b', token, re.IGNORECASE):
         return False
     # Общепринятые стандарты (ГОСТ, ОСТ, ТУ, DIN, ISO) - публичные нормативные документы, а не закрытые чертежи
     if full_text and re.search(r'\b(?:гост|ост|ту|din|iso)\s*' + re.escape(token), full_text, re.I):
@@ -167,9 +169,8 @@ def is_drawing_or_part_code(token: str, full_text: str = "") -> bool:
 
 def is_closed_factory_drawing(token: str, full_text: str = "") -> bool:
     """
-    Определяет специализированные закрытые децимальные номера заводских чертежей (ОСТ/ТУ/КД).
-    Такие детали являются уникальными заказными позициями (турбины, роторы, генераторы).
-    Для них необходим строгий поиск в кавычках во избежание омонимов бытовой техники.
+    Отличает явную ссылку на чертёж и децимальную маркировку от серийного SKU.
+    Эта эвристика задаёт точность поиска, но не доказывает отсутствие рыночной цены.
     """
     token = token.strip("()[]{}<>\"'*#№!, ")
     if len(token) < 5:
@@ -177,12 +178,9 @@ def is_closed_factory_drawing(token: str, full_text: str = "") -> bool:
     # Общепринятые стандарты (ГОСТ, ОСТ, ТУ, DIN, ISO) - публичные нормативные документы, а не чертежи
     if full_text and re.search(r'\b(?:гост|ост|ту|din|iso)\s*' + re.escape(token), full_text, re.I):
         return False
-    # Децимальный номер чертежа с 3+ сегментами через точки/дефисы (например 5ВК.568.007.2, 8БС.370.544-1, 8ВК.951.075, ЭГ.059.00.00-02, 1085.05.02)
-    if re.search(r'^[0-9a-zA-Zа-яА-ЯёЁ]{1,5}[.\-_/][0-9a-zA-Zа-яА-ЯёЁ]{2,}[.\-_/][0-9a-zA-Zа-яА-ЯёЁ]{2,}', token):
-        if not re.fullmatch(r'\d+[-–/]\d+[-–/]\d+', token):
-            return True
-    # Заводской номер узла/чертежа с серией дефисов (например SPGA4270-200-01)
-    if re.fullmatch(r'[a-zA-Zа-яА-ЯёЁ]{2,}\d{3,}-\d{2,}-\d{2,}', token):
+    # Кириллический префикс и числовые децимальные сегменты: 5ВК.568.007.2,
+    # ЭГ.059.00.00-02. Произвольные точки/дефисы встречаются и в серийных моделях.
+    if re.fullmatch(r'(?:\d+[А-ЯЁ]{1,4}|[А-ЯЁ]{1,4})\.\d{2,}(?:\.\d+)+(?:-\d+)?', token, re.I):
         return True
     # Прямое указание чертежа в тексте
     if full_text and re.search(r'\b(?:черт|по черт|чертеж|кд|сборочн)\S*\s*' + re.escape(token), full_text, re.I):
@@ -472,8 +470,15 @@ def extract_items_from_files_or_text(
     """
     Извлекает перечень номенклатурных позиций (номенклатура, единица_измерения) из переданных файлов
     (.xlsx, .xls, .docx, .pdf, .txt, .csv) и/или текстового контекста.
-    Корректно поддерживает несколько файлов за раз, объединяет и дедуплицирует позиции.
+    Структурированные таблицы сохраняют каждую исходную строку; свободные списки
+    используют прежний текстовый разбор при отсутствии достоверной структуры.
     """
+    from ..product_inventory import extract_structured_product_inventory
+    structured = extract_structured_product_inventory(file_paths, context=context)
+    if structured is not None:
+        # Distinct physical source rows must not collapse by name alone.
+        return [(clean_nomenclature_name(row["name"]), normalize_unit(row.get("unit") or "шт")) for row in structured]
+
     items: list[tuple[str, str]] = []
     seen: set[str] = set()
 

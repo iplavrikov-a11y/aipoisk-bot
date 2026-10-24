@@ -141,12 +141,10 @@ def test_cleaner_unit_and_hints():
     assert normalize_unit("Т") == "т"
     assert normalize_unit("УП") == "уп"
 
+    # The helper exposes only explicit generic package facts. It must not infer
+    # gas type or product contents from a nomenclature name.
     hints = extract_package_hints("Пропан сжиженный бал.50л ТУ 51-882", "КГ")
-    assert hints["gas_type"] == "propane"
-    assert hints["cylinder_volume_l"] == 50
-
-    hints_ox = extract_package_hints("Кислород газ.ГОСТ 5583(м3)", "М3")
-    assert hints_ox["gas_type"] == "oxygen"
+    assert hints == {"pack_pieces": None, "pack_weight_kg": None}
 
     hints_pack = extract_package_hints("Пружина пластик.19мм 100шт/НЕ ИСП", "УП")
     assert hints_pack["pack_pieces"] == 100
@@ -158,7 +156,7 @@ def test_cleaner_unit_and_hints():
 def test_unit_reconciliation_math():
     from app.price_monitoring.extractor import reconcile_quote_unit
 
-    # 1. Propane 50L cylinder -> converted to kg (~21 kg gas)
+    # 1. A container name alone is not source evidence for its contents.
     q_propane = SupplierQuote(
         company_name="Алан Газ",
         price_rub=2400.0,
@@ -168,10 +166,10 @@ def test_unit_reconciliation_math():
         url="https://alangas-msk.ru/catalog/propan/50l/",
     )
     rec_propane = reconcile_quote_unit(q_propane, "Пропан сжиженный бал.50л ТУ 51-882", "КГ")
-    assert rec_propane.price_rub == 114.29
-    assert "21 кг" in rec_propane.conversion_comment
+    assert rec_propane.price_rub == 2400.0
+    assert rec_propane.unit == "кг"
 
-    # 2. Oxygen 40L cylinder -> converted to m3 (~6.3 m3 gas)
+    # 2. The same rule applies to every product class.
     q_ox = SupplierQuote(
         company_name="Завод Уралтехгаз",
         price_rub=900.0,
@@ -181,8 +179,8 @@ def test_unit_reconciliation_math():
         url="https://svar-ka.ru/shop/goods/kislorod",
     )
     rec_ox = reconcile_quote_unit(q_ox, "Кислород газ.ГОСТ 5583(м3)", "М3")
-    assert rec_ox.price_rub == 142.86
-    assert "6.3 м³" in rec_ox.conversion_comment
+    assert rec_ox.price_rub == 900.0
+    assert rec_ox.unit == "м3"
 
     # 3. Steel ton -> converted to kg
     q_steel = SupplierQuote(
@@ -335,7 +333,8 @@ async def test_dadata_quote_enrichment():
 def test_dynamic_pack_weight_from_site_unit():
     from app.price_monitoring.extractor import reconcile_quote_unit
 
-    # Item doesn't have weight in name, but site_unit specifies 5.5 kg pack
+    # A site-unit label alone does not prove package contents; the extractor
+    # must provide source-backed structured package fields before conversion.
     q = SupplierQuote(
         company_name="Сварка",
         price_rub=825.0,
@@ -346,8 +345,8 @@ def test_dynamic_pack_weight_from_site_unit():
         is_price_found=True,
     )
     rec = reconcile_quote_unit(q, "Электрод сварочный ОЗС-12", "КГ")
-    assert rec.price_rub == 150.0  # 825 / 5.5 = 150.0
-    assert "5.5 кг" in rec.conversion_comment
+    assert rec.price_rub == 825.0
+    assert rec.unit == "кг"
 
 
 def test_outlier_excluded_from_excel_formulas(tmp_path):
@@ -419,7 +418,7 @@ def test_divergent_prices_suppressed_when_no_consensus_cluster(tmp_path):
 
     # When no homogeneous consensus exists, report displays honest missing status
     assert ws["C5"].value == "-"
-    assert "В открытых источниках цена отсутствует" in str(ws["D5"].value)
+    assert "Цены не образуют сопоставимую группу" in str(ws["D5"].value)
     assert ws["C5"].value != "разброс цен"
 
 
@@ -709,7 +708,7 @@ def test_price_monitoring_multiformat_input_extraction():
 
         # Test multiple files extraction
         multi_items = extract_items_from_files_or_text([p1, p2])
-        assert len(multi_items) == 3
+        assert len(multi_items) == 4  # Different source rows retain identity, even with matching names.
         assert ("Кислород газообразный", "м3") in multi_items
         assert ("Сталь листовая 10мм", "т") in multi_items
         assert ("Подшипник 13630", "шт") in multi_items

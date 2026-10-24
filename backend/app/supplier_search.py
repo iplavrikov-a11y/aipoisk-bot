@@ -2175,7 +2175,7 @@ async def _discover_suppliers_impl(
         annotate_contacts_radius_status(accepted, delivery_city, geo_radius_km)
         def _final_geo_sort(item: dict):
             within = item.get("supplier_distance_within_radius")
-            rad_rank = 0 if within is True else (1 if within is False else 2)
+            rad_rank = 0 if within is True else (1 if within is None else 2)
             dist = item.get("supplier_distance_km")
             effective_dist = dist if (dist is not None and dist > 0) else 999999
             base_key = _supplier_result_sort_key(item)
@@ -6018,15 +6018,6 @@ def _deterministic_queries(context: str) -> list[str]:
     phrase_text = " ".join(product_phrases).lower()
     product_has_mine_context = not product_phrases or any(word in phrase_text for word in ("шахт", "горно", "горн", "вгсч"))
     product_has_fire_context = not product_phrases or any(word in phrase_text for word in ("пожар", "рукав", "гм 70", "гм-70"))
-    if "сверло шахтное" in lowered or "сшу" in lowered:
-        queries.extend(
-            [
-                '"Сверло шахтное универсальное" поставщик',
-                '"СШУ-22" "сверло шахтное"',
-                '"СШУ-22" купить',
-                '"сверло шахтное" "пожарных рукавов"',
-            ]
-        )
     if product_has_mine_context and any(word in lowered for word in ("шахт", "горно", "горн")):
         queries.extend(
             [
@@ -6262,56 +6253,16 @@ def _is_strong_product_phrase(phrase: str) -> bool:
         )
     ):
         return False
-    if lowered.startswith("работы") or "швеллер" in lowered:
+    if lowered.startswith("работы"):
         return False
     if len(lowered) > 100 and re.search(r"\bшт\b|кол-во|количество", lowered):
+        return False
+    if re.search(r"\b(?:ооо|пао|зао|ао|ип)\b", lowered):
         return False
     meaningful = [word for word in re.findall(r"[а-яёa-z0-9\-]{5,}", lowered) if word not in _supplier_anchor_stopwords()]
     if len(meaningful) < 2:
         return False
-    return any(
-        marker in lowered
-        for marker in (
-            "система",
-            "контрол",
-            "кабель",
-            "жгут",
-            "измер",
-            "испыт",
-            "приспособ",
-            "рукав",
-            "шахт",
-            "пожар",
-            "трубопровод",
-            "арматур",
-            "датчик",
-            "станок",
-            "установка",
-            "комплекс",
-            "поликарбон",
-            "вермикулит",
-            "оргстекл",
-            "панел",
-            "профил",
-            "свар",
-            "полуавтомат",
-            "скрайб",
-            "скалыв",
-            "холодильн",
-            "камера",
-            "камер",
-            "кладов",
-            "пенообраз",
-            "преобраз",
-            "электролиз",
-            "толкател",
-            "вагонет",
-            "газорегулятор",
-            "гидро",
-            "кальматрон",
-            "ультрабанд",
-        )
-    )
+    return True
 
 
 def _is_generic_supplier_anchor(value: str) -> bool:
@@ -6515,16 +6466,6 @@ def _exact_match_terms(context: str) -> list[str]:
         for code in _exact_codes(context)
         if not re.fullmatch(r"ГМ-\d+", code)
     )
-    lowered_context = context.lower()
-    if "сверло шахтное универсальное" in lowered_context:
-        result.extend(["сверло шахтное универсальное", "сверло шахтное", "сшу-22", "сшу 22"])
-    if "промежуточного подсоединения пожарных рукавов" in lowered_context:
-        result.extend(
-            [
-                "приспособление для промежуточного подсоединения",
-                "промежуточного подсоединения пожарных рукавов",
-            ]
-        )
     return [item for item in dict.fromkeys(re.sub(r"\s+", " ", term).strip(" .,:;") for term in result) if len(item) >= 5]
 
 

@@ -502,44 +502,40 @@ def annotate_contacts_radius_status(
     }
     if not radius_km or radius_km <= 0 or not delivery_city:
         return stats
-    norm_deliv = normalize_city_name(delivery_city)
-    norm_deliv_cap = RUSSIAN_REGION_CAPITALS.get(norm_deliv, norm_deliv)
-
     for item in contacts:
         supplier_city = str(item.get("supplier_city") or item.get("city") or "").strip()
         region_str = str(item.get("region") or "").strip()
         if not supplier_city:
-            extracted = extract_city_from_text(
-                f"{item.get('address') or ''} {item.get('legal_address') or ''} {region_str} {item.get('comments') or ''}"
-            )
-            if extracted:
-                supplier_city = extracted
-                item["supplier_city"] = extracted
+            # Do not concatenate independent fields: an address marker in one
+            # field must not validate a delivery city mentioned in another.
+            for address_evidence in (
+                str(item.get("address") or ""),
+                str(item.get("legal_address") or ""),
+                str(item.get("comments") or ""),
+            ):
+                extracted = extract_evidenced_city_from_text(address_evidence)
+                if extracted:
+                    supplier_city = extracted
+                    item["supplier_city"] = extracted
+                    break
 
-        # If supplier_city is a region name, resolve to capital
-        norm_sc = normalize_city_name(supplier_city)
-        if norm_sc in RUSSIAN_REGION_CAPITALS:
-            resolved = RUSSIAN_REGION_CAPITALS[norm_sc]
-            item["supplier_city"] = resolved.capitalize()
-            supplier_city = resolved
-
+        # A regional registration is not a dispatch city.  In particular, do
+        # not let calculate_city_distance_fast map it to a regional capital.
+        supplier_city_for_distance = normalize_city_name(supplier_city)
+        if (
+            supplier_city_for_distance not in CITY_COORDINATES
+            or supplier_city_for_distance in RUSSIAN_REGION_CAPITALS
+        ):
+            supplier_city_for_distance = ""
         distance = item.get("supplier_distance_km")
-        if distance is None and supplier_city and delivery_city:
-            distance = calculate_city_distance_fast(delivery_city, supplier_city)
+        if distance is None and supplier_city_for_distance and delivery_city:
+            distance = calculate_city_distance_fast(delivery_city, supplier_city_for_distance)
             if distance is not None:
                 item["supplier_distance_km"] = distance
 
-        # Special check: if supplier region matches delivery_city's region/capital
-        if distance is None and region_str:
-            norm_reg = normalize_city_name(region_str)
-            reg_cap = RUSSIAN_REGION_CAPITALS.get(norm_reg)
-            if reg_cap and (reg_cap == norm_deliv or reg_cap == norm_deliv_cap):
-                distance = 0
-                item["supplier_distance_km"] = 0
-                item["supplier_city"] = delivery_city.capitalize()
-
         item["supplier_distance_radius_km"] = radius_km
         if distance is None:
+            item["supplier_distance_km"] = None
             item["supplier_distance_radius_status"] = "unknown_distance"
             item["supplier_distance_within_radius"] = None
             stats["unknown_distance"] += 1
@@ -553,6 +549,125 @@ def annotate_contacts_radius_status(
         item["supplier_distance_within_radius"] = True
         stats["within_radius"] += 1
     return stats
+
+
+def annotate_price_quotes_radius_status(
+    quotes: list[Any],
+    delivery_city: str,
+    radius_km: int | None,
+) -> dict[str, int]:
+    """Annotate price quotes from their evidenced address/contact city only.
+
+    A company registration region or a guessed warehouse is not enough to
+    establish a delivery radius, so quotes without an extractable city stay
+    explicitly unknown.
+    """
+    stats = {"within_radius": 0, "outside_radius": 0, "unknown_distance": 0}
+    if not radius_km or radius_km <= 0 or not delivery_city:
+        return stats
+    for quote in quotes:
+        supplier_city = str(getattr(quote, "supplier_city", "") or "").strip()
+        location_source = str(getattr(quote, "supplier_location_source", "") or "")
+        if not supplier_city:
+            supplier_city = extract_evidenced_city_from_text(str(getattr(quote, "contacts", "") or ""))
+            if supplier_city:
+                quote.supplier_city = supplier_city.capitalize()
+                location_source = "contact_address_city"
+        supplier_city_for_distance = normalize_city_name(supplier_city)
+        if (
+            supplier_city_for_distance not in CITY_COORDINATES
+            or supplier_city_for_distance in RUSSIAN_REGION_CAPITALS
+            or location_source != "contact_address_city"
+        ):
+            supplier_city_for_distance = ""
+        distance = calculate_city_distance_fast(delivery_city, supplier_city_for_distance) if supplier_city_for_distance else None
+        quote.supplier_distance_radius_km = radius_km
+        if distance is None:
+            quote.supplier_distance_km = None
+            quote.supplier_distance_radius_status = "unknown_distance"
+            quote.supplier_distance_within_radius = None
+            quote.supplier_location_source = ""
+            quote.supplier_location_confidence = "unknown"
+            stats["unknown_distance"] += 1
+        elif distance <= radius_km:
+            quote.supplier_distance_km = distance
+            quote.supplier_distance_radius_status = "within_radius"
+            quote.supplier_distance_within_radius = True
+            quote.supplier_location_source = location_source
+            quote.supplier_location_confidence = "city_centroid"
+            stats["within_radius"] += 1
+        else:
+            quote.supplier_distance_km = distance
+            quote.supplier_distance_radius_status = "outside_radius"
+            quote.supplier_distance_within_radius = False
+            quote.supplier_location_source = location_source
+            quote.supplier_location_confidence = "city_centroid"
+            stats["outside_radius"] += 1
+    return stats
+
+
+def sort_quotes_by_radius_priority(quotes: list[Any]) -> None:
+    """Keep all offers, placing local evidence before unknown and remote ones."""
+    def key(quote: Any) -> tuple[int, bool, float]:
+        within = getattr(quote, "supplier_distance_within_radius", None)
+        rank = 0 if within is True else (1 if within is None else 2)
+        return (rank, bool(getattr(quote, "is_outlier", False)), float(getattr(quote, "price_rub", 0) or 0))
+
+    quotes.sort(key=key)
+
+
+def extract_evidenced_city_from_text(text: str) -> str:
+    """Extract only a known city written in an address, never a region proxy.
+
+    ``extract_city_from_text`` intentionally supports region names for search
+    expansion. Radius evidence has a stricter contract: a legal region is not
+    a warehouse or a dispatch city.
+    """
+    if not text:
+        return ""
+
+    # A city alone can describe a delivery destination.  Radius ranking needs
+    # an address-shaped assertion about the supplier (legal/postal address,
+    # office, warehouse, production site, or street/house details).
+    address_proof = re.compile(
+        r"\b(?:адрес|юр(?:идическ(?:ий|ого))?\s+адрес|местонахожд\w*|офис|склад|производств\w*|"
+        r"представительств\w*|пункт\s+выдачи|ул\.?|улиц\w*|просп\.?|пр-т|переул\w*|шоссе|д\.?|дом)\b",
+        re.IGNORECASE,
+    )
+    delivery_destination = re.compile(
+        r"\b(?:достав\w*|отправ\w*|привез\w*|доставляем|самовывоз\w*)\b",
+        re.IGNORECASE,
+    )
+    unconfirmed_location = re.compile(
+        r"\b(?:адрес|офис|склад|производств\w*|местонахожд\w*)\b.{0,40}"
+        r"\b(?:уточня\w*|не\s+указан\w*|по\s+запросу)\b",
+        re.IGNORECASE,
+    )
+    city_prefix = re.compile(r"(?:г\.|город|гор\.)\s*([А-Яа-яЁё0-9\-]+)", re.IGNORECASE)
+
+    # Contacts are commonly separated into clauses.  Keeping the evidence in
+    # one clause avoids treating "Доставка Москва; адрес: ..." as an address.
+    clauses = [part.strip() for part in re.split(r"[;\n|]+", text) if part.strip()]
+    for clause in clauses or [text]:
+        if (
+            delivery_destination.search(clause)
+            or unconfirmed_location.search(clause)
+            or not address_proof.search(clause)
+        ):
+            continue
+        explicit = city_prefix.search(clause)
+        if explicit:
+            candidate = normalize_city_name(explicit.group(1))
+            if candidate in CITY_COORDINATES:
+                return candidate
+        clean = re.sub(r"[^\w\s-]", " ", clause.lower().replace("ё", "е"))
+        words = clean.split()
+        for size in (3, 2, 1):
+            for start in range(len(words) - size + 1):
+                candidate = normalize_city_name(" ".join(words[start : start + size]))
+                if candidate in CITY_COORDINATES:
+                    return candidate
+    return ""
 
 
 def extract_city_from_text(text: str) -> str:

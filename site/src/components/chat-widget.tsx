@@ -48,12 +48,96 @@ export function ChatWidget() {
   const [sendError, setSendError] = useState('');
   const [unreadCount, setUnreadCount] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageFeedRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<Message[]>([]);
+  const isOpenRef = useRef(false);
+  const pollControllerRef = useRef<AbortController | null>(null);
+  const pendingMessageIdsRef = useRef(new Map<string, Pick<Message, 'text' | 'preset'>>());
+  const shouldScrollToEndRef = useRef(false);
+
+  function persistMessages(updated: Message[]) {
+    try {
+      localStorage.setItem('tenderlex_chat_history', JSON.stringify(updated));
+    } catch {}
+  }
+
+  function replaceMessages(updated: Message[]) {
+    if (updated === messagesRef.current) return false;
+    messagesRef.current = updated;
+    persistMessages(updated);
+    setMessages(updated);
+    return true;
+  }
+
+  function isMessage(value: unknown): value is Message {
+    if (!value || typeof value !== 'object') return false;
+    const message = value as Partial<Message>;
+    return typeof message.id === 'string'
+      && typeof message.text === 'string'
+      && typeof message.timestamp === 'string'
+      && (message.sender === 'user' || message.sender === 'admin' || message.sender === 'system');
+  }
+
+  function isNearMessageFeedEnd() {
+    const feed = messageFeedRef.current;
+    return !feed || feed.scrollHeight - feed.scrollTop - feed.clientHeight < 48;
+  }
+
+  function mergeRemoteMessages(remoteMessages: Message[]) {
+    const shouldScroll = isOpenRef.current && isNearMessageFeedEnd();
+    const previous = messagesRef.current;
+    const currentIds = new Set(previous.map((message) => message.id));
+    const reconciledPendingIds: string[] = [];
+    let updated = previous;
+    let addedCount = 0;
+
+    for (const remoteMessage of remoteMessages) {
+      if (!isMessage(remoteMessage) || currentIds.has(remoteMessage.id)) continue;
+
+      const pendingEntry = remoteMessage.sender === 'user'
+        ? updated.find((message) => (
+          pendingMessageIdsRef.current.has(message.id)
+          && message.sender === 'user'
+          && message.text === remoteMessage.text
+        ))
+        : undefined;
+
+      if (pendingEntry) {
+        reconciledPendingIds.push(pendingEntry.id);
+        updated = updated.map((message) => message.id === pendingEntry.id ? remoteMessage : message);
+      } else {
+        updated = [...updated, remoteMessage];
+        addedCount += 1;
+      }
+      currentIds.add(remoteMessage.id);
+    }
+
+    if (!replaceMessages(updated)) return;
+    for (const pendingId of reconciledPendingIds) pendingMessageIdsRef.current.delete(pendingId);
+    if (addedCount > 0 && !isOpenRef.current) {
+      setUnreadCount((count) => count + addedCount);
+    }
+    if (shouldScroll && isOpenRef.current) {
+      shouldScrollToEndRef.current = true;
+    }
+  }
+
+  function openChat() {
+    isOpenRef.current = true;
+    shouldScrollToEndRef.current = true;
+    setIsOpen(true);
+    setIsPillDismissed(false);
+  }
+
+  function closeChat() {
+    isOpenRef.current = false;
+    setIsOpen(false);
+  }
 
   // Open via custom event (e.g. from header 'Чат' button)
   useEffect(() => {
     const handleOpen = () => {
-      setIsOpen(true);
-      setIsPillDismissed(false);
+      openChat();
     };
     window.addEventListener("open_tenderlex_chat", handleOpen);
     (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat = handleOpen;
@@ -77,7 +161,9 @@ export function ChatWidget() {
     const savedMsgs = localStorage.getItem('tenderlex_chat_history');
     if (savedMsgs) {
       try {
-        setMessages(JSON.parse(savedMsgs));
+        const restoredMessages = JSON.parse(savedMsgs);
+        if (Array.isArray(restoredMessages)) replaceMessages(restoredMessages);
+        else initWelcomeMessage();
       } catch {
         initWelcomeMessage();
       }
@@ -93,17 +179,24 @@ export function ChatWidget() {
       text: '👋 Здравствуйте! На связи команда TenderLex. Какая задача по закупкам или поиску поставщиков перед вами стоит?',
       timestamp: new Date().toISOString(),
     };
-    setMessages([welcomeMsg]);
-    try {
-      localStorage.setItem('tenderlex_chat_history', JSON.stringify([welcomeMsg]));
-    } catch {}
+    replaceMessages([welcomeMsg]);
   }
 
-  // 2. Auto-scroll to bottom
+  // 2. Auto-scroll only when the customer opens chat, sends a message, or is
+  // already at the end. Incoming messages must not pull a reader away from
+  // older correspondence.
   useEffect(() => {
+    isOpenRef.current = isOpen;
     if (isOpen) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       setUnreadCount(0);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (isOpen && shouldScrollToEndRef.current) {
+      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      messagesEndRef.current?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth' });
+      shouldScrollToEndRef.current = false;
     }
   }, [messages, isOpen]);
 
@@ -111,42 +204,47 @@ export function ChatWidget() {
   useEffect(() => {
     if (!sessionId) return;
 
-    const pollInterval = isOpen ? 4000 : 25000;
-    const interval = setInterval(async () => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+
+    const poll = async () => {
+      if (pollControllerRef.current) return;
+      const controller = new AbortController();
+      pollControllerRef.current = controller;
       try {
-        const res = await fetch(`/api/chat/messages?sessionId=${sessionId}`);
+        const res = await fetch(`/api/chat/messages?sessionId=${sessionId}`, { signal: controller.signal });
         if (res.ok) {
           const data = await res.json();
-          if (data.messages && Array.isArray(data.messages)) {
-            // Check if new admin message arrived
-            setMessages((prev) => {
-              const currentIds = new Set(prev.map((m) => m.id));
-              const currentTexts = new Set(prev.map((m) => `${m.sender}:${(m.text || "").trim()}`));
-              const newMsgs = data.messages.filter(
-                (m: Message) => !currentIds.has(m.id) && !currentTexts.has(`${m.sender}:${(m.text || "").trim()}`)
-              );
-
-              if (newMsgs.length > 0) {
-                const updated = [...prev, ...newMsgs];
-                try {
-                  localStorage.setItem('tenderlex_chat_history', JSON.stringify(updated));
-                } catch {}
-
-                if (!isOpen) {
-                  setUnreadCount((c) => c + newMsgs.length);
-                }
-                return updated;
-              }
-              return prev;
-            });
+          if (!disposed && Array.isArray(data.messages)) {
+            mergeRemoteMessages(data.messages);
           }
         }
-      } catch (e) {
+      } catch (error) {
         // Silent poll error
+      } finally {
+        if (pollControllerRef.current === controller) {
+          pollControllerRef.current = null;
+        }
       }
-    }, pollInterval);
+    };
 
-    return () => clearInterval(interval);
+    const scheduleNextPoll = () => {
+      if (disposed) return;
+      timeout = setTimeout(async () => {
+        await poll();
+        scheduleNextPoll();
+      }, isOpenRef.current ? 4000 : 25000);
+    };
+
+    void poll();
+    scheduleNextPoll();
+
+    return () => {
+      disposed = true;
+      if (timeout) clearTimeout(timeout);
+      pollControllerRef.current?.abort();
+      pollControllerRef.current = null;
+    };
   }, [sessionId, isOpen]);
 
   // 4. Send Message Handler
@@ -165,13 +263,10 @@ export function ChatWidget() {
       timestamp: new Date().toISOString(),
     };
 
-    const newHistory = [...messages, userMsg];
-    setMessages(newHistory);
+    pendingMessageIdsRef.current.set(userMsg.id, { text: userMsg.text, preset: userMsg.preset });
+    shouldScrollToEndRef.current = true;
+    replaceMessages([...messagesRef.current, userMsg]);
     setInputText('');
-
-    try {
-      localStorage.setItem('tenderlex_chat_history', JSON.stringify(newHistory));
-    } catch {}
 
     try {
       const response = await fetch('/api/chat/send', {
@@ -185,11 +280,13 @@ export function ChatWidget() {
         }),
       });
       if (!response.ok) throw new Error('Message delivery failed');
+      const data = await response.json().catch(() => null);
+      if (isMessage(data?.message)) mergeRemoteMessages([data.message]);
     } catch (err) {
       setSendError('Сообщение не отправлено. Повторите отправку или свяжитесь с нами через контакты на сайте.');
       setInputText(msgText);
-      setMessages(previous => previous.filter(message => message.id !== userMsg.id));
-      try { localStorage.setItem('tenderlex_chat_history', JSON.stringify(messages)); } catch {}
+      pendingMessageIdsRef.current.delete(userMsg.id);
+      replaceMessages(messagesRef.current.filter((message) => message.id !== userMsg.id));
     } finally {
       setIsSending(false);
     }
@@ -213,13 +310,13 @@ export function ChatWidget() {
         <div className="relative group flex items-center bg-gradient-to-r from-teal-700 via-teal-800 to-slate-900 text-white pl-2.5 pr-1 py-1 rounded-full shadow-lg hover:shadow-teal-900/30 hover:scale-[1.02] transition-all duration-200 border border-teal-400/30">
           <button
             type="button"
-            onClick={() => setIsOpen(true)}
+            onClick={openChat}
             className="flex items-center gap-1.5 cursor-pointer text-left py-0.5"
             aria-label="Чат с поддержкой TenderLex"
           >
             <div className="relative flex items-center justify-center w-5 h-5 rounded-full bg-white/20 text-white shrink-0">
               <MessageSquare className="w-3 h-3" />
-              <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full animate-ping" />
+              {unreadCount > 0 ? <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full motion-safe:animate-ping" /> : null}
               <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full border border-teal-800" />
             </div>
 
@@ -283,7 +380,7 @@ export function ChatWidget() {
               </PublicSiteLink>
               <button
                 type="button"
-                onClick={() => setIsOpen(false)}
+                onClick={closeChat}
                 title="Закрыть чат"
                 aria-label="Закрыть чат"
                 className="text-slate-300 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
@@ -307,7 +404,7 @@ export function ChatWidget() {
           </div>
 
           {/* Messages Feed */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-slate-50/50">
+          <div ref={messageFeedRef} className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-slate-50/50">
             {messages.map((m) => {
               const isAdmin = m.sender === 'admin';
               return (

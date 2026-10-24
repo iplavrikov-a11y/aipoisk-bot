@@ -12,6 +12,23 @@ _DADATA_FIND_URL = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/findByI
 _DADATA_SUGGEST_URL = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/party"
 
 
+def _normalize_domain(value: str) -> str:
+    """Return a hostname suitable for comparing an explicit company website."""
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    raw = re.sub(r"^https?://", "", raw)
+    raw = raw.split("/", 1)[0].split(":", 1)[0]
+    return raw[4:] if raw.startswith("www.") else raw
+
+
+def _is_explicit_site_match(page_domain: str, company_site: str) -> bool:
+    """Match only the same domain or a real subdomain, never a name-like stem."""
+    page = _normalize_domain(page_domain)
+    site = _normalize_domain(company_site)
+    return bool(page and site and (page == site or page.endswith("." + site) or site.endswith("." + page)))
+
+
 def _get_dadata_api_key() -> str:
     key = os.getenv("DADATA_API_KEY", "").strip() or os.getenv("DADATA_TOKEN", "").strip()
     if not key:
@@ -204,29 +221,23 @@ async def enrich_company_by_inn_or_query(
         cleaned_inn = re.sub(r"\D+", "", str(inn))
         if len(cleaned_inn) in (10, 12):
             res = await enrich_company_by_inn(cleaned_inn, api_key=api_key)
-            if res and res.get("inn"):
+            if res and res.get("inn") == cleaned_inn:
                 return res
 
     # 2. Поиск по чистому домену (многие компании зарегистрированы по сайту)
     if domain:
-        clean_d = domain.lower().replace("https://", "").replace("http://", "").split("/")[0]
-        if clean_d.startswith("www."):
-            clean_d = clean_d[4:]
+        clean_d = _normalize_domain(domain)
         if "." in clean_d and len(clean_d) >= 4:
             sugs = await suggest_company_by_query(clean_d, count=3, api_key=api_key)
-            stem = clean_d.split(".")[0]
             for s in sugs:
                 if s.get("is_non_commercial"):
                     continue
-                site_vals = [
-                    st.lower().replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
-                    for st in s.get("sites", [])
-                ]
-                if clean_d in site_vals or any(clean_d.endswith(st) or st.endswith(clean_d) for st in site_vals):
+                if any(_is_explicit_site_match(clean_d, site) for site in s.get("sites", [])):
                     return s
-                comp_clean = re.sub(r'[^a-zA-Zа-яА-Я0-9]', '', s.get("company_name", "")).lower()
-                if len(stem) >= 4 and stem in comp_clean:
-                    return s
+
+        # A suggestion based only on a company-name stem cannot prove that the
+        # company operates this page.  Keep the page-derived identity instead.
+        return {}
 
     # 3. Поиск по связке: Название + Город/Регион
     if query and city:

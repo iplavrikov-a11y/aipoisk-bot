@@ -19,6 +19,63 @@ from .models import ItemPriceResult, SupplierQuote
 logger = logging.getLogger(__name__)
 
 
+def _source_position_note(item: ItemPriceResult) -> str:
+    note = [f"Позиция исходного перечня: {item.source_position_no or item.row_number}"]
+    for label, value in (("ID", item.position_id), ("Файл", item.source_file), ("Лист", item.source_sheet),
+                         ("Строка", item.source_row), ("Количество", item.quantity)):
+        if value:
+            note.append(f"{label}: {value}")
+    note.extend(f"{requirement.get('param_name')}: {requirement.get('tz_requirement')}" for requirement in item.requirements)
+    return "\n".join(note)
+
+
+def _missing_price_status(item: ItemPriceResult) -> str:
+    if item.status == "error":
+        return "Ошибка обработки позиции; требуется повторный поиск"
+    if any(q.price_rub > 0 and q.is_outlier for q in item.quotes):
+        return "Цены не образуют сопоставимую группу"
+    reason = getattr(item, "not_found_reason", "")
+    if reason in {"budget", "budget_exhausted"}:
+        return "Цена не найдена: исчерпан лимит поиска"
+    if reason in {"network", "network_error"}:
+        return "Цена не подтверждена: источники недоступны"
+    if reason == "all_rejected":
+        return "Цена не подтверждена: предложения не прошли проверку"
+    codes = extract_generic_nomenclature_codes(item.clean_name)
+    if any(is_closed_factory_drawing(c, item.clean_name) for c in codes):
+        return "По точному обозначению цена в этом поиске не найдена"
+    return "Предложения с ценой в этом поиске не найдены"
+
+
+def _price_sources_status(quotes: list[SupplierQuote]) -> str:
+    count = len(quotes)
+    if count == 1:
+        return "Найдена цена: 1 источник; требуется проверка"
+    if count == 2:
+        return "Найдены цены: 2 источника; мало данных"
+    return f"Найдены цены: {count} источников"
+
+
+def _quote_evidence_note(q: SupplierQuote) -> str:
+    level = {
+        "page_content": "Цена найдена в тексте страницы",
+        "search_snippet": "Источник цены: поисковый сниппет; требуется проверка страницы",
+    }.get(q.evidence_level, "Способ подтверждения источника не указан")
+    return level + (f"; получено: {q.retrieved_at}" if q.retrieved_at else "")
+
+
+def _quote_geo_note(q: SupplierQuote) -> str:
+    status = q.supplier_distance_radius_status
+    source_note = "; расчёт между городами по контактному адресу" if q.supplier_location_source == "contact_address_city" else ""
+    if status == "within_radius":
+        return f"География: {q.supplier_city or 'город указан'}; {q.supplier_distance_km} км, в радиусе{source_note}"
+    if status == "outside_radius":
+        return f"География: {q.supplier_city or 'город указан'}; {q.supplier_distance_km} км, вне радиуса (добор по РФ){source_note}"
+    if status == "unknown_distance":
+        return "География: адрес поставщика не подтверждён; расстояние не определено"
+    return ""
+
+
 def format_short_url(url: str) -> str:
     """Форматирует компактную кликабельную ссылку без визуального захламления ячейки."""
     if not url:
@@ -114,12 +171,18 @@ def _build_cell_comment(q: SupplierQuote, item_unit: str) -> Comment:
         lines.append(f"Пересчет: {q.conversion_comment}")
     if q.comment:
         lines.append(f"Примечание: {q.comment}")
+    geo_note = _quote_geo_note(q)
+    if geo_note:
+        lines.append(geo_note)
+    lines.append(_quote_evidence_note(q))
+    if q.source_excerpt:
+        lines.append(f"Фрагмент источника: {q.source_excerpt}")
     lines.append(f"Полная ссылка: {q.url}")
 
     text = "\n".join(lines)
     comm = Comment(text, "TenderLex")
     comm.width = 380
-    comm.height = 140
+    comm.height = 240
     return comm
 
 
@@ -321,6 +384,7 @@ def generate_price_monitoring_excel(
     for item in items:
         # A: Номенклатура
         cell_nom = ws.cell(row=current_row, column=1, value=item.raw_name)
+        cell_nom.comment = Comment(_source_position_note(item), "TenderLex")
         cell_nom.font = font_calibri_regular
         cell_nom.alignment = align_left
         cell_nom.border = thin_border
@@ -334,13 +398,7 @@ def generate_price_monitoring_excel(
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
 
         if not display_quotes:
-            # Честно отражаем статус отсутствия: отличаем закрытые заводские чертежи от стандартных коммерческих товаров
-            nom_codes = extract_generic_nomenclature_codes(item.clean_name)
-            has_closed = any(is_closed_factory_drawing(c, item.clean_name) for c in nom_codes)
-            if has_closed:
-                missing_label = "В открытых источниках цена отсутствует (заказная деталь по чертежу завода)"
-            else:
-                missing_label = "В открытых источниках цена отсутствует (предложения не найдены)"
+            missing_label = _missing_price_status(item)
 
             cell_p1 = ws.cell(row=current_row, column=3, value="-")
             cell_p1.border = thin_border
@@ -532,18 +590,14 @@ def generate_price_monitoring_excel(
     row_num = 2
     for idx, item in enumerate(items, 1):
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
-        nom_codes = extract_generic_nomenclature_codes(item.clean_name)
-        has_closed = any(is_closed_factory_drawing(c, item.clean_name) for c in nom_codes)
         if display_quotes:
-            status_text = "Подтверждено"
-        elif has_closed:
-            status_text = "Заказная деталь по чертежу завода"
+            status_text = _price_sources_status(display_quotes)
         else:
-            status_text = "В открытых источниках предложения не найдены"
+            status_text = _missing_price_status(item)
         best_p = min(q.price_rub for q in display_quotes) if display_quotes else "-"
 
         row_vals = [
-            idx,
+            item.source_position_no or item.row_number,
             item.raw_name,
             item.unit,
             status_text,
@@ -560,18 +614,21 @@ def generate_price_monitoring_excel(
                     q.price_rub if q.price_rub > 0 else "по запросу",
                     q.raw_price_rub if q.raw_price_rub > 0 else "-",
                     q.site_unit or "-",
-                    q.conversion_comment or q.comment or "-",
+                    "; ".join(filter(None, [q.conversion_comment, q.comment, _quote_geo_note(q), _quote_evidence_note(q)])),
                     q.url,
                 ])
             else:
                 row_vals.extend(["-", "-", "-", "-", "-", "-", "-", "-", "-"])
         ws2.append(row_vals)
+        ws2.cell(row=row_num, column=2).comment = Comment(_source_position_note(item), "TenderLex")
         for col_idx in range(1, len(headers_reg) + 1):
             cell = ws2.cell(row=row_num, column=col_idx)
             cell.font = font_calibri_regular
             cell.border = thin_border
             if col_idx == 4:
-                cell.font = Font(name="Calibri", bold=True, color="166534" if display_quotes else "64748B")
+                strong_sources = len(display_quotes) >= 3 and all(q.evidence_level == "page_content" for q in display_quotes)
+                cell.font = Font(name="Calibri", bold=True, color="166534" if strong_sources else "92400E" if display_quotes else "64748B")
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
             elif col_idx > 5 and (col_idx - 5) % 9 == 0:  # Ссылка
                 val = str(cell.value or "")
                 if val.startswith("http"):
@@ -582,11 +639,11 @@ def generate_price_monitoring_excel(
     # Высота и ширина колонок листа 2
     ws2.row_dimensions[1].height = 26
     for r in range(2, row_num):
-        ws2.row_dimensions[r].height = 24
+        ws2.row_dimensions[r].height = 42
     ws2.column_dimensions["A"].width = 6
     ws2.column_dimensions["B"].width = 46
     ws2.column_dimensions["C"].width = 14
-    ws2.column_dimensions["D"].width = 12
+    ws2.column_dimensions["D"].width = 40
     ws2.column_dimensions["E"].width = 18
 
     wb.save(output_path)

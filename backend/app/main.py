@@ -35,6 +35,8 @@ from .result_offers import (
 )
 from .billing import (
     BillingError,
+    cancel_price_monitoring_job,
+    cancel_exact_product_job,
     KIND_MONEY,
     KIND_DEPOSIT,
     KIND_SUPPLIER_SEARCH,
@@ -63,6 +65,7 @@ from .billing import (
     debit_money_balance,
     debit_package_units,
     effective_price_kopeks,
+    effective_job_unit_price_kopeks,
     expire_stale_confirmations,
     grant_money_balance,
     grant_package_units,
@@ -81,6 +84,7 @@ from .legal import (
     LEGAL_DOCUMENT_PERSONAL_DATA,
     record_legal_acceptance,
 )
+from .position_selection import AWAITING_POSITION_SELECTION, confirm_position_selection, processing_retry_lock
 from .config import config
 from .db import db_session, init_db
 from .jobs import (
@@ -114,6 +118,7 @@ from .jobs import (
     write_supplier_exclusions,
 )
 from .price_monitoring.cookie_manager import cookie_manager
+from .position_selection import AWAITING_EXACT_SELECTION, build_selection_snapshot, confirm_exact_product_selection, read_selection, validate_selected_ids
 from .models import (
     AccountLinkToken,
     ApiKey,
@@ -240,11 +245,13 @@ logger = logging.getLogger(__name__)
 from .outreach_api import router as outreach_router
 from .outreach_unsubscribe import router as outreach_unsubscribe_router
 from .mcp_api import router as mcp_router, admin_router as mcp_admin_router, generate_api_key
+from .mcp_jobs_api import router as mcp_jobs_router
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
 app.include_router(outreach_router)
 app.include_router(outreach_unsubscribe_router)
 app.include_router(mcp_router)
+app.include_router(mcp_jobs_router)
 app.include_router(mcp_admin_router)
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 CUSTOMER_AUTH_ATTEMPTS: dict[str, list[float]] = {}
@@ -1016,12 +1023,11 @@ def customer_list_api_keys(
         items.append({
             "id": k.id,
             "key_prefix": k.key_prefix,
-            "raw_key": k.secret_token or k.key_prefix,
             "name": k.name,
             "created_at": k.created_at.isoformat() if k.created_at else None,
             "is_active": k.is_active,
             "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
-            "total_spent": (k.spent_supplier_search or 0) + (k.spent_exact_product or 0) + (k.spent_procurement_report or 0),
+            "total_spent": (k.spent_supplier_search or 0) + (k.spent_exact_product or 0) + (k.spent_procurement_report or 0) + (k.spent_price_monitoring or 0),
         })
     return {
         "keys": items,
@@ -1041,7 +1047,7 @@ def customer_create_api_key(
     api_key = ApiKey(
         key_hash=key_hash,
         key_prefix=key_prefix,
-        secret_token=raw_key,
+        secret_token="",
         name="Ключ API (Личный кабинет)",
         client_id=client.id,
         is_admin=False,
@@ -1049,6 +1055,7 @@ def customer_create_api_key(
         allowed_supplier_search=True,
         allowed_exact_product=True,
         allowed_procurement_report=True,
+        allowed_price_monitoring=True,
         quota_supplier_search=999999,
         quota_exact_product=999999,
         quota_procurement_report=999999,
@@ -1217,12 +1224,19 @@ def customer_job_detail_api(
 @app.post("/api/customer/jobs/{job_id}/retry")
 def customer_job_retry_api(
     job_id: str,
+    request: Request,
     policy: str | None = Query(default=None),
     multi_item_mode: str | None = Query(default=None),
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    require_customer_csrf(request, context)
     job = _customer_job_or_404(db, job_id, context)
+    if job.mode in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}:
+        child, created = _create_fresh_processing_job(db, job, client=context.user.client, created_by=f"web:{context.user.id}")
+        if created:
+            enqueue_job(child.id)
+        return {"ok": True, "message": "Создана новая задача; предыдущий результат сохранён", "job": customer_job_to_dict(child)}
     if policy:
         normalized = _normalize_supplier_search_policy_for_job(job.mode, policy)
         job.supplier_search_policy = normalized
@@ -1236,6 +1250,130 @@ def customer_job_retry_api(
     db.commit()
     enqueue_job(job.id)
     return {"ok": True, "message": "Задача успешно перезапущена"}
+
+
+@app.post("/api/customer/jobs/{job_id}/position-selection")
+async def customer_position_selection_route(job_id: str, request: Request,
+                                            context: WebAuthContext = Depends(require_web_context),
+                                            db: Session = Depends(db_session)) -> dict:
+    require_customer_csrf(request, context)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректный выбор позиций.")
+    return choose_product_positions_api(job_id, revision=payload.get("revision"), selected_item_ids=payload.get("selected_item_ids"), context=context, db=db)
+
+
+def choose_product_positions_api(job_id: str, *, revision: str, selected_item_ids: list[str], context: WebAuthContext, db: Session) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    try:
+        changed = confirm_position_selection(db, job, revision, selected_item_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if changed:
+        enqueue_job(job.id)
+    return {"ok": True, "job": customer_job_to_dict(job)}
+
+
+@app.post("/api/customer/jobs/{job_id}/exact-selection")
+async def customer_exact_selection_route(job_id: str, request: Request,
+                                         context: WebAuthContext = Depends(require_web_context),
+                                         db: Session = Depends(db_session)) -> dict:
+    require_customer_csrf(request, context)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректный выбор позиций.")
+    return choose_exact_product_positions_api(job_id, revision=payload.get("revision"),
+               selected_item_ids=payload.get("selected_item_ids"), context=context, db=db)
+
+
+def choose_exact_product_positions_api(job_id: str, *, revision: str, selected_item_ids: list[str],
+                                        context: WebAuthContext, db: Session) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    try:
+        changed = confirm_exact_product_selection(db, job, revision, selected_item_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if changed:
+        enqueue_job(job.id)
+    return {"ok": True, "job": customer_job_to_dict(job)}
+
+
+@app.post("/api/customer/jobs/{job_id}/exact-selection/retry")
+async def customer_exact_selection_retry_route(job_id: str, request: Request,
+                                               context: WebAuthContext = Depends(require_web_context),
+                                               db: Session = Depends(db_session)) -> dict:
+    require_customer_csrf(request, context)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректный выбор позиций.")
+    parent = _customer_job_or_404(db, job_id, context)
+    if parent.mode != MODE_EXACT_PRODUCT or parent.status not in {"completed", "failed"}:
+        raise HTTPException(status_code=409, detail="Повтор позиции доступен после завершения подбора.")
+    selection = read_selection(parent)
+    try:
+        chosen = validate_selected_ids(selection, payload.get("revision"), payload.get("selected_item_ids"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    child, _created = _create_fresh_processing_job(db, parent, client=context.user.client,
+            created_by=f"web:{context.user.id}", selected_source_ids=chosen)
+    return {"ok": True, "job": customer_job_to_dict(child)}
+
+
+def _create_fresh_processing_job(db: Session, parent: Job, *, client: Client, created_by: str = "",
+                                 selected_source_ids: list[str] | None = None) -> tuple[Job, bool]:
+    # The retry lock is independent of the client billing lock: no nested flock
+    # on the same client, and no DB write occurs before acquiring either lock.
+    with processing_retry_lock(parent.id):
+        db.refresh(parent, attribute_names=["status"])
+        if parent.status in {"pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION, "settling"}:
+            raise HTTPException(status_code=409, detail="Дождитесь завершения или отмените текущую задачу.")
+        intent = sorted(selected_source_ids) if selected_source_ids is not None else "all"
+        active = db.query(Job).filter(Job.parent_job_id == parent.id, Job.mode == parent.mode,
+                    Job.status.in_(["draft", "pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION, "settling"])).all()
+        for child in active:
+            if read_dobor_context(child).get("retry_selection_intent", "all") == intent:
+                return child, False
+        if active:
+            raise HTTPException(status_code=409, detail="Для этой задачи уже выполняется новый подбор. Завершите или отмените его.")
+        from .geo_policy import GEO_SUPPORTED_MODES
+        retry_city = parent.delivery_city if parent.mode in GEO_SUPPORTED_MODES else ""
+        retry_radius = parent.geo_radius_km if parent.mode in GEO_SUPPORTED_MODES else None
+        error = client_access_error(db, client, parent.mode, geo_radius_km=retry_radius)
+        if error:
+            raise HTTPException(status_code=403, detail=error)
+        files = [(file.original_filename, Path(file.stored_path).read_bytes()) for file in parent.files if Path(file.stored_path).is_file()]
+        sources = [{"kind": source.kind, "label": source.label, "value": source.value} for source in parent.sources]
+        if not files and not sources:
+            raise HTTPException(status_code=400, detail="Исходные документы недоступны. Загрузите их заново.")
+        child = create_job(db, client_id=client.id, created_by_telegram_id=created_by or parent.created_by_telegram_id,
+                           mode=parent.mode, title=parent.title, target_suppliers=parent.target_suppliers,
+                           files=files, sources=sources, supplier_search_policy=parent.supplier_search_policy,
+                           multi_item_mode=parent.multi_item_mode, delivery_city=retry_city, geo_radius_km=retry_radius,
+                           initial_status="draft")
+        child.parent_job_id = parent.id
+        update_dobor_context_dict(child, {"retry_selection_intent": intent})
+        for key in ("filter_marketplaces", "filter_foreign", "max_suppliers", "max_variation_pct"):
+            setattr(child, key, getattr(parent, key))
+        try:
+            reserve_job_units(db, client, child)
+        except BillingError as exc:
+            child.status, child.error = "failed", str(exc)
+            db.commit()
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if selected_source_ids is not None:
+            selection = read_selection(parent)
+            reserve = db.query(BillingTransaction).filter_by(job_id=child.id, kind=KIND_EXACT_PRODUCT, operation=OP_RESERVE).first()
+            price = int(reserve.amount_kopeks or 0) if reserve else effective_job_unit_price_kopeks(db, client, KIND_EXACT_PRODUCT, job=child)
+            snapshot = json.loads(build_selection_snapshot(selection["items"], price_kopeks=price))
+            old_indexes = [i for i, row in enumerate(selection["items"]) if row["id"] in selected_source_ids]
+            snapshot["selected_ids"] = [snapshot["items"][index]["id"] for index in old_indexes]
+            child.position_selection_json = json.dumps(snapshot, ensure_ascii=False)
+            child.status = AWAITING_EXACT_SELECTION
+            child.message = "Проверьте выбранную позицию и подтвердите стоимость нового подбора"
+        else:
+            child.status = "pending"
+        db.commit()
+        return child, True
 
 
 @app.get("/api/customer/jobs/{job_id}/download")
@@ -1381,6 +1519,8 @@ async def customer_start_supplier_search_route(
     multi_item_mode = "balanced"
     include_alternatives = True
     additional_prompt = ""
+    delivery_city = ""
+    geo_radius_km = None
     try:
         body = await request.json()
         if isinstance(body, dict):
@@ -1388,6 +1528,8 @@ async def customer_start_supplier_search_route(
             multi_item_mode = str(body.get("multi_item_mode") or "balanced").strip()
             include_alternatives = bool(body.get("include_alternatives", True))
             additional_prompt = str(body.get("additional_prompt") or "").strip()
+            delivery_city = str(body.get("delivery_city") or "").strip()
+            geo_radius_km = body.get("geo_radius_km")
     except Exception:
         pass
     original_job = _customer_job_or_404(db, job_id, context)
@@ -1400,6 +1542,8 @@ async def customer_start_supplier_search_route(
         multi_item_mode=multi_item_mode,
         include_alternatives=include_alternatives,
         additional_prompt=additional_prompt,
+        delivery_city=delivery_city,
+        geo_radius_km=geo_radius_km,
     )
     return {
         "success": True,
@@ -2993,6 +3137,13 @@ def retry_job(
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job.mode in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}:
+        if not job.client:
+            raise HTTPException(status_code=400, detail="У задачи нет клиента.")
+        child, created = _create_fresh_processing_job(db, job, client=job.client)
+        if created:
+            enqueue_job(child.id)
+        return {"success": True, "job": job_to_dict(child)}
     if policy:
         job.supplier_search_policy = _normalize_supplier_search_policy_for_job(job.mode, policy)
     if multi_item_mode in ("balanced", "per_item"):
@@ -3027,85 +3178,99 @@ def admin_rerun_job(
     if not parent_job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    new_job_id = new_id()
-    orig_title = parent_job.title or ""
-    clean_title = orig_title.replace("[Админ] ", "").strip()
-    admin_title = f"[Админ] {clean_title}"
-
     root_parent_id = parent_job.parent_job_id if getattr(parent_job, "parent_job_id", "") else parent_job.id
+    with processing_retry_lock(root_parent_id):
+        active = db.query(Job).filter(Job.parent_job_id == root_parent_id, Job.is_admin_rerun == True,
+            Job.status.in_(["pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION, "settling"])).first()
+        if active:
+            return {"success": True, "job": job_to_dict(active, db=db), "parent_job_id": root_parent_id}
+        new_job_id = new_id()
+        orig_title = parent_job.title or ""
+        clean_title = orig_title.replace("[Админ] ", "").strip()
+        admin_title = f"[Админ] {clean_title}"
 
-    new_job = Job(
-        id=new_job_id,
-        job_number=next_job_number(db),
-        client_id=parent_job.client_id,
-        created_by_telegram_id="",
-        mode=parent_job.mode,
-        supplier_search_policy=_normalize_supplier_search_policy_for_job(parent_job.mode, policy or parent_job.supplier_search_policy),
-        multi_item_mode=multi_item_mode if multi_item_mode in ("balanced", "per_item") else getattr(parent_job, "multi_item_mode", "balanced"),
-        title=admin_title,
-        status="pending",
-        progress=0,
-        message="Экспертный перезапуск администратора",
-        parent_job_id=root_parent_id,
-        is_admin_rerun=True,
-        target_suppliers=parent_job.target_suppliers,
-    )
-    db.add(new_job)
-    db.flush()
-
-    parent_dir = job_dir(parent_job.id)
-    new_dir = job_dir(new_job.id)
-    new_dir.mkdir(parents=True, exist_ok=True)
-
-    parent_input_dir = parent_dir / "input"
-    new_input_dir = new_dir / "input"
-    new_input_dir.mkdir(parents=True, exist_ok=True)
-    if parent_input_dir.exists():
-        shutil.copytree(parent_input_dir, new_input_dir, dirs_exist_ok=True)
-
-    for pf in parent_job.files:
-        src_p = Path(pf.stored_path) if pf.stored_path else None
-        dest_stored_path = ""
-        if src_p and src_p.exists():
-            dest_file = new_input_dir / src_p.name
-            if not dest_file.exists():
-                shutil.copy2(src_p, dest_file)
-            dest_stored_path = str(dest_file)
-        elif src_p:
-            dest_stored_path = str(new_input_dir / src_p.name)
-
-        new_file = JobFile(
-            id=new_id(),
-            job_id=new_job.id,
-            original_filename=pf.original_filename,
-            stored_path=dest_stored_path,
-            parse_status="pending",
-            extracted_chars=pf.extracted_chars or 0,
-            error="",
+        new_job = Job(
+            id=new_job_id,
+            job_number=next_job_number(db),
+            client_id=parent_job.client_id,
+            created_by_telegram_id="",
+            mode=parent_job.mode,
+            supplier_search_policy=_normalize_supplier_search_policy_for_job(parent_job.mode, policy or parent_job.supplier_search_policy),
+            multi_item_mode=multi_item_mode if multi_item_mode in ("balanced", "per_item") else getattr(parent_job, "multi_item_mode", "balanced"),
+            title=admin_title,
+            status="pending",
+            progress=0,
+            message="Экспертный перезапуск администратора",
+            parent_job_id=root_parent_id,
+            is_admin_rerun=True,
+            target_suppliers=parent_job.target_suppliers,
         )
-        db.add(new_file)
+        for key in ("delivery_city", "geo_radius_km", "filter_marketplaces", "filter_foreign", "max_suppliers", "max_variation_pct"):
+            setattr(new_job, key, getattr(parent_job, key))
+        from .geo_policy import GEO_SUPPORTED_MODES, validate_geo_request
+        if new_job.mode not in GEO_SUPPORTED_MODES:
+            new_job.delivery_city, new_job.geo_radius_km = "", None
+        else:
+            try:
+                new_job.delivery_city, new_job.geo_radius_km = validate_geo_request(new_job.delivery_city, new_job.geo_radius_km, mode=new_job.mode)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.add(new_job)
+        db.flush()
 
-    for ps in parent_job.sources:
-        new_source = JobSource(
-            id=new_id(),
-            job_id=new_job.id,
-            kind=ps.kind,
-            label=ps.label,
-            value=ps.value,
-            parse_status="pending",
-            context_path="",
-            extracted_chars=ps.extracted_chars or 0,
-            error="",
-        )
-        db.add(new_source)
+        parent_dir = job_dir(parent_job.id)
+        new_dir = job_dir(new_job.id)
+        new_dir.mkdir(parents=True, exist_ok=True)
 
-    db.commit()
-    enqueue_job(new_job.id)
-    return {
-        "success": True,
-        "job": job_to_dict(new_job, db=db),
-        "parent_job_id": root_parent_id,
-    }
+        parent_input_dir = parent_dir / "input"
+        new_input_dir = new_dir / "input"
+        new_input_dir.mkdir(parents=True, exist_ok=True)
+        if parent_input_dir.exists():
+            shutil.copytree(parent_input_dir, new_input_dir, dirs_exist_ok=True)
+
+        for pf in parent_job.files:
+            src_p = Path(pf.stored_path) if pf.stored_path else None
+            dest_stored_path = ""
+            if src_p and src_p.exists():
+                dest_file = new_input_dir / src_p.name
+                if not dest_file.exists():
+                    shutil.copy2(src_p, dest_file)
+                dest_stored_path = str(dest_file)
+            elif src_p:
+                dest_stored_path = str(new_input_dir / src_p.name)
+
+            new_file = JobFile(
+                id=new_id(),
+                job_id=new_job.id,
+                original_filename=pf.original_filename,
+                stored_path=dest_stored_path,
+                parse_status="pending",
+                extracted_chars=pf.extracted_chars or 0,
+                error="",
+            )
+            db.add(new_file)
+
+        for ps in parent_job.sources:
+            new_source = JobSource(
+                id=new_id(),
+                job_id=new_job.id,
+                kind=ps.kind,
+                label=ps.label,
+                value=ps.value,
+                parse_status="pending",
+                context_path="",
+                extracted_chars=ps.extracted_chars or 0,
+                error="",
+            )
+            db.add(new_source)
+
+        db.commit()
+        enqueue_job(new_job.id)
+        return {
+            "success": True,
+            "job": job_to_dict(new_job, db=db),
+            "parent_job_id": root_parent_id,
+        }
 
 
 @app.get("/api/jobs/{job_id}/supplement-candidates", dependencies=[Depends(require_admin)])
@@ -3154,6 +3319,24 @@ def get_job_supplement_candidates(job_id: str, db: Session = Depends(db_session)
     }
 
 
+@app.post("/api/jobs/{job_id}/position-selection", dependencies=[Depends(require_admin)])
+@app.post("/api/jobs/{job_id}/exact-selection", dependencies=[Depends(require_admin)])
+async def admin_exact_selection_route(job_id: str, request: Request, db: Session = Depends(db_session)) -> dict:
+    job = resolve_admin_job(job_id, db)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректный выбор позиций.")
+    try:
+        changed = confirm_position_selection(db, job, payload.get("revision"), payload.get("selected_item_ids"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if changed:
+        enqueue_job(job.id)
+    return {"ok": True, "job": job_to_dict(job)}
+
+
 @app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(require_admin)])
 def cancel_job(job_id: str, db: Session = Depends(db_session)) -> dict:
     job = resolve_admin_job(job_id, db)
@@ -3161,6 +3344,13 @@ def cancel_job(job_id: str, db: Session = Depends(db_session)) -> dict:
         raise HTTPException(status_code=404, detail="Job not found")
     if job.status in TERMINAL_JOB_STATUSES:
         return {"success": True, "job": job_to_dict(job), "note": "Job already in terminal status"}
+    if job.mode in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}:
+        cancel_atomic = cancel_price_monitoring_job if job.mode == MODE_PRICE_MONITORING else cancel_exact_product_job
+        cancelled = cancel_atomic(db, job, note="Резерв возвращён: задача отменена администратором", message="Задача отменена администратором")
+        if cancelled:
+            cancel_running_job(job.id)
+        db.refresh(job)
+        return {"success": cancelled, "job": job_to_dict(job)}
     release_job_reservation(db, job, note="Резерв возвращён: задача отменена администратором")
     job.status = "cancelled"
     job.progress = 100
@@ -3187,6 +3377,12 @@ def force_fail_stale_jobs(
     )
     cancelled = []
     for job in stale_jobs:
+        if job.mode in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}:
+            cancel_atomic = cancel_price_monitoring_job if job.mode == MODE_PRICE_MONITORING else cancel_exact_product_job
+            if cancel_atomic(db, job, note="Резерв возвращён: задача зависла", message="Задача принудительно остановлена"):
+                cancel_running_job(job.id)
+                cancelled.append(job.id)
+            continue
         release_job_reservation(db, job, note="Резерв возвращён: задача зависла и принудительно остановлена")
         job.status = "cancelled"
         job.progress = 100
@@ -3735,6 +3931,9 @@ def human_status_label(status: str) -> str:
         "needs_review": "нужна проверка",
         "failed": "ошибка",
         "awaiting_customer_confirmation": "ожидает клиента",
+        AWAITING_EXACT_SELECTION: "выберите товары",
+        AWAITING_POSITION_SELECTION: "выберите позиции",
+        "settling": "завершаю расчёт",
         "customer_declined": "отклонено",
         "confirmation_expired": "истёк срок",
         "cancelled": "отменено",
@@ -4229,6 +4428,9 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "geo_radius_km": getattr(job, "geo_radius_km", None),
         "confirmation_kind": confirmation_kind,
         "multi_item_details": multi_item_details,
+        "exact_product_selection": read_selection(job) if job.mode == MODE_EXACT_PRODUCT else None,
+        "position_selection": read_selection(job) if job.mode in {MODE_EXACT_PRODUCT, MODE_PRICE_MONITORING} else None,
+        "exact_product_positions": _customer_exact_product_positions(job),
         "status": job.status,
         "status_label": status_lbl,
         "progress": job.progress,
@@ -4242,7 +4444,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "file_count": job.file_count,
         "has_result": bool(result_files),
         "can_download": bool(result_files) and job.status not in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED},
-        "can_cancel": job.status in {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION},
+        "can_cancel": job.status in {"pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION, STATUS_AWAITING_CUSTOMER_CONFIRMATION},
         "can_find_more_suppliers": job_can_find_more_suppliers(job),
         "can_start_supplier_search": job_can_start_supplier_search(job),
         "exact_product_summary": _customer_exact_product_summary(job) if job_can_start_supplier_search(job) else None,
@@ -4270,6 +4472,22 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         data["files"] = [file_to_dict(item) for item in job.files]
         data["sources"] = [source_to_dict(item) for item in job.sources]
     return data
+
+
+def _customer_exact_product_positions(job: Job) -> list[dict]:
+    if job.mode != MODE_EXACT_PRODUCT or not job.evidence_path:
+        return []
+    try:
+        report = read_job_evidence_payload(job).get("exact_product_report") or {}
+        return [{"id": str(row.get("position_id") or ""), "position_no": row.get("position_no"),
+                 "name": row.get("name_in_tz") or "", "status": row.get("status") or "needs_clarification",
+                 "model": row.get("identified_model") or "", "manufacturer": row.get("manufacturer") or "",
+                 "alternatives": row.get("alternative_brands") or [], "error": row.get("error") or "",
+                 "source_url": row.get("source_url") or "",
+                 "can_retry_position": bool(row.get("position_id") and read_selection(job).get("confirmed") and job.status == "completed")}
+                for row in report.get("positions", []) if isinstance(row, dict)]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
 
 
 def customer_job_result_files(job: Job) -> list[dict]:
@@ -4336,7 +4554,11 @@ async def create_customer_job_api(
     normalized_policy = _normalize_supplier_search_policy_for_job(mode, supplier_search_policy)
     normalized_multi_item_mode = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
     settings = get_or_create_settings(db)
-    delivery_city = str(delivery_city or "").strip()
+    from .geo_policy import validate_geo_request
+    try:
+        delivery_city, geo_radius_km = validate_geo_request(delivery_city, geo_radius_km, mode=mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if delivery_city:
         is_geo_allowed = bool(
             getattr(settings, "geo_radius_search_enabled_global", False)
@@ -4371,10 +4593,12 @@ async def create_customer_job_api(
         mode,
         incoming_file_count=len(payload),
         supplier_search_count=supplier_search_count,
+        geo_radius_km=geo_radius_km,
     )
     if access_error:
         raise HTTPException(status_code=403, detail=access_error)
 
+    created_jobs: list[Job] = []
     try:
         if supplier_specs and len(supplier_specs) > 1:
             jobs: list[Job] = []
@@ -4392,10 +4616,17 @@ async def create_customer_job_api(
                     multi_item_mode=normalized_multi_item_mode,
                     delivery_city=delivery_city,
                     geo_radius_km=geo_radius_km,
+                    initial_status="draft",
                 )
+                created_jobs.append(job)
                 reserve_job_units(db, client, job)
-                enqueue_job(job.id)
                 jobs.append(job)
+            for ready in jobs:
+                ready.status = "pending"
+                ready.message = "Задача создана"
+            db.commit()
+            for ready in jobs:
+                enqueue_job(ready.id)
             return {"batch": True, "count": len(jobs), "jobs": [customer_job_to_dict(job) for job in jobs]}
 
         title = _customer_initial_job_title(mode, payload, sources)
@@ -4412,14 +4643,41 @@ async def create_customer_job_api(
             multi_item_mode=normalized_multi_item_mode,
             delivery_city=delivery_city,
             geo_radius_km=geo_radius_km,
+            initial_status="draft",
         )
+        created_jobs.append(job)
         reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
+        job.status = "pending"
+        job.message = "Задача создана"
+        db.commit()
         enqueue_job(job.id)
     except BillingError as exc:
+        _abort_customer_job_creation(db, created_jobs, str(exc))
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
+        _abort_customer_job_creation(db, created_jobs, str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        _abort_customer_job_creation(db, created_jobs, "Не удалось запустить комплект")
+        raise
     return {"batch": False, "count": 1, "job": customer_job_to_dict(job)}
+
+
+def _abort_customer_job_creation(db: Session, jobs: list[Job], reason: str) -> None:
+    """Keep an audit trail but never leave staged batch reservations running."""
+    db.rollback()
+    for created in jobs:
+        db.refresh(created)
+        # Submitted jobs may already be owned by a worker; never rewind them.
+        if created.status != "draft":
+            continue
+        release_job_reservation(db, created, note="Комплект не запущен: резерв возвращён")
+        created.status = "failed"
+        created.error = reason[:500]
+        created.message = "Комплект не запущен; резерв возвращён"
+        created.completed_at = now_utc()
+        created.updated_at = now_utc()
+        db.commit()
 
 
 ALLOWED_UPLOAD_EXTENSIONS = {
@@ -4482,12 +4740,20 @@ def _customer_job_or_404(db: Session, job_id: str, context: WebAuthContext) -> J
     return job
 
 
-def download_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session):
-    job = _customer_job_or_404(db, job_id, context)
+def _ensure_customer_job_result_delivery_allowed(job: Job) -> None:
     if job.status in {STATUS_CONFIRMATION_EXPIRED, STATUS_DELIVERY_EXPIRED}:
         raise HTTPException(status_code=410, detail="Срок действия предложения или выдачи результата истёк.")
     if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
+    if job.status in {"cancelled", STATUS_CUSTOMER_DECLINED} or (
+        str(job.created_by_telegram_id or "").startswith("api:") and job.status != "completed"
+    ):
+        raise HTTPException(status_code=409, detail="Результат отменённой или незавершённой API-задачи недоступен.")
+
+
+def download_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session):
+    job = _customer_job_or_404(db, job_id, context)
+    _ensure_customer_job_result_delivery_allowed(job)
     output = package_job_outputs(job)
     if not output or not output.exists():
         items = package_job_output_items(job)
@@ -4505,10 +4771,7 @@ def download_customer_job_api(job_id: str, *, context: WebAuthContext, db: Sessi
 
 def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebAuthContext, db: Session):
     job = _customer_job_or_404(db, job_id, context)
-    if job.status in {STATUS_CONFIRMATION_EXPIRED, STATUS_DELIVERY_EXPIRED}:
-        raise HTTPException(status_code=410, detail="Срок действия предложения или выдачи результата истёк.")
-    if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
-        raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
+    _ensure_customer_job_result_delivery_allowed(job)
     normalized_kind = str(file_kind or "").strip()
     if normalized_kind in {"admin_supplement", "admin-supplement"} or normalized_kind.startswith("admin_supplement_") or normalized_kind.startswith("admin-supplement_"):
         supplements = get_job_admin_supplements(job)
@@ -4547,9 +4810,25 @@ def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebA
 
 def cancel_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
     job = _customer_job_or_404(db, job_id, context)
-    cancellable_statuses = {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION}
+    cancellable_statuses = {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION, AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION}
     if job.status not in cancellable_statuses:
         raise HTTPException(status_code=409, detail="Эту задачу уже нельзя отменить.")
+    if (str(job.created_by_telegram_id or "").startswith("api:")
+            and job.mode not in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}
+            and job.status in {"pending", "running"}):
+        from .mcp_api import cancel_api_job
+        if not cancel_api_job(db, job):
+            raise HTTPException(status_code=409, detail="Эта задача уже завершается или отменена.")
+        cancel_running_job(job.id)
+        db.refresh(job)
+        return {"success": True, "job": customer_job_to_dict(job)}
+    if job.mode in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}:
+        cancel_atomic = cancel_price_monitoring_job if job.mode == MODE_PRICE_MONITORING else cancel_exact_product_job
+        if not cancel_atomic(db, job, note="Резерв возвращён: задача отменена клиентом", message="Задача отменена клиентом"):
+            raise HTTPException(status_code=409, detail="Эту задачу уже нельзя отменить.")
+        cancel_running_job(job.id)
+        db.refresh(job)
+        return {"success": True, "job": customer_job_to_dict(job)}
     release_job_reservation(db, job, note="Резерв возвращён: задача отменена клиентом")
     job.status = "cancelled"
     job.progress = 100
@@ -4834,6 +5113,7 @@ def create_additional_supplier_search_for_client(
         incoming_file_count=len(input_files),
         supplier_search_count=1,
         supplier_search_run_type=SUPPLIER_RUN_ADDITIONAL,
+        geo_radius_km=original_job.geo_radius_km,
     )
     if access_error:
         raise HTTPException(status_code=403, detail=access_error)
@@ -4856,6 +5136,8 @@ def create_additional_supplier_search_for_client(
             ),
             supplier_search_run_type=SUPPLIER_RUN_ADDITIONAL,
             multi_item_mode=getattr(original_job, "multi_item_mode", "balanced"),
+            delivery_city=original_job.delivery_city,
+            geo_radius_km=original_job.geo_radius_km,
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
         prior_verified_count = _cumulative_prior_verified_count(original_job)
@@ -5094,6 +5376,8 @@ def create_supplier_search_from_exact_product(
     multi_item_mode: str = "balanced",
     include_alternatives: bool = True,
     additional_prompt: str = "",
+    delivery_city: str = "",
+    geo_radius_km: int | None = None,
 ) -> Job:
     if original_job.client_id != client.id:
         raise HTTPException(status_code=404, detail="Задача не найдена.")
@@ -5104,12 +5388,18 @@ def create_supplier_search_from_exact_product(
 
     input_files = _repeat_supplier_search_input_files(original_job)
     settings = get_or_create_settings(db)
+    from .geo_policy import validate_geo_request
+    try:
+        delivery_city, geo_radius_km = validate_geo_request(delivery_city, geo_radius_km, mode=MODE_SUPPLIER_SEARCH)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     access_error = client_access_error(
         db,
         client,
         MODE_SUPPLIER_SEARCH,
         incoming_file_count=max(1, len(input_files)),
         supplier_search_count=1,
+        geo_radius_km=geo_radius_km,
     )
     if access_error:
         raise HTTPException(status_code=403, detail=access_error)
@@ -5149,6 +5439,8 @@ def create_supplier_search_from_exact_product(
             supplier_search_policy=normalized_policy,
             supplier_search_run_type="initial",
             multi_item_mode=multi_item_mode,
+            delivery_city=delivery_city,
+            geo_radius_km=geo_radius_km,
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
         enqueue_job(job.id)
@@ -5904,6 +6196,9 @@ def job_to_dict(
         "mode_label": mode_label(job.mode),
         "supplier_search_policy": getattr(job, "supplier_search_policy", None) or SUPPLIER_POLICY_NORMAL,
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", None) or SUPPLIER_RUN_INITIAL,
+        "exact_product_selection": read_selection(job) if job.mode == MODE_EXACT_PRODUCT else None,
+        "position_selection": read_selection(job) or None,
+        "exact_product_positions": _customer_exact_product_positions(job),
         "multi_item_mode": getattr(job, "multi_item_mode", "balanced") or "balanced",
         "confirmation_kind": confirmation_kind,
         "confirmation_outcome": confirmation_outcome,
@@ -5960,6 +6255,8 @@ def job_to_dict(
         data["admin_reruns"] = [
             {
                 "id": r.id,
+                "exact_product_selection": read_selection(r) if r.mode == MODE_EXACT_PRODUCT else None,
+                "position_selection": read_selection(r) or None,
                 "job_number": getattr(r, "job_number", None),
                 "status": r.status,
                 "progress": r.progress,

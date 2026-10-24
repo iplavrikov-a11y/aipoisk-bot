@@ -40,7 +40,7 @@ export function IndustryPageLayout({
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(howToSchema) }} />
 
-      <main className="bg-slate-50 text-slate-900 min-h-screen font-sans">
+      <main className="tl-public tl-industry-page bg-slate-50 text-slate-900 min-h-screen font-sans">
         <SiteHeader />
 
         {/* HERO */}

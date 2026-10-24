@@ -12,6 +12,7 @@ from typing import Optional
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 import structlog
+from .search_metrics import record_search_request
 
 logger = structlog.get_logger(__name__)
 
@@ -176,9 +177,11 @@ class YandexSearchEngine:
                 page_results: list[YandexSearchResult] = []
                 # Fast path: Synchronous endpoint (<1s)
                 try:
+                    record_search_request()
                     response = await client.post(self.V2_API_URL, json=body, headers=headers)
                     if response.status_code == 429:
                         await asyncio.sleep(2.0)
+                        record_search_request()
                         response = await client.post(self.V2_API_URL, json=body, headers=headers)
                     if response.status_code == 200:
                         data = response.json()
@@ -191,6 +194,7 @@ class YandexSearchEngine:
                 # Slow path fallback: Async operation polling
                 if not page_results:
                     try:
+                        record_search_request()
                         async_resp = await client.post(self.V2_ASYNC_API_URL, json=body, headers=headers)
                         if async_resp.status_code == 200:
                             op_id = async_resp.json().get("id")
@@ -300,6 +304,7 @@ class YandexSearchEngine:
 
             client = await self._get_client()
             self.total_requests += 1
+            record_search_request()
             response = await client.get(self.V1_API_URL, params=params)
 
             if response.status_code != 200:

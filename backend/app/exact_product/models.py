@@ -77,6 +77,9 @@ class ExactProductPosition:
     datasheet_url: str = ""
     inn: str = ""
     region: str = ""
+    position_id: str = ""
+    status: str = "found"
+    error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -101,12 +104,14 @@ class ExactProductReport:
     disclaimer: str = (
         "Отчёт сформирован на основе сопоставления технического задания с открытыми веб-источниками, "
         "каталогами производителей, PDF-паспортами изделий и реестром Минпромторга РФ (ГИСП). "
-        "Все показатели проверены первоисточниками без искусственной подгонки под ТЗ заказчика по 44-ФЗ и 223-ФЗ."
+        "Степень подтверждения каждого параметра указана отдельно. Неподтверждённые характеристики "
+        "требуют уточнения; наличие отчёта само по себе не подтверждает соответствие товара условиям закупки."
     )
     yandex_requests_count: int = 0
     yandex_cost_rub: float = 0.0
     web_sources: list[str] = field(default_factory=list)
     verified_documents: list[dict[str, Any]] = field(default_factory=list)
+    search_metrics_available: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +124,7 @@ class ExactProductReport:
             "yandex_cost_rub": self.yandex_cost_rub,
             "web_sources": self.web_sources,
             "verified_documents": self.verified_documents,
+            "search_metrics_available": self.search_metrics_available,
         }
 
 

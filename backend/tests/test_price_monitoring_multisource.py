@@ -164,8 +164,7 @@ def test_12_positions_normalization_and_hints():
 
     # Specific hints checks
     propan_hints = extract_package_hints("Пропан сжиженный бал.50л", "кг")
-    assert propan_hints.get("cylinder_volume_l") == 50.0
-    assert propan_hints.get("gas_type") == "propane"
+    assert propan_hints == {"pack_pieces": None, "pack_weight_kg": None}
 
     electrodes_hints = extract_package_hints("Электрод ОЗС-12 4мм пачка 5 кг", "кг")
     assert electrodes_hints.get("pack_weight_kg") == 5.0
