@@ -286,7 +286,7 @@ def generate_price_monitoring_excel(
     """
     wb = Workbook()
 
-    # --- ЛИСТ 1: 'Пример отчета' по шаблону заказчика ---
+    # --- ЛИСТ 1: Сводный расчет НМЦК (по шаблону заказчика 'Пример отчета') ---
     ws = wb.active
     ws.title = "Пример отчета"
 
@@ -326,7 +326,7 @@ def generate_price_monitoring_excel(
     hdr_slate_600 = PatternFill(start_color="475569", end_color="475569", fill_type="solid")
     hdr_slate_500 = PatternFill(start_color="64748B", end_color="64748B", fill_type="solid")
     hdr_col_fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
-    hdr_summary_fill = PatternFill(start_color="0F766E", end_color="0F766E", fill_type="solid")
+    hdr_summary_fill = PatternFill(start_color="064E3B", end_color="064E3B", fill_type="solid")
     summary_data_fill = PatternFill(start_color="F0FDF4", end_color="F0FDF4", fill_type="solid")
     missing_badge_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
 
@@ -411,45 +411,49 @@ def generate_price_monitoring_excel(
                 inn_parts.append(f"КПП {sup_quote.kpp}")
             inn_kpp_text = " / ".join(inn_parts) if inn_parts else "ИНН: уточняется"
             contacts_text = _format_contacts_multiline(sup_quote.contacts)
+
+            # Строка 1: Поставщик N (наименование)
+            ws.merge_cells(f"{col_start_let}1:{col_end_let}1")
+            cell_sup = ws[f"{col_start_let}1"]
+            cell_sup.value = sup_name_text
+            cell_sup.font = font_main_hdr
+            cell_sup.fill = hdr_slate_700
+            cell_sup.alignment = align_center
+
+            # Строка 2: ИНН/КПП
+            ws.merge_cells(f"{col_start_let}2:{col_end_let}2")
+            cell_inn = ws[f"{col_start_let}2"]
+            cell_inn.value = inn_kpp_text
+            cell_inn.font = font_sub_hdr_white
+            cell_inn.fill = hdr_slate_600
+            cell_inn.alignment = align_center
+
+            # Строка 3: контакты
+            ws.merge_cells(f"{col_start_let}3:{col_end_let}3")
+            cell_cont = ws[f"{col_start_let}3"]
+            cell_cont.value = contacts_text
+            cell_cont.font = font_sub_hdr_white
+            cell_cont.fill = hdr_slate_500
+            cell_cont.alignment = align_center
         else:
-            sup_name_text = f"Поставщик {s_idx} ( наименование )"
-            inn_kpp_text = "ИНН/КПП"
-            contacts_text = "контакты"
+            # Когда поставщики меняются в каждой строке, объединяем строки 1..3 в единый цельный стильный блок
+            ws.merge_cells(f"{col_start_let}1:{col_end_let}3")
+            cell_sup = ws[f"{col_start_let}1"]
+            cell_sup.value = f"Поставщик {s_idx}"
+            cell_sup.font = font_main_hdr
+            cell_sup.fill = hdr_slate_700
+            cell_sup.alignment = align_center
 
-        # Строка 1: Поставщик N (наименование)
-        ws.merge_cells(f"{col_start_let}1:{col_end_let}1")
-        cell_sup = ws[f"{col_start_let}1"]
-        cell_sup.value = sup_name_text
-        cell_sup.font = font_main_hdr
-        cell_sup.fill = hdr_slate_700
-        cell_sup.alignment = align_center
-
-        # Строка 2: ИНН/КПП
-        ws.merge_cells(f"{col_start_let}2:{col_end_let}2")
-        cell_inn = ws[f"{col_start_let}2"]
-        cell_inn.value = inn_kpp_text
-        cell_inn.font = font_sub_hdr_white
-        cell_inn.fill = hdr_slate_600
-        cell_inn.alignment = align_center
-
-        # Строка 3: контакты
-        ws.merge_cells(f"{col_start_let}3:{col_end_let}3")
-        cell_cont = ws[f"{col_start_let}3"]
-        cell_cont.value = contacts_text
-        cell_cont.font = font_sub_hdr_white
-        cell_cont.fill = hdr_slate_500
-        cell_cont.alignment = align_center
-
-        # Строка 4: Цена руб./ед.
+        # Строка 4: Цена, руб./ед.
         cell_p = ws[f"{col_start_let}4"]
-        cell_p.value = "Цена руб./ед."
+        cell_p.value = "Цена, руб./ед."
         cell_p.font = font_col_name
         cell_p.fill = hdr_col_fill
         cell_p.alignment = align_center
 
         # Строка 4: источник (ссылка)
         cell_src = ws[f"{col_end_let}4"]
-        cell_src.value = "источник (ссылка)"
+        cell_src.value = "Поставщик / ссылка"
         cell_src.font = font_col_src
         cell_src.fill = hdr_col_fill
         cell_src.alignment = align_center
@@ -478,7 +482,7 @@ def generate_price_monitoring_excel(
 
     ws.merge_cells(f"{col_var_let}1:{col_var_let}4")
     cell_var_hdr = ws[f"{col_var_let}1"]
-    cell_var_hdr.value = "Коэффициент вариации"
+    cell_var_hdr.value = "Коэфф. вариации (V)"
     cell_var_hdr.font = font_summary_hdr
     cell_var_hdr.fill = hdr_summary_fill
     cell_var_hdr.alignment = align_center
@@ -614,10 +618,9 @@ def generate_price_monitoring_excel(
                 if q.url.startswith("http"):
                     cell_link.hyperlink = q.url
 
-                # Формируем информативную всплывающую подсказку в ячейке
+                # Формируем информативную всплывающую подсказку только на источнике (без дублирования на цену)
                 comment_obj = _build_cell_comment(q, item.unit)
                 cell_link.comment = comment_obj
-                cell_price.comment = comment_obj
             else:
                 cell_price.value = ""
                 cell_link.value = ""
@@ -648,12 +651,13 @@ def generate_price_monitoring_excel(
         cell_var.fill = summary_data_fill
         cell_var.alignment = align_center
         cell_var.font = font_summary_var
+        cell_var.number_format = "0.0%"
 
         if clean_col_letters:
             args_str = ",".join(f"{col_let}{current_row}" for col_let in clean_col_letters)
             cell_min.value = f"=MIN({args_str})"
             cell_avg.value = f"=AVERAGE({args_str})"
-            cell_var.value = f'=_xlfn.IFS(COUNTA({args_str})>=3,_xlfn.STDEV.S({args_str})/AVERAGE({args_str})*100,COUNTA({args_str})<3,"недостаточно данных")'
+            cell_var.value = f'=_xlfn.IFS(COUNTA({args_str})>=3,_xlfn.STDEV.S({args_str})/{cell_avg.coordinate},COUNTA({args_str})<3,"мало данных")'
         else:
             cell_min.value = ""
             cell_avg.value = ""
@@ -662,22 +666,22 @@ def generate_price_monitoring_excel(
         current_row += 1
 
     # Настройка высоты строк шапки
-    ws.row_dimensions[1].height = 28  # Поставщик N
-    ws.row_dimensions[2].height = 22  # ИНН / КПП
-    ws.row_dimensions[3].height = 36  # Контакты
-    ws.row_dimensions[4].height = 24  # Заголовки колонок "Цена руб./ед.", "источник (ссылка)"
+    ws.row_dimensions[1].height = 24  # Поставщик N
+    ws.row_dimensions[2].height = 18  # ИНН / КПП
+    ws.row_dimensions[3].height = 24  # Контакты
+    ws.row_dimensions[4].height = 26  # Заголовки колонок "Цена, руб./ед.", "Поставщик / ссылка"
 
     # Динамическая подгонка высоты строк под фактический объем текста (исключает обрезание контактов и ссылок)
     for r in range(5, current_row):
         max_lines_in_row = 1
 
-        # Колонка A (Номенклатура, ширина 48)
+        # Колонка A (Номенклатура, ширина 46)
         nom_val = str(ws.cell(row=r, column=1).value or "").strip()
         if nom_val:
             nom_lines = sum(max(1, (len(p) + 41) // 42) for p in nom_val.split("\n"))
             max_lines_in_row = max(max_lines_in_row, nom_lines)
 
-        # Колонки поставщиков (ширина 42)
+        # Колонки поставщиков (ширина 44)
         for s_idx in range(1, max_suppliers + 1):
             col_link_idx = 4 + (s_idx - 1) * 2
             cell_val = str(ws.cell(row=r, column=col_link_idx).value or "").strip()
@@ -688,13 +692,13 @@ def generate_price_monitoring_excel(
         ws.row_dimensions[r].height = max(36, max_lines_in_row * 17 + 10)
 
     # Настройка ширины колонок Листа 1
-    ws.column_dimensions["A"].width = 48
-    ws.column_dimensions["B"].width = 12
+    ws.column_dimensions["A"].width = 46
+    ws.column_dimensions["B"].width = 11
     for s_idx in range(1, max_suppliers + 1):
         col_start_let = get_column_letter(3 + (s_idx - 1) * 2)
         col_end_let = get_column_letter(4 + (s_idx - 1) * 2)
-        ws.column_dimensions[col_start_let].width = 16
-        ws.column_dimensions[col_end_let].width = 42
+        ws.column_dimensions[col_start_let].width = 18
+        ws.column_dimensions[col_end_let].width = 44
 
     ws.column_dimensions[col_min_let].width = 18
     ws.column_dimensions[col_avg_let].width = 18

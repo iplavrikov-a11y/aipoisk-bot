@@ -298,11 +298,10 @@ def test_excel_report_structure_and_links(tmp_path):
     assert "ForOffice" in cell_d5.comment.text
     assert "7724521481" in cell_d5.comment.text
 
-    # Check cell C5 (price cell): MUST be numeric, hyperlinked and have comment
+    # Check cell C5 (price cell): MUST be numeric, hyperlinked (comments kept on D5 to prevent visual clutter)
     cell_c5 = ws1["C5"]
     assert cell_c5.value == 723.0
     assert cell_c5.hyperlink.target == "https://www.foroffice.ru/products/description/1129.html"
-    assert cell_c5.comment is not None
 
     # Check summary formula columns (M: Мин. цена, N: Средняя цена)
     assert ws1["M1"].value == "Мин. цена, руб."
