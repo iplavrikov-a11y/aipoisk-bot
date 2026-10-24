@@ -670,7 +670,11 @@ def _has_deterministic_identifier_conflict(
     if not candidates:
         return False
 
-    for c in candidates:
+    # Если в номенклатуре есть заводской чертеж (децимальный номер), он является ключевым идентификатором детали:
+    drawings = [c for c in candidates if is_closed_factory_drawing(c, target_item_name)]
+    check_candidates = drawings if drawings else candidates
+
+    for c in check_candidates:
         # Проверяем точное вхождение в исходный текст или URL
         if re.search(r'\b' + re.escape(c) + r'\b', raw_corpus, re.IGNORECASE):
             return False
@@ -921,8 +925,17 @@ URL страницы: {url}
                     if official_name:
                         quote.company_name = official_name
                     city_or_addr = dadata_info.get("city") or dadata_info.get("legal_address")
+                    extra_parts = []
                     if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
-                        quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                        extra_parts.append(city_or_addr)
+                    d_phones = dadata_info.get("phones") or []
+                    if d_phones and (not quote.contacts or not re.search(r'\+?\d[\d\s\(\)\-]{7,}', quote.contacts)):
+                        extra_parts.append(f"Тел: {d_phones[0]}")
+                    d_emails = dadata_info.get("emails") or []
+                    if d_emails and (not quote.contacts or "@" not in quote.contacts):
+                        extra_parts.append(f"Email: {d_emails[0]}")
+                    if extra_parts:
+                        quote.contacts = f"{quote.contacts}, {', '.join(extra_parts)}".strip(", ") if quote.contacts else ", ".join(extra_parts)
             except Exception as d_exc:
                 logger.debug("DaData enrichment skipped for %s: %s", quote.company_name, d_exc)
 
@@ -1020,8 +1033,17 @@ URL страницы: {url}
                 if official_name:
                     quote.company_name = official_name
                 city_or_addr = dadata_info.get("city") or dadata_info.get("legal_address")
+                extra_parts = []
                 if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
-                    quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                    extra_parts.append(city_or_addr)
+                d_phones = dadata_info.get("phones") or []
+                if d_phones and (not quote.contacts or not re.search(r'\+?\d[\d\s\(\)\-]{7,}', quote.contacts)):
+                    extra_parts.append(f"Тел: {d_phones[0]}")
+                d_emails = dadata_info.get("emails") or []
+                if d_emails and (not quote.contacts or "@" not in quote.contacts):
+                    extra_parts.append(f"Email: {d_emails[0]}")
+                if extra_parts:
+                    quote.contacts = f"{quote.contacts}, {', '.join(extra_parts)}".strip(", ") if quote.contacts else ", ".join(extra_parts)
 
         except Exception as d_exc:
             logger.debug("DaData enrichment skipped for %s: %s", quote.company_name, d_exc)
