@@ -328,18 +328,22 @@ def cluster_and_reconcile_item_quotes(
         min_cp = min(q.price_rub for q in best_homogeneous_subset)
         max_cp = max(q.price_rub for q in best_homogeneous_subset)
         for q in item_res.quotes:
-            if id(q) not in best_ids:
+            if q.price_rub > 0 and id(q) not in best_ids:
                 q.is_outlier = True
                 q.comment = f"⚠️ Исключена: цена {q.price_rub:,.2f} ₽ не вошла в однородную группу V={best_v:.1f}% ({min_cp:,.2f} - {max_cp:,.2f} ₽)"
     else:
         # Цены не образуют однородной совокупности (разброс > max_variation_pct)
         all_v = calculate_variation_coefficient([q.price_rub for q in valid_quotes])
         for q in item_res.quotes:
-            q.is_outlier = True
-            q.comment = f"⚠️ Неоднородная цена: вариация {all_v:.1f}% превышает лимит {max_variation_pct:.0f}% (Приказ №567)"
+            if q.price_rub > 0:
+                q.is_outlier = True
+                q.comment = f"⚠️ Неоднородная цена: вариация {all_v:.1f}% превышает лимит {max_variation_pct:.0f}% (Приказ №567)"
 
-    # Сортируем: сначала подтвержденный кластер по возрастанию цены, затем исключенные
-    item_res.quotes.sort(key=lambda q: (q.is_outlier, q.price_rub if q.price_rub > 0 else 999_999_999))
+    # Сортируем: сначала подтвержденный кластер по возрастанию цены, затем котировки "по запросу", затем исключенные выбросы
+    item_res.quotes.sort(key=lambda q: (
+        2 if q.is_outlier else (1 if q.price_rub <= 0 else 0),
+        q.price_rub if q.price_rub > 0 else 0
+    ))
 
 
 # Псевдоним для обратной совместимости
@@ -731,24 +735,30 @@ async def process_single_item(
                     pre_kpp=kpp,
                     pre_contacts=contacts,
                 )
-                if quote and quote.is_price_found and quote.price_rub > 0:
-                    grounding_price = quote.raw_price_rub or quote.price_rub
-                    page_price_match = find_price_grounding_match(grounding_price, raw_page_text)
-                    snippet_price_match = find_price_grounding_match(grounding_price, snippet_block)
-                    if page_price_match is not None:
-                        quote.evidence_level = "page_content"
-                        evidence_text = raw_page_text
-                        evidence_match = page_price_match
-                    elif snippet_price_match is not None:
-                        quote.evidence_level = "search_snippet"
-                        evidence_text = snippet_block
-                        evidence_match = snippet_price_match
+                if quote and (quote.price_rub > 0 or not quote.is_price_found):
+                    if quote.price_rub > 0:
+                        grounding_price = quote.raw_price_rub or quote.price_rub
+                        page_price_match = find_price_grounding_match(grounding_price, raw_page_text)
+                        snippet_price_match = find_price_grounding_match(grounding_price, snippet_block)
+                        if page_price_match is not None:
+                            quote.evidence_level = "page_content"
+                            evidence_text = raw_page_text
+                            evidence_match = page_price_match
+                        elif snippet_price_match is not None:
+                            quote.evidence_level = "search_snippet"
+                            evidence_text = snippet_block
+                            evidence_match = snippet_price_match
+                        else:
+                            quote.evidence_level = "unknown"
+                            evidence_text = ""
+                            evidence_match = None
+                        quote.retrieved_at = datetime.now(timezone.utc).isoformat()
+                        quote.source_excerpt = _price_evidence_excerpt(evidence_text, evidence_match)
                     else:
-                        quote.evidence_level = "unknown"
-                        evidence_text = ""
-                        evidence_match = None
-                    quote.retrieved_at = datetime.now(timezone.utc).isoformat()
-                    quote.source_excerpt = _price_evidence_excerpt(evidence_text, evidence_match)
+                        quote.evidence_level = "catalog_offer"
+                        quote.retrieved_at = datetime.now(timezone.utc).isoformat()
+                        quote.source_excerpt = "Товар в каталоге поставщика (цена по запросу)"
+
                     for kd, kdata in KNOWN_MAJOR_RETAILERS.items():
                         if _domain_matches(domain, kd):
                             quote.company_name = kdata["company_name"]
@@ -922,6 +932,8 @@ async def process_single_item(
         item_res.status = "found"
     elif any(q.price_rub > 0 for q in item_res.quotes):
         item_res.status = "divergent"
+    elif any(q.price_rub == 0 and not q.is_outlier and (q.url or q.company_name) for q in item_res.quotes):
+        item_res.status = "on_request"
     else:
         item_res.status = "not_found"
         if budget_exhausted:
@@ -939,8 +951,11 @@ async def process_single_item(
         q_summary = ""
         if item_res.quotes:
             valid_p = [q.price_rub for q in item_res.quotes if q.price_rub > 0]
+            unpriced_c = len([q for q in item_res.quotes if q.price_rub == 0 and not q.is_outlier])
             if valid_p:
                 q_summary = f"Найдено {len(valid_p)} предложений с ценами от {min(valid_p):,.0f} до {max(valid_p):,.0f} ₽ (вариация > 33%)"
+            elif unpriced_c:
+                q_summary = f"Товар обнаружен у {unpriced_c} поставщиков (цена по запросу/опросному листу)"
         ai_ans = await synthesize_missing_reason_ai(
             clean,
             unit,

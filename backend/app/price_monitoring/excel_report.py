@@ -251,7 +251,10 @@ def _build_cell_comment(q: SupplierQuote, item_unit: str) -> Comment:
     ]
     if q.raw_price_rub > 0 and q.site_unit:
         lines.append(f"Цена на сайте: {q.raw_price_rub:,.2f} ₽ ({q.site_unit})")
-    lines.append(f"Цена в отчете: {q.price_rub:,.2f} ₽ за {item_unit}")
+    if q.price_rub > 0:
+        lines.append(f"Цена в отчете: {q.price_rub:,.2f} ₽ за {item_unit}")
+    else:
+        lines.append(f"Цена: по запросу (требуется запрос счета / КП)")
     if q.conversion_comment:
         lines.append(f"Пересчет: {q.conversion_comment}")
     if q.comment:
@@ -290,23 +293,23 @@ def generate_price_monitoring_excel(
     ws = wb.active
     ws.title = "Пример отчета"
 
-    # Стили - Премиальная палитра Slate & Emerald
+    # Стили - Фирменная палитра TenderLex: Deep Emerald & Soft Mint (в едином стиле с другими отчетами)
     font_calibri_bold = Font(name="Calibri", size=11, bold=True, color="0F172A")
     font_calibri_regular = Font(name="Calibri", size=11, color="1E293B")
     font_main_hdr = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     font_sub_hdr_white = Font(name="Calibri", size=9, color="F8FAFC")
-    font_col_name = Font(name="Calibri", size=10, bold=True, color="0F172A")
-    font_col_src = Font(name="Calibri", size=10, bold=True, color="475569")
+    font_col_name = Font(name="Calibri", size=10, bold=True, color="064E3B")
+    font_col_src = Font(name="Calibri", size=10, bold=True, color="047857")
     font_summary_hdr = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    font_link = Font(name="Calibri", size=10, color="2563EB", underline="single")
+    font_link = Font(name="Calibri", size=10, color="0284C7", underline="single")
     font_price_bold = Font(name="Calibri", size=11, bold=True, color="047857")
     font_summary_min = Font(name="Calibri", size=11, bold=True, color="047857")
-    font_summary_avg = Font(name="Calibri", size=11, bold=True, color="065F46")
-    font_summary_var = Font(name="Calibri", size=10, bold=True, color="065F46")
+    font_summary_avg = Font(name="Calibri", size=11, bold=True, color="064E3B")
+    font_summary_var = Font(name="Calibri", size=10, bold=True, color="064E3B")
     font_price_outlier = Font(name="Calibri", size=11, bold=True, color="B45309")
-    font_missing_badge = Font(name="Calibri", size=10, italic=True, color="64748B")
+    font_missing_badge = Font(name="Calibri", size=10, italic=True, color="064E3B")
     font_rich_regular = InlineFont(rFont="Calibri", sz=10, color="1E293B")
-    font_rich_link = InlineFont(rFont="Calibri", sz=10, color="2563EB", u="single")
+    font_rich_link = InlineFont(rFont="Calibri", sz=10, color="0284C7", u="single")
 
     thin_border = Border(
         left=Side(style="thin", color="CBD5E1"),
@@ -321,14 +324,14 @@ def generate_price_monitoring_excel(
         bottom=Side(style="thin", color="A7F3D0"),
     )
 
-    hdr_dark_slate = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
-    hdr_slate_700 = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
-    hdr_slate_600 = PatternFill(start_color="475569", end_color="475569", fill_type="solid")
-    hdr_slate_500 = PatternFill(start_color="64748B", end_color="64748B", fill_type="solid")
-    hdr_col_fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+    hdr_brand_emerald = PatternFill(start_color="064E3B", end_color="064E3B", fill_type="solid")
+    hdr_supplier_fill = PatternFill(start_color="047857", end_color="047857", fill_type="solid")
+    hdr_dominant_sub2 = PatternFill(start_color="065F46", end_color="065F46", fill_type="solid")
+    hdr_dominant_sub3 = PatternFill(start_color="0F766E", end_color="0F766E", fill_type="solid")
+    hdr_col_fill = PatternFill(start_color="ECFDF5", end_color="ECFDF5", fill_type="solid")
     hdr_summary_fill = PatternFill(start_color="064E3B", end_color="064E3B", fill_type="solid")
-    summary_data_fill = PatternFill(start_color="F0FDF4", end_color="F0FDF4", fill_type="solid")
-    missing_badge_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    summary_data_fill = PatternFill(start_color="ECFDF5", end_color="ECFDF5", fill_type="solid")
+    missing_badge_fill = PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid")
 
     align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     align_left = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -342,7 +345,7 @@ def generate_price_monitoring_excel(
     cell_a = ws["A1"]
     cell_a.value = "Номенклатура"
     cell_a.font = font_main_hdr
-    cell_a.fill = hdr_dark_slate
+    cell_a.fill = hdr_brand_emerald
     cell_a.alignment = align_center
     if delivery_city:
         clean_city = str(delivery_city).strip()
@@ -356,7 +359,7 @@ def generate_price_monitoring_excel(
     cell_b = ws["B1"]
     cell_b.value = "Ед. изм."
     cell_b.font = font_main_hdr
-    cell_b.fill = hdr_dark_slate
+    cell_b.fill = hdr_brand_emerald
     cell_b.alignment = align_center
 
     # Определяем основных поставщиков по массиву позиций
@@ -417,7 +420,7 @@ def generate_price_monitoring_excel(
             cell_sup = ws[f"{col_start_let}1"]
             cell_sup.value = sup_name_text
             cell_sup.font = font_main_hdr
-            cell_sup.fill = hdr_slate_700
+            cell_sup.fill = hdr_supplier_fill
             cell_sup.alignment = align_center
 
             # Строка 2: ИНН/КПП
@@ -425,7 +428,7 @@ def generate_price_monitoring_excel(
             cell_inn = ws[f"{col_start_let}2"]
             cell_inn.value = inn_kpp_text
             cell_inn.font = font_sub_hdr_white
-            cell_inn.fill = hdr_slate_600
+            cell_inn.fill = hdr_dominant_sub2
             cell_inn.alignment = align_center
 
             # Строка 3: контакты
@@ -433,7 +436,7 @@ def generate_price_monitoring_excel(
             cell_cont = ws[f"{col_start_let}3"]
             cell_cont.value = contacts_text
             cell_cont.font = font_sub_hdr_white
-            cell_cont.fill = hdr_slate_500
+            cell_cont.fill = hdr_dominant_sub3
             cell_cont.alignment = align_center
         else:
             # Когда поставщики меняются в каждой строке, объединяем строки 1..3 в единый цельный стильный блок
@@ -441,7 +444,7 @@ def generate_price_monitoring_excel(
             cell_sup = ws[f"{col_start_let}1"]
             cell_sup.value = f"Поставщик {s_idx}"
             cell_sup.font = font_main_hdr
-            cell_sup.fill = hdr_slate_700
+            cell_sup.fill = hdr_supplier_fill
             cell_sup.alignment = align_center
 
         # Строка 4: Цена, руб./ед.
@@ -494,7 +497,7 @@ def generate_price_monitoring_excel(
             cell = ws.cell(row=r, column=c)
             cell.border = thin_border
             if c <= 2:
-                cell.fill = hdr_dark_slate
+                cell.fill = hdr_brand_emerald
             elif c >= col_min_idx:
                 cell.fill = hdr_summary_fill
 
@@ -504,7 +507,7 @@ def generate_price_monitoring_excel(
     # Заполняем строки данными
     current_row = 5
     for item in items:
-        row_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid") if (current_row % 2 == 1) else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+        row_fill = PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid") if (current_row % 2 == 1) else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
         # A: Номенклатура
         cell_nom = ws.cell(row=current_row, column=1, value=item.raw_name)
@@ -521,7 +524,9 @@ def generate_price_monitoring_excel(
         cell_unit.border = thin_border
         cell_unit.fill = row_fill
 
-        display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
+        valid_priced = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
+        valid_unpriced = [q for q in item.quotes if q.price_rub <= 0 and not q.is_outlier and (q.url or q.company_name)]
+        display_quotes = (valid_priced + valid_unpriced)[:max_suppliers]
 
         if not display_quotes:
             missing_label, _ = _missing_price_status_and_note(item)
@@ -561,14 +566,13 @@ def generate_price_monitoring_excel(
             current_row += 1
             continue
 
-        # Заполняем котировки поставщиков (СТРОГО согласованный кластер цен)
+        # Заполняем котировки поставщиков (согласованный кластер цен + найденные поставщики "по запросу")
         for s_idx in range(1, max_suppliers + 1):
             col_start = 3 + (s_idx - 1) * 2
             col_end = col_start + 1
 
             cell_price = ws.cell(row=current_row, column=col_start)
             cell_price.border = thin_border
-            cell_price.alignment = align_right
             cell_price.fill = row_fill
 
             cell_link = ws.cell(row=current_row, column=col_end)
@@ -578,9 +582,17 @@ def generate_price_monitoring_excel(
 
             if s_idx <= len(display_quotes):
                 q = display_quotes[s_idx - 1]
-                cell_price.value = q.price_rub
-                cell_price.number_format = "#,##0.00"
-                cell_price.font = font_price_bold
+                if q.price_rub > 0:
+                    cell_price.value = q.price_rub
+                    cell_price.number_format = "#,##0.00"
+                    cell_price.font = font_price_bold
+                    cell_price.alignment = align_right
+                else:
+                    cell_price.value = "По запросу"
+                    cell_price.number_format = "@"
+                    cell_price.font = Font(name="Calibri", size=10, bold=True, color="047857")
+                    cell_price.alignment = align_center
+
                 if q.url.startswith("http"):
                     cell_price.hyperlink = q.url
 
@@ -625,43 +637,56 @@ def generate_price_monitoring_excel(
                 cell_price.value = ""
                 cell_link.value = ""
 
-        # Формулы Мин. цена и Средняя цена (СТРОГО по отображаемым столбцам поставщиков, защита от циклических ссылок)
-        displayed_count = min(max_suppliers, len(display_quotes))
-        clean_col_letters = [
+        # Формулы Мин. цена и Средняя цена (СТРОГО по столбцам с числовыми ценами)
+        numeric_col_letters = [
             get_column_letter(3 + (s - 1) * 2)
-            for s in range(1, displayed_count + 1)
+            for s in range(1, len(display_quotes) + 1)
+            if display_quotes[s - 1].price_rub > 0
         ]
 
         cell_min = ws.cell(row=current_row, column=col_min_idx)
         cell_min.border = summary_border
         cell_min.fill = summary_data_fill
-        cell_min.alignment = align_right
-        cell_min.number_format = "#,##0.00"
         cell_min.font = font_summary_min
 
         cell_avg = ws.cell(row=current_row, column=col_avg_idx)
         cell_avg.border = summary_border
         cell_avg.fill = summary_data_fill
-        cell_avg.alignment = align_right
-        cell_avg.number_format = "#,##0.00"
         cell_avg.font = font_summary_avg
 
         cell_var = ws.cell(row=current_row, column=col_var_idx)
         cell_var.border = summary_border
         cell_var.fill = summary_data_fill
-        cell_var.alignment = align_center
         cell_var.font = font_summary_var
-        cell_var.number_format = "0.0%"
 
-        if clean_col_letters:
-            args_str = ",".join(f"{col_let}{current_row}" for col_let in clean_col_letters)
+        if numeric_col_letters:
+            cell_min.alignment = align_right
+            cell_min.number_format = "#,##0.00"
+            cell_avg.alignment = align_right
+            cell_avg.number_format = "#,##0.00"
+            cell_var.alignment = align_center
+            cell_var.number_format = "0.0%"
+
+            args_str = ",".join(f"{col_let}{current_row}" for col_let in numeric_col_letters)
             cell_min.value = f"=MIN({args_str})"
             cell_avg.value = f"=AVERAGE({args_str})"
             cell_var.value = f'=_xlfn.IFS(COUNTA({args_str})>=3,_xlfn.STDEV.S({args_str})/{cell_avg.coordinate},COUNTA({args_str})<3,"мало данных")'
         else:
-            cell_min.value = ""
-            cell_avg.value = ""
-            cell_var.value = ""
+            # Все отображаемые поставщики имеют цену "по запросу"
+            cell_min.alignment = align_center
+            cell_min.number_format = "@"
+            cell_min.font = Font(name="Calibri", size=10, italic=True, color="064E3B")
+            cell_min.value = "по запросу"
+
+            cell_avg.alignment = align_center
+            cell_avg.number_format = "@"
+            cell_avg.font = Font(name="Calibri", size=10, italic=True, color="064E3B")
+            cell_avg.value = "по запросу"
+
+            cell_var.alignment = align_center
+            cell_var.number_format = "@"
+            cell_var.font = Font(name="Calibri", size=10, italic=True, color="64748B")
+            cell_var.value = "мало данных"
 
         current_row += 1
 
@@ -731,17 +756,22 @@ def generate_price_monitoring_excel(
     for col_idx in range(1, len(headers_reg) + 1):
         cell = ws2.cell(row=1, column=col_idx)
         cell.font = font_main_hdr
-        cell.fill = hdr_dark_slate
+        cell.fill = hdr_brand_emerald
         cell.alignment = align_center
         cell.border = thin_border
 
     row_num = 2
     for idx, item in enumerate(items, 1):
-        r_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid") if (row_num % 2 == 1) else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
-        display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
-        if display_quotes:
-            status_text = _price_sources_status(display_quotes)
-            best_p = min(q.price_rub for q in display_quotes)
+        r_fill = PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid") if (row_num % 2 == 1) else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+        valid_priced = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
+        valid_unpriced = [q for q in item.quotes if q.price_rub <= 0 and not q.is_outlier and (q.url or q.company_name)]
+        display_quotes = (valid_priced + valid_unpriced)[:max_suppliers]
+        if valid_priced:
+            status_text = _price_sources_status(valid_priced)
+            best_p = min(q.price_rub for q in valid_priced)
+        elif valid_unpriced:
+            status_text = f"Товар найден у {len(valid_unpriced)} пост. (цена по запросу)"
+            best_p = "По запросу"
         else:
             status_text, _ = _missing_price_status_and_note(item)
             best_p = "По запросу"

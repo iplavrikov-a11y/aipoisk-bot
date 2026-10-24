@@ -561,7 +561,7 @@ PRICE_SIGNAL_PATTERN = re.compile(
     r'(?:'
     r'\d+[\s\xa0]*(?:[.,]\d{1,2})?[\s\xa0]*(?:₽|руб\.?|рублей|rur|rub)\b|'
     r'(?:цена|стоимость|прайс|от)[\s:№#«"\'\xa0]{1,10}\d+[\s\xa0]*(?:[.,]\d{1,2})?|'
-    r'\b(?:купить|в\s+корзину|заказать|в\s+наличии|прайс-лист|розница|опт)\b'
+    r'\b(?:купить|в\s+корзину|заказать|в\s+наличии|прайс-лист|розница|опт|по\s+запросу|запросить\s+(?:цену|кп|счет)|уточняйте\s+цену|под\s+заказ)\b'
     r')',
     re.IGNORECASE,
 )
@@ -752,10 +752,14 @@ URL страницы: {url}
      * Конструкционные легированные стали нельзя заменять на углеродистый рядовой прокат без указания марки.
    - Если identifier_conflict, category_conflict, specification_conflict или material_conflict: true -> is_relevant: false, is_price_found: false.
 2. ЦЕНА НА САЙТЕ (raw_price_rub) И ЕДИНИЦА (site_unit):
-   - Найди реальную коммерческую цену в рублях, которая ЯВНО указана на странице.
-   - ФИКТИВНЫЕ ЦЕНЫ-ЗАГЛУШКИ (1 руб, 0.01 руб) И СНЯТИЕ С ПРОИЗВОДСТВА:
-     * Если на странице указана формальная заглушка (1.00 ₽, 0.01 ₽) вместо реальной стоимости ('уточняйте цену', 'по запросу', 'договорная'), либо товар помечен 'снят с производства' / 'архивный товар' — СТРОГО установи is_price_found: false, is_relevant: false!
-     * ВНИМАНИЕ: Если указана реальная цена в рублях (например 890 ₽, 1 500 ₽), но на складе статус 'под заказ', 'уточняйте наличие' или 'нет на складе' — ЭТО ДЕЙСТВУЮЩАЯ ЦЕНА КАТАЛОГА ДЛЯ ЗАКУПКИ! Установи is_price_found: true, is_relevant: true!
+   - Если на странице указана реальная коммерческая цена в рублях, укажи raw_price_rub и is_price_found: true.
+   - Если товар есть в каталоге/предложении поставщика, но цена указана как 'по запросу', 'уточняйте цену', 'запросить счет', 'под заказ' или не указана в открытом доступе:
+     * Установи is_relevant: true, is_price_found: false, raw_price_rub: 0.0, price_rub: 0.0!
+     * ОБЯЗАТЕЛЬНО извлеки официальное название компании (company_name), контакты (телефон, email, город) и ИНН/КПП!
+     * В conversion_comment укажи 'Цена по запросу'.
+   - СНЯТИЕ С ПРОИЗВОДСТВА И АРХИВНЫЕ ТОВАРЫ:
+     * Если товар явно помечен 'снят с производства' / 'архивный товар' без предложения поставки — установи is_relevant: false, is_price_found: false!
+   - ВНИМАНИЕ: Если указана реальная цена в рублях (например 890 ₽, 1 500 ₽), но на складе статус 'под заказ', 'уточняйте наличие' или 'нет на складе' — ЭТО ДЕЙСТВУЮЩАЯ ЦЕНА КАТАЛОГА ДЛЯ ЗАКУПКИ! Установи is_price_found: true, is_relevant: true!
 3. СЕМАНТИЧЕСКИЙ ФИЗИЧЕСКИЙ ПЕРЕСЧЕТ В ЕДИНИЦУ ЗАКАЗЧИКА "{norm_unit}" (ПРАВИЛО 14):
    - Если единица на сайте уже совпадает с "{norm_unit}", price_rub = raw_price_rub.
    - Если отличается, выполни математический пересчет исходя из физических характеристик товара:
@@ -836,23 +840,93 @@ URL страницы: {url}
             logger.debug("Rejected quote for %s: item is discontinued or out of stock", url)
             return None
 
-        if not parsed.get("is_relevant") or not parsed.get("is_price_found"):
+        if not parsed.get("is_relevant"):
             return None
 
-        # Исходная цена
+        is_price_found = bool(parsed.get("is_price_found"))
         raw_p = parsed.get("raw_price_rub") or parsed.get("price_rub")
-        if raw_p is None:
-            return None
-        raw_price_val = float(raw_p)
-        # Фильтрация фиктивных заглушек (1.00 ₽) и нереалистичных цен
-        if raw_price_val <= 1.0 or raw_price_val > 500_000_000:
+        raw_price_val = 0.0
+        if raw_p is not None:
+            try:
+                raw_price_val = float(raw_p)
+            except (ValueError, TypeError):
+                raw_price_val = 0.0
+
+        # Фильтрация фиктивных цен-заглушек (0 < price <= 1.00 ₽) и нереалистичных цен
+        if (0.0 < raw_price_val <= 1.0) or raw_price_val > 500_000_000:
             logger.debug("Rejected quote for %s: dummy or out of range price %s", url, raw_price_val)
             return None
 
-        # Проверка заземления цены (grounding check): цена должна присутствовать в тексте страницы/сниппета
-        if not is_price_grounded_in_text(raw_price_val, page_text):
-            logger.debug("Rejected quote for %s: price %s not grounded in page text", url, raw_price_val)
-            return None
+        # Проверка заземления числовой цены
+        if is_price_found and raw_price_val > 1.0:
+            if not is_price_grounded_in_text(raw_price_val, page_text):
+                logger.debug("Rejected quote for %s: price %s not grounded in page text, falling back to on-request", url, raw_price_val)
+                is_price_found = False
+                raw_price_val = 0.0
+        else:
+            is_price_found = False
+            raw_price_val = 0.0
+
+        # Если цена не найдена (цена "по запросу"), но поставщик и товар релевантны
+        if not is_price_found or raw_price_val <= 0.0:
+            comp_name = str(parsed.get("company_name") or "").strip() or domain
+            inn = str(parsed.get("inn") or pre_inn or "").strip() or None
+            if inn:
+                inn = re.sub(r'\D', '', inn)
+                if len(inn) not in (10, 12):
+                    inn = None
+
+            kpp = str(parsed.get("kpp") or pre_kpp or "").strip() or None
+            if kpp:
+                kpp = re.sub(r'\D', '', kpp)
+                if len(kpp) != 9:
+                    kpp = None
+
+            contacts = str(parsed.get("contacts") or pre_contacts or "").strip() or None
+            match_reason = str(parsed.get("semantic_match_reason") or "").strip()
+
+            quote = SupplierQuote(
+                company_name=comp_name,
+                inn=inn,
+                kpp=kpp,
+                contacts=contacts,
+                price_rub=0.0,
+                raw_price_rub=0.0,
+                unit=norm_unit,
+                site_unit="",
+                url=url,
+                is_price_found=False,
+                conversion_comment="Товар в каталоге поставщика, цена по запросу",
+                comment=match_reason or "Цена по запросу",
+            )
+            try:
+                detected_city = None
+                if contacts:
+                    city_match = re.search(r'(?:г\.|город)\s*([А-Яа-я\-]{3,25})', contacts)
+                    if city_match:
+                        detected_city = city_match.group(1)
+
+                dadata_info = await enrich_company_by_inn_or_query(
+                    inn=quote.inn,
+                    query=quote.company_name,
+                    domain=domain,
+                    city=detected_city,
+                )
+                if dadata_info:
+                    if not quote.inn and dadata_info.get("inn"):
+                        quote.inn = dadata_info["inn"]
+                    if not quote.kpp and dadata_info.get("kpp"):
+                        quote.kpp = dadata_info["kpp"]
+                    official_name = dadata_info.get("company_name")
+                    if official_name:
+                        quote.company_name = official_name
+                    city_or_addr = dadata_info.get("city") or dadata_info.get("legal_address")
+                    if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                        quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+            except Exception as d_exc:
+                logger.debug("DaData enrichment skipped for %s: %s", quote.company_name, d_exc)
+
+            return quote
 
         site_unit = str(parsed.get("site_unit") or "").strip()
         pack_quantity = parsed.get("pack_quantity")

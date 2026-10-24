@@ -420,6 +420,78 @@ def test_divergent_prices_suppressed_when_no_consensus_cluster(tmp_path):
     assert "Цены не образуют сопоставимую группу" in str(ws["D5"].value)
 
 
+def test_unpriced_suppliers_on_request_rendering(tmp_path):
+    import openpyxl
+    from app.price_monitoring.excel_report import generate_price_monitoring_excel
+
+    item = ItemPriceResult(
+        row_number=1,
+        raw_name="Набивка ВАТИ-202 22х22мм",
+        clean_name="Набивка ВАТИ-202 22х22мм",
+        unit="КГ",
+        quotes=[
+            SupplierQuote(
+                company_name='ООО "Промма"',
+                inn="4205123456",
+                contacts="Тел: +7 (800) 093-44-55, Email: all-rti@mail.ru",
+                url="https://promma.ru/catalog/nabivki-vati/202",
+                price_rub=0.0,
+                raw_price_rub=0.0,
+                is_price_found=False,
+                comment="Цена по запросу",
+            ),
+            SupplierQuote(
+                company_name='ООО "НПФ Атлас"',
+                inn="7701987654",
+                contacts="+7 (495) 849-29-70, info@npfatlas.ru",
+                url="https://npfatlas.ru/catalog/5158854",
+                price_rub=0.0,
+                raw_price_rub=0.0,
+                is_price_found=False,
+                comment="Цена по запросу",
+            ),
+        ],
+    )
+
+    out_file = tmp_path / "test_unpriced.xlsx"
+    generate_price_monitoring_excel([item], str(out_file), max_suppliers=3)
+
+    wb = openpyxl.load_workbook(str(out_file))
+    ws1 = wb["Пример отчета"]
+
+    # Лист 1: Поставщик 1 и 2 заполнены ценой "По запросу" и реальными контактами
+    assert ws1["C5"].value == "По запросу"
+    assert "Промма" in str(ws1["D5"].value)
+    assert "all-rti@mail.ru" in str(ws1["D5"].value)
+    assert ws1["D5"].hyperlink is not None
+    assert "promma.ru" in ws1["D5"].hyperlink.target
+
+    assert ws1["E5"].value == "По запросу"
+    assert "НПФ Атлас" in str(ws1["F5"].value)
+    assert "info@npfatlas.ru" in str(ws1["F5"].value)
+    assert ws1["F5"].hyperlink is not None
+    assert "npfatlas.ru" in ws1["F5"].hyperlink.target
+
+    # Поставщик 3 пустой
+    assert not ws1["G5"].value
+    assert not ws1["H5"].value
+
+    # Сводные колонки (I=Мин, J=Средняя, K=Вариация)
+    assert ws1["I5"].value == "по запросу"
+    assert ws1["J5"].value == "по запросу"
+    assert ws1["K5"].value == "мало данных"
+
+    # Лист 2: Детализированный реестр
+    ws2 = wb["Детализированный реестр"]
+    assert "Товар найден у 2 пост. (цена по запросу)" in str(ws2.cell(2, 4).value)
+    assert ws2.cell(2, 5).value == "По запросу"
+    # Поставщик 1
+    assert "Промма" in str(ws2.cell(2, 6).value)
+    assert ws2.cell(2, 7).value == "4205123456"
+    assert ws2.cell(2, 11).value == "по запросу"
+    assert "promma.ru" in str(ws2.cell(2, 15).value)
+
+
 def test_circular_reference_prevention_and_row_height_and_no_address(tmp_path):
     import openpyxl
     from app.price_monitoring.excel_report import generate_price_monitoring_excel
