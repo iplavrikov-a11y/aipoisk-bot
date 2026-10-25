@@ -3533,7 +3533,7 @@ function ClientsView({
                     <details className="compact-form-details price-settings-details">
                       <summary>Индивидуальные цены</summary>
                       <div className="price-settings-panel">
-                        {(['supplier_search', 'procurement_report', 'supplier_search_extra', 'exact_product'] as const).map(kind => {
+                        {(['supplier_search', 'exact_product', 'procurement_report', 'supplier_search_extra', 'price_monitoring'] as const).map(kind => {
                           const price = client.usage?.effective_prices?.[kind]
                           const fallbackKopeks = price?.price_kopeks || 0
                           return (
@@ -3668,13 +3668,15 @@ function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
 
 function humanBillingKind(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор поставщиков'
-  if (kind === 'exact_product') return 'Точный товар и аналоги'
-  return kind === 'procurement_report' ? 'Анализ документации' : 'Поставщики'
+  if (kind === 'exact_product') return 'Подбор товара и аналогов'
+  if (kind === 'price_monitoring') return 'Мониторинг цен'
+  return kind === 'procurement_report' ? 'Анализ документации' : 'Поиск поставщиков'
 }
 
 function priceBillingLabel(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор'
-  if (kind === 'exact_product') return 'Точный товар'
+  if (kind === 'exact_product') return 'Подбор товара'
+  if (kind === 'price_monitoring') return 'Мониторинг цен'
   return kind === 'procurement_report' ? 'Анализ' : 'Поиск'
 }
 
