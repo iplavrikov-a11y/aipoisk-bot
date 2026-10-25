@@ -1295,7 +1295,9 @@ export function CabinetClient() {
   }
 
   function toggleExactSelectionItem(job: CustomerJob, itemId: string) {
-    const maxPositions = positionSelectionForJob(job)?.max_positions || 5;
+    const selection = positionSelectionForJob(job);
+    const isUncapped = job.mode === "exact_product" || job.mode === "price_monitoring" || selection?.pricing_mode === "per_position" || selection?.pricing_mode === "per_found_position";
+    const maxPositions = isUncapped ? (selection?.items.length || 100) : (selection?.max_positions || 5);
     setSelectedExactItemIds((current) => {
       const hasItem = current.includes(itemId);
       if (hasItem) {
@@ -1318,7 +1320,8 @@ export function CabinetClient() {
   function toggleExactSelectionGroup(job: CustomerJob, itemIds: string[], groupName: string) {
     const selection = positionSelectionForJob(job);
     if (!selection || itemIds.length === 0) return;
-    const maxPositions = selection.max_positions;
+    const isUncapped = job.mode === "exact_product" || job.mode === "price_monitoring" || selection.pricing_mode === "per_position" || selection.pricing_mode === "per_found_position";
+    const maxPositions = isUncapped ? selection.items.length : (selection.max_positions || selection.items.length);
     setSelectedExactItemIds((current) => {
       const groupSet = new Set(itemIds);
       const allSelected = itemIds.every((itemId) => current.includes(itemId));
@@ -1337,12 +1340,14 @@ export function CabinetClient() {
     const selection = positionSelectionForJob(job);
     if (!csrf || !selection) return;
     const isPriceMonitoring = job.mode === "price_monitoring";
+    const isUncapped = job.mode === "exact_product" || isPriceMonitoring || selection.pricing_mode === "per_position" || selection.pricing_mode === "per_found_position";
+    const maxPositions = isUncapped ? selection.items.length : (selection.max_positions || selection.items.length);
     if (selectedExactItemIds.length === 0) {
       setExactSelectionError(`Выберите хотя бы одну позицию для ${isPriceMonitoring ? "мониторинга цен" : "подбора"}.`);
       return;
     }
-    if (selectedExactItemIds.length > selection.max_positions) {
-      setExactSelectionError(`Можно выбрать не более ${selection.max_positions} позиций.`);
+    if (selectedExactItemIds.length > maxPositions) {
+      setExactSelectionError(`Можно выбрать не более ${maxPositions} позиций.`);
       return;
     }
     setExactSelectionSubmittingJobId(job.id);
@@ -5173,7 +5178,10 @@ export function CabinetClient() {
         });
         remainingByCategory.forEach((items, name) => selectionGroups.push({ id: `category-${name}`, name, items }));
         const groupCount = selectionGroups.length;
-        const canSelectAll = selection.items.length <= selection.max_positions;
+        const isExactProduct = exactSelectionJob.mode === "exact_product";
+        const isUncapped = isExactProduct || isPriceMonitoring || selection.pricing_mode === "per_position" || selection.pricing_mode === "per_found_position";
+        const maxPositions = isUncapped ? selection.items.length : (selection.max_positions || selection.items.length);
+        const canSelectAll = selection.items.length <= maxPositions;
         const submitting = exactSelectionSubmittingJobId === exactSelectionJob.id;
 
         const searchNorm = selectionSearchQuery.trim().toLowerCase();
@@ -5236,17 +5244,17 @@ export function CabinetClient() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="font-bold text-slate-900">
                       {isPriceMonitoring
-                        ? `Выберите позиции для мониторинга цен (до ${selection.max_positions}).`
-                        : `Выберите позиции для подбора модели и аналогов (до ${selection.max_positions}).`}
+                        ? "Выберите позиции для мониторинга цен."
+                        : "Выберите позиции для подбора модели и аналогов."}
                     </p>
                     <span className="px-2 py-0.5 rounded-full bg-white border border-teal-200 text-teal-800 font-extrabold whitespace-nowrap">
-                      Выбрано: {selectedExactItemIds.length} из {selection.max_positions}
+                      Выбрано: {selectedExactItemIds.length} из {selection.items.length}
                     </span>
                   </div>
                   <p className="mt-1.5 leading-relaxed">
                     {isPriceMonitoring
                       ? selection.price_kopeks
-                        ? `Стоимость рассчитывается по результату: ${formatRubles(selection.price_kopeks)} за позицию с найденной ценой. Максимальная сумма при выборе ${selection.max_positions} позиций: ${formatRubles(selection.max_positions * selection.price_kopeks)}. Позиции без найденной цены не учитываются.`
+                        ? `Стоимость рассчитывается по результату: ${formatRubles(selection.price_kopeks)} за позицию с найденной ценой. Максимальная сумма при выборе ${selection.items.length} позиций: ${formatRubles(selection.items.length * selection.price_kopeks)}. Позиции без найденной цены не учитываются.`
                         : "Стоимость рассчитывается только по позициям с найденной ценой."
                       : selection.price_kopeks
                         ? `Стоимость подбора: ${formatRubles(selection.price_kopeks)} за позицию. Выбрано ${selectedExactItemIds.length} ${pluralizeRu(selectedExactItemIds.length, ["позиция", "позиции", "позиций"])} на сумму ${formatRubles(selectedExactItemIds.length * selection.price_kopeks)}.`
@@ -5293,15 +5301,15 @@ export function CabinetClient() {
                           type="button"
                           className="font-bold text-teal-700 hover:text-teal-900 underline cursor-pointer disabled:text-slate-400 disabled:no-underline"
                           onClick={() => {
-                            const next = selection.items.slice(0, selection.max_positions).map((item) => item.id);
+                            const next = selection.items.slice(0, maxPositions).map((item) => item.id);
                             setSelectedExactItemIds(next);
                             exactSelectionStateRef.current.set(exactSelectionKey(exactSelectionJob), next);
                             setExactSelectionError("");
                           }}
                           disabled={submitting}
-                          title={`Выбрать первые ${selection.max_positions} позиций по порядку`}
+                          title={`Выбрать первые ${maxPositions} позиций по порядку`}
                         >
-                          Выбрать первые {selection.max_positions}
+                          Выбрать первые {maxPositions}
                         </button>
                         <span className="text-slate-300">·</span>
                       </>
@@ -5310,14 +5318,13 @@ export function CabinetClient() {
                       type="button"
                       className="font-bold text-teal-700 hover:text-teal-900 disabled:text-slate-400 disabled:no-underline underline cursor-pointer disabled:cursor-not-allowed"
                       onClick={() => {
-                        if (!canSelectAll) return;
                         const next = selection.items.map((item) => item.id);
                         setSelectedExactItemIds(next);
                         exactSelectionStateRef.current.set(exactSelectionKey(exactSelectionJob), next);
                         setExactSelectionError("");
                       }}
-                      disabled={!canSelectAll || submitting}
-                      title={canSelectAll ? "Выбрать все позиции" : `В спецификации больше ${selection.max_positions} позиций; выберите нужные вручную.`}
+                      disabled={submitting}
+                      title="Выбрать все позиции"
                     >
                       Выбрать все
                     </button>
@@ -5336,13 +5343,13 @@ export function CabinetClient() {
                     </button>
                   </div>
                 </div>
-                {!canSelectAll ? <p className="-mt-2 text-[11px] text-amber-800">В спецификации больше {selection.max_positions} позиций, поэтому выберите нужные вручную или нажмите «Выбрать первые {selection.max_positions}».</p> : null}
+                {!canSelectAll ? <p className="-mt-2 text-[11px] text-amber-800">В спецификации больше {maxPositions} позиций, поэтому выберите нужные вручную или нажмите «Выбрать первые {maxPositions}».</p> : null}
 
                 <div className="space-y-3" role="group" aria-label={isPriceMonitoring ? "Позиции для мониторинга цен" : "Позиции для подбора"}>
                   {visibleGroups.map((group) => {
                     const groupItemIds = group.items.map((item) => item.id);
                     const groupSelected = groupItemIds.length > 0 && groupItemIds.every((itemId) => selectedExactItemIds.includes(itemId));
-                    const wouldExceedLimit = !groupSelected && new Set([...selectedExactItemIds, ...groupItemIds]).size > selection.max_positions;
+                    const wouldExceedLimit = !groupSelected && new Set([...selectedExactItemIds, ...groupItemIds]).size > maxPositions;
                     return (
                       <section key={group.id} className="rounded-2xl border border-slate-200 bg-slate-50/60 overflow-hidden">
                         <header className="px-3.5 py-2.5 border-b border-slate-200/80 flex flex-wrap items-center justify-between gap-2 bg-white">
@@ -5355,12 +5362,12 @@ export function CabinetClient() {
                             className="shrink-0 rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1.5 text-[11px] font-bold text-teal-800 hover:bg-teal-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
                             onClick={() => toggleExactSelectionGroup(exactSelectionJob, groupItemIds, group.name)}
                             disabled={submitting}
-                            title={wouldExceedLimit ? `Выбор категории превысит лимит ${selection.max_positions}; выберите строки вручную.` : undefined}
+                            title={wouldExceedLimit ? `Выбор категории превысит лимит ${maxPositions}; выберите строки вручную.` : undefined}
                           >
                             {groupSelected ? "Снять категорию" : "Выбрать категорию"}
                           </button>
                         </header>
-                        {wouldExceedLimit ? <p className="px-3.5 pt-2 text-[10px] leading-relaxed text-amber-800">Выбор всей категории превысит лимит {selection.max_positions}; выберите нужные строки вручную.</p> : null}
+                        {wouldExceedLimit ? <p className="px-3.5 pt-2 text-[10px] leading-relaxed text-amber-800">Выбор всей категории превысит лимит {maxPositions}; выберите нужные строки вручную.</p> : null}
                         <div className="space-y-2 p-2.5">
                           {group.items.map((item) => {
                             const checked = selectedExactItemIds.includes(item.id);

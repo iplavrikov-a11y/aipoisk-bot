@@ -24,7 +24,18 @@ def read_selection(job: Job) -> dict[str, Any]:
         value = json.loads(getattr(job, "position_selection_json", "") or "{}")
     except (ValueError, TypeError):
         return {}
-    return value if isinstance(value, dict) else {}
+    if not isinstance(value, dict) or not value:
+        return {}
+    mode = value.get("mode") or getattr(job, "mode", "")
+    items = value.get("items") or []
+    if mode in {"exact_product", "price_monitoring"} and isinstance(items, list) and items:
+        expected_max = len(items)
+        expected_pricing = "per_found_position" if mode == "price_monitoring" else "per_position"
+        if value.get("max_positions") != expected_max or value.get("pricing_mode") != expected_pricing:
+            value = dict(value)
+            value["max_positions"] = expected_max
+            value["pricing_mode"] = expected_pricing
+    return value
 
 
 def build_selection_snapshot(items: list[dict], *, price_kopeks: int, mode: str = "exact_product") -> str:
@@ -61,7 +72,11 @@ def validate_selected_ids(selection: dict, revision: str, item_ids: list[str]) -
         raise ValueError("Выберите хотя бы одну позицию.")
     if len(item_ids) != len(set(item_ids)):
         raise ValueError("Позиции в выборе не должны повторяться.")
-    maximum = int(selection.get("max_positions") or 0) if selection.get("mode") in {"price_monitoring", "exact_product"} else MAX_SELECTED_POSITIONS
+    items_count = len(selection.get("items", []))
+    if selection.get("mode") in {"price_monitoring", "exact_product"}:
+        maximum = max(items_count, int(selection.get("max_positions") or 0))
+    else:
+        maximum = MAX_SELECTED_POSITIONS
     if len(item_ids) > maximum:
         raise ValueError(f"За один запуск можно выбрать до {maximum} позиций.")
     allowed = [str(item["id"]) for item in selection.get("items", []) if isinstance(item, dict) and item.get("id")]
