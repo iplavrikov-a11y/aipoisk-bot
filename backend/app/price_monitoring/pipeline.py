@@ -791,6 +791,23 @@ async def process_single_item(
                                     break
                         except Exception as e_inn:
                             logger.debug("Fallback domain INN search failed for %s: %s", domain, e_inn)
+
+                    # Если ИНН найден, но официальное наименование компании не заполнено или равно домену, обогащаем через DaData
+                    clean_cname = (quote.company_name or "").lower().replace("www.", "").strip()
+                    if quote.inn and (not clean_cname or clean_cname == domain or "." in clean_cname or not quote.kpp):
+                        try:
+                            from ..dadata_client import enrich_company_by_inn
+                            d_info = await enrich_company_by_inn(quote.inn)
+                            if d_info:
+                                if d_info.get("company_name"):
+                                    quote.company_name = d_info["company_name"]
+                                if not quote.kpp and d_info.get("kpp"):
+                                    quote.kpp = d_info["kpp"]
+                                city_or_addr = d_info.get("city") or d_info.get("legal_address")
+                                if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                                    quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                        except Exception as e_enrich:
+                            logger.debug("DaData company enrichment failed for %s (INN %s): %s", domain, quote.inn, e_enrich)
                     if quote.inn and quote.inn in seen_inns:
                         diagnostics["duplicate_suppliers"] += 1
                         logger.debug("Skip duplicate supplier INN %s for %s", quote.inn, url)

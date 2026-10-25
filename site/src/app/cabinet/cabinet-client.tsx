@@ -1737,6 +1737,11 @@ export function CabinetClient() {
 
   function selectScenario(next: Scenario) {
     setScenario(next);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("tenderlex_cabinet_launcher_scenario", next);
+      } catch {}
+    }
     setGeoRadiusEnabled(false);
     setDeliveryCity("");
     setGeoRadiusKm(300);
@@ -1766,10 +1771,24 @@ export function CabinetClient() {
     }).catch((err) => setError(err instanceof Error ? err.message : String(err)));
     const params = new URLSearchParams(window.location.search);
     const scenarioParam = params.get("scenario") || params.get("mode");
+    const validScenarios: Scenario[] = ["procurement_report", "supplier_search", "analysis_and_suppliers", "exact_product", "price_monitoring"];
     if (scenarioParam === "doc_analysis") {
       setScenario("procurement_report");
-    } else if (scenarioParam === "exact_product" || scenarioParam === "supplier_search" || scenarioParam === "procurement_report" || scenarioParam === "analysis_and_suppliers") {
-      setScenario(scenarioParam);
+      if (typeof window !== "undefined") {
+        try { localStorage.setItem("tenderlex_cabinet_launcher_scenario", "procurement_report"); } catch {}
+      }
+    } else if (scenarioParam && validScenarios.includes(scenarioParam as Scenario)) {
+      setScenario(scenarioParam as Scenario);
+      if (typeof window !== "undefined") {
+        try { localStorage.setItem("tenderlex_cabinet_launcher_scenario", scenarioParam); } catch {}
+      }
+    } else if (typeof window !== "undefined") {
+      try {
+        const savedScenario = localStorage.getItem("tenderlex_cabinet_launcher_scenario");
+        if (savedScenario && validScenarios.includes(savedScenario as Scenario)) {
+          setScenario(savedScenario as Scenario);
+        }
+      } catch {}
     }
     const textParam = params.get("text") || params.get("q");
     if (textParam) {

@@ -194,35 +194,57 @@ def is_valid_domain(
 
 
 def _extract_inn_kpp_contacts(html: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Извлекает ИНН, КПП и базовые контакты из HTML регулярными выражениями."""
+    """Извлекает ИНН, КПП и базовые контакты из HTML регулярными выражениями и очищенного текста."""
     inn: Optional[str] = None
     kpp: Optional[str] = None
     contacts_list: list[str] = []
 
-    # ИНН (10 цифр для юрлиц, 12 для ИП)
+    # 1. Быстрый поиск по raw HTML
     m_inn = re.findall(r'(?:ИНН|инн|taxid|inn)[\s:№#«"\'\xa0]{0,10}(\d{10}|\d{12})\b', html)
     if m_inn:
         inn = m_inn[0]
 
-    # КПП (9 цифр)
     m_kpp = re.findall(r'(?:КПП|кпп)[\s:№#«"\'\xa0]{0,10}(\d{9})\b', html)
     if m_kpp:
         kpp = m_kpp[0]
 
-    # Телефоны РФ
     phones = re.findall(r'(?:(?:\+7|8)[\s\-\(]{0,2}\d{3,4}[\s\-\)]{0,2}\d{2,3}[\s\-]?\d{2}[\s\-]?\d{2})', html)
     if phones:
-        # фильтруем слишком короткие/длинные или явно мусорные
         valid_phones = [p.strip() for p in phones if len(re.sub(r'\D', '', p)) in (11, 10)]
         if valid_phones:
             contacts_list.append(valid_phones[0])
 
-    # Email
     emails = re.findall(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b', html)
     if emails:
-        clean_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css'))]
+        clean_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css', '.svg'))]
         if clean_emails:
             contacts_list.append(clean_emails[0])
+
+    # 2. Если что-то не найдено, очищаем HTML от тегов (BeautifulSoup), так как реквизиты часто оформлены как <dt>ИНН</dt><dd>1234567890</dd>
+    if not inn or not kpp or len(contacts_list) < 2:
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            text = " ".join(soup.stripped_strings)
+            if not inn:
+                m_inn_txt = re.findall(r'(?:ИНН|инн|taxid|inn)[\s:№#«"\'\xa0]{0,10}(\d{10}|\d{12})\b', text)
+                if m_inn_txt:
+                    inn = m_inn_txt[0]
+            if not kpp:
+                m_kpp_txt = re.findall(r'(?:КПП|кпп)[\s:№#«"\'\xa0]{0,10}(\d{9})\b', text)
+                if m_kpp_txt:
+                    kpp = m_kpp_txt[0]
+            if not phones:
+                t_phones = re.findall(r'(?:(?:\+7|8)[\s\-\(]{0,2}\d{3,4}[\s\-\)]{0,2}\d{2,3}[\s\-]?\d{2}[\s\-]?\d{2})', text)
+                valid_t_phones = [p.strip() for p in t_phones if len(re.sub(r'\D', '', p)) in (11, 10)]
+                if valid_t_phones and not any(p in contacts_list for p in valid_t_phones):
+                    contacts_list.insert(0, valid_t_phones[0])
+            if not emails:
+                t_emails = re.findall(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b', text)
+                clean_t_emails = [e for e in t_emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css', '.svg'))]
+                if clean_t_emails and not any(e in contacts_list for e in clean_t_emails):
+                    contacts_list.append(clean_t_emails[0])
+        except Exception:
+            pass
 
     contacts_str = ", ".join(contacts_list) if contacts_list else None
     return inn, kpp, contacts_str
@@ -365,11 +387,17 @@ async def fetch_page_content_and_meta(
             schema_block = "[ВНИМАНИЕ]: СТАТУС НАЛИЧИЯ: НЕТ В НАЛИЧИИ НА СКЛАДЕ (ПОД ЗАКАЗ)\n\n"
 
         # Находим ссылку на страницу контактов/реквизитов, если ИНН не найден в теле страницы
+        # Находим ссылку на страницу контактов/реквизитов, если ИНН или контакты не найдены в теле страницы
         contacts_suburl: Optional[str] = None
-        if not inn:
+        if not inn or not contacts:
             for a_tag in soup.find_all("a", href=True):
                 href = a_tag["href"].strip()
-                if re.search(r'(?:contacts|kontakty|rekvizit|requisites|about|o-kompanii)', href, re.I):
+                txt = a_tag.get_text().strip().lower()
+                href_low = href.lower()
+                if (
+                    re.search(r'(?:contacts|kontakty|rekvizit|requisites|about|o-kompanii)', href_low)
+                    or any(w in txt for w in ("контакт", "реквизит", "о компании", "о магазине", "о нас", "связь"))
+                ):
                     full_c_url = urljoin(url, href)
                     if urlparse(full_c_url).netloc == urlparse(url).netloc:
                         contacts_suburl = full_c_url
@@ -392,13 +420,13 @@ async def fetch_page_content_and_meta(
         if footer_text:
             combined_text += "\n\n[РЕКВИЗИТЫ И ПОДВАЛ САЙТА]:\n" + footer_text[:1000]
 
-        # Если ИНН всё ещё нет, но есть ссылка на контакты, пробуем быстро подтянуть реквизиты
-        if not inn and contacts_suburl:
+        # Если ИНН или контактов всё ещё нет, но есть ссылка на контакты, пробуем быстро подтянуть реквизиты
+        if (not inn or not contacts) and contacts_suburl:
             try:
-                c_resp = await client.get(contacts_suburl, headers=headers, timeout=httpx.Timeout(3.0, connect=1.5))
+                c_resp = await client.get(contacts_suburl, headers=headers, timeout=httpx.Timeout(3.5, connect=2.0))
                 if c_resp.status_code == 200:
                     c_inn, c_kpp, c_contacts = _extract_inn_kpp_contacts(c_resp.text)
-                    if c_inn:
+                    if c_inn and not inn:
                         inn = c_inn
                     if c_kpp and not kpp:
                         kpp = c_kpp
@@ -666,6 +694,19 @@ def _has_deterministic_identifier_conflict(
         c_tok = tok.strip("()[]{}<>\"'*#№!, =")
         if _is_complex_identifier(c_tok) and c_tok not in candidates:
             candidates.append(c_tok)
+        # Если сложный артикул содержит разделители модификаций/опций (/ или -):
+        if "/" in c_tok:
+            base_part = c_tok.split("/")[0].strip("()[]{}<>\"'*#№!, =")
+            if _is_complex_identifier(base_part) and base_part not in candidates:
+                candidates.append(base_part)
+            if "-" in base_part:
+                sub_base = base_part.rsplit("-", 1)[0].strip("()[]{}<>\"'*#№!, =")
+                if _is_complex_identifier(sub_base) and sub_base not in candidates:
+                    candidates.append(sub_base)
+        elif "-" in c_tok and c_tok.count("-") >= 2:
+            base_prefix = c_tok.split("-")[0].strip("()[]{}<>\"'*#№!, =")
+            if _is_complex_identifier(base_prefix) and base_prefix not in candidates:
+                candidates.append(base_prefix)
 
     if not candidates:
         return False

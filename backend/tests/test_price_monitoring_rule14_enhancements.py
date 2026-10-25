@@ -506,3 +506,51 @@ def test_deterministic_conflict_short_codes_and_decimal_zeros():
     page_text_other = "Электроды сварочные МР-3С диаметр 3мм цена 450 руб"
     assert _has_deterministic_identifier_conflict("Электрод ЦЧ-4 3мм", [], page_text_other, "https://example.com/item") is True
 
+
+def test_deterministic_conflict_slash_and_modular_series():
+    """Проверка отсутствия ложных конфликтов для блочно-модульных артикулов с модификациями (ИРТ-5922-МВ/В/t1050)."""
+    from app.price_monitoring.extractor import _has_deterministic_identifier_conflict
+
+    # Поставщик указывает базовую модель ИРТ-5922-МВ
+    page_text_irt = "Измеритель-регулятор технологический ИРТ-5922-МВ в наличии на складе в Москве"
+    assert _has_deterministic_identifier_conflict(
+        "Измеритель-регулятор ИРТ-5922-МВ/В/t1050", [], page_text_irt, "https://propribory.ru/catalog/irt"
+    ) is False
+
+    # Поставщик указывает семейство ИРТ-5922
+    page_text_base = "Приборы серии ИРТ-5922 измерители-регуляторы купить по оптовой цене"
+    assert _has_deterministic_identifier_conflict(
+        "Измеритель-регулятор ИРТ-5922-МВ/В/t1050", [], page_text_base, "https://tps21mag.ru/catalog/irt-5922"
+    ) is False
+
+    # Клапан Hoerbiger 385RF-NG-SPT63B
+    page_text_valve = "Клапан компрессорный 385RF Hoerbiger оригинальные запчасти"
+    assert _has_deterministic_identifier_conflict(
+        "Клапан P8 385RF-NG-SPT63B PS11048-630A01", [], page_text_valve, "https://alnext.ru/item"
+    ) is False
+
+
+def test_html_tag_delimited_contacts_and_inn():
+    """Проверка извлечения ИНН и контактов, разделенных HTML-тегами (<dt>/<dd>, <td>/<td>)."""
+    from app.price_monitoring.extractor import _extract_inn_kpp_contacts
+
+    sample_html = """
+    <div class="company-details">
+      <dl>
+        <dt>ИНН</dt>
+        <dd>4705076091</dd>
+        <dt>КПП</dt>
+        <dd>470501001</dd>
+      </dl>
+      <div class="phone">Тел: +7 (812) 309-29-49</div>
+      <div class="email">zakaz@4-20.ru</div>
+    </div>
+    """
+    inn, kpp, contacts = _extract_inn_kpp_contacts(sample_html)
+    assert inn == "4705076091"
+    assert kpp == "470501001"
+    assert contacts is not None
+    assert "+7 (812) 309-29-49" in contacts
+    assert "zakaz@4-20.ru" in contacts
+
+
