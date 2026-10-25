@@ -539,3 +539,64 @@ def extract_items_from_files_or_text(
     return items
 
 
+def extract_engineering_spec_tokens(text: str) -> dict[str, set[str]]:
+    """
+    Извлекает ключевые инженерные размерности и параметры для защиты от пересорта (Правило 14).
+    Детерминированный разбор: диаметры (Ду/DN), давления (Ру/PN), напряжения, сечения кабеля, резьбы и мощности.
+    """
+    specs: dict[str, set[str]] = {}
+    if not text:
+        return specs
+    t = text.lower().replace(",", ".")
+
+    # 1. Номинальный диаметр (Ду / DN)
+    m_dn = re.findall(r"\b(?:ду|dn)\s*[-:=]?\s*(\d+)\b", t)
+    if m_dn:
+        specs["dn"] = set(m_dn)
+
+    # 2. Номинальное давление (Ру / PN)
+    m_pn = re.findall(r"\b(?:ру|pn)\s*[-:=]?\s*(\d+)\b", t)
+    if m_pn:
+        specs["pn"] = set(m_pn)
+
+    # 3. Напряжение питания (12, 24, 36, 48, 110, 220, 380, 660, 1000)
+    m_volt = re.findall(r"\b(12|24|36|48|110|220|380|660|1000|10000)\s*(?:в|v|вольт)\b", t)
+    if m_volt:
+        specs["volt"] = set(m_volt)
+
+    # 4. Кабельное сечение (3х2.5, 4х16, 5х4.0)
+    m_cable = re.findall(r"\b(\d+)\s*[xх*]\s*(\d+(?:\.\d+)?)\b", t)
+    if m_cable:
+        specs["cable"] = {f"{c[0]}x{float(c[1]):g}" for c in m_cable}
+
+    # 5. Метрическая резьба / диаметр крепежа (М16, М20, М8)
+    m_thread = re.findall(r"\bм(\d+)(?=[xх*]|\b)", t)
+    if m_thread:
+        specs["thread"] = set(m_thread)
+
+    # 6. Мощность электродвигателя (15 кВт, 2.2 кВт)
+    m_power = re.findall(r"\b(\d+(?:\.\d+)?)\s*(?:квт|kw)\b", t)
+    if m_power:
+        specs["power"] = {f"{float(p):g}" for p in m_power}
+
+    return specs
+
+
+def check_engineering_spec_conflict(target_name: str, candidate_text: str) -> tuple[bool, str]:
+    """
+    Детерминированная проверка размерностей и характеристик оборудования (Compare-then-Match, Правило 14).
+    Предотвращает ошибочное подтверждение товаров с несовпадающим диаметром, давлением, напряжением или сечением.
+    """
+    t_specs = extract_engineering_spec_tokens(target_name)
+    if not t_specs:
+        return False, ""
+    c_specs = extract_engineering_spec_tokens(candidate_text)
+    for key, t_vals in t_specs.items():
+        if key in c_specs:
+            c_vals = c_specs[key]
+            if not (t_vals & c_vals):
+                return True, f"Несоответствие параметра {key.upper()}: требуется {t_vals}, найдено {c_vals}"
+    return False, ""
+
+
+

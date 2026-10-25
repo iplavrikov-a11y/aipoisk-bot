@@ -14,7 +14,12 @@ from bs4 import BeautifulSoup
 from ..ai import call_llm, parse_json_object
 from ..dadata_client import enrich_company_by_inn_or_query
 from ..models import SystemSettings
-from .cleaner import is_closed_factory_drawing, is_drawing_or_part_code, normalize_unit
+from .cleaner import (
+    check_engineering_spec_conflict,
+    is_closed_factory_drawing,
+    is_drawing_or_part_code,
+    normalize_unit,
+)
 from .cookie_manager import cookie_manager
 from .models import SupplierQuote
 
@@ -304,6 +309,8 @@ def extract_schema_org_product_data(soup: BeautifulSoup) -> Tuple[Optional[Dict[
             if "Product" in item_type or item.get("offers"):
                 name = item.get("name")
                 sku = item.get("sku") or item.get("mpn") or item.get("productID")
+                brand_raw = item.get("brand") or item.get("manufacturer")
+                brand = brand_raw.get("name") if isinstance(brand_raw, dict) else (str(brand_raw) if brand_raw else None)
                 offers = item.get("offers")
                 p_val, p_curr, p_avail, p_oos = None, None, None, False
                 if isinstance(offers, dict):
@@ -322,6 +329,7 @@ def extract_schema_org_product_data(soup: BeautifulSoup) -> Tuple[Optional[Dict[
                     best_product = {
                         "name": name,
                         "sku": sku,
+                        "brand": brand,
                         "price": p_val,
                         "currency": p_curr or "RUB",
                         "availability": p_avail,
@@ -373,6 +381,8 @@ async def fetch_page_content_and_meta(
                 schema_block += f"- Товар: {product_info['name']}\n"
             if product_info.get("sku"):
                 schema_block += f"- Артикул/Чертеж (SKU): {product_info['sku']}\n"
+            if product_info.get("brand"):
+                schema_block += f"- Бренд/Производитель: {product_info['brand']}\n"
             if product_info.get("price"):
                 schema_block += f"- Цена: {product_info['price']} {product_info.get('currency', 'RUB')}\n"
             avail_str = str(product_info.get("availability") or "").lower()
@@ -755,6 +765,12 @@ async def extract_supplier_quote(
         logger.debug("Skip LLM extraction for %s: deterministic identifier conflict for %s", url, target_item_name)
         return None
 
+    # Детерминированная проверка размерностей и характеристик оборудования (Compare-then-Match: Ду, Ру, В, кВт, сечение)
+    spec_conflict, spec_reason = check_engineering_spec_conflict(target_item_name, f"{url} {page_text}")
+    if spec_conflict:
+        logger.debug("Skip LLM extraction for %s: %s", url, spec_reason)
+        return None
+
     domain = urlparse(url).netloc
     norm_unit = normalize_unit(target_unit)
 
@@ -878,6 +894,12 @@ URL страницы: {url}
         target_ids = parsed.get("target_identifiers") or []
         if _has_deterministic_identifier_conflict(target_item_name, target_ids, page_text, url):
             logger.debug("Rejected quote for %s: deterministic identifier conflict for %s", url, target_item_name)
+            return None
+
+        # Детерминированная проверка размерностей и характеристик оборудования (Compare-then-Match: Ду, Ру, В, кВт, сечение)
+        spec_conflict, spec_reason = check_engineering_spec_conflict(target_item_name, f"{url} {page_text}")
+        if spec_conflict:
+            logger.debug("Rejected quote for %s: %s", url, spec_reason)
             return None
 
         # Проверка снятия с производства / отсутствия на складе (защита от устаревших цен-призраков)

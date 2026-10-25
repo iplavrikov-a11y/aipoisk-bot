@@ -56,7 +56,18 @@ def _missing_price_status_and_note(item: ItemPriceResult) -> tuple[str, str]:
             "Технический сбой при обработке страницы поставщика. Рекомендуется перезапустить поиск.",
         )
 
-    # 0. Если реальная причина сформулирована искусственным интеллектом для этой позиции:
+    # 0. Если в Реестре Минпромторга (ГИСП) найден отечественный производитель:
+    minprom_m = (getattr(item, "search_diagnostics", {}) or {}).get("minprom_match")
+    if minprom_m and isinstance(minprom_m, dict) and minprom_m.get("manufacturer"):
+        manuf = minprom_m.get("manufacturer")
+        reg_num = minprom_m.get("registry_number")
+        reg_suffix = f" (запись реестра ГИСП № {reg_num})" if reg_num else ""
+        return (
+            "Цена по запросу на завод (найден изготовитель в Реестре Минпромторга)",
+            f"В открытых источниках цены не опубликованы. В Реестре промышленной продукции РФ (ГИСП) найден официальный производитель: {manuf}{reg_suffix}. Рекомендуется направить официальный Запрос КП напрямую изготовителю.",
+        )
+
+    # 1. Если реальная причина сформулирована искусственным интеллектом для этой позиции:
     ai_reason = (
         getattr(item, "ai_reason", "")
         or (getattr(item, "search_diagnostics", {}) or {}).get("ai_reason", "")

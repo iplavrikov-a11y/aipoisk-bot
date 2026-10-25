@@ -984,6 +984,28 @@ async def process_single_item(
         if ai_ans:
             item_res.ai_reason = ai_ans
             diagnostics["ai_reason"] = ai_ans
+
+    # Проверка наличия официального отечественного производителя в Реестре Минпромторга (ГИСП)
+    if confirmed_count == 0:
+        try:
+            from ..exact_product.minprom import find_minprom_gisp_match
+            minprom_m = find_minprom_gisp_match(brand="", manufacturer="", model="", name_in_tz=clean)
+            if minprom_m and minprom_m.matched and minprom_m.manufacturer:
+                diagnostics["minprom_match"] = {
+                    "registry_number": minprom_m.registry_number,
+                    "manufacturer": minprom_m.manufacturer,
+                    "product": minprom_m.product,
+                    "inn": minprom_m.inn,
+                    "conclusion_number": minprom_m.conclusion_number,
+                }
+                reg_info = f"В Реестре Минпромторга РФ (ГИСП) найден завод: {minprom_m.manufacturer}"
+                if minprom_m.registry_number:
+                    reg_info += f" (запись № {minprom_m.registry_number})"
+                if not getattr(item_res, "not_found_reason", "") or item_res.not_found_reason in ("no_results", "all_rejected", "budget_exhausted"):
+                    item_res.not_found_reason = reg_info
+        except Exception as e_minprom:
+            logger.debug("GISP registry check in price_monitoring skipped: %s", e_minprom)
+
     all_candidate_urls = candidate_urls + wave2_urls + wave3_urls
     diagnostics["unique_candidate_urls"] = len(dict.fromkeys(all_candidate_urls))
     diagnostics["distinct_domains"] = len(
