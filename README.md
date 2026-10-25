@@ -18,6 +18,15 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 ## Production notes
 
+- Exact Product Per-Position Pricing & Unlimited Selection Transition (2026-10-25):
+  - Per-Position Pricing Model (`backend/app/exact_product/models.py`, `matcher.py`, `deep.py`, `pipeline.py`): transitioned «Подбор товара и аналогов» (`exact_product`) from flat task fee with a hard 5-item cap to transparent per-position billing (`len(chosen) * 99 ₽`), allowing clients to select as many items as needed up to safety ceiling of 100 positions per job.
+  - Atomic Balance Check & Ledger Adjustment (`backend/app/billing.py`, `position_selection.py`): implemented `adjust_exact_product_reservation_for_selection` to atomically check client available funds and reserve additional funds (`(chosen - 1) * 99 ₽`) upon selection confirmation. Insufficient funds cleanly rejected with informative user messages.
+  - UI/UX Synchronization across Telegram Bot, Customer Cabinet, and Admin Panel:
+    * Bot (`backend/app/bot.py`): updated `_exact_selection_view` to show unit price (99 ₽), count of selected items, total cost, and dynamic max items; updated tariffs list (`99 ₽ / поз.`).
+    * Customer Cabinet (`site/src/app/cabinet/cabinet-client.tsx`): updated selection modal banner and tariffs card to display `99 ₽ / поз.`.
+    * Admin Panel (`frontend/src/App.tsx`): updated `AdminExactSelection` with `pricing_mode === 'per_position'` support and dynamic selection limit.
+  - Full Test Suite Passing: added unit tests for multi-item selection and balance checks in `backend/tests/test_exact_selection_contract.py`. All 1,334 backend tests, 54 subtests, site typecheck, and admin Vite production build passing cleanly.
+
 - Exact Product & Price Monitoring Cross-Pollination, Deterministic Spec Conflict Guard & GISP Fallback (2026-10-25):
   - Deterministic Engineering Sizing Conflict Guard (`backend/app/price_monitoring/cleaner.py`, `extractor.py`): added Compare-then-Match sizing and specification verification (Rule 14) for industrial goods. Automatically extracts and cross-validates nominal diameters (Ду/DN), pressures (Ру/PN), voltage ratings (В), cable core counts and sections (3х2.5 vs. 3х1.5), metric thread diameters (М16 vs. М12), and motor powers (кВт). Prevents wrong-sized items from passing through even if base model codes match (100% precision on benchmark).
   - Minpromtorg GISP Domestic Manufacturer Fallback (`backend/app/price_monitoring/pipeline.py`, `excel_report.py`): integrated domestic manufacturer lookup from `exact_product` into price monitoring. When open commercial prices are unavailable, the system checks the official Russian Industry Register (GISP). If a domestic manufacturer exists, formats the missing price note with the certified factory name and registry record number (e.g. "Цена по запросу на завод (найден изготовитель в Реестре Минпромторга)"), advising the client to send an official RFQ.

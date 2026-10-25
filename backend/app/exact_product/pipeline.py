@@ -321,11 +321,10 @@ async def _analyze_exact_product(
     raw_count = max(len(positions_raw), max((int(p.get("total_tz_positions") or 0) for p in positions_raw if isinstance(p, dict)), default=0))
     found_count = sum(p.status == "found" for p in typed_positions)
     summary_text = f"Обработано позиций: {len(typed_positions)}. Найдены модели: {found_count}. Остальные позиции требуют уточнения или повторного поиска."
-    if raw_count > MAX_EXACT_POSITIONS_PER_JOB:
+    if raw_count > len(typed_positions) and len(typed_positions) < raw_count:
         limit_note = (
             f"В исходном ТЗ обнаружено {raw_count} позиций. "
-            f"Сформирован детальный инженерный анализ и Форма 2 по топ-{MAX_EXACT_POSITIONS_PER_JOB} ключевым позициям оборудования/материалов "
-            f"(работы и мелкий крепеж исключены). Для анализа остальных позиций выполните отдельный запуск."
+            f"Сформирован детальный инженерный анализ по {len(typed_positions)} выбранным позициям оборудования/материалов."
         )
         summary_text = f"{limit_note}\n\n{summary_text}".strip()
 

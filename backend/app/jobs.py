@@ -1728,7 +1728,7 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
             price = int(reserve.amount_kopeks or 0) if reserve else effective_job_unit_price_kopeks(db, job.client, KIND_EXACT_PRODUCT, job=job)
             job.position_selection_json = build_selection_snapshot(items, price_kopeks=price)
         _set_job(db, job, status=AWAITING_EXACT_SELECTION, progress=25,
-                 message="Выберите до 5 товаров для подбора. Поиск начнётся после подтверждения.")
+                 message="Выберите позиции для подбора модели и аналогов. Поиск начнётся после подтверждения.")
         return
     chosen_positions = selected_positions(job)
     if not chosen_positions:

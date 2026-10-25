@@ -16,7 +16,7 @@ def test_telegram_selection_pages_keep_original_ids_and_bound_callback_lengths()
     job = Job(id="a" * 32, mode="exact_product", status="awaiting_exact_selection", position_selection_json=json.dumps(selection))
     text, keyboard = _exact_selection_view(job, page=1)
     assert "99.00" in text
-    assert "1 из 5" in text
+    assert "1 из 12" in text
     buttons = [b for row in keyboard.inline_keyboard for b in row]
     assert any("9" in b.text and "☑" in b.text for b in buttons)
     assert any(b.callback_data == f"exact_toggle:{job.id}:8" for b in buttons)

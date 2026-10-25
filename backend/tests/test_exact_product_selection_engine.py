@@ -24,8 +24,8 @@ async def test_selected_rows_keep_identity_and_no_reparse_or_factory_fallback():
 
 @pytest.mark.asyncio
 async def test_selection_limit_is_explicit():
-    with pytest.raises(ValueError, match="5"):
-        await analyze_exact_product(SystemSettings(), "Спецификация оборудования с характеристиками", selected_positions=[{"name": str(i)} for i in range(6)])
+    with pytest.raises(ValueError, match="100"):
+        await analyze_exact_product(SystemSettings(), "Спецификация оборудования с характеристиками", selected_positions=[{"name": str(i)} for i in range(101)])
 
 
 @pytest.mark.asyncio

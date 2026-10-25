@@ -3197,7 +3197,7 @@ export function CabinetClient() {
                     <div className={`px-2 py-1 ${exactIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
                       <span className="truncate mr-2 font-semibold text-slate-700">2. Подбор товара и аналогов</span>
                       <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
-                        {formatRubles(exactPriceKopeks)}
+                        {formatRubles(exactPriceKopeks)} / поз.
                       </b>
                     </div>
                     <div className={`px-2 py-1 ${reportIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
@@ -5234,15 +5234,23 @@ export function CabinetClient() {
               <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[70vh]">
                 <div className="rounded-2xl border border-teal-200 bg-teal-50/70 p-3.5 text-xs text-slate-700">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="font-bold text-slate-900">Выберите до {selection.max_positions} позиций для {isPriceMonitoring ? "мониторинга цен" : "отдельного подбора модели и аналогов"}.</p>
-                    <span className="px-2 py-0.5 rounded-full bg-white border border-teal-200 text-teal-800 font-extrabold whitespace-nowrap">Выбрано: {selectedExactItemIds.length} из {selection.max_positions}</span>
+                    <p className="font-bold text-slate-900">
+                      {isPriceMonitoring
+                        ? `Выберите позиции для мониторинга цен (до ${selection.max_positions}).`
+                        : `Выберите позиции для подбора модели и аналогов (до ${selection.max_positions}).`}
+                    </p>
+                    <span className="px-2 py-0.5 rounded-full bg-white border border-teal-200 text-teal-800 font-extrabold whitespace-nowrap">
+                      Выбрано: {selectedExactItemIds.length} из {selection.max_positions}
+                    </span>
                   </div>
                   <p className="mt-1.5 leading-relaxed">
                     {isPriceMonitoring
                       ? selection.price_kopeks
                         ? `Стоимость рассчитывается по результату: ${formatRubles(selection.price_kopeks)} за позицию с найденной ценой. Максимальная сумма при выборе ${selection.max_positions} позиций: ${formatRubles(selection.max_positions * selection.price_kopeks)}. Позиции без найденной цены не учитываются.`
                         : "Стоимость рассчитывается только по позициям с найденной ценой."
-                      : `Стоимость задачи фиксирована: ${formatRubles(selection.price_kopeks)} за подбор выбранных позиций независимо от их количества.`}
+                      : selection.price_kopeks
+                        ? `Стоимость подбора: ${formatRubles(selection.price_kopeks)} за позицию. Выбрано ${selectedExactItemIds.length} ${pluralizeRu(selectedExactItemIds.length, ["позиция", "позиции", "позиций"])} на сумму ${formatRubles(selectedExactItemIds.length * selection.price_kopeks)}.`
+                        : "Стоимость рассчитывается по выбранным позициям."}
                     {" "}Перед запуском проверьте требования каждой позиции.
                   </p>
                 </div>
@@ -6660,7 +6668,7 @@ ${webLink}`;
    - POST /api/v1/mcp/jobs/{job_id}/position-selection: revision, selected_item_ids из полученного списка.
    - POST /api/v1/mcp/jobs/{job_id}/choose-strategy: multi_item_mode, selected_item_ids.
    - POST /api/v1/mcp/jobs/{job_id}/cancel; GET /api/v1/mcp/jobs/{job_id}/download.
-   - Мониторинг оплачивается за найденные выбранные позиции; подбор — по тарифу задачи до 5 выбранных строк.
+   - Мониторинг оплачивается за найденные выбранные позиции; подбор товара и аналогов — по тарифу за каждую выбранную позицию.
 
 5. Проверка остатка баланса:
    - Метод: GET https://tenderlex.ru/api/v1/mcp/balance

@@ -355,7 +355,7 @@ AUTO_FILL_RECOMMENDATIONS_PROMPT = """Ты — старший инженер-т�
 ]
 """
 
-MAX_EXACT_POSITIONS_PER_JOB = 5
+MAX_EXACT_POSITIONS_PER_JOB = 100
 
 
 def auto_rotate_clean_analogs(positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

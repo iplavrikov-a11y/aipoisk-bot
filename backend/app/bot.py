@@ -2042,7 +2042,7 @@ def _tariffs_text(db, settings) -> str:
         "",
         "<b>Стоимость операций (списание с баланса):</b>",
         "• 🔎 Поиск поставщиков: 99 ₽",
-        "• 🎯 Подбор товара и аналогов: 99 ₽",
+        "• 🎯 Подбор товара и аналогов: 99 ₽ / поз.",
         "• 📄 Анализ документации: 99 ₽",
         "• ⚡ Анализ + поиск: 198 ₽",
     ])
@@ -2168,9 +2168,15 @@ def _exact_selection_view(job: Job, page: int = 0) -> tuple[str, InlineKeyboardM
             f"Максимум при выборе: {maximum * unit_price / 100:.2f} ₽. Итоговое списание — только за найденные цены.\n"
             "Мониторинг начнётся после подтверждения.")
     else:
-        text = (f"Выберите товары для подбора — {len(selected)} из 5.\n"
+        maximum = max(1, int(selection.get("max_positions") or len(items) or 1))
+        unit_price = max(0, int(selection.get("price_kopeks") or 0))
+        total_price = len(selected) * unit_price
+        price_str = f"Стоимость: {unit_price / 100:.2f} ₽ за позицию"
+        if len(selected) > 0:
+            price_str += f" (выбрано на сумму: {total_price / 100:.2f} ₽)"
+        text = (f"Выберите позиции для подбора товара и аналогов — {len(selected)} из {maximum}.\n"
                 f"Страница {page + 1} из {page_count}, всего позиций: {len(items)}.\n"
-                f"Стоимость всей задачи: {int(selection.get('price_kopeks') or 0) / 100:.2f} ₽.\n"
+                f"{price_str}.\n"
                 "Подбор начнётся после подтверждения. Результат — общий Word-отчёт по выбранным строкам.")
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 

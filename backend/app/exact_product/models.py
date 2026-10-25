@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, List, Optional
 
 GISP_PRODUCT_REGISTRY_URL = "https://gisp.gov.ru/pp719v2/pub/prod/"
-MAX_EXACT_POSITIONS_PER_JOB: int = 5
+MAX_EXACT_POSITIONS_PER_JOB: int = 100
 MAX_YANDEX_QUERIES_PER_JOB: int = 20
 
 
@@ -128,6 +128,6 @@ class ExactProductReport:
         }
 
 
-MAX_EXACT_POSITIONS_PER_JOB: int = 5
+MAX_EXACT_POSITIONS_PER_JOB: int = 100
 MAX_YANDEX_QUERIES_PER_JOB: int = 20
 

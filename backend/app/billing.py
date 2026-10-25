@@ -1661,6 +1661,78 @@ def reserve_price_monitoring_job(
         return expected_amount
 
 
+def adjust_exact_product_reservation_for_selection(
+    db: Session,
+    job: Job,
+    *,
+    chosen_count: int,
+    price_per_item_kopeks: int,
+) -> int:
+    """Adjust reservation when exact_product positions are chosen (positional pricing)."""
+    chosen = max(1, int(chosen_count or 1))
+    unit_price = max(0, int(price_per_item_kopeks or 0))
+    if not getattr(job, "client_id", None):
+        return 0
+    with _billing_client_lock(str(job.client_id)):
+        current = _current_billing_job(db, job)
+        if current.mode != KIND_EXACT_PRODUCT:
+            raise BillingError("Резервирование доступно только для подбора товаров.")
+
+        existing_units = _job_reserved_remaining(db, current.id, KIND_EXACT_PRODUCT)
+        existing_amount = _job_reserved_amount_remaining(db, current.id, KIND_EXACT_PRODUCT)
+
+        diff_units = chosen - existing_units
+        diff_amount = (chosen * unit_price) - existing_amount
+
+        if diff_amount <= 0 and diff_units <= 0:
+            return existing_amount
+
+        client = db.get(Client, current.client_id)
+        if client is None:
+            raise BillingError("Клиент задачи подбора товаров не найден.")
+        db.refresh(client)
+        available = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
+        if available < diff_amount:
+            raise BillingError(
+                f"Недостаточно средств для выбранных позиций: нужно {diff_amount / 100:.2f} ₽ дополнительно, "
+                f"доступно {available / 100:.2f} ₽. Пополните баланс или уменьшите выбор."
+            )
+
+        client.money_reserved_kopeks = int(client.money_reserved_kopeks or 0) + diff_amount
+        existing_tx = (
+            db.query(BillingTransaction)
+            .filter(
+                BillingTransaction.job_id == current.id,
+                BillingTransaction.kind == KIND_EXACT_PRODUCT,
+                BillingTransaction.operation == OP_RESERVE,
+            )
+            .first()
+        )
+        if existing_tx:
+            existing_tx.units = int(existing_tx.units or 0) + diff_units
+            existing_tx.amount_kopeks = int(existing_tx.amount_kopeks or 0) + diff_amount
+            existing_tx.reserved_after_kopeks = int(client.money_reserved_kopeks or 0)
+            existing_tx.balance_after_kopeks = int(client.money_balance_kopeks or 0)
+            existing_tx.note = f"Резерв подбора товаров ({chosen} поз. по {unit_price / 100:.2f} ₽)"
+        else:
+            db.add(
+                BillingTransaction(
+                    client_id=client.id,
+                    job_id=current.id,
+                    kind=KIND_EXACT_PRODUCT,
+                    operation=OP_RESERVE,
+                    units=diff_units,
+                    amount_kopeks=diff_amount,
+                    balance_after_kopeks=int(client.money_balance_kopeks or 0),
+                    reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
+                    note=f"Дополнительный резерв подбора товаров ({chosen} поз. по {unit_price / 100:.2f} ₽)",
+                    created_by="system",
+                )
+            )
+        db.commit()
+        return existing_amount + diff_amount
+
+
 def cancel_price_monitoring_job(
     db: Session,
     job: Job,

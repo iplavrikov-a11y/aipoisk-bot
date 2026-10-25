@@ -46,9 +46,9 @@ def build_selection_snapshot(items: list[dict], *, price_kopeks: int, mode: str 
             category = "Позиции спецификации"
         row["category"] = category
         groups.setdefault(category, []).append(row["id"])
-    maximum = len(rows) if mode == "price_monitoring" else MAX_SELECTED_POSITIONS
+    maximum = len(rows) if mode in {"price_monitoring", "exact_product"} else MAX_SELECTED_POSITIONS
     return json.dumps({"revision": uuid.uuid4().hex, "mode": mode, "max_positions": maximum,
-                       "pricing_mode": "per_found_position" if mode == "price_monitoring" else "fixed_task",
+                       "pricing_mode": "per_found_position" if mode == "price_monitoring" else ("per_position" if mode == "exact_product" else "fixed_task"),
                        "price_kopeks": max(0, int(price_kopeks)), "items": rows,
                        "groups": [{"id": f"group-{index}", "name": name, "item_ids": ids} for index, (name, ids) in enumerate(groups.items(), 1)],
                        "selected_ids": [], "confirmed": False}, ensure_ascii=False)
@@ -61,7 +61,7 @@ def validate_selected_ids(selection: dict, revision: str, item_ids: list[str]) -
         raise ValueError("Выберите хотя бы одну позицию.")
     if len(item_ids) != len(set(item_ids)):
         raise ValueError("Позиции в выборе не должны повторяться.")
-    maximum = int(selection.get("max_positions") or 0) if selection.get("mode") == "price_monitoring" else MAX_SELECTED_POSITIONS
+    maximum = int(selection.get("max_positions") or 0) if selection.get("mode") in {"price_monitoring", "exact_product"} else MAX_SELECTED_POSITIONS
     if len(item_ids) > maximum:
         raise ValueError(f"За один запуск можно выбрать до {maximum} позиций.")
     allowed = [str(item["id"]) for item in selection.get("items", []) if isinstance(item, dict) and item.get("id")]
@@ -86,14 +86,22 @@ def confirm_position_selection(db: Session, job: Job, revision: str, item_ids: l
         if chosen == selection.get("selected_ids") and job.status in {"pending", "running", "completed"}:
             return False
         raise ValueError("Выбор этой задачи уже подтверждён. Для другого состава создайте новый подбор.")
-    if job.mode == "price_monitoring" and job.client_id and not getattr(job, "is_admin_rerun", False):
-        client = db.get(Client, job.client_id)
-        if client is not None:
-            db.refresh(client, attribute_names=["money_balance_kopeks", "money_reserved_kopeks"])
-            available = int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0)
-            budget = len(chosen) * int(selection.get("price_kopeks") or 0)
-            if available < budget:
-                raise ValueError(f"Недостаточно средств для выбранных позиций: нужно {budget / 100:.2f} ₽, доступно {available / 100:.2f} ₽. Уменьшите выбор или пополните баланс.")
+    if job.mode in {"price_monitoring", "exact_product"} and job.client_id and not getattr(job, "is_admin_rerun", False):
+        if job.mode == "price_monitoring":
+            client = db.get(Client, job.client_id)
+            if client is not None:
+                db.refresh(client, attribute_names=["money_balance_kopeks", "money_reserved_kopeks"])
+                available = int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0)
+                budget = len(chosen) * int(selection.get("price_kopeks") or 0)
+                if available < budget:
+                    raise ValueError(f"Недостаточно средств для выбранных позиций: нужно {budget / 100:.2f} ₽, доступно {available / 100:.2f} ₽. Уменьшите выбор или пополните баланс.")
+        elif job.mode == "exact_product":
+            from .billing import adjust_exact_product_reservation_for_selection
+            unit_price = int(selection.get("price_kopeks") or 0)
+            try:
+                adjust_exact_product_reservation_for_selection(db, job, chosen_count=len(chosen), price_per_item_kopeks=unit_price)
+            except Exception as e:
+                raise ValueError(str(e)) from e
     expected_status = AWAITING_EXACT_SELECTION if job.mode == "exact_product" else AWAITING_POSITION_SELECTION
     if job.status != expected_status:
         raise ValueError("Эта задача сейчас не ожидает выбора товаров.")

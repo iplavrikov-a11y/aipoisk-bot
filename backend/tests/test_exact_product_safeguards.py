@@ -49,7 +49,7 @@ async def test_max_positions_limit_and_summary_note():
                 ],
                 "alternative_brands": [],
             }
-            for i in range(1, 8)
+            for i in range(1, 106)
         ],
     }
 
@@ -60,18 +60,18 @@ async def test_max_positions_limit_and_summary_note():
 
             report = await analyze_exact_product(
                 settings=settings,
-                context="Спецификация из 7 позиций оборудования",
+                context="Спецификация из 105 позиций оборудования",
                 procurement_title="Комплексная закупка оборудования",
             )
 
-            # Check that exactly MAX_EXACT_POSITIONS_PER_JOB (5) are retained
+            # Check that exactly MAX_EXACT_POSITIONS_PER_JOB (100) are retained
             assert len(report.positions) == MAX_EXACT_POSITIONS_PER_JOB
             assert report.total_positions == MAX_EXACT_POSITIONS_PER_JOB
-            assert [p.position_no for p in report.positions] == [1, 2, 3, 4, 5]
+            assert [p.position_no for p in report.positions] == list(range(1, 101))
 
             # Check that note is included in summary
-            assert "обнаружено 7 позиций" in report.summary
-            assert f"топ-{MAX_EXACT_POSITIONS_PER_JOB} ключевым позициям" in report.summary
+            assert "обнаружено 105 позиций" in report.summary
+            assert f"{MAX_EXACT_POSITIONS_PER_JOB} выбранным позициям" in report.summary
 
 
 @pytest.mark.asyncio

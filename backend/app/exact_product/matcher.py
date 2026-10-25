@@ -43,7 +43,7 @@ ProgressCallback = Any  # Callable[[int, str], Coroutine]
 
 _MAX_CANDIDATE_DOCS = 12
 
-MAX_EXACT_POSITIONS_PER_JOB = 5
+MAX_EXACT_POSITIONS_PER_JOB = 100
 _MAX_FACTS_PER_DOC = 40
 _CITY_SUFFIX_RE = re.compile(r"\s*[-–—]\s*[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s*$")
 

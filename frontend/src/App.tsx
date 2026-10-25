@@ -4710,7 +4710,7 @@ function AdminExactSelection({ jobId, selection, mode, multiItemMode, reissue = 
   const [strategy, setStrategy] = useState(multiItemMode || 'balanced')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const maximum = selection.max_positions || 5
+  const maximum = selection.max_positions || (selection.pricing_mode === 'per_position' ? (selection.items?.length || 100) : 5)
   const monitoring = mode === 'price_monitoring' || selection.pricing_mode === 'per_found_position'
   const supplier = ['supplier_search', 'analysis_and_suppliers'].includes(mode || selection.mode || '')
   const balanced = supplier && strategy === 'balanced'
@@ -4719,6 +4719,7 @@ function AdminExactSelection({ jobId, selection, mode, multiItemMode, reissue = 
   const billing = noCharge ? 'Экспертная задача без списания с клиента. Результат не отправляется автоматически.'
     : supplier ? 'Продолжение исходной задачи по тарифу клиента. Попозиционный режим может потребовать дополнительный резерв за позиции.'
     : monitoring ? `За найденную позицию: ${formatMoney(selection.price_kopeks)}. Максимальный резерв: ${formatMoney(selection.price_kopeks * selected.length)}.`
+    : selection.pricing_mode === 'per_position' ? `За выбранную позицию: ${formatMoney(selection.price_kopeks)}. Итого: ${formatMoney(selection.price_kopeks * selected.length)}.`
     : `Стоимость исходной задачи: ${formatMoney(selection.price_kopeks)} за выбор до ${maximum} товаров.`
   async function confirm() {
     if (!effectiveIds.length || effectiveIds.length > maximum || busy) return
@@ -4743,7 +4744,7 @@ function AdminExactSelection({ jobId, selection, mode, multiItemMode, reissue = 
     }
   }
   return <section aria-label={supplier ? 'Выбор позиций и стратегии поставщиков' : monitoring ? 'Выбор позиций для мониторинга' : 'Выбор товаров для подбора'} style={{ border: '1px solid #a7c9bd', borderRadius: 10, padding: 14, marginTop: 12, minWidth: 0 }}>
-    <strong>{reissue ? 'Срок подтверждения истёк. Выберите позиции для новой экспертной задачи' : supplier ? 'Подтвердите позиции и стратегию поиска поставщиков' : monitoring ? 'Выберите позиции для мониторинга цен' : `Выберите до ${maximum} товаров для подбора`}</strong>
+    <strong>{reissue ? 'Срок подтверждения истёк. Выберите позиции для новой экспертной задачи' : supplier ? 'Подтвердите позиции и стратегию поиска поставщиков' : monitoring ? 'Выберите позиции для мониторинга цен' : selection.pricing_mode === 'per_position' ? 'Выберите позиции для подбора модели и аналогов' : `Выберите до ${maximum} товаров для подбора`}</strong>
     <p>Выбрано: {effectiveIds.length} из {maximum}. {billing}</p>
     {supplier && <label style={{ display: 'block', marginBottom: 10 }}>Стратегия поиска поставщиков{' '}
       <select aria-label="Стратегия поиска поставщиков" value={strategy} disabled={busy} onChange={event => setStrategy(event.target.value)}>
