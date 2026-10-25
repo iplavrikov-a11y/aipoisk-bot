@@ -1,6 +1,6 @@
 # TenderLex Bot
 
-Актуальный выпуск 24 октября 2026 (поздний вечер): [выделенная колонка локации в Excel и полнономенклатурный гео-поиск](docs/GEO_RADIUS_EXCEL_COLUMNS_RELEASE_2026-10-24.md), а также [исправление XLSX №968 и попозиционной админки](docs/JOB968_ADMIN_POSITIONAL_RELEASE_2026-10-24.md), [санитизация клиентских ошибок](docs/PROJECT_STATUS.md) — 1 325 серверных тестов и 54 подтеста, 5 E2E реальных задач с ТЗ (10/10), деплой на боевой сервер. Предыдущий выпуск 23 октября: [API, правило 14 и география](docs/API_RULE14_GEO_RELEASE_2026-10-23.md), [руководство клиентского API](docs/API_CLIENT_GUIDE.md), [оставшиеся улучшения](docs/SITE_REMAINING_IMPROVEMENTS_2026-10-21.md). Выбор исходных товаров, расчёты мониторинга и стабильность кабинета описаны в [выпуске 22 октября](docs/POSITIONAL_SELECTION_RELEASE_2026-10-22.md); разбор ошибочных 243 позиций — в [отчёте задач 954–956](docs/SELECTION_INVENTORY_FIX_954_956_2026-10-22.md).
+Актуальный выпуск 25 октября 2026: [сохранение поставщиков «По запросу», фирменная изумрудно-мятная палитра Excel и валидация 300 позиций по Правилу 14](docs/PRICE_MONITORING_ON_REQUEST_AND_PALETTE_RELEASE_2026-10-25.md). Предыдущий выпуск 24 октября (поздний вечер): [выделенная колонка локации в Excel и полнономенклатурный гео-поиск](docs/GEO_RADIUS_EXCEL_COLUMNS_RELEASE_2026-10-24.md), а также [исправление XLSX №968 и попозиционной админки](docs/JOB968_ADMIN_POSITIONAL_RELEASE_2026-10-24.md), [санитизация клиентских ошибок](docs/PROJECT_STATUS.md) — 1 326 серверных тестов и 54 подтеста, деплой на боевой сервер. Предыдущий выпуск 23 октября: [API, правило 14 и география](docs/API_RULE14_GEO_RELEASE_2026-10-23.md), [руководство клиентского API](docs/API_CLIENT_GUIDE.md), [оставшиеся улучшения](docs/SITE_REMAINING_IMPROVEMENTS_2026-10-21.md). Выбор исходных товаров, расчёты мониторинга и стабильность кабинета описаны в [выпуске 22 октября](docs/POSITIONAL_SELECTION_RELEASE_2026-10-22.md); разбор ошибочных 243 позиций — в [отчёте задач 954–956](docs/SELECTION_INVENTORY_FIX_954_956_2026-10-22.md).
 
 Серверный прогон выпуска 23 октября: 1221 тест и 54 подтеста; после публикации проверены 97 сценариев кабинета и сохранность SEO-контрактов 92 уникальных страниц. Браузерные API подменялись тестовыми ответами; платный рыночный поиск не запускался. Это результаты локальной проверки выпуска, а не GitHub CI.
 
@@ -17,6 +17,13 @@ Public product domain: `https://tenderlex.ru`
 Admin/internal domain: `https://admin.tenderlex.ru`
 
 ## Production notes
+
+- Unpriced Suppliers On-Request Quotes, Brand Emerald/Mint Excel & 300-Item Rule 14 Benchmark (2026-10-25):
+  - On-Request Quotes Retention (`extractor.py`, `pipeline.py`, `excel_report.py`): suppliers with unpriced quotes ("по запросу" / "под заказ") are no longer discarded. Company names, clickable URLs, INNs, phones, and emails are extracted and rendered with bold emerald "По запросу" labels, while 44-ФЗ formulas (`MIN`, `AVERAGE`) are dynamically protected against text arguments.
+  - TenderLex Brand Visual Palette (`excel_report.py`): unified Excel reports with Deep Emerald (`#064E3B`, `#047857`) and Soft Mint (`#ECFDF5`, `#A7F3D0`), matching DOCX and XLSX procurement reports.
+  - DaData Phone & Email Enrichment (`extractor.py`): automatically supplements missing on-page contacts with official phone numbers and email addresses from DaData Suggestions API.
+  - Prioritized Factory Drawings in Compare-then-Match (`extractor.py`): strict decimal drawing priority ensures aggregate model names do not allow mismatched part drawings (100% accuracy).
+  - Validated on 300 real client procurement items from `aipoisk.db` across all industries (100% success rate), with 1,326 backend tests passing and live deployment on `202.71.13.57`.
 
 - Dedicated City/Distance Columns & Full-Inventory Multi-Item Geo Search (2026-10-24):
   - Supplier Search Excel Reports (`backend/app/report_builder.py`): added dedicated 6th column "Город и расстояние" between "Комментарий" and "Реестр Минпромторга" (7 columns total). Completely stripped location text pollution from the "Комментарий" column, leaving purely technical specifications and matching notes. Formatted in-radius (emerald), out-of-radius (red with explicit `(вне радиуса)` tag), and unknown distances (`—`).
