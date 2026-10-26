@@ -448,6 +448,7 @@ class Job(Base):
     position_selection_json: Mapped[str] = mapped_column(Text, default="")
     delivery_city: Mapped[str] = mapped_column(String(255), default="")
     geo_radius_km: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    geo_scope: Mapped[str] = mapped_column(String(32), default="ru")
     filter_marketplaces: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     filter_foreign: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     max_suppliers: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)

@@ -377,6 +377,48 @@ def is_blocked(url_or_domain: str) -> bool:
     )
 
 
+FOREIGN_NATIONAL_CCTLDS = {
+    ".cn", ".by", ".kz", ".am", ".kg", ".ua", ".de", ".us", ".uk", ".pl", ".fr",
+    ".it", ".es", ".jp", ".kr", ".in", ".tr", ".cz", ".nl", ".se", ".fi",
+    ".ro", ".bg", ".hu", ".gr", ".at", ".ch", ".ca", ".au", ".br", ".mx", ".ar"
+}
+CIS_CCTLDS = {".by", ".kz", ".am", ".kg"}
+FOREIGN_B2B_PORTALS = {
+    "made-in-china.com", "alibaba.com", "globalsources.com", "1688.com",
+    "taiwantrade.com", "indiamart.com", "ec21.com", "tradekey.com", "dhgate.com",
+    "sino-fire.com", "pandapipe.com", "flowex-pipe.com", "aliexpress.com", "aliexpress.ru"
+}
+
+
+def is_domain_allowed_for_geo(domain_or_url: str, geo_scope: str = "ru") -> bool:
+    if not domain_or_url:
+        return True
+    dom = base_domain(domain_or_url).lower().strip()
+    scope = str(geo_scope or "ru").strip().lower()
+    for portal in FOREIGN_B2B_PORTALS:
+        if dom == portal or dom.endswith("." + portal):
+            return False
+
+    if scope == "world":
+        return True
+
+    parts = dom.split(".")
+    tld = f".{parts[-1]}" if len(parts) > 1 else ""
+
+    if scope == "ru":
+        if tld in FOREIGN_NATIONAL_CCTLDS:
+            return False
+        return True
+
+    if scope == "cis":
+        if tld in FOREIGN_NATIONAL_CCTLDS and tld not in CIS_CCTLDS:
+            return False
+        return True
+
+    return True
+
+
+
 def hostname(url_or_domain: str) -> str:
     value = str(url_or_domain or "").strip().lower()
     if "://" in value:
@@ -1771,6 +1813,7 @@ async def discover_suppliers(
     multi_item_mode: str = "balanced",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[dict], dict]:
     async with _browser_pool_session():
         return await _discover_suppliers_impl(
@@ -1789,6 +1832,7 @@ async def discover_suppliers(
             multi_item_mode=multi_item_mode,
             delivery_city=delivery_city,
             geo_radius_km=geo_radius_km,
+            geo_scope=geo_scope,
         )
 
 
@@ -1809,6 +1853,7 @@ async def _discover_suppliers_impl(
     multi_item_mode: str = "balanced",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[dict], dict]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search")
@@ -2714,10 +2759,18 @@ def _supplier_exclusion_sets(excluded_suppliers: list[dict] | None) -> tuple[set
     return domains, company_keys
 
 
-def _exclude_candidates(candidates: list[Candidate], excluded_domains: set[str]) -> list[Candidate]:
-    if not excluded_domains:
-        return candidates
-    return [candidate for candidate in candidates if candidate.domain and candidate.domain not in excluded_domains]
+def _exclude_candidates(candidates: list[Candidate], excluded_domains: set[str], geo_scope: str = "ru") -> list[Candidate]:
+    filtered: list[Candidate] = []
+    for candidate in candidates:
+        if not candidate.domain:
+            continue
+        if excluded_domains and candidate.domain in excluded_domains:
+            continue
+        if not is_domain_allowed_for_geo(candidate.domain, geo_scope):
+            continue
+        filtered.append(candidate)
+    return filtered
+
 
 
 def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
@@ -3870,6 +3923,27 @@ async def _review_candidates_until_target(
         )
         if result:
             result["_source_rank"] = index
+            cand_url = str(candidate.url or result.get("site") or "").lower()
+            dom = base_domain(cand_url)
+            if dom.endswith(".by"):
+                result["supplier_country"] = "Беларусь 🇧🇾"
+            elif dom.endswith(".kz"):
+                result["supplier_country"] = "Казахстан 🇰🇿"
+            elif dom.endswith(".am"):
+                result["supplier_country"] = "Армения 🇦🇲"
+            elif dom.endswith(".kg"):
+                result["supplier_country"] = "Кыргызстан 🇰🇬"
+            elif dom.endswith(".cn") or any(p in dom for p in ("made-in-china", "alibaba", "globalsources", "1688", "sino-")):
+                result["supplier_country"] = "Китай 🇨🇳"
+            elif dom.endswith(".tr"):
+                result["supplier_country"] = "Турция 🇹🇷"
+            elif dom.endswith(".de"):
+                result["supplier_country"] = "Германия 🇩🇪"
+            elif result.get("inn") or dom.endswith((".ru", ".рф", ".su", ".xn--p1ai")):
+                result["supplier_country"] = "Россия 🇷🇺"
+            else:
+                result["supplier_country"] = "Россия 🇷🇺"
+
             raw_city = str(result.get("region") or result.get("supplier_city") or result.get("city") or "").strip()
             detected = extract_city_from_text(f"{raw_city} {result.get('company_name', '')} {result.get('comments', '')} {candidate.snippet} {result.get('contact_evidence_snippet', '')}")
             supplier_city = detected or raw_city
@@ -4136,6 +4210,7 @@ async def discover_candidates(
     primary_candidate_floor: int | None = None,
     fallback_candidate_limit: int | None = None,
     reserve_only: bool = False,
+    geo_scope: str = "ru",
 ) -> tuple[list[Candidate], dict]:
     candidates: list[Candidate] = []
     reports: list[dict] = []
@@ -4208,7 +4283,13 @@ async def discover_candidates(
         try:
             existing_domains = base_excluded_domains | {candidate.domain for candidate in candidates}
             if provider == "yandex":
-                y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
+                try:
+                    y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
+                except TypeError as t_err:
+                    if "geo_scope" in str(t_err):
+                        y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
+                    else:
+                        raise
                 if isinstance(y_res, tuple) and len(y_res) == 2:
                     provider_candidates, y_reqs = y_res
                 else:
@@ -4220,7 +4301,7 @@ async def discover_candidates(
                 provider_candidates = await _search_with_tavily(settings, queries, request_limit, existing_domains=existing_domains)
             elif provider == "ddgs":
                 provider_candidates = await _search_with_ddgs(queries, request_limit, existing_domains=existing_domains)
-            provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains)[:request_limit]
+            provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains, geo_scope=geo_scope)[:request_limit]
             status = "ok" if provider_candidates else "empty"
         except Exception as exc:
             status = "error"
@@ -4371,6 +4452,7 @@ async def _search_with_yandex(
     existing_domains: set[str] | None = None,
     expand_queries: bool = True,
     max_pages_per_query: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[Candidate], int]:
     folder_id, api_key = _yandex_credentials(settings)
     if not folder_id or not api_key:
@@ -4477,12 +4559,13 @@ async def _search_with_yandex(
                 new_added = 0
                 for c in page_candidates:
                     cand_domain = c.domain or base_domain(c.url)
-                    if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS:
+                    if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(cand_domain, geo_scope):
                         for entity in extract_supplier_entities_from_aggregator_snippet(c.title, c.snippet):
                             ent_key = entity.lower().strip()
                             if ent_key not in seen_mined_entities:
                                 seen_mined_entities.add(ent_key)
                                 mined_company_names.append(entity)
+                        continue
                     if c.domain not in seen_domains:
                         seen_domains.add(c.domain)
                         all_candidates.append(c)
@@ -4529,7 +4612,7 @@ async def _search_with_yandex(
                 mined_page_candidates = await search_one_page(client, target_q, 0)
                 for mc in mined_page_candidates:
                     m_dom = mc.domain or base_domain(mc.url)
-                    if not m_dom or m_dom in seen or is_blocked(m_dom) or m_dom in BLOCKED_DOMAINS or m_dom in EXTRA_AGGREGATOR_DOMAINS:
+                    if not m_dom or m_dom in seen or is_blocked(m_dom) or m_dom in BLOCKED_DOMAINS or m_dom in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(m_dom, geo_scope):
                         continue
                     seen.add(m_dom)
                     candidates.append(

@@ -119,6 +119,23 @@ VALID_SUPPLIER_SEARCH_POLICIES = {
     SUPPLIER_POLICY_MINPROM_ONLY,
     SUPPLIER_POLICY_MINPROM_PRIORITY,
 }
+GEO_SCOPE_RU = "ru"
+GEO_SCOPE_CIS = "cis"
+GEO_SCOPE_WORLD = "world"
+VALID_GEO_SCOPES = {
+    GEO_SCOPE_RU,
+    GEO_SCOPE_CIS,
+    GEO_SCOPE_WORLD,
+}
+
+
+def normalize_geo_scope(value: str | None, supplier_search_policy: str = SUPPLIER_POLICY_NORMAL) -> str:
+    cleaned_policy = str(supplier_search_policy or "").strip().lower()
+    if cleaned_policy in {SUPPLIER_POLICY_MINPROM_ONLY, SUPPLIER_POLICY_MINPROM_PRIORITY}:
+        return GEO_SCOPE_RU
+    cleaned = str(value or "").strip().lower()
+    return cleaned if cleaned in VALID_GEO_SCOPES else GEO_SCOPE_RU
+
 SUPPLIER_RUN_INITIAL = "initial"
 SUPPLIER_RUN_ADDITIONAL = "additional"
 RESULT_STEM_MAX_BYTES = 150
@@ -169,6 +186,7 @@ def create_job(
     initial_status: str = "pending",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = GEO_SCOPE_RU,
 ) -> Job:
     from .geo_policy import validate_geo_request
     delivery_city, geo_radius_km = validate_geo_request(delivery_city, geo_radius_km, mode=mode)
@@ -179,6 +197,7 @@ def create_job(
             "Номер извещения или ссылку закупки отправьте в режим анализа закупки или анализа + поставщики."
         )
     normalized_policy = normalize_supplier_search_policy(supplier_search_policy)
+    normalized_geo_scope = normalize_geo_scope(geo_scope, normalized_policy)
     if mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
         registry_error = minprom_registry_preflight_error(normalized_policy)
         if registry_error:
@@ -197,6 +216,7 @@ def create_job(
         multi_item_mode=normalized_multi_item_mode,
         delivery_city=delivery_city,
         geo_radius_km=geo_radius_km,
+        geo_scope=normalized_geo_scope,
         title=title,
         target_suppliers=target_suppliers,
         status="draft" if initial_status == "draft" else "pending",
@@ -1451,6 +1471,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
             multi_item_mode=multi_item_mode,
             delivery_city=getattr(job, "delivery_city", "") or "",
             geo_radius_km=getattr(job, "geo_radius_km", None),
+            geo_scope=getattr(job, "geo_scope", GEO_SCOPE_RU) or GEO_SCOPE_RU,
         )
     except TypeError:
         discovery_coro = discover_suppliers(
@@ -2105,6 +2126,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             multi_item_mode=multi_item_mode,
             delivery_city=getattr(job, "delivery_city", "") or "",
             geo_radius_km=getattr(job, "geo_radius_km", None),
+            geo_scope=getattr(job, "geo_scope", GEO_SCOPE_RU) or GEO_SCOPE_RU,
         )
     except TypeError:
         discovery_coro = discover_suppliers(

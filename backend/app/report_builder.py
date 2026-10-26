@@ -805,14 +805,19 @@ def _format_supplier_location(row: dict) -> str:
     city = str(row.get("supplier_city") or row.get("city") or "").strip()
     if city:
         city = city[0].upper() + city[1:]
+    country = str(row.get("supplier_country") or row.get("country") or "").strip()
     dist = row.get("supplier_distance_km")
     within = row.get("supplier_distance_within_radius")
+    country_note = f" [{country}]" if country and "россия" not in country.lower() else ""
     if city and dist is not None:
         note = " (вне радиуса)" if within is False else ""
-        return f"{city} (~{dist} км){note}"
+        return f"{city}{country_note} (~{dist} км){note}"
     if city:
-        return city
+        return f"{city}{country_note}"
+    if country and "россия" not in country.lower():
+        return f"[{country}]" if not country.startswith("[") else country
     return "—"
+
 
 
 def _client_supplier_comment(row: dict, *, is_multi_item: bool = False) -> str:

@@ -1,5 +1,5 @@
 import { SeoTrafficView } from './SeoTrafficView'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
 import {
   X,
   AlertTriangle,
@@ -274,6 +274,7 @@ type Job = {
   multi_item_mode?: string
   delivery_city?: string
   geo_radius_km?: number | null
+  geo_scope?: string
   confirmation_expires_at?: string | null
   confirmation_kind?: string
   confirmation_outcome?: string
@@ -1203,6 +1204,67 @@ function getInitialView(): View {
   return 'dashboard'
 }
 
+interface ErrorBoundaryProps {
+  children: ReactNode
+  sectionName?: string
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean
+  error: Error | null
+}
+
+class AdminErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('AdminErrorBoundary caught error:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 24, margin: '20px auto', maxWidth: 640, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, color: '#991b1b' }}>
+          <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Ошибка отображения раздела {this.props.sectionName ? `«${this.props.sectionName}»` : ''}</h3>
+          <p style={{ margin: '0 0 12px 0', fontSize: 13, color: '#7f1d1d' }}>
+            {this.state.error?.message || 'Произошла непредвиденная ошибка при отображении данных.'}
+          </p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="ghost small-text"
+              style={{ background: '#fff', border: '1px solid #fca5a5', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
+              onClick={() => {
+                this.setState({ hasError: false, error: null })
+              }}
+            >
+              Попробовать снова
+            </button>
+            <button
+              type="button"
+              className="ghost small-text"
+              style={{ background: '#0f766e', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
+              onClick={() => {
+                window.location.reload()
+              }}
+            >
+              Перезагрузить страницу
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 export function App() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -1763,35 +1825,39 @@ export function App() {
         )}
         {isReady && view === 'seo' && <SeoTrafficView />}
         {isReady && view === 'clients' && (
-          <ClientsView
-            clients={clients}
-            passwordResets={passwordResets}
-            onChange={loadAll}
-            onNavigateToClientJobs={handleNavigateToClientJobs}
-            onNavigateToMcp={() => setView('mcp')}
-            isSyncing={isClientsSyncing}
-            lastSyncAt={lastClientsSyncAt}
-            onManualSync={handleManualClientsSync}
-            recentNewClientIds={recentNewClientIds}
-            selectedClientIdFromParent={selectedClientIdForView}
-            onClearSelectedClientFromParent={() => setSelectedClientIdForView('')}
-          />
+          <AdminErrorBoundary sectionName="Клиенты">
+            <ClientsView
+              clients={clients}
+              passwordResets={passwordResets}
+              onChange={loadAll}
+              onNavigateToClientJobs={handleNavigateToClientJobs}
+              onNavigateToMcp={() => setView('mcp')}
+              isSyncing={isClientsSyncing}
+              lastSyncAt={lastClientsSyncAt}
+              onManualSync={handleManualClientsSync}
+              recentNewClientIds={recentNewClientIds}
+              selectedClientIdFromParent={selectedClientIdForView}
+              onClearSelectedClientFromParent={() => setSelectedClientIdForView('')}
+            />
+          </AdminErrorBoundary>
         )}
         {isReady && view === 'jobs' && (
-          <JobsView
-            jobs={jobs}
-            clients={clients}
-            selectedClientId={selectedClientForJobs}
-            onClearSelectedClient={() => setSelectedClientForJobs('')}
-            onChange={async jobId => {
-              if (jobId) {
-                const updated = await api<Job>(`/api/jobs/${jobId}`)
-                setJobs(current => current.map(job => job.id === jobId ? updated : job))
-              }
-              await loadAll()
-            }}
-            loading={jobsLoading}
-          />
+          <AdminErrorBoundary sectionName="Задачи">
+            <JobsView
+              jobs={jobs}
+              clients={clients}
+              selectedClientId={selectedClientForJobs}
+              onClearSelectedClient={() => setSelectedClientForJobs('')}
+              onChange={async jobId => {
+                if (jobId) {
+                  const updated = await api<Job>(`/api/jobs/${jobId}`)
+                  setJobs(current => current.map(job => job.id === jobId ? updated : job))
+                }
+                await loadAll()
+              }}
+              loading={jobsLoading}
+            />
+          </AdminErrorBoundary>
         )}
         {isReady && view === 'outreach' && <OutreachView />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
@@ -3760,26 +3826,56 @@ function getPrimaryReport(job: Job): { file: JobResultFile; isAdmin: boolean; jo
 const selectionWaitingStatuses = ['awaiting_exact_selection', 'awaiting_position_selection']
 const activeExpertStatuses = ['pending', 'running', 'settling', ...selectionWaitingStatuses, 'awaiting_customer_confirmation']
 
-function jobSelection(job: Pick<Job, 'position_selection' | 'exact_product_selection' | 'multi_item_selection'>): ExactSelection | null | undefined {
-  if (job.position_selection || job.exact_product_selection) return job.position_selection || job.exact_product_selection
+function jobSelection(job?: Pick<Job, 'position_selection' | 'exact_product_selection' | 'multi_item_selection'> | null): ExactSelection | null {
+  if (!job) return null
+  const ps = job.position_selection
+  if (ps && Array.isArray(ps.items) && ps.items.length > 0) {
+    return {
+      ...ps,
+      items: ps.items,
+      selected_ids: Array.isArray(ps.selected_ids) ? ps.selected_ids : [],
+    }
+  }
+  const eps = job.exact_product_selection
+  if (eps && Array.isArray(eps.items) && eps.items.length > 0) {
+    return {
+      ...eps,
+      items: eps.items,
+      selected_ids: Array.isArray(eps.selected_ids) ? eps.selected_ids : [],
+    }
+  }
   const strategy = job.multi_item_selection
-  if (!strategy) return null
-  const items = strategy.items.map((row, index) => ({ ...row, id: String(row.id || `item-${index}`),
-    position_no: row.position_no || index + 1, name: row.name || row.name_in_tz || `Позиция ${index + 1}` }))
-  return { ...strategy, items, selected_ids: strategy.selected_ids,
-    mode: 'supplier_search', revision: strategy.revision || '', max_positions: items.length, price_kopeks: 0 }
+  if (!strategy || !Array.isArray(strategy.items) || strategy.items.length === 0) return null
+  const items = strategy.items.map((row, index) => ({
+    ...row,
+    id: String(row.id || `item-${index}`),
+    position_no: row.position_no || index + 1,
+    name: row.name || row.name_in_tz || `Позиция ${index + 1}`,
+  }))
+  return {
+    ...strategy,
+    items,
+    selected_ids: Array.isArray(strategy.selected_ids) ? strategy.selected_ids : [],
+    mode: 'supplier_search',
+    revision: strategy.revision || '',
+    max_positions: items.length,
+    price_kopeks: 0,
+  }
 }
 
 function needsAdminSelection(job: Pick<Job, 'status' | 'confirmation_kind' | 'position_selection' | 'exact_product_selection' | 'multi_item_selection'>) {
   return selectionWaitingStatuses.includes(job.status) ||
     (job.status === 'awaiting_customer_confirmation' && job.confirmation_kind === 'multi_item_strategy') ||
-    Boolean(jobSelection(job)?.items.length && !jobSelection(job)?.confirmed)
+    Boolean(jobSelection(job)?.items?.length && !jobSelection(job)?.confirmed)
 }
 
 function expertScope(job: Job) {
   const selection = jobSelection(job)
-  const rows = selection?.confirmed ? `Подтверждённые позиции: ${selection.selected_ids.length}. ` : ''
-  const geography = job.delivery_city ? `География: ${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''}. ` : ''
+  const rows = selection?.confirmed ? `Подтверждённые позиции: ${selection.selected_ids?.length || 0}. ` : ''
+  const geoScopeLabel = job.geo_scope === 'cis' ? 'РФ и СНГ (ЕАЭС)' : job.geo_scope === 'world' ? 'Весь мир (Китай)' : 'Только РФ'
+  const geography = job.delivery_city
+    ? `География: ${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''} (${geoScopeLabel}). `
+    : (job.geo_scope && job.geo_scope !== 'ru' ? `География: ${geoScopeLabel}. ` : '')
   const strategy = ['supplier_search', 'analysis_and_suppliers'].includes(job.mode)
     ? `Стратегия: ${job.multi_item_mode === 'per_item' ? 'попозиционный поиск' : 'сбалансированный поиск'}. ` : ''
   return `${humanMode(job.mode)}. ${rows}${strategy}${geography}`
@@ -4329,9 +4425,18 @@ function JobsView({
                       : `${supplierCountLabel(job)} пост.`}
                   </span>
 
-                  {selection && <span className="meta-item">Распознано: {selection.items.length} · Подтверждено: {selection.confirmed ? selection.selected_ids.length : 0}</span>}
+                  {selection && Boolean(selection.items?.length) && (
+                    <span className="meta-item">
+                      Распознано: {selection.items?.length || 0} · Подтверждено: {selection.confirmed ? (selection.selected_ids?.length || 0) : 0}
+                    </span>
+                  )}
                   {awaitingSelection && job.confirmation_expires_at && <span className="meta-item">Подтвердить до: {formatDate(job.confirmation_expires_at)}</span>}
-                  {job.delivery_city && <span className="meta-item">{job.delivery_city}{job.geo_radius_km ? ` · ${job.geo_radius_km} км` : ''}</span>}
+                  {job.delivery_city && <span className="meta-item">📍 {job.delivery_city}{job.geo_radius_km ? ` · ${job.geo_radius_km} км` : ''}</span>}
+                  {job.geo_scope && job.geo_scope !== 'ru' && (
+                    <span className="meta-item" style={{ color: '#4f46e5', fontWeight: 600 }}>
+                      {job.geo_scope === 'cis' ? '🤝 СНГ' : '🌍 Мир'}
+                    </span>
+                  )}
 
                   {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) ? (
                     <>
@@ -4633,13 +4738,14 @@ function JobsView({
               </div>
             </div>
 
-            {(awaitingSelection || expiredSelection) && selection && !expertActive && (
+            {(awaitingSelection || expiredSelection) && selection && Boolean(selection.items?.length) && !expertActive && (
               <AdminExactSelection key={`${job.id}:${selection.revision}`} jobId={job.id} selection={selection}
                 mode={job.mode} multiItemMode={job.multi_item_mode} reissue={expiredSelection}
                 geography={job.delivery_city ? `${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''}` : ''} onChange={() => onChange(job.id)} />
             )}
             {job.admin_rerun && (selectionWaitingStatuses.includes(job.admin_rerun.status) ||
-              (job.admin_rerun.status === 'awaiting_customer_confirmation' && job.admin_rerun.confirmation_kind === 'multi_item_strategy')) && jobSelection(job.admin_rerun) && (
+              (job.admin_rerun.status === 'awaiting_customer_confirmation' && job.admin_rerun.confirmation_kind === 'multi_item_strategy')) &&
+              Boolean(jobSelection(job.admin_rerun)?.items?.length) && (
               <AdminExactSelection key={`${job.admin_rerun.id}:${jobSelection(job.admin_rerun)!.revision}`} jobId={job.admin_rerun.id}
                 selection={jobSelection(job.admin_rerun)!} mode={job.admin_rerun.mode || job.mode} multiItemMode={job.admin_rerun.multi_item_mode}
                 internal onChange={() => onChange(job.id)} />

@@ -1190,6 +1190,7 @@ async def customer_create_job_route(
     multi_item_mode: str = Form(default="balanced"),
     delivery_city: str = Form(default=""),
     geo_radius_km: int | None = Form(default=None),
+    geo_scope: str = Form(default="ru"),
     text: str = Form(default=""),
     source_urls: str = Form(default=""),
     target_suppliers: int = Form(default=0),
@@ -1204,6 +1205,7 @@ async def customer_create_job_route(
         multi_item_mode=multi_item_mode,
         delivery_city=delivery_city,
         geo_radius_km=geo_radius_km,
+        geo_scope=geo_scope,
         text=text,
         source_urls=source_urls,
         target_suppliers=target_suppliers,
@@ -1352,10 +1354,11 @@ def _create_fresh_processing_job(db: Session, parent: Job, *, client: Client, cr
                            mode=parent.mode, title=parent.title, target_suppliers=parent.target_suppliers,
                            files=files, sources=sources, supplier_search_policy=parent.supplier_search_policy,
                            multi_item_mode=parent.multi_item_mode, delivery_city=retry_city, geo_radius_km=retry_radius,
+                           geo_scope=getattr(parent, "geo_scope", "ru") or "ru",
                            initial_status="draft")
         child.parent_job_id = parent.id
         update_dobor_context_dict(child, {"retry_selection_intent": intent})
-        for key in ("filter_marketplaces", "filter_foreign", "max_suppliers", "max_variation_pct"):
+        for key in ("filter_marketplaces", "filter_foreign", "max_suppliers", "max_variation_pct", "geo_scope"):
             setattr(child, key, getattr(parent, key))
         try:
             reserve_job_units(db, client, child)
@@ -1523,12 +1526,14 @@ async def customer_start_supplier_search_route(
     require_customer_csrf(request, context)
     if not context.user.is_email_verified:
         raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
+    original_job = _customer_job_or_404(db, job_id, context)
     supplier_search_policy = SUPPLIER_POLICY_NORMAL
     multi_item_mode = "balanced"
     include_alternatives = True
     additional_prompt = ""
     delivery_city = ""
     geo_radius_km = None
+    geo_scope = getattr(original_job, "geo_scope", "ru") or "ru"
     try:
         body = await request.json()
         if isinstance(body, dict):
@@ -1538,9 +1543,10 @@ async def customer_start_supplier_search_route(
             additional_prompt = str(body.get("additional_prompt") or "").strip()
             delivery_city = str(body.get("delivery_city") or "").strip()
             geo_radius_km = body.get("geo_radius_km")
+            if "geo_scope" in body:
+                geo_scope = str(body.get("geo_scope") or geo_scope).strip()
     except Exception:
         pass
-    original_job = _customer_job_or_404(db, job_id, context)
     job = create_supplier_search_from_exact_product(
         db,
         client=context.user.client,
@@ -1552,6 +1558,7 @@ async def customer_start_supplier_search_route(
         additional_prompt=additional_prompt,
         delivery_city=delivery_city,
         geo_radius_km=geo_radius_km,
+        geo_scope=geo_scope,
     )
     return {
         "success": True,
@@ -3292,7 +3299,7 @@ def admin_rerun_job(
             is_admin_rerun=True,
             target_suppliers=parent_job.target_suppliers,
         )
-        for key in ("delivery_city", "geo_radius_km", "filter_marketplaces", "filter_foreign", "max_suppliers", "max_variation_pct"):
+        for key in ("delivery_city", "geo_radius_km", "geo_scope", "filter_marketplaces", "filter_foreign", "max_suppliers", "max_variation_pct"):
             setattr(new_job, key, getattr(parent_job, key))
         from .geo_policy import GEO_SUPPORTED_MODES, validate_geo_request
         if new_job.mode not in GEO_SUPPORTED_MODES:
@@ -4524,6 +4531,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "multi_item_mode": getattr(job, "multi_item_mode", "balanced"),
         "delivery_city": getattr(job, "delivery_city", "") or "",
         "geo_radius_km": getattr(job, "geo_radius_km", None),
+        "geo_scope": getattr(job, "geo_scope", "ru") or "ru",
         "confirmation_kind": confirmation_kind,
         "multi_item_details": multi_item_details,
         "exact_product_selection": read_selection(job) if job.mode == MODE_EXACT_PRODUCT else None,
@@ -4638,6 +4646,7 @@ async def create_customer_job_api(
     multi_item_mode: str = "balanced",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
     text: str = "",
     source_urls: str = "",
     target_suppliers: int = 0,
@@ -4714,6 +4723,7 @@ async def create_customer_job_api(
                     multi_item_mode=normalized_multi_item_mode,
                     delivery_city=delivery_city,
                     geo_radius_km=geo_radius_km,
+                    geo_scope=geo_scope,
                     initial_status="draft",
                 )
                 created_jobs.append(job)
@@ -4741,6 +4751,7 @@ async def create_customer_job_api(
             multi_item_mode=normalized_multi_item_mode,
             delivery_city=delivery_city,
             geo_radius_km=geo_radius_km,
+            geo_scope=geo_scope,
             initial_status="draft",
         )
         created_jobs.append(job)
@@ -5496,6 +5507,7 @@ def create_supplier_search_from_exact_product(
     additional_prompt: str = "",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> Job:
     if original_job.client_id != client.id:
         raise HTTPException(status_code=404, detail="Задача не найдена.")
@@ -5559,6 +5571,7 @@ def create_supplier_search_from_exact_product(
             multi_item_mode=multi_item_mode,
             delivery_city=delivery_city,
             geo_radius_km=geo_radius_km,
+            geo_scope=geo_scope or getattr(original_job, "geo_scope", "ru") or "ru",
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
         enqueue_job(job.id)
@@ -6321,7 +6334,7 @@ def job_to_dict(
         "mode_label": mode_label(job.mode),
         "supplier_search_policy": getattr(job, "supplier_search_policy", None) or SUPPLIER_POLICY_NORMAL,
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", None) or SUPPLIER_RUN_INITIAL,
-        "exact_product_selection": position_selection if job.mode == MODE_EXACT_PRODUCT else None,
+        "exact_product_selection": (position_selection or None) if job.mode == MODE_EXACT_PRODUCT else None,
         "position_selection": position_selection or None,
         "selected_position_count": len(selected_position_ids),
         "available_position_count": len(available_positions),
@@ -6351,6 +6364,7 @@ def job_to_dict(
         "target_suppliers": job.target_suppliers,
         "delivery_city": getattr(job, "delivery_city", "") or "",
         "geo_radius_km": getattr(job, "geo_radius_km", None),
+        "geo_scope": getattr(job, "geo_scope", "ru") or "ru",
         "verified_count": job.verified_count,
         "file_count": job.file_count,
         "has_result": bool(result_files),
@@ -6411,6 +6425,7 @@ def job_to_dict(
                 "confirmation_expires_at": r.confirmation_expires_at.isoformat() if getattr(r, "confirmation_expires_at", None) else None,
                 "delivery_city": getattr(r, "delivery_city", "") or "",
                 "geo_radius_km": getattr(r, "geo_radius_km", None),
+                "geo_scope": getattr(r, "geo_scope", "ru") or "ru",
                 "status": r.status,
                 "progress": r.progress,
                 "message": r.message,

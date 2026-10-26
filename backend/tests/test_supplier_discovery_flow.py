@@ -1321,7 +1321,7 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         original_yandex = supplier_search._search_with_yandex
         captured: dict = {}
 
-        async def fake_yandex(settings, queries: list[str], max_results: int, *, existing_domains=None):
+        async def fake_yandex(settings, queries: list[str], max_results: int, *, existing_domains=None, **kwargs):
             captured["existing_domains"] = set(existing_domains or set())
             return [
                 Candidate(url="https://old.example/catalog", domain="old.example", title="old", source="yandex", query=queries[0]),

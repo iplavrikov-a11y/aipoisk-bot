@@ -59,6 +59,7 @@ import {
 type JobMode = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product" | "price_monitoring";
 type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product" | "price_monitoring";
 type SupplierSearchPolicy = "normal" | "minprom_registry_only" | "minprom_registry_priority";
+type GeoScope = "ru" | "cis" | "world";
 
 function normalizeSupplierSearchPolicy(val?: string | null): SupplierSearchPolicy {
   if (val === "minprom_registry_priority" || val === "minprom_registry_only") {
@@ -258,6 +259,7 @@ type CustomerJob = {
   multi_item_mode?: string;
   delivery_city?: string;
   geo_radius_km?: number | null;
+  geo_scope?: GeoScope;
   status: string;
   status_label: string;
   progress: number;
@@ -488,6 +490,28 @@ const supplierPolicyOptions: Array<{ id: SupplierSearchPolicy; label: string; de
     description: "для закупок с ограничением",
   },
 ];
+
+const geoScopeOptions: Array<{ id: GeoScope; flag: string; label: string; description: string }> = [
+  {
+    id: "ru",
+    flag: "🇷🇺",
+    label: "Только Россия",
+    description: "поставщики и дистрибьюторы с ИНН РФ (для 44-ФЗ и нацрежима)",
+  },
+  {
+    id: "cis",
+    flag: "🤝",
+    label: "РФ и СНГ (ЕАЭС)",
+    description: "Россия, Беларусь, Казахстан, Армения, Кыргызстан",
+  },
+  {
+    id: "world",
+    flag: "🌍",
+    label: "Весь мир (Китай)",
+    description: "прямые фабрики Китая, Азии и мира без посредников",
+  },
+];
+
 
 const statusClasses: Record<string, string> = {
   pending: "pending",
@@ -1196,6 +1220,34 @@ export function CabinetClient() {
   const [emailEditOpen, setEmailEditOpen] = useState(false);
   const [scenario, setScenario] = useState<Scenario>("procurement_report");
   const [supplierSearchPolicy, setSupplierSearchPolicy] = useState<SupplierSearchPolicy>("normal");
+  const [geoScope, setGeoScope] = useState<GeoScope>("ru");
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("tenderlex_geo_scope");
+      if (saved === "ru" || saved === "cis" || saved === "world") {
+        setGeoScope(saved as GeoScope);
+      }
+    } catch {}
+  }, []);
+
+  const handleSetSupplierSearchPolicy = (policy: SupplierSearchPolicy) => {
+    setSupplierSearchPolicy(policy);
+    if (policy === "minprom_registry_only" || policy === "minprom_registry_priority") {
+      setGeoScope("ru");
+    }
+  };
+
+  const handleSetGeoScope = (scope: GeoScope) => {
+    setGeoScope(scope);
+    try {
+      localStorage.setItem("tenderlex_geo_scope", scope);
+    } catch {}
+    if (scope !== "ru" && supplierSearchPolicy === "minprom_registry_only") {
+      setSupplierSearchPolicy("normal");
+    }
+  };
+
   const [multiItemMode, setMultiItemMode] = useState<"balanced" | "per_item">("balanced");
   const [geoRadiusEnabled, setGeoRadiusEnabled] = useState(false);
   const [deliveryCity, setDeliveryCity] = useState("");
@@ -2218,6 +2270,9 @@ export function CabinetClient() {
       const form = new FormData();
       form.append("mode", selectedMode);
       form.append("supplier_search_policy", selectedMode === "procurement_report" ? "normal" : supplierSearchPolicy);
+      const isMinpromPolicy = supplierSearchPolicy === "minprom_registry_only" || supplierSearchPolicy === "minprom_registry_priority";
+      const effectiveGeoScope = isMinpromPolicy ? "ru" : geoScope;
+      form.append("geo_scope", effectiveGeoScope);
       form.append("multi_item_mode", multiItemMode);
       if (geoRadiusEnabled && session?.user?.allowed_geo_radius && ["supplier_search", "analysis_and_suppliers", "price_monitoring"].includes(selectedMode)) {
         if (!deliveryCity.trim() || !Number.isInteger(geoRadiusKm) || geoRadiusKm < 10 || geoRadiusKm > 5000) {
@@ -3445,7 +3500,7 @@ export function CabinetClient() {
                       ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs font-bold text-slate-900"
                       : "bg-white border-slate-200/90 text-slate-700 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
                   }`}
-                  onClick={() => setSupplierSearchPolicy(opt.id)}
+                  onClick={() => handleSetSupplierSearchPolicy(opt.id)}
                 >
                   <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
                     supplierSearchPolicy === opt.id ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
@@ -3458,6 +3513,57 @@ export function CabinetClient() {
                   </div>
                 </button>
               ))}
+            </div>
+          ) : null}
+
+          {scenario === "supplier_search" || scenario === "analysis_and_suppliers" || scenario === "price_monitoring" ? (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between px-0.5">
+                <span className="text-[11px] font-semibold text-slate-700 tracking-tight flex items-center gap-1.5">
+                  <span>География поиска поставщиков:</span>
+                  {(supplierSearchPolicy === "minprom_registry_only" || supplierSearchPolicy === "minprom_registry_priority") && (
+                    <span className="text-[10px] text-teal-800 bg-teal-50 border border-teal-200/80 px-1.5 py-0.5 rounded font-normal">
+                      Реестр Минпромторга действует только в РФ
+                    </span>
+                  )}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-1.5 bg-slate-50 border border-slate-200/90 rounded-xl">
+                {geoScopeOptions.map((opt) => {
+                  const isLockedByMinprom = (supplierSearchPolicy === "minprom_registry_only" || supplierSearchPolicy === "minprom_registry_priority") && opt.id !== "ru";
+                  const isSelected = isLockedByMinprom ? false : geoScope === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      disabled={isLockedByMinprom}
+                      title={isLockedByMinprom ? "При поиске по реестру Минпромторга доступна только территория РФ" : opt.description}
+                      className={`p-2.5 rounded-lg text-left border text-xs transition-all flex items-start gap-2 ${
+                        isLockedByMinprom
+                          ? "bg-slate-100 border-slate-200 text-slate-400 opacity-60 cursor-not-allowed"
+                          : isSelected
+                          ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs font-bold text-slate-900 cursor-pointer"
+                          : "bg-white border-slate-200/90 text-slate-700 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs cursor-pointer"
+                      }`}
+                      onClick={() => !isLockedByMinprom && handleSetGeoScope(opt.id)}
+                    >
+                      <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                        isSelected ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
+                      }`}>
+                        {isSelected ? <div className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
+                      </div>
+                      <div className="min-w-0">
+                        <strong className="block font-bold text-xs leading-tight text-slate-900 truncate">
+                          {opt.flag} {opt.label}
+                        </strong>
+                        <span className="text-[10px] text-slate-500 font-normal leading-tight block mt-0.5">
+                          {opt.description}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           ) : null}
 
@@ -3815,6 +3921,11 @@ export function CabinetClient() {
                     {job.delivery_city ? (
                       <span className="inline-flex items-center gap-1 text-[10px] font-bold text-teal-800 bg-teal-50 border border-teal-200/90 px-1.5 py-0.5 rounded-md">
                         📍 {job.delivery_city}{job.geo_radius_km ? ` (до ${job.geo_radius_km} км)` : ""}
+                      </span>
+                    ) : null}
+                    {job.geo_scope && job.geo_scope !== "ru" ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200/90 px-1.5 py-0.5 rounded-md">
+                        {job.geo_scope === "cis" ? "🤝 РФ и СНГ (ЕАЭС)" : "🌍 Весь мир (Китай)"}
                       </span>
                     ) : null}
                   </div>
@@ -6012,6 +6123,14 @@ export function CabinetClient() {
                           • <strong>Обычный</strong> — поиск по всем поставщикам РФ.<br />
                           • <strong>Только реестр (ГИСП)</strong> — отбор компаний из реестра; применимость записи проверяется для конкретного товара и закупки.<br />
                           • <strong>Реестр в приоритете</strong> — производители из ГИСП первыми. Соответствие требованиям ПП РФ № 1875 нужно подтвердить отдельно.
+                        </p>
+                      </div>
+                      <div className="pt-2 border-t border-slate-200/80">
+                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🌍 География поиска поставщиков:</strong>
+                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                          • <strong>🇷🇺 Только Россия</strong> — строгий фильтр отечественных компаний с ИНН РФ (для 44-ФЗ, 223-ФЗ и нацрежима).<br />
+                          • <strong>🤝 РФ и СНГ (ЕАЭС)</strong> — поставщики и заводы России, Беларуси, Казахстана, Армении, Кыргызстана.<br />
+                          • <strong>🌍 Весь мир (включая Китай)</strong> — фабрики Китая и мира без посредников (для параллельного импорта и прямых контрактов).
                         </p>
                       </div>
                     </div>
