@@ -98,7 +98,35 @@ def is_listing_url(url: str) -> bool:
         query = parsed.query.lower()
         if any(param in query for param in ("sort=", "filter=", "page=", "search=")):
             return True
+        if re.search(r'/(?:catalog|katalog\d*|category)/[a-z0-9_-]+/?$', path):
+            if not any(m in path for m in ("/product/", "/item/", "/goods/", "/tovar/", "/card/", "/p/", "/sku/")):
+                if re.search(r'/(?:catalog|katalog\d*)/[a-z_-]*gost[-_]?\d+/?$', path):
+                    return True
+                if not re.search(r'item|tovar|prod|goods|card|sku|\d+|\.html?$', path):
+                    return True
         return False
+    except Exception:
+        return False
+
+
+def is_deep_product_url(u: str) -> bool:
+    """Проверяет, является ли ссылка прямой карточкой конкретного товара."""
+    if not u or not u.startswith("http"):
+        return False
+    try:
+        if is_listing_url(u) or is_reference_price_url(u):
+            return False
+        p = urlparse(u).path.strip().lower()
+        if not p or p in ("/", "/index.html", "/index.php", "/ru", "/ru/", "/en", "/en/"):
+            return False
+        if any(p.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".ico", ".css", ".js")):
+            return False
+        if any(b in p for b in ("/biznes-idei/", "/blog/", "/news/", "/stati/", "/articles/", "/about/", "/contact", "/vacancy", "/delivery", "/politika")):
+            return False
+        segments = [s for s in p.split("/") if s and s not in ("ru", "en", "catalog", "products", "item", "tovar", "upload", "goods", "shop")]
+        if not segments:
+            return False
+        return True
     except Exception:
         return False
 
@@ -258,7 +286,8 @@ def _extract_inn_kpp_contacts(html: str) -> Tuple[Optional[str], Optional[str], 
 DISCONTINUED_PATTERN = re.compile(
     r'\b(?:товар\s+снят\s+с\s+производства|снят(?:о|а)?\s+с\s+производства|'
     r'архивный\s+товар|товар\s+в\s+архиве|снят\s+с\s+продажи|'
-    r'не\s+поставляется|снято\s+с\s+продажи|товар\s+недоступен\s+для\s+заказа)\b',
+    r'не\s+поставляется|снято\s+с\s+продажи|товар\s+недоступен\s+для\s+заказа|'
+    r'(?:временно\s+)?не\s+(?:изготавлива|производит|поставляет|выпускает)\w*)\b',
     re.IGNORECASE,
 )
 
