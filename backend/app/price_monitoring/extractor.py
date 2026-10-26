@@ -102,7 +102,7 @@ def is_listing_url(url: str) -> bool:
             if not any(m in path for m in ("/product/", "/item/", "/goods/", "/tovar/", "/card/", "/p/", "/sku/")):
                 if re.search(r'/(?:catalog|katalog\d*)/[a-z_-]*gost[-_]?\d+/?$', path):
                     return True
-                if not re.search(r'item|tovar|prod|goods|card|sku|\d+|\.html?$', path):
+                if not re.search(r'(?:^|/|-|_)(?:item|tovar|product|goods|card|sku)[-_/\d]|\d+|\.html?$', path):
                     return True
         return False
     except Exception:
