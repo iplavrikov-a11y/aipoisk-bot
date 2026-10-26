@@ -144,8 +144,15 @@ def _mock_direct_market(monkeypatch, db, *, service, terminate, verified=True):
         if service == "supplier_search":
             return [{"company_name": "Protected result", "site": "https://example.test"}], {"subject": "Protected result"}
         if service == "exact_product":
-            position = ExactProductPosition(1, "Protected result", "Brand", "Model", "Factory", 0.95, "Evidence",
-                                            status="found" if verified else "needs_clarification")
+            position = ExactProductPosition(
+                1, "Protected result",
+                "Brand" if verified else "",
+                "Model" if verified else "",
+                "Factory" if verified else "",
+                0.95 if verified else 0.0,
+                "Evidence",
+                status="found" if verified else "needs_clarification",
+            )
             return ExactProductReport("Protected result", 1, [position], "Protected summary")
         return SimpleNamespace(report="Protected procurement report", ai_model="mock")
 

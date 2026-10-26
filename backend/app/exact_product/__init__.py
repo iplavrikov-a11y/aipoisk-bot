@@ -37,6 +37,7 @@ from .models import (
     ExactProductReport,
     GispRegistryMatch,
     SpecParameterMatch,
+    is_exact_position_resolved,
 )
 from .pipeline import (
     analyze_exact_product,

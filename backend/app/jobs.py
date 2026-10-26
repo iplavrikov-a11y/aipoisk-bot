@@ -55,6 +55,7 @@ from .exact_product import (
     prepare_exact_product_positions,
     write_exact_product_docx,
     ExactProductReport,
+    is_exact_position_resolved,
 )
 from .price_monitoring import run_price_monitoring_pipeline
 from .position_selection import AWAITING_POSITION_SELECTION, AWAITING_EXACT_SELECTION, build_selection_snapshot, read_selection, selected_positions
@@ -1791,11 +1792,14 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
     job.evidence_path = str(evidence_path)
     job.result_path = str(docx_path)
-    job.verified_count = sum(1 for position in report.positions if getattr(position, "status", "found") == "found")
+    job.verified_count = sum(1 for position in report.positions if is_exact_position_resolved(position))
     job.yandex_requests_count = report.yandex_requests_count
     job.yandex_cost_rub = report.yandex_cost_rub
     _set_customer_job_title_from_subject(job, subject)
-    job.message = f"Подбор завершён: подтверждено {job.verified_count} из {report.total_positions} выбранных позиций; остальные требуют проверки"
+    if job.verified_count == report.total_positions:
+        job.message = f"Подбор завершён: подобрано {job.verified_count} из {report.total_positions} выбранных позиций"
+    else:
+        job.message = f"Подбор завершён: подобрано {job.verified_count} из {report.total_positions} выбранных позиций; остальные требуют уточнения"
     if getattr(job, "is_admin_rerun", False):
         finalize_internal_exact_product_job(db, job)
     else:

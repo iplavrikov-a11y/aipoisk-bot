@@ -1985,19 +1985,73 @@ def settle_exact_product_job(db: Session, job: Job, *, confirmed_count: int) -> 
         try:
             db.flush()
             db.refresh(current, attribute_names=["status"])
-            charge = int(confirmed_count) > 0
-            if charge and current.client_id:
-                _charge_job_kind_reservation_locked(db, current, KIND_EXACT_PRODUCT,
-                    note="Подбор выбранных товаров и аналогов завершён")
-            elif current.client_id:
-                _release_job_kind_reservation(db, current, KIND_EXACT_PRODUCT,
-                    note="Подтверждённая модель не найдена: резерв подбора возвращён")
+            confirmed = max(0, int(confirmed_count or 0))
+            charged = False
+            client = db.get(Client, current.client_id) if current.client_id else None
+            if client:
+                db.refresh(client)
+                reserve_units = _job_reserved_remaining(db, current.id, KIND_EXACT_PRODUCT)
+                reserve_amount = _job_reserved_amount_remaining(db, current.id, KIND_EXACT_PRODUCT)
+
+                if reserve_units > 1 and reserve_amount > 0:
+                    unit_price = reserve_amount // reserve_units
+                    billable_units = min(reserve_units, confirmed)
+                    charge_amount = billable_units * unit_price
+                    unused_units = reserve_units - billable_units
+                    unused_amount = reserve_amount - charge_amount
+
+                    client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0) - reserve_amount)
+
+                    if charge_amount > 0:
+                        client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - charge_amount)
+                        db.add(
+                            BillingTransaction(
+                                client_id=client.id,
+                                job_id=current.id,
+                                kind=KIND_EXACT_PRODUCT,
+                                operation=OP_CHARGE,
+                                units=billable_units,
+                                amount_kopeks=charge_amount,
+                                balance_after_kopeks=int(client.money_balance_kopeks or 0),
+                                reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
+                                note=f"Подбор товаров: подобрано {billable_units} из {reserve_units} поз. по {unit_price / 100:.2f} ₽",
+                                created_by="system",
+                            )
+                        )
+                        charged = True
+
+                    if unused_amount > 0 or unused_units > 0:
+                        db.add(
+                            BillingTransaction(
+                                client_id=client.id,
+                                job_id=current.id,
+                                kind=KIND_EXACT_PRODUCT,
+                                operation=OP_RELEASE,
+                                units=unused_units,
+                                amount_kopeks=unused_amount,
+                                balance_after_kopeks=int(client.money_balance_kopeks or 0),
+                                reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
+                                note=f"Возврат неиспользованного резерва подбора ({unused_units} поз.)" if charge_amount > 0 else "Подтверждённая модель не найдена: резерв подбора возвращён",
+                                created_by="system",
+                            )
+                        )
+                else:
+                    if confirmed > 0:
+                        charged = _charge_job_kind_reservation_locked(
+                            db, current, KIND_EXACT_PRODUCT,
+                            note="Подбор выбранных товаров и аналогов завершён",
+                        )
+                    else:
+                        _release_job_kind_reservation(
+                            db, current, KIND_EXACT_PRODUCT,
+                            note="Подтверждённая модель не найдена: резерв подбора возвращён",
+                        )
             current.status = "completed"
             current.progress = 100
             current.completed_at = now_utc()
             current.updated_at = now_utc()
             db.commit()
-            return charge
+            return charged
         except Exception:
             db.rollback()
             raise

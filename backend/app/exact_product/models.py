@@ -81,8 +81,23 @@ class ExactProductPosition:
     status: str = "found"
     error: str = ""
 
+    @property
+    def is_resolved(self) -> bool:
+        if self.status == "found":
+            return True
+        if self.status in ("not_found", "error") and not self.identified_model and not self.alternative_brands:
+            return False
+        if bool((self.identified_model or "").strip() or (self.identified_brand or "").strip()):
+            return True
+        if bool(self.alternative_brands):
+            return True
+        if self.gisp_match and getattr(self.gisp_match, "registry_number", None):
+            return True
+        return False
+
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        data["is_resolved"] = self.is_resolved
         data["specs_breakdown"] = [
             s.to_dict() if isinstance(s, SpecParameterMatch) else s
             for s in self.specs_breakdown
@@ -93,6 +108,41 @@ class ExactProductPosition:
         ]
         data["gisp_match"] = self.gisp_match.to_dict() if self.gisp_match else None
         return data
+
+
+def is_exact_position_resolved(pos: Any) -> bool:
+    if pos is None:
+        return False
+    if hasattr(pos, "is_resolved"):
+        return bool(pos.is_resolved)
+    if isinstance(pos, dict):
+        status = pos.get("status", "found")
+        if status == "found":
+            return True
+        if status in ("not_found", "error") and not pos.get("identified_model") and not pos.get("alternative_brands"):
+            return False
+        if bool((pos.get("identified_model") or "").strip() or (pos.get("identified_brand") or "").strip()):
+            return True
+        if bool(pos.get("alternative_brands")):
+            return True
+        gisp = pos.get("gisp_match")
+        if gisp and (isinstance(gisp, dict) and gisp.get("registry_number") or getattr(gisp, "registry_number", None)):
+            return True
+        return False
+    status = getattr(pos, "status", "found")
+    if status == "found":
+        return True
+    if status in ("not_found", "error") and not getattr(pos, "identified_model", "") and not getattr(pos, "alternative_brands", None):
+        return False
+    if bool((getattr(pos, "identified_model", "") or "").strip() or (getattr(pos, "identified_brand", "") or "").strip()):
+        return True
+    if bool(getattr(pos, "alternative_brands", None)):
+        return True
+    gisp = getattr(pos, "gisp_match", None)
+    if gisp and getattr(gisp, "registry_number", None):
+        return True
+    return False
+
 
 
 @dataclass

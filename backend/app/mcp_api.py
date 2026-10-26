@@ -39,6 +39,7 @@ from .exact_product import (
     ExactProductReport,
     analyze_exact_product,
     write_exact_product_docx,
+    is_exact_position_resolved,
 )
 from .models import ApiKey, ApiOperation, ApiRateLimitEvent, Client, Job, JobFile, SystemSettings, now_utc
 from .procurement_report import generate_procurement_report
@@ -1492,7 +1493,7 @@ async def mcp_exact_product(
             detail=f"Exact product analysis error: {str(exc)}",
         )
 
-    verified_positions = sum(getattr(pos, "status", "found") == "found" for pos in report.positions)
+    verified_positions = sum(1 for pos in report.positions if is_exact_position_resolved(pos))
 
     # A result is deliverable only after both the Word report and its manifest are saved.
     docx_rel_url = None

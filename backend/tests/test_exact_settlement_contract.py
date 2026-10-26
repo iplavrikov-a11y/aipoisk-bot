@@ -139,3 +139,73 @@ def test_stale_unconfirmed_exact_selection_expires_and_releases_its_reserve(exac
         assert job.status == "confirmation_expired"
         assert client.money_reserved_kopeks == 0
         assert OP_RELEASE in _operations(db, job_id)
+
+
+def test_exact_settlement_proportional_positional_billing(exact_db):
+    from app.billing import adjust_exact_product_reservation_for_selection
+    client_id, job_id = _create_job(exact_db)
+    
+    with exact_db() as db:
+        job = db.get(Job, job_id)
+        # Reserve 20 positions at 1.00 ₽ (100 kopeks)
+        adjust_exact_product_reservation_for_selection(
+            db, job, chosen_count=20, price_per_item_kopeks=100
+        )
+
+    with exact_db() as db:
+        client = db.get(Client, client_id)
+        assert client.money_reserved_kopeks == 2000
+        assert client.money_balance_kopeks == 100_000
+
+        # Settle 17 confirmed positions out of 20
+        assert settle_exact_product_job(db, db.get(Job, job_id), confirmed_count=17)
+
+    with exact_db() as db:
+        client = db.get(Client, client_id)
+        assert client.money_reserved_kopeks == 0
+        # 100_000 - 1700 = 98_300
+        assert client.money_balance_kopeks == 98_300
+        ops = _operations(db, job_id)
+        assert OP_CHARGE in ops
+        assert ops[OP_CHARGE].units == 17
+        assert ops[OP_CHARGE].amount_kopeks == 1700
+        assert OP_RELEASE in ops
+        assert ops[OP_RELEASE].units == 3
+        assert ops[OP_RELEASE].amount_kopeks == 300
+
+
+def test_is_exact_position_resolved_contract():
+    from app.exact_product import is_exact_position_resolved, ExactProductPosition
+
+    # 1. Standard found
+    p1 = ExactProductPosition(
+        position_no=1, name_in_tz="Кабель", identified_brand="РЭК",
+        identified_model="ВВГнг-LS", manufacturer="Завод", confidence=0.9,
+        reasoning="", status="found",
+    )
+    assert is_exact_position_resolved(p1) is True
+
+    # 2. Needs clarification with identified model/brand (user gave raw name without specs)
+    p2 = ExactProductPosition(
+        position_no=2, name_in_tz="Автомат 16А", identified_brand="IEK",
+        identified_model="BA47-29", manufacturer="IEK", confidence=0.7,
+        reasoning="Требуется уточнить", status="needs_clarification",
+    )
+    assert is_exact_position_resolved(p2) is True
+
+    # 3. Needs clarification with NO model/brand found
+    p3 = ExactProductPosition(
+        position_no=3, name_in_tz="Неизвестный товар", identified_brand="",
+        identified_model="", manufacturer="", confidence=0.0,
+        reasoning="", status="needs_clarification",
+    )
+    assert is_exact_position_resolved(p3) is False
+
+    # 4. Genuinely not found
+    p4 = ExactProductPosition(
+        position_no=4, name_in_tz="Редкий товар", identified_brand="",
+        identified_model="", manufacturer="", confidence=0.0,
+        reasoning="", status="not_found",
+    )
+    assert is_exact_position_resolved(p4) is False
+
