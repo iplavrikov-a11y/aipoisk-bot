@@ -491,24 +491,21 @@ const supplierPolicyOptions: Array<{ id: SupplierSearchPolicy; label: string; de
   },
 ];
 
-const geoScopeOptions: Array<{ id: GeoScope; flag: string; label: string; description: string }> = [
+const geoScopeOptions: Array<{ id: GeoScope; label: string; description: string }> = [
   {
     id: "ru",
-    flag: "🇷🇺",
     label: "Только Россия",
     description: "поставщики и дистрибьюторы с ИНН РФ (для 44-ФЗ и нацрежима)",
   },
   {
     id: "cis",
-    flag: "🤝",
     label: "РФ и СНГ (ЕАЭС)",
     description: "Россия, Беларусь, Казахстан, Армения, Кыргызстан",
   },
   {
     id: "world",
-    flag: "🌍",
-    label: "Весь мир (Китай)",
-    description: "прямые фабрики Китая, Азии и мира без посредников",
+    label: "Весь мир",
+    description: "прямые фабрики и производители мира без посредников",
   },
 ];
 
@@ -3520,7 +3517,7 @@ export function CabinetClient() {
             <div className="space-y-1.5">
               <div className="flex items-center justify-between px-0.5">
                 <span className="text-[11px] font-semibold text-slate-700 tracking-tight flex items-center gap-1.5">
-                  <span>География поиска поставщиков:</span>
+                  <span>{scenario === "price_monitoring" ? "География мониторинга цен:" : "География поиска поставщиков:"}</span>
                   {(supplierSearchPolicy === "minprom_registry_only" || supplierSearchPolicy === "minprom_registry_priority") && (
                     <span className="text-[10px] text-teal-800 bg-teal-50 border border-teal-200/80 px-1.5 py-0.5 rounded font-normal">
                       Реестр Минпромторга действует только в РФ
@@ -3554,7 +3551,7 @@ export function CabinetClient() {
                       </div>
                       <div className="min-w-0">
                         <strong className="block font-bold text-xs leading-tight text-slate-900 truncate">
-                          {opt.flag} {opt.label}
+                          {opt.label}
                         </strong>
                         <span className="text-[10px] text-slate-500 font-normal leading-tight block mt-0.5">
                           {opt.description}
@@ -3925,7 +3922,7 @@ export function CabinetClient() {
                     ) : null}
                     {job.geo_scope && job.geo_scope !== "ru" ? (
                       <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200/90 px-1.5 py-0.5 rounded-md">
-                        {job.geo_scope === "cis" ? "🤝 РФ и СНГ (ЕАЭС)" : "🌍 Весь мир (Китай)"}
+                        {job.geo_scope === "cis" ? "РФ и СНГ (ЕАЭС)" : "Весь мир"}
                       </span>
                     ) : null}
                   </div>
@@ -6126,11 +6123,11 @@ export function CabinetClient() {
                         </p>
                       </div>
                       <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🌍 География поиска поставщиков:</strong>
+                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">География поиска:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          • <strong>🇷🇺 Только Россия</strong> — строгий фильтр отечественных компаний с ИНН РФ (для 44-ФЗ, 223-ФЗ и нацрежима).<br />
-                          • <strong>🤝 РФ и СНГ (ЕАЭС)</strong> — поставщики и заводы России, Беларуси, Казахстана, Армении, Кыргызстана.<br />
-                          • <strong>🌍 Весь мир (включая Китай)</strong> — фабрики Китая и мира без посредников (для параллельного импорта и прямых контрактов).
+                          • <strong>Только Россия</strong> — строгий фильтр отечественных компаний с ИНН РФ (для 44-ФЗ, 223-ФЗ и нацрежима).<br />
+                          • <strong>РФ и СНГ (ЕАЭС)</strong> — поставщики и заводы России, Беларуси, Казахстана, Армении, Кыргызстана.<br />
+                          • <strong>Весь мир</strong> — прямые зарубежные фабрики и производители мира без посредников (для параллельного импорта и прямых контрактов).
                         </p>
                       </div>
                     </div>

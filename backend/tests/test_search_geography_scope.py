@@ -135,3 +135,27 @@ def test_customer_job_to_dict_geo_scope():
     job_world = Job(id="test_geo_2", created_by_telegram_id="123", mode="supplier_search", geo_scope="world")
     job_dict_world = customer_job_to_dict(job_world)
     assert job_dict_world["geo_scope"] == "world"
+
+
+def test_price_monitoring_geo_scope_domain_filtering():
+    from app.price_monitoring.extractor import is_foreign_source, is_valid_domain
+
+    # RU mode: domestic allowed, .by/.kz/.cn blocked
+    assert is_valid_domain("https://kabel-snab.ru/catalog/1", geo_scope="ru") is True
+    assert is_valid_domain("https://minsk-kabel.by/catalog/1", geo_scope="ru") is False
+    assert is_valid_domain("https://shanghai-cable.cn/product/1", geo_scope="ru") is False
+    assert is_foreign_source("https://minsk-kabel.by/p", geo_scope="ru") is True
+    assert is_foreign_source("https://kabel-snab.ru/p", geo_scope="ru") is False
+
+    # CIS mode: .by and .kz allowed, .cn/.de blocked
+    assert is_valid_domain("https://kabel-snab.ru/catalog/1", geo_scope="cis") is True
+    assert is_valid_domain("https://minsk-kabel.by/catalog/1", geo_scope="cis") is True
+    assert is_valid_domain("https://almaty-truba.kz/catalog/1", geo_scope="cis") is True
+    assert is_valid_domain("https://shanghai-cable.cn/product/1", geo_scope="cis") is False
+    assert is_foreign_source("https://minsk-kabel.by/p", geo_scope="cis") is False
+    assert is_foreign_source("https://shanghai-cable.cn/p", geo_scope="cis") is True
+
+    # World mode: foreign domains allowed, but aggregators like made-in-china still blocked
+    assert is_valid_domain("https://shanghai-cable.cn/product/1", filter_foreign=False, geo_scope="world") is True
+    assert is_valid_domain("https://made-in-china.com/product/1", filter_foreign=False, geo_scope="world") is False
+    assert is_foreign_source("https://shanghai-cable.cn/p", geo_scope="world") is False

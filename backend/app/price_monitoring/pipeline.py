@@ -538,6 +538,7 @@ async def process_single_item(
     city: str = "",
     geo_radius_km: Optional[int] = None,
     source_position: Optional[dict[str, Any]] = None,
+    geo_scope: str = "ru",
 ) -> ItemPriceResult:
     row_idx, raw_name, unit = item_tuple
     clean = clean_nomenclature_name(raw_name)
@@ -619,7 +620,7 @@ async def process_single_item(
                 )
                 diagnostics["search_results"] += len(results)
                 for r in results:
-                    if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign):
+                    if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign, geo_scope=geo_scope):
                         url_to_meta[r.url] = r
                         if r.url not in candidate_urls:
                             candidate_urls.append(r.url)
@@ -709,7 +710,7 @@ async def process_single_item(
                     continue
 
                 # Дополнительная проверка на иностранный язык контента
-                if filter_foreign and is_foreign_source(url, page_text):
+                if filter_foreign and is_foreign_source(url, page_text, geo_scope=geo_scope):
                     diagnostics["foreign_rejections"] += 1
                     logger.debug("Skip foreign source by content for %s", url)
                     continue
@@ -845,7 +846,7 @@ async def process_single_item(
                     )
                     diagnostics["search_results"] += len(b_results)
                     for r in b_results:
-                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign):
+                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign, geo_scope=geo_scope):
                             url_to_meta[r.url] = r
                             if r.url not in candidate_urls and r.url not in wave2_urls:
                                 wave2_urls.append(r.url)
@@ -890,7 +891,7 @@ async def process_single_item(
                     )
                     diagnostics["search_results"] += len(w_results)
                     for r in w_results:
-                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign):
+                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign, geo_scope=geo_scope):
                             url_to_meta[r.url] = r
                             if r.url not in candidate_urls and r.url not in wave2_urls and r.url not in wave3_urls:
                                 wave3_urls.append(r.url)
@@ -1035,6 +1036,7 @@ async def run_price_monitoring_pipeline(
     delivery_city: str = "",
     geo_radius_km: Optional[int] = None,
     source_positions: Optional[List[dict[str, Any]]] = None,
+    geo_scope: str = "ru",
 ) -> BatchMonitoringResult:
     """Полный пайплайн мониторинга цен с защитой от сбоев (чекпоинты) и кластеризацией цен."""
     if items is not None and len(items) > 0:
@@ -1111,6 +1113,7 @@ async def run_price_monitoring_pipeline(
                         max_variation_pct=max_variation_pct,
                         city=delivery_city,
                         geo_radius_km=geo_radius_km,
+                        geo_scope=geo_scope,
                         **({"source_position": source_positions[item[0] - 1]} if source_positions is not None else {}),
                     )
                     for item in chunk_to_process

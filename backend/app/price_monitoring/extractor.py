@@ -22,6 +22,7 @@ from .cleaner import (
 )
 from .cookie_manager import cookie_manager
 from .models import SupplierQuote
+from ..supplier_search import is_domain_allowed_for_geo, CIS_CCTLDS
 
 logger = logging.getLogger(__name__)
 
@@ -140,9 +141,13 @@ def is_reference_price_url(url: str) -> bool:
         return False
 
 
-def is_foreign_source(url: str, text: str = "") -> bool:
-    """Определяет иностранные сайты, зарубежные TLD и сервисы трансграничного выкупа."""
+def is_foreign_source(url: str, text: str = "", geo_scope: str = "ru") -> bool:
+    """Определяет иностранные сайты, зарубежные TLD и сервисы трансграничного выкупа с учетом geo_scope."""
     try:
+        scope = str(geo_scope or "ru").strip().lower()
+        if scope == "world":
+            return False
+
         domain = urlparse(url).netloc.lower()
         if domain.startswith("www."):
             domain = domain[4:]
@@ -156,9 +161,13 @@ def is_foreign_source(url: str, text: str = "") -> bool:
         parts = domain.split(".")
         if len(parts) >= 2:
             tld = "." + parts[-1]
-            # Явные зарубежные национальные зоны
-            if tld in FOREIGN_NATIONAL_CCTLDS:
-                return True
+            if scope == "ru":
+                if tld in FOREIGN_NATIONAL_CCTLDS or tld in CIS_CCTLDS:
+                    return True
+            elif scope == "cis":
+                if tld in FOREIGN_NATIONAL_CCTLDS and tld not in CIS_CCTLDS:
+                    return True
+
             # Специальные gTLD, активно используемые российскими дистрибьюторами и интернет-магазинами
             if tld in {".tools", ".pro", ".one", ".online", ".shop", ".store", ".market", ".moscow", ".tech", ".group"}:
                 # Разрешаем предварительный парсинг для проверки языка контента
@@ -171,8 +180,11 @@ def is_foreign_source(url: str, text: str = "") -> bool:
                 return False
 
             # Обычные зарубежные зоны (.com, .net, .org, .cc и прочие) без подтвержденного русскоязычного текста
-            if tld not in ALLOWED_DOMESTIC_TLDS and not domain.endswith(".xn--p1ai"):
-                return True
+            if tld not in {".ru", ".рф", ".su"} and not domain.endswith(".xn--p1ai"):
+                if scope == "cis" and tld in CIS_CCTLDS:
+                    pass
+                else:
+                    return True
 
         # Проверка языка контента, если передан текст
         if text and len(text) > 80:
@@ -192,6 +204,7 @@ def is_valid_domain(
     target_item_name: str = "",
     filter_marketplaces: bool = True,
     filter_foreign: bool = True,
+    geo_scope: str = "ru",
 ) -> bool:
     try:
         domain = urlparse(url).netloc.lower()
@@ -209,8 +222,12 @@ def is_valid_domain(
                 if domain == md or domain.endswith("." + md):
                     return False
 
+        # Проверка допустимости домена по географии
+        if not is_domain_allowed_for_geo(domain, geo_scope=geo_scope):
+            return False
+
         # Фильтрация зарубежных источников
-        if filter_foreign and is_foreign_source(url):
+        if filter_foreign and is_foreign_source(url, geo_scope=geo_scope):
             return False
 
         # Отсекаем явные страницы списков и тегов

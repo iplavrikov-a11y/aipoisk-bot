@@ -1937,6 +1937,9 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
     cluster_ratio = float(getattr(settings, "price_monitoring_cluster_ratio", 1.4) or 1.4)
     delivery_city = str(getattr(job, "delivery_city", "") or "").strip()
     geo_radius_km = getattr(job, "geo_radius_km", None)
+    geo_scope = getattr(job, "geo_scope", "ru") or "ru"
+    if geo_scope == "world":
+        filter_foreign = False
 
     try:
         batch_res = asyncio.run(_run_supplier_discovery_with_cancellation(
@@ -1957,6 +1960,7 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
                 source_positions=chosen,
                 delivery_city=delivery_city,
                 geo_radius_km=geo_radius_km,
+                geo_scope=geo_scope,
             )
         ))
     except Exception as exc:

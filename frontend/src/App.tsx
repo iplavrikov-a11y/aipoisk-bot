@@ -3872,7 +3872,7 @@ function needsAdminSelection(job: Pick<Job, 'status' | 'confirmation_kind' | 'po
 function expertScope(job: Job) {
   const selection = jobSelection(job)
   const rows = selection?.confirmed ? `Подтверждённые позиции: ${selection.selected_ids?.length || 0}. ` : ''
-  const geoScopeLabel = job.geo_scope === 'cis' ? 'РФ и СНГ (ЕАЭС)' : job.geo_scope === 'world' ? 'Весь мир (Китай)' : 'Только РФ'
+  const geoScopeLabel = job.geo_scope === 'cis' ? 'РФ и СНГ (ЕАЭС)' : job.geo_scope === 'world' ? 'Весь мир' : 'Только РФ'
   const geography = job.delivery_city
     ? `География: ${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''} (${geoScopeLabel}). `
     : (job.geo_scope && job.geo_scope !== 'ru' ? `География: ${geoScopeLabel}. ` : '')
@@ -4434,7 +4434,7 @@ function JobsView({
                   {job.delivery_city && <span className="meta-item">📍 {job.delivery_city}{job.geo_radius_km ? ` · ${job.geo_radius_km} км` : ''}</span>}
                   {job.geo_scope && job.geo_scope !== 'ru' && (
                     <span className="meta-item" style={{ color: '#4f46e5', fontWeight: 600 }}>
-                      {job.geo_scope === 'cis' ? '🤝 СНГ' : '🌍 Мир'}
+                      {job.geo_scope === 'cis' ? 'СНГ' : 'Весь мир'}
                     </span>
                   )}
 

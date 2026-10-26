@@ -4296,11 +4296,11 @@ async def discover_candidates(
                     provider_candidates, y_reqs = y_res, len(queries)
                 yandex_total_requests += y_reqs
             elif provider == "google":
-                provider_candidates = await _search_with_google(settings, queries, request_limit, existing_domains=existing_domains)
+                provider_candidates = await _search_with_google(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
             elif provider == "tavily":
-                provider_candidates = await _search_with_tavily(settings, queries, request_limit, existing_domains=existing_domains)
+                provider_candidates = await _search_with_tavily(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
             elif provider == "ddgs":
-                provider_candidates = await _search_with_ddgs(queries, request_limit, existing_domains=existing_domains)
+                provider_candidates = await _search_with_ddgs(queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
             provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains, geo_scope=geo_scope)[:request_limit]
             status = "ok" if provider_candidates else "empty"
         except Exception as exc:
@@ -4458,7 +4458,7 @@ async def _search_with_yandex(
     if not folder_id or not api_key:
         return [], 0
     if expand_queries:
-        search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "yandex"))
+        search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "yandex"), geo_scope=geo_scope)
     else:
         search_queries = [q.strip() for q in queries if str(q).strip()]
     max_pages = max_pages_per_query if max_pages_per_query is not None else _yandex_max_pages_per_query(settings)
@@ -4673,27 +4673,31 @@ async def _search_with_google(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     api_key, cse_id = _google_credentials(settings)
     if not api_key or not cse_id:
         return []
-    search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "google"))
+    search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "google"), geo_scope=geo_scope)
     semaphore = asyncio.Semaphore(4)
+    scope = str(geo_scope or "ru").strip().lower()
 
     async def search_one(client: httpx.AsyncClient, query: str) -> list[Candidate]:
         async with semaphore:
+            params = {
+                "key": api_key,
+                "cx": cse_id,
+                "q": query,
+                "num": 10,
+                "safe": "off",
+            }
+            if scope == "ru":
+                params.update({"gl": "ru", "cr": "countryRU", "lr": "lang_ru"})
+            elif scope == "cis":
+                params.update({"lr": "lang_ru"})
             response = await client.get(
                 "https://www.googleapis.com/customsearch/v1",
-                params={
-                    "key": api_key,
-                    "cx": cse_id,
-                    "q": query,
-                    "num": 10,
-                    "gl": "ru",
-                    "cr": "countryRU",
-                    "lr": "lang_ru",
-                    "safe": "off",
-                },
+                params=params,
             )
             if response.status_code != 200:
                 return []
@@ -4746,13 +4750,14 @@ async def _search_with_tavily(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     key_candidates = _tavily_key_candidates(settings)
     if not key_candidates:
         return []
 
     base_url = _tavily_base_url(settings)
-    search_queries = _expand_search_queries(queries, max_queries=max(32, min(48, len(queries) * 3)))
+    search_queries = _expand_search_queries(queries, max_queries=max(32, min(48, len(queries) * 3)), geo_scope=geo_scope)
 
     async with httpx.AsyncClient(timeout=28, follow_redirects=True) as client:
         candidates, followups = await _run_tavily_queries(
@@ -4846,6 +4851,7 @@ async def _search_with_ddgs(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     try:
         from ddgs import DDGS  # type: ignore
@@ -4853,6 +4859,7 @@ async def _search_with_ddgs(
         return []
 
     search_queries = _ddgs_search_queries(queries)
+    region = "wt-wt" if str(geo_scope or "ru").strip().lower() == "world" else "ru-ru"
 
     def search_all_sync() -> list[Candidate]:
         candidates: list[Candidate] = []
@@ -4862,7 +4869,7 @@ async def _search_with_ddgs(
                 if len(candidates) >= max_results:
                     break
                 try:
-                    items = list(client.text(query, region="ru-ru", backend="auto", max_results=10))
+                    items = list(client.text(query, region=region, backend="auto", max_results=10))
                 except Exception:
                     continue
                 for item in items:
@@ -4927,9 +4934,10 @@ def _tavily_key_candidates(settings: SystemSettings) -> list[str]:
     return [key for key in dict.fromkeys(keys) if key]
 
 
-def _expand_search_queries(queries: list[str], *, max_queries: int) -> list[str]:
+def _expand_search_queries(queries: list[str], *, max_queries: int, geo_scope: str = "ru") -> list[str]:
     base_queries: list[str] = []
     secondary_variants: list[str] = []
+    scope = str(geo_scope or "ru").strip().lower()
     for query in queries:
         clean = re.sub(r"\s+", " ", str(query or "")).strip(" .,:;")
         if not clean:
@@ -4940,6 +4948,17 @@ def _expand_search_queries(queries: list[str], *, max_queries: int) -> list[str]
             f"{clean} производитель завод",
             f"{clean} каталог продукция",
         ]
+        if scope == "cis":
+            variants.extend([
+                f"{clean} завод Беларусь Казахстан",
+                f"{clean} производитель СНГ",
+            ])
+        elif scope == "world":
+            variants.extend([
+                f"{clean} manufacturer factory",
+                f"{clean} global supplier",
+                f"{clean} производитель фабрика импорт",
+            ])
         for item in variants:
             secondary_variants.append(item)
 
