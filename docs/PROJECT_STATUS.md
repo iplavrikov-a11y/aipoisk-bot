@@ -2,7 +2,7 @@
 
 ## Актуальное состояние — 27 октября 2026, вечер (Москва)
 
-[Комплексная SEO-оптимизация и ускорение индексации: аудит по 7 SEO-репозиториям, расширение IndexNow до 91 URL, кликабельные сниппеты коммерческих посадочных страниц и автоматический деплой]:
+[Комплексная SEO-оптимизация и ускорение индексации: аудит по 7 SEO-репозиториям, расширение IndexNow до 91 URL, кликабельные сниппеты коммерческих посадочных страниц и автоматический деплой](SEO_AUDIT_INDEXNOW_AND_CTR_RELEASE_2026-10-27.md):
 1. **Анализ репозиториев и аудит проекта**:
    - Изучены практики 7 SEO-репозиториев (`AgriciDaniel/claude-seo`, `every-app/open-seo`, `TheCraigHewitt/seomachine`, `zubair-trabzada/geo-seo-claude`, `garmeeh/next-seo`, `ethercreative/seo`, `coreyhaines31/marketingskills`).
    - Проведен консилиум 5 независимых экспертов (Tech SEO, Content/Search Intent, Analytics/CRO, Search Engine Engineer, B2B Growth/Sales Lead). Оценки: Яндекс 8.4/10, Google 7.4/10.

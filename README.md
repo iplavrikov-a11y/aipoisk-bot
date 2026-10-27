@@ -1,12 +1,19 @@
 # TenderLex Bot
 
-Актуальный выпуск 27 октября 2026: [исправление B2B-счетов: формат А4, Chromium PDF, Pillow XLSX и Email-релей с вложениями](docs/INVOICE_A4_XLSX_EMAIL_RELEASE_2026-10-27.md), [устранение кодов классификаторов ОКПД2/КТРУ из запросов, блокировка тендерных агрегаторов, исключение больниц/школ как поставщиков и валидация 32 новых ТЗ](docs/CLASSIFIER_ISOLATION_AND_32TZ_BENCHMARK_RELEASE_2026-10-27.md), а также [матричное тестирование 7 режимов на 105 реальных задачах, сквозная география мониторинга цен и адаптация под Windows](docs/BENCHMARK_MATRIX_AND_GEO_SCOPE_RELEASE_2026-10-26.md).
+Актуальный выпуск 27 октября 2026: [комплексная SEO-оптимизация, расширение IndexNow до 91 URL и кликабельные коммерческие сниппеты](docs/SEO_AUDIT_INDEXNOW_AND_CTR_RELEASE_2026-10-27.md), [исправление B2B-счетов: формат А4, Chromium PDF, Pillow XLSX и Email-релей с вложениями](docs/INVOICE_A4_XLSX_EMAIL_RELEASE_2026-10-27.md), [устранение кодов классификаторов ОКПД2/КТРУ из запросов, блокировка тендерных агрегаторов, исключение больниц/школ как поставщиков и валидация 32 новых ТЗ](docs/CLASSIFIER_ISOLATION_AND_32TZ_BENCHMARK_RELEASE_2026-10-27.md), а также [матричное тестирование 7 режимов на 105 реальных задачах, сквозная география мониторинга цен и адаптация под Windows](docs/BENCHMARK_MATRIX_AND_GEO_SCOPE_RELEASE_2026-10-26.md).
 
-Серверный прогон выпуска 27 октября: 1 353 бэкенд-теста (включая полный пайплайн счетов); 108 страниц сайта собраны успешно; деплой проверен на проде.
+Серверный прогон выпуска 27 октября: 1 353 бэкенд-теста; 108 страниц сайта собраны успешно; 91 страница sitemap проверена и отправлена в IndexNow (HTTP 200); деплой проверен на проде.
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Comprehensive SEO Optimization, IndexNow 91-URL Dynamic Pipeline & Commercial Snippets CTR (2026-10-27):
+  - Expert Council & Multi-Repo Synthesis: conducted a 10-point independent expert audit combining best practices from 7 specialized SEO repositories (`claude-seo`, `open-seo`, `seomachine`, `geo-seo-claude`, `next-seo`, `ethercreative/seo`, `marketingskills`). Composite evaluation: Yandex 8.4/10, Google 7.4/10.
+  - Dynamic IndexNow Pipeline (`backend/app/yandex_seo.py`): implemented dynamic sitemap extraction (`_get_sitemap_urls`) expanding instant recrawl from 12 to all 91 canonical URLs. Submitted via IndexNow protocol with verified HTTP 200. Protected Yandex recrawl queue against gateway timeouts (504).
+  - High-CTR Commercial Landing Snippets: optimized `title`, `description`, and OpenGraph/Twitter cards across 9 core pages (Home, exact product, supplier search, RF/EAEU factories, quote generation, procurement risk analysis, GISP Minpromtorg registry). Aligned with top search intents, speed ("за 3 минуты"), and procurement laws (44-FZ, 223-FZ).
+  - Clean Consent Banner UX (`site/src/app/yandex-metrika.tsx`): refined consent text for higher B2B trust while strictly preserving zero-leakage SSR test contracts.
+  - Production Deployment & 91-Page Validation: 1,353 backend tests passing, 108 static pages generated in Next.js Turbopack, all 91 URLs verified via `check_tenderlex_seo.sh`, live deployment completed. Details in [release document](docs/SEO_AUDIT_INDEXNOW_AND_CTR_RELEASE_2026-10-27.md).
 
 - B2B Bank Invoice Generation & 1C Layout with Digital Facsimile & DaData (2026-10-27):
   - Interactive Invoice Generator in Customer Cabinet (`site/src/app/cabinet/cabinet-client.tsx`): clients can choose packages with automatic bonus calculation (+500 ₽, +1 500 ₽, +4 000 ₽, +50%) or enter custom amount (from 3 000 ₽). Instant DaData company lookup by 10/12-digit INN auto-fills legal name, KPP, and registered address.
