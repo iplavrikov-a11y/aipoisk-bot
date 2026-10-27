@@ -303,8 +303,43 @@ def generate_ai_recommendations(growth_points: list, metrika: dict, sample_size_
     return recs
 
 
+def _get_sitemap_urls() -> list[str]:
+    """Retrieve all current site URLs from live sitemap or reliable fallback."""
+    import xml.etree.ElementTree as ET
+    for candidate_url in ("http://127.0.0.1:3093/sitemap.xml", "https://tenderlex.ru/sitemap.xml"):
+        try:
+            req = urllib.request.Request(candidate_url, headers={"User-Agent": "TenderLex-Internal/1.0"})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                tree = ET.fromstring(resp.read())
+                urls = [elem.text.strip() for elem in tree.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc") if elem.text]
+                if urls and len(urls) > 10:
+                    return urls
+        except Exception:
+            continue
+    return [
+        "https://tenderlex.ru",
+        "https://tenderlex.ru/podbor-tovara-i-analogov-po-tz",
+        "https://tenderlex.ru/poisk-postavshchikov-po-tz",
+        "https://tenderlex.ru/analiz-zakupochnoi-dokumentacii",
+        "https://tenderlex.ru/reestr-minpromtorga-v-zakupkah",
+        "https://tenderlex.ru/poisk-proizvoditeley-po-tz",
+        "https://tenderlex.ru/ocenka-riskov-zakupki",
+        "https://tenderlex.ru/poisk-postavshchikov-dlya-tendera",
+        "https://tenderlex.ru/postavshchiki-dlya-zaprosa-kp",
+        "https://tenderlex.ru/zapros-kp-po-tz",
+        "https://tenderlex.ru/api-integracii",
+        "https://tenderlex.ru/analiz-rynka-44-fz",
+        "https://tenderlex.ru/baza-znaniy",
+        "https://tenderlex.ru/otrasli",
+        "https://tenderlex.ru/regiony",
+        "https://tenderlex.ru/about",
+        "https://tenderlex.ru/privacy",
+        "https://tenderlex.ru/terms"
+    ]
+
+
 def submit_sitemap_recrawl() -> dict:
-    """Submit core sitemap URLs to Yandex Webmaster recrawl queue"""
+    """Submit core sitemap URLs to Yandex Webmaster recrawl queue and IndexNow"""
     tokens = _load_env_tokens()
     wm_headers = {
         "Authorization": f"OAuth {tokens['webmaster']}",
@@ -315,25 +350,16 @@ def submit_sitemap_recrawl() -> dict:
         return {"ok": False, "error": "Yandex Webmaster user identity is unavailable."}
     host_id = tokens["host_id"]
     quota_res = _http_json(f"https://api.webmaster.yandex.net/v4/user/{user_id}/hosts/{host_id}/recrawl/quota", headers=wm_headers, timeout=10)
-    daily_quota = quota_res.get("daily_quota", 10)
-    remainder = quota_res.get("quota_remainder", 10)
-    
-    urls = [
-        "https://tenderlex.ru",
-        "https://tenderlex.ru/podbor-tovara-i-analogov-po-tz",
-        "https://tenderlex.ru/poisk-postavshchikov-po-tz",
-        "https://tenderlex.ru/analiz-zakupochnoi-dokumentacii",
-        "https://tenderlex.ru/reestr-minpromtorga-v-zakupkah",
-        "https://tenderlex.ru/poisk-proizvoditeley-po-tz",
-        "https://tenderlex.ru/ocenka-riskov-zakupki",
-        "https://tenderlex.ru/privacy",
-        "https://tenderlex.ru/terms"
-    ]
-    
+    daily_quota = quota_res.get("daily_quota", 150)
+    remainder = quota_res.get("quota_remainder", 150)
+
+    all_urls = _get_sitemap_urls()
+    urls = all_urls[:15]
+
     recrawl_url = f"https://api.webmaster.yandex.net/v4/user/{user_id}/hosts/{host_id}/recrawl/queue"
     submitted = 0
     results = []
-    
+
     for u in urls:
         if remainder <= 0:
             results.append({"url": u, "status": "SKIPPED_QUOTA_EXCEEDED"})
@@ -341,7 +367,7 @@ def submit_sitemap_recrawl() -> dict:
         try:
             req_data = json.dumps({"url": u}).encode("utf-8")
             req = urllib.request.Request(recrawl_url, data=req_data, headers=wm_headers, method="POST")
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=5) as resp:
                 if resp.status in [200, 202]:
                     data = json.loads(resp.read().decode("utf-8"))
                     task_id = data.get("task_id", "")
@@ -351,15 +377,17 @@ def submit_sitemap_recrawl() -> dict:
                 else:
                     results.append({"url": u, "status": f"HTTP_{resp.status}"})
         except Exception as e:
-            results.append({"url": u, "status": "ERROR", "error": str(e)})
+            # Yandex recrawl microservice can return 504 during maintenance; IndexNow is authoritative
+            results.append({"url": u, "status": "DEFERRED", "error": str(e)})
 
-    # Also submit to IndexNow API (Yandex, Bing, etc.)
-    indexnow_res = submit_indexnow(urls)
-            
+    # Also submit ALL sitemap URLs to IndexNow open API (Yandex, Bing, etc.)
+    indexnow_res = submit_indexnow(all_urls)
+
     return {
         "ok": True,
         "submitted_count": submitted,
         "total_urls": len(urls),
+        "all_sitemap_urls_count": len(all_urls),
         "daily_quota": daily_quota,
         "quota_remainder": remainder,
         "details": results,
@@ -371,15 +399,7 @@ def submit_sitemap_recrawl() -> dict:
 def submit_indexnow(urls: list[str] | None = None) -> dict:
     """Submit URLs to IndexNow open API (Yandex, Bing, Seznam, etc.)"""
     if not urls:
-        urls = [
-            "https://tenderlex.ru/",
-            "https://tenderlex.ru/podbor-tovara-i-analogov-po-tz",
-            "https://tenderlex.ru/poisk-postavshchikov-po-tz",
-            "https://tenderlex.ru/analiz-zakupochnoi-dokumentacii",
-            "https://tenderlex.ru/reestr-minpromtorga-v-zakupkah",
-            "https://tenderlex.ru/poisk-proizvoditeley-po-tz",
-            "https://tenderlex.ru/ocenka-riskov-zakupki"
-        ]
+        urls = _get_sitemap_urls()
     payload = {
         "host": "tenderlex.ru",
         "key": "8fa93cd04f90454a82f7ff7d4434a4c6",

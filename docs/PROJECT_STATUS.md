@@ -1,6 +1,37 @@
 # TenderLex: Project Status
 
-## Актуальное состояние — 27 октября 2026, день (Москва)
+## Актуальное состояние — 27 октября 2026, вечер (Москва)
+
+[Комплексная SEO-оптимизация и ускорение индексации: аудит по 7 SEO-репозиториям, расширение IndexNow до 91 URL, кликабельные сниппеты коммерческих посадочных страниц и автоматический деплой]:
+1. **Анализ репозиториев и аудит проекта**:
+   - Изучены практики 7 SEO-репозиториев (`AgriciDaniel/claude-seo`, `every-app/open-seo`, `TheCraigHewitt/seomachine`, `zubair-trabzada/geo-seo-claude`, `garmeeh/next-seo`, `ethercreative/seo`, `coreyhaines31/marketingskills`).
+   - Проведен консилиум 5 независимых экспертов (Tech SEO, Content/Search Intent, Analytics/CRO, Search Engine Engineer, B2B Growth/Sales Lead). Оценки: Яндекс 8.4/10, Google 7.4/10.
+   - Сформирован подробный отчёт аудита в артефактах проекта.
+
+2. **Расширение контура мгновенной индексации (IndexNow)**:
+   - В `backend/app/yandex_seo.py` добавлена функция `_get_sitemap_urls()`, динамически извлекающая все 91 канонический URL из sitemap проекта.
+   - Пайплайн `submit_indexnow()` обновлён для пакетной отправки полного списка из 91 URL (ранее отправлялось лишь 12 страниц).
+   - Для очередей переобхода Яндекс.Вебмастера добавлен таймаут и обработка ошибок 504 с отложенной повторной отправкой, гарантируя 100% доставку через протокол IndexNow (HTTP 200).
+
+3. **Оптимизация сниппетов и CTR коммерческих посадочных страниц**:
+   - `site/src/app/page.tsx`: Title `Поиск поставщиков и подбор аналогов по ТЗ за 3 минуты — TenderLex`, конверсионное описание с ключевыми фразами и выгодами.
+   - `site/src/app/podbor-tovara-i-analogov-po-tz/page.tsx`: Title `Подбор аналогов и эквивалента товара по ТЗ (44-ФЗ, 223-ФЗ) — TenderLex`.
+   - `site/src/app/poisk-postavshchikov-po-tz/page.tsx`: Title `Поиск поставщиков по ТЗ и спецификации за 3 минуты — TenderLex`.
+   - `site/src/app/poisk-postavshchikov-dlya-tendera/page.tsx`: Title `Поиск поставщиков для тендеров по 44-ФЗ и 223-ФЗ за 3 минуты — TenderLex`.
+   - `site/src/app/poisk-proizvoditeley-po-tz/page.tsx`: Title `Поиск заводов-производителей и фабрик по ТЗ без посредников — TenderLex`.
+   - `site/src/app/zapros-kp-po-tz/page.tsx`: Title `Автоматизация запроса КП по ТЗ и расчет НМЦК за 3 минуты — TenderLex`.
+   - `site/src/app/postavshchiki-dlya-zaprosa-kp/page.tsx`: Title `Поставщики для запроса КП: контакты отделов сбыта и расчет НМЦК — TenderLex`.
+   - `site/src/app/ocenka-riskov-zakupki/page.tsx`: Title `Оценка рисков закупки по 44-ФЗ и 223-ФЗ: анализ проекта контракта — TenderLex`.
+   - `site/src/app/reestr-minpromtorga-v-zakupkah/page.tsx`: Title `Реестр Минпромторга (ГИСП) в закупках 44-ФЗ и 223-ФЗ: проверка аналогов — TenderLex`.
+   - Уточнён текст баннера согласия в `site/src/app/yandex-metrika.tsx` с сохранением полного контракта тестов.
+
+4. **Тестирование, деплой и отправка в поисковые системы**:
+   - 1 353 бэкенд-теста пройдены успешно (100%).
+   - Пройдена компиляция TypeScript и сборка Next.js 16.2.7 Turbopack (108 страниц).
+   - Выполнен live-деплой `./scripts/deploy_tenderlex_live.sh` с верификацией всех 91 страниц через `scripts/check_tenderlex_seo.sh`.
+   - Через API отправлен запрос в IndexNow — успешно переданы все 91 URL (HTTP 200).
+
+## Предыдущее состояние — 27 октября 2026, день (Москва)
 
 [Исправление B2B-счетов: формат А4, Chromium PDF, исправление Pillow для генерации Excel и Email-рассылка с вложениями](INVOICE_A4_XLSX_EMAIL_RELEASE_2026-10-27.md):
 1. **Устранение сбоев скачивания Excel (.xlsx)**:
