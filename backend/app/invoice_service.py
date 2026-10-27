@@ -506,11 +506,38 @@ def generate_invoice_xlsx(invoice: Invoice, output_path: str) -> str:
 
 
 def generate_invoice_pdf(invoice: Invoice, output_pdf_path: str) -> str:
-    """Generate high-resolution PDF invoice using headless libreoffice conversion."""
+    """Generate high-resolution A4 PDF invoice using headless Chromium, falling back to LibreOffice."""
+    out_pdf = Path(output_pdf_path)
+    out_pdf.parent.mkdir(parents=True, exist_ok=True)
+
+    html_content = render_invoice_html(invoice, embed_images=True)
     with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_html = Path(tmp_dir) / f"{invoice.invoice_number}.html"
+        tmp_html.write_text(html_content, encoding="utf-8")
+
+        # 1. Try headless Google Chrome (clean vector A4 PDF without browser headers/footers)
+        chrome_bin = "/usr/bin/google-chrome"
+        if os.path.exists(chrome_bin):
+            cmd = [
+                chrome_bin,
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--no-pdf-header-footer",
+                f"--print-to-pdf={out_pdf}",
+                str(tmp_html),
+            ]
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                if res.returncode == 0 and out_pdf.exists() and out_pdf.stat().st_size > 1000:
+                    return str(out_pdf)
+            except Exception:
+                pass
+
+        # 2. Fallback to LibreOffice Calc from XLSX
         tmp_xlsx = Path(tmp_dir) / f"{invoice.invoice_number}.xlsx"
         generate_invoice_xlsx(invoice, str(tmp_xlsx))
-        cmd = [
+        cmd_soffice = [
             "soffice",
             "--headless",
             "--convert-to",
@@ -519,20 +546,18 @@ def generate_invoice_pdf(invoice: Invoice, output_pdf_path: str) -> str:
             tmp_dir,
             str(tmp_xlsx),
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if res.returncode != 0:
-            raise RuntimeError(f"LibreOffice PDF conversion failed: {res.stderr}")
+        res_soffice = subprocess.run(cmd_soffice, capture_output=True, text=True, timeout=30)
+        if res_soffice.returncode != 0:
+            raise RuntimeError(f"PDF conversion failed: {res_soffice.stderr or res_soffice.stdout}")
         generated_pdf = Path(tmp_dir) / f"{invoice.invoice_number}.pdf"
         if not generated_pdf.exists():
             raise FileNotFoundError(f"Generated PDF not found: {generated_pdf}")
-        out_pdf = Path(output_pdf_path)
-        out_pdf.parent.mkdir(parents=True, exist_ok=True)
         generated_pdf.replace(out_pdf)
         return str(out_pdf)
 
 
 def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
-    """Generate clean HTML representation for web viewing and browser printing (@media print)."""
+    """Generate authentic A4 HTML representation for web viewing and browser printing (@media print)."""
     date_str = format_date_ru(invoice.created_at)
     amount_str = format_rubles_num(invoice.amount_rub)
     words_str = num_to_words_ru(invoice.amount_rub)
@@ -569,31 +594,29 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
     body {{
       font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
       font-size: 10pt;
-      line-height: 1.25;
+      line-height: 1.3;
       color: #000;
-      background: #f8fafc;
+      background: #f1f5f9;
       margin: 0;
-      padding: 20px;
-    }}
-    .invoice-card {{
-      max-width: 800px;
-      margin: 0 auto;
-      background: #fff;
-      padding: 30px 40px;
-      border: 1px solid #e2e8f0;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.06);
-      position: relative;
+      padding: 24px 12px 60px 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }}
     .no-print-toolbar {{
-      max-width: 800px;
-      margin: 0 auto 15px auto;
+      width: 210mm;
+      max-width: 100%;
+      margin: 0 auto 16px auto;
       display: flex;
       gap: 10px;
       align-items: center;
       justify-content: space-between;
+      flex-wrap: wrap;
     }}
     .btn {{
-      padding: 8px 16px;
+      padding: 9px 16px;
       border-radius: 8px;
       font-size: 13px;
       font-weight: 700;
@@ -603,34 +626,52 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
       align-items: center;
       gap: 6px;
       border: 1px solid transparent;
+      transition: background-color 0.15s ease;
     }}
     .btn-primary {{
       background: #0d9488;
       color: #fff;
     }}
     .btn-primary:hover {{ background: #0f766e; }}
+    .btn-emerald {{
+      background: #059669;
+      color: #fff;
+    }}
+    .btn-emerald:hover {{ background: #047857; }}
     .btn-outline {{
       background: #fff;
       color: #334155;
       border-color: #cbd5e1;
     }}
-    .btn-outline:hover {{ background: #f1f5f9; }}
+    .btn-outline:hover {{ background: #f8fafc; border-color: #94a3b8; }}
+
+    .invoice-card {{
+      width: 210mm;
+      min-height: 297mm;
+      max-width: 100%;
+      margin: 0 auto;
+      background: #ffffff;
+      padding: 16mm 18mm 20mm 18mm;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+      border: 1px solid #cbd5e1;
+      position: relative;
+    }}
 
     .notice {{
       font-size: 8pt;
-      color: #333;
-      margin-bottom: 12px;
-      line-height: 1.2;
+      color: #475569;
+      margin-bottom: 14px;
+      line-height: 1.25;
     }}
     table.bank-box {{
       width: 100%;
       border-collapse: collapse;
-      margin-bottom: 20px;
+      margin-bottom: 22px;
       font-size: 9.5pt;
     }}
     table.bank-box td {{
       border: 1px solid #000;
-      padding: 4px 6px;
+      padding: 4px 7px;
       vertical-align: middle;
     }}
     .subtext {{
@@ -639,21 +680,22 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
       display: block;
     }}
     h1.title {{
-      font-size: 14pt;
+      font-size: 15pt;
       font-weight: bold;
       border-bottom: 2px solid #000;
-      padding-bottom: 6px;
-      margin: 20px 0 16px 0;
+      padding-bottom: 8px;
+      margin: 22px 0 16px 0;
     }}
     .info-row {{
       display: flex;
-      margin-bottom: 8px;
+      margin-bottom: 10px;
       font-size: 9.5pt;
+      line-height: 1.35;
     }}
     .info-label {{
-      width: 110px;
+      width: 115px;
       flex-shrink: 0;
-      color: #333;
+      color: #334155;
     }}
     .info-value {{
       font-weight: bold;
@@ -662,13 +704,13 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
     table.items-table {{
       width: 100%;
       border-collapse: collapse;
-      margin-top: 16px;
-      margin-bottom: 12px;
-      font-size: 9pt;
+      margin-top: 18px;
+      margin-bottom: 14px;
+      font-size: 9.5pt;
     }}
     table.items-table th, table.items-table td {{
       border: 1px solid #000;
-      padding: 5px 6px;
+      padding: 6px 8px;
     }}
     table.items-table th {{
       border-top: 2px solid #000;
@@ -678,31 +720,31 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
       font-weight: bold;
     }}
     .totals-area {{
-      margin-top: 8px;
-      font-size: 9.5pt;
+      margin-top: 10px;
+      font-size: 10pt;
     }}
     .totals-row {{
       display: flex;
       justify-content: flex-end;
-      gap: 20px;
+      gap: 24px;
       font-weight: bold;
-      padding: 2px 0;
+      padding: 3px 0;
     }}
     .words-block {{
       margin-top: 14px;
       font-weight: bold;
-      font-size: 9.5pt;
+      font-size: 10pt;
     }}
     .divider {{
       border-bottom: 2px solid #000;
-      margin: 14px 0 20px 0;
+      margin: 16px 0 28px 0;
     }}
     .signatures-block {{
       position: relative;
       display: flex;
       justify-content: space-between;
-      margin-top: 30px;
-      font-size: 9.5pt;
+      margin-top: 40px;
+      font-size: 10pt;
       font-weight: bold;
     }}
     .sig-col {{
@@ -719,10 +761,10 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
     }}
     .stamp-overlay {{
       position: absolute;
-      left: 105px;
+      left: 110px;
       top: -45px;
-      width: 125px;
-      height: 125px;
+      width: 135px;
+      height: 135px;
       pointer-events: none;
       z-index: 10;
     }}
@@ -730,30 +772,33 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
       position: absolute;
       left: 95px;
       top: -20px;
-      width: 95px;
-      height: 65px;
+      width: 100px;
+      height: 70px;
       pointer-events: none;
       z-index: 5;
     }}
 
     @media print {{
       body {{
-        background: #fff;
-        padding: 0;
+        background: #fff !important;
+        padding: 0 !important;
+        margin: 0 !important;
       }}
       .no-print-toolbar {{
         display: none !important;
       }}
       .invoice-card {{
-        border: none;
-        box-shadow: none;
-        padding: 0;
-        width: 100%;
-        max-width: 100%;
+        width: 100% !important;
+        max-width: 100% !important;
+        min-height: auto !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+        box-shadow: none !important;
       }}
       @page {{
         size: A4 portrait;
-        margin: 12mm 15mm;
+        margin: 12mm 15mm 12mm 15mm;
       }}
     }}
   </style>
@@ -761,15 +806,18 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
 <body>
 
   <div class="no-print-toolbar">
-    <div style="font-size: 12px; color: #64748b;">
+    <div style="font-size: 13px; color: #475569; font-weight: 500;">
       Счёт <b>№ {invoice.invoice_number}</b> от {date_str} г.
     </div>
-    <div style="display: flex; gap: 8px;">
+    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
       <button class="btn btn-primary" onclick="window.print()">
-        🖨️ Распечатать / Сохранить в PDF
+        🖨️ Распечатать
       </button>
+      <a class="btn btn-emerald" href="/api/customer/invoices/{invoice.id}/download?format=pdf" download>
+        📥 Скачать PDF
+      </a>
       <a class="btn btn-outline" href="/api/customer/invoices/{invoice.id}/download?format=xlsx" download>
-        📥 Скачать Excel (.xlsx)
+        📊 Скачать Excel (.xlsx)
       </a>
     </div>
   </div>
@@ -891,27 +939,15 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
 
 
 def send_invoice_email(invoice: Invoice, recipient_email: str) -> tuple[bool, str]:
-    """Send generated invoice via SMTP to recipient."""
+    """Send generated invoice with attached Excel and PDF files to recipient."""
     recipient = str(recipient_email or invoice.buyer_email or "").strip()
     if not recipient or "@" not in recipient:
         return False, "Не указан корректный email получателя"
-
-    smtp_host = config.smtp_host or "smtp.jino.ru"
-    smtp_port = config.smtp_port or 587
-    smtp_user = config.smtp_username or "info@tenderlex.ru"
-    smtp_pass = config.smtp_password
-    smtp_from = config.smtp_from or "info@tenderlex.ru"
 
     date_str = format_date_ru(invoice.created_at)
     amount_str = format_rubles_num(invoice.amount_rub)
     subject = f"Счёт на оплату № {invoice.invoice_number} от {date_str} - TenderLex"
 
-    msg = MIMEMultipart()
-    msg["Subject"] = subject
-    msg["From"] = f"TenderLex <{smtp_from}>"
-    msg["To"] = recipient
-
-    # HTML body
     body_html = f"""<html>
 <body style="font-family: Arial, sans-serif; font-size: 14px; color: #1e293b; line-height: 1.5;">
   <p>Здравствуйте!</p>
@@ -935,7 +971,7 @@ def send_invoice_email(invoice: Invoice, recipient_email: str) -> tuple[bool, st
     <tr><td style="padding: 4px 8px 4px 0; color: #64748b;">Назначение платежа:</td><td><b>Оплата по счету № {invoice.invoice_number} от {date_str} г. за услуги сервиса TenderLex. Без НДС.</b></td></tr>
   </table>
 
-  <p>Оригинал счёта в формате Excel с факсимиле подписи и печати прикреплён к этому письму.</p>
+  <p>Оригинал счёта в формате Excel (.xlsx) и PDF с факсимиле подписи и печати прикреплены к этому письму.</p>
   <p>Также вы можете открыть или распечатать счёт онлайн по ссылке:<br>
   <a href="{config.public_base_url}/cabinet" style="color: #0d9488; font-weight: bold;">Перейти в личный кабинет TenderLex</a></p>
 
@@ -943,17 +979,72 @@ def send_invoice_email(invoice: Invoice, recipient_email: str) -> tuple[bool, st
 </body>
 </html>"""
 
-    msg.attach(MIMEText(body_html, "html", "utf-8"))
-
-    # Generate XLSX and attach
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
             xlsx_path = Path(tmp_dir) / f"schet_{invoice.invoice_number}.xlsx"
             generate_invoice_xlsx(invoice, str(xlsx_path))
-            with open(xlsx_path, "rb") as f:
-                attach = MIMEApplication(f.read(), _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                attach.add_header("Content-Disposition", "attachment", filename=f"schet_{invoice.invoice_number}.xlsx")
-                msg.attach(attach)
+            xlsx_bytes = xlsx_path.read_bytes()
+
+            pdf_path = Path(tmp_dir) / f"schet_{invoice.invoice_number}.pdf"
+            generate_invoice_pdf(invoice, str(pdf_path))
+            pdf_bytes = pdf_path.read_bytes()
+
+            # 1. Try sending via Email Relay (Postfix+DKIM with high deliverability)
+            relay_url = str(config.email_relay_url or "").strip()
+            relay_api_key = str(config.email_relay_api_key or "").strip()
+            if relay_url and relay_api_key:
+                attachments = [
+                    {
+                        "filename": f"schet_{invoice.invoice_number}.xlsx",
+                        "content": base64.b64encode(xlsx_bytes).decode("ascii"),
+                        "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    },
+                    {
+                        "filename": f"schet_{invoice.invoice_number}.pdf",
+                        "content": base64.b64encode(pdf_bytes).decode("ascii"),
+                        "contentType": "application/pdf",
+                    },
+                ]
+                payload = {
+                    "to": recipient,
+                    "subject": subject,
+                    "html": body_html,
+                    "from_name": config.email_from_name or "TenderLex",
+                    "from_email": config.email_from_email or config.smtp_from or "info@tenderlex.ru",
+                    "attachments": attachments,
+                }
+                with httpx.Client(timeout=25.0) as client:
+                    resp = client.post(
+                        f"{relay_url.rstrip('/')}/send",
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {relay_api_key}",
+                        },
+                        json=payload,
+                    )
+                    if resp.status_code == 200:
+                        return True, "Счёт успешно отправлен на email (прикреплены Excel и PDF)"
+
+            # 2. Fallback to direct SMTP
+            smtp_host = config.smtp_host or "smtp.jino.ru"
+            smtp_port = config.smtp_port or 587
+            smtp_user = config.smtp_username or "info@tenderlex.ru"
+            smtp_pass = config.smtp_password
+            smtp_from = config.smtp_from or "info@tenderlex.ru"
+
+            msg = MIMEMultipart()
+            msg["Subject"] = subject
+            msg["From"] = f"TenderLex <{smtp_from}>"
+            msg["To"] = recipient
+            msg.attach(MIMEText(body_html, "html", "utf-8"))
+
+            attach_xl = MIMEApplication(xlsx_bytes, _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            attach_xl.add_header("Content-Disposition", "attachment", filename=f"schet_{invoice.invoice_number}.xlsx")
+            msg.attach(attach_xl)
+
+            attach_p = MIMEApplication(pdf_bytes, _subtype="pdf")
+            attach_p.add_header("Content-Disposition", "attachment", filename=f"schet_{invoice.invoice_number}.pdf")
+            msg.attach(attach_p)
 
             import smtplib
             if config.smtp_use_ssl:

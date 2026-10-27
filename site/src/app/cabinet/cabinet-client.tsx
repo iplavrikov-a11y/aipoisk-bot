@@ -7914,15 +7914,14 @@ ${webLink}`;
                       </div>
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {/* Print / View PDF */}
+                        {/* Download PDF */}
                         <a
-                          href={`/api/customer/invoices/${invoiceCreated.id}/html`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
+                          href={`/api/customer/invoices/${invoiceCreated.id}/download?format=pdf`}
+                          download
+                          className="flex items-center justify-center gap-2 p-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer text-center"
                         >
-                          <Printer size={15} className="text-teal-600 shrink-0" />
-                          <span>Распечатать / В PDF</span>
+                          <Download size={15} className="shrink-0" />
+                          <span>Скачать PDF (.pdf)</span>
                         </a>
 
                         {/* Download Excel */}
@@ -7933,6 +7932,17 @@ ${webLink}`;
                         >
                           <FileSpreadsheet size={15} className="text-emerald-600 shrink-0" />
                           <span>Скачать Excel (.xlsx)</span>
+                        </a>
+
+                        {/* Print / View A4 HTML */}
+                        <a
+                          href={`/api/customer/invoices/${invoiceCreated.id}/html`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
+                        >
+                          <Printer size={15} className="text-slate-600 shrink-0" />
+                          <span>Печать и просмотр (А4)</span>
                         </a>
 
                         {/* Send Email */}
@@ -7978,19 +7988,18 @@ ${webLink}`;
                           type="button"
                           onClick={() => {
                             const detailsText = `Получатель: ИП Груздев Игорь Вячеславович\nИНН: 352516048881\nР/с: 40802810217430000342\nБанк: АО "АЛЬФА-БАНК"\nБИК: 044525593\nК/с: 30101810200000000593\nСумма: ${invoiceCreated.amount_rub} руб.\nНазначение: Оплата по счету № ${invoiceCreated.invoice_number} за услуги сервиса TenderLex. Без НДС.`;
-                            navigator.clipboard.writeText(detailsText).then(() => {
-                              setInvoiceDetailsCopied(true);
-                              setTimeout(() => setInvoiceDetailsCopied(false), 3000);
-                            });
+                            navigator.clipboard.writeText(detailsText);
+                            setInvoiceDetailsCopied(true);
+                            setTimeout(() => setInvoiceDetailsCopied(false), 2500);
                           }}
-                          className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
+                          className="sm:col-span-2 flex items-center justify-center gap-2 p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 transition-all cursor-pointer text-center"
                         >
                           {invoiceDetailsCopied ? (
                             <Check size={15} className="text-emerald-600" />
                           ) : (
                             <Copy size={15} className="text-slate-600" />
                           )}
-                          <span>{invoiceDetailsCopied ? "Реквизиты скопированы!" : "Скопировать для банк-клиента"}</span>
+                          <span>{invoiceDetailsCopied ? "Реквизиты скопированы!" : "Скопировать реквизиты для банк-клиента / 1С"}</span>
                         </button>
                       </div>
                     </div>

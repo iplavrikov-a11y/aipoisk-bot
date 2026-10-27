@@ -1723,22 +1723,26 @@ def customer_invoice_download_api(
     storage_base.mkdir(parents=True, exist_ok=True)
 
     fmt = str(format or "xlsx").lower().strip()
-    if fmt == "pdf":
-        file_path = storage_base / f"schet_{invoice.invoice_number}.pdf"
-        generate_invoice_pdf(invoice, str(file_path))
-        return FileResponse(
-            str(file_path),
-            media_type="application/pdf",
-            filename=f"schet_{invoice.invoice_number}.pdf",
-        )
-    else:
-        file_path = storage_base / f"schet_{invoice.invoice_number}.xlsx"
-        generate_invoice_xlsx(invoice, str(file_path))
-        return FileResponse(
-            str(file_path),
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=f"schet_{invoice.invoice_number}.xlsx",
-        )
+    try:
+        if fmt == "pdf":
+            file_path = storage_base / f"schet_{invoice.invoice_number}.pdf"
+            generate_invoice_pdf(invoice, str(file_path))
+            return FileResponse(
+                str(file_path),
+                media_type="application/pdf",
+                filename=f"schet_{invoice.invoice_number}.pdf",
+            )
+        else:
+            file_path = storage_base / f"schet_{invoice.invoice_number}.xlsx"
+            generate_invoice_xlsx(invoice, str(file_path))
+            return FileResponse(
+                str(file_path),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                filename=f"schet_{invoice.invoice_number}.xlsx",
+            )
+    except Exception as exc:
+        logger.exception("invoice_download_error", extra={"invoice_id": invoice_id, "error": str(exc)})
+        raise HTTPException(status_code=500, detail=f"Ошибка генерации файла: {exc}")
 
 
 @app.post("/api/customer/invoices/{invoice_id}/send-email")
