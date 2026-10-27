@@ -1,6 +1,6 @@
 # TenderLex Bot
 
-Актуальный выпуск 27 октября 2026: [выставление счетов для юридических лиц и ИП по расчётному счёту (B2B)](backend/app/invoice_service.py), [устранение кодов классификаторов ОКПД2/КТРУ из запросов, блокировка тендерных агрегаторов, исключение больниц/школ как поставщиков и валидация 32 новых ТЗ](docs/CLASSIFIER_ISOLATION_AND_32TZ_BENCHMARK_RELEASE_2026-10-27.md), а также [матричное тестирование 7 режимов на 105 реальных задачах, сквозная география мониторинга цен и адаптация под Windows](docs/BENCHMARK_MATRIX_AND_GEO_SCOPE_RELEASE_2026-10-26.md).
+Актуальный выпуск 27 октября 2026: [исправление B2B-счетов: формат А4, Chromium PDF, Pillow XLSX и Email-релей с вложениями](docs/INVOICE_A4_XLSX_EMAIL_RELEASE_2026-10-27.md), [устранение кодов классификаторов ОКПД2/КТРУ из запросов, блокировка тендерных агрегаторов, исключение больниц/школ как поставщиков и валидация 32 новых ТЗ](docs/CLASSIFIER_ISOLATION_AND_32TZ_BENCHMARK_RELEASE_2026-10-27.md), а также [матричное тестирование 7 режимов на 105 реальных задачах, сквозная география мониторинга цен и адаптация под Windows](docs/BENCHMARK_MATRIX_AND_GEO_SCOPE_RELEASE_2026-10-26.md).
 
 Серверный прогон выпуска 27 октября: 1 353 бэкенд-теста (включая полный пайплайн счетов); 108 страниц сайта собраны успешно; деплой проверен на проде.
 
@@ -11,7 +11,10 @@
 - B2B Bank Invoice Generation & 1C Layout with Digital Facsimile & DaData (2026-10-27):
   - Interactive Invoice Generator in Customer Cabinet (`site/src/app/cabinet/cabinet-client.tsx`): clients can choose packages with automatic bonus calculation (+500 ₽, +1 500 ₽, +4 000 ₽, +50%) or enter custom amount (from 3 000 ₽). Instant DaData company lookup by 10/12-digit INN auto-fills legal name, KPP, and registered address.
   - Authentic 1C Invoice Layout & Facsimile (`backend/app/invoice_service.py`): generates compliant Russian B2B invoices for ИП Груздев И.В. with official Альфа-Банк requisites, sequential numbers (`TL-2026-XXXX`), ruble amounts in words with kopeks and "Без НДС". Overlays official blue stamp and black signature PNGs with transparent alpha channels over Руководитель and Бухгалтер lines.
-  - Multi-Format Export & Print: instant in-browser print (`@media print` A4 styled layout), direct PDF download via headless LibreOffice converter, and native `.xlsx` Excel download.
+  - Native Excel Generation & Pillow Dependency: added `pillow>=10.0.0` to `backend/requirements.txt` to eliminate `download.txt` 500 error in `openpyxl.drawing.image.Image`, ensuring native 1.2 MB `.xlsx` generation.
+  - Authentic A4 Standard & Chromium Vector PDF: web preview strictly matches physical A4 dimensions (`210mm x 297mm`, soft shadow `#f1f5f9`, 1C margins, `@media print` with `@page { size: A4 portrait; margin: 12mm 15mm; }`). Vector PDF rendered via headless Google Chrome (`--headless=new --no-pdf-header-footer --print-to-pdf`), preventing cropped views and removing technical browser headers.
+  - Multi-Action Cabinet UI: distinct buttons for direct `.pdf` download, `.xlsx` download, A4 sheet print/view, email dispatch, and 1-click clipboard copy of banking requisites.
+  - Reliable Email Relay with Dual Attachments: `send_invoice_email` routes via TenderLex Postfix+DKIM relay (`79.133.182.215:8080`) attaching both `.xlsx` and `.pdf` files.
   - Real-Time Telegram Alerts: immediately notifies admin via Telegram Bot API with buyer details, INN, amount, and tariff upon invoice issuance.
   - Admin Reconciliation: `/api/admin/invoices` and `/api/admin/invoices/{id}/mark-paid` instantly credit client balance and bonus once funds reach the bank account.
   - Verified with 4 new dedicated E2E pipeline unit tests (`backend/tests/test_invoices.py`), 1,353 total passing tests, and live production deployment.
