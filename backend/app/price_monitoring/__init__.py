@@ -1,5 +1,5 @@
 from .models import ItemPriceResult, SupplierQuote, BatchMonitoringResult
-from .cleaner import clean_nomenclature_name, build_commercial_search_queries, is_drawing_or_part_code
+from .cleaner import clean_nomenclature_name, build_commercial_search_queries, is_drawing_or_part_code, is_classifier_code
 from .extractor import (
     extract_supplier_quote,
     fetch_page_content,
@@ -16,6 +16,7 @@ __all__ = [
     "clean_nomenclature_name",
     "build_commercial_search_queries",
     "is_drawing_or_part_code",
+    "is_classifier_code",
     "extract_supplier_quote",
     "fetch_page_content",
     "compute_deterministic_normalized_price",

@@ -24,6 +24,7 @@ from .cleaner import (
     build_fallback_broad_queries,
     clean_nomenclature_name,
     extract_generic_nomenclature_codes,
+    is_classifier_code,
     is_drawing_or_part_code,
     normalize_unit,
 )
@@ -551,10 +552,14 @@ async def process_single_item(
     if source_position is not None:
         _attach_source_position(item_res, source_position)
         # Only this selected row's explicit requirements influence query and offer matching.
+        # Filter out tender classification metadata (ОКПД2, КТРУ, ТН ВЭД) from requirements_text
         requirements_text = "; ".join(
             f"{requirement.get('param_name')}: {requirement.get('tz_requirement')}"
             for requirement in item_res.requirements
             if requirement.get("param_name") and requirement.get("tz_requirement")
+            and not is_classifier_code(str(requirement.get("param_name", "")))
+            and not is_classifier_code(str(requirement.get("tz_requirement", "")))
+            and not any(k in str(requirement.get("param_name", "")).lower() for k in ("окпд", "ктру", "тнвэд", "тн вэд", "okpd", "ktru"))
         )
         if requirements_text:
             clean = f"{clean}; {requirements_text}"
@@ -562,7 +567,7 @@ async def process_single_item(
     nom_codes = extract_generic_nomenclature_codes(clean)
     exact_identifier_codes = [
         c for c in nom_codes
-        if is_drawing_or_part_code(c, clean) and not _is_measurement_like_identifier(c)
+        if is_drawing_or_part_code(c, clean) and not _is_measurement_like_identifier(c) and not is_classifier_code(c, clean)
     ]
 
     diagnostics: dict[str, Any] = {

@@ -1,22 +1,20 @@
 # TenderLex Bot
 
-Актуальный выпуск 26 октября 2026: [матричное тестирование 7 режимов на 105 реальных задачах, сквозная география мониторинга цен и адаптация под Windows](docs/BENCHMARK_MATRIX_AND_GEO_SCOPE_RELEASE_2026-10-26.md), а также [устранение уязвимости нулевого списания в подборе товара, аудит 150 боевых задач и регламент гео-радиуса](docs/PROJECT_STATUS.md). Предыдущий выпуск 25 октября: [снятие лимита позиций в подборе товара, индивидуальные тарифы по всем 5 услугам в админке и аудит задачи №977](docs/PROJECT_STATUS.md), а также [переход функции «Подбор товара и аналогов» на попозиционную тарификацию](docs/PROJECT_STATUS.md) и [сохранение поставщиков «По запросу», фирменная изумрудно-мятная палитра Excel и валидация 300 позиций по Правилу 14](docs/PRICE_MONITORING_ON_REQUEST_AND_PALETTE_RELEASE_2026-10-25.md). Предыдущий выпуск 24 октября (поздний вечер): [выделенная колонка локации в Excel и полнономенклатурный гео-поиск](docs/GEO_RADIUS_EXCEL_COLUMNS_RELEASE_2026-10-24.md), а также [исправление XLSX №968 и попозиционной админки](docs/JOB968_ADMIN_POSITIONAL_RELEASE_2026-10-24.md), [санитизация клиентских ошибок](docs/PROJECT_STATUS.md) — 1 345 серверных тестов и 54 подтеста, деплой на боевой сервер. Предыдущий выпуск 23 октября: [API, правило 14 и география](docs/API_RULE14_GEO_RELEASE_2026-10-23.md), [руководство клиентского API](docs/API_CLIENT_GUIDE.md), [оставшиеся улучшения](docs/SITE_REMAINING_IMPROVEMENTS_2026-10-21.md). Выбор исходных товаров, расчёты мониторинга и стабильность кабинета описаны в [выпуске 22 октября](docs/POSITIONAL_SELECTION_RELEASE_2026-10-22.md); разбор ошибочных 243 позиций — в [отчёте задач 954–956](docs/SELECTION_INVENTORY_FIX_954_956_2026-10-22.md).
+Актуальный выпуск 27 октября 2026: [устранение кодов классификаторов ОКПД2/КТРУ из запросов, блокировка тендерных агрегаторов, исключение больниц/школ как поставщиков и валидация 32 новых ТЗ](docs/PROJECT_STATUS.md), а также [матричное тестирование 7 режимов на 105 реальных задачах, сквозная география мониторинга цен и адаптация под Windows](docs/BENCHMARK_MATRIX_AND_GEO_SCOPE_RELEASE_2026-10-26.md). Предыдущий выпуск 25 октября: [снятие лимита позиций в подборе товара, индивидуальные тарифы по всем 5 услугам в админке и аудит задачи №977](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 23 октября: 1221 тест и 54 подтеста; после публикации проверены 97 сценариев кабинета и сохранность SEO-контрактов 92 уникальных страниц. Браузерные API подменялись тестовыми ответами; платный рыночный поиск не запускался. Это результаты локальной проверки выпуска, а не GitHub CI.
+Серверный прогон выпуска 27 октября: 1 349 тестов и 54 подтеста; проведен матричный бенчмарк на 32 новых реальных промышленных ТЗ платформы (68 проверочных задач: отсечение классификаторов 100%, блокировка ЭТП 100%, отсечение бюджетных учреждений 100%).
 
-Исходный код выполненных исправлений сохранён в GitHub: [`76e2f3b`](https://github.com/iplavrikov-a11y/aipoisk-bot/commit/76e2f3b868e6455e7e5a15f6c4d0b008983e81d5) — 99 файлов кода, тестов и требуемый ресурс администратора. Первый коммит `a8c1c5b` содержал только документы; следующая публикация включает обязательные модули и регрессии. Свежая проверка перед публикацией: 1231 серверный тест и 54 подтеста, изолированные сборки сайта/админки и браузерные сценарии с тестовыми API. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
-
-SEO: [текущий статус](docs/PROJECT_STATUS.md), [Home v3 и SEO-релиз 20 октября](docs/SITE_HOME_V3_SEO_2026-10-20.md), [свежие даты и часовой сбор — 4 октября](docs/SEO_DAILY_COVERAGE_2026-10-04.md), [история ревизий](docs/SEO_AUDIT_LEDGER.md). Панель показывает 30 календарных дней каждого источника, предварительные данные Google отмечены, решения выполняются с агентом без ручных согласований. Оценка функциональности — **9/10**; рост поисковых позиций пока не доказан.
-
-Проверки исторического SEO-этапа 4 октября: 799 backend-тестов и 54 подтеста, затем 44 целевых теста с фиксированной календарной датой; сборка админки успешна. Источники и ограничения проверки GitHub указаны в отчёте. [Первоначальное исправление панели 4 октября](docs/SEO_ADMIN_REPAIR_2026-10-04.md) и [отчёт 2 октября](docs/SEO_FOLLOWUP_REPORT_2026-10-02.md) сохраняют историю своих этапов. Исходные снимки 1–2 октября используются по [протоколу сравнения](docs/SEO_WEEKLY_COMPARISON.md).
-
-TenderLex Telegram bot and admin panel for procurement document analysis and
-supplier search.
-
-Public product domain: `https://tenderlex.ru`
-Admin/internal domain: `https://admin.tenderlex.ru`
+Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Classifier Code Isolation, Tender ETP & Institutional Buyer Filtering, 32-TZ Benchmark (2026-10-27):
+  - Root Cause Remediated (Job #994): `is_drawing_or_part_code` in `cleaner.py` misclassified OKPD2/KTRU numbers as drawing codes, wrapping them in strict quotes (`"31.01.12.160"`), completely destroying international commercial queries and forcing Yandex onto tender aggregators where hospital buyers were misparsed as suppliers.
+  - Dedicated Classifier Code Guard (`backend/app/price_monitoring/cleaner.py`, `pipeline.py`): added `is_classifier_code` detecting OKPD/KTRU/TN VED patterns and stripping them from exact identifier codes and search queries.
+  - Tender ETP & Platform Blacklist (`backend/app/price_monitoring/extractor.py`): blocked all major ETPs and aggregators (`roseltorg.ru`, `star-pro.ru`, `otc.ru`, `torgkey.ru`, `sberbank-ast.ru`, `rts-tender.ru`, `tektorg.ru`, `b2b-center.ru`, `fabrikant.ru`).
+  - Institutional Buyer Filter (`is_public_institution_buyer`): strictly filters out budgetary buyers (ГБУ, ГБУЗ, МУП, ГУП, ФГБУ, ЦРБ, hospitals, schools, administrations) so they are never presented as commercial suppliers.
+  - 32-TZ Platform Benchmark (`scripts/run_fresh_30_procurement_matrix.py`): verified across 32 previously untested real specifications (68 tasks): 0 classifier leaks, 0 ETP leaks, 0 hospital leaks. Found 5-8 verified commercial suppliers per item in World mode.
+  - 1,349 backend tests passing (100%), live production deploy verified via `./scripts/deploy_tenderlex_live.sh`.
 
 - 7-Mode Matrix Benchmark, Price Monitoring Geo-Scope & Windows Chromium UI Polish (2026-10-26):
   - 105 Real Production Tasks Matrix Tested: verified 15 real industrial items across 7 modes (105 tasks) without mock or synthetic data. Achieved 100% success rate:

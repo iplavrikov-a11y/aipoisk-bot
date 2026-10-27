@@ -32,7 +32,13 @@ BLOCKED_DOMAINS = {
     "zakupki.gov.ru", "consultant.ru", "garant.ru", "nalog.gov.ru", "tass.ru", "ria.ru",
     "zen.yandex.ru", "vc.ru", "drive2.ru", "pikabu.ru", "otzovik.com", "irecommend.ru",
     "habr.com", "tbank.ru", "sberbank.ru", "hh.ru", "superjob.ru", "rabota.ru", "audit-it.ru",
-    "klerk.ru", "cbr.ru", "rbc.ru", "kommersant.ru", "lenta.ru", "gazeta.ru"
+    "klerk.ru", "cbr.ru", "rbc.ru", "kommersant.ru", "lenta.ru", "gazeta.ru",
+    # Государственные и коммерческие электронные торговые площадки (тендерные агрегаторы и ЭТП)
+    "roseltorg.ru", "star-pro.ru", "torgkey.ru", "otc.ru", "sberbank-ast.ru",
+    "rts-tender.ru", "etp-ets.ru", "gz.lot-online.ru", "tektorg.ru", "b2b-center.ru",
+    "fabrikant.ru", "synapsenet.ru", "bicotender.ru", "tenderplan.ru", "clearspending.ru",
+    "goszakupki.ru", "tenderguru.ru", "rostender.info", "trade.su", "zakupki.kontur.ru",
+    "seldon-pro.ru", "seldon.ru", "zakazrf.ru", "lot-online.ru", "etp-gpb.ru"
 }
 
 
@@ -85,7 +91,28 @@ LISTING_PATH_PATTERNS = [
 REFERENCE_PRICE_PATH_PATTERNS = [
     re.compile(r'/(?:tenders?|procurement|purchases?|auctions?|protocols?|archive)(?:/|$)', re.I),
     re.compile(r'/(?:tender|procurement|purchase|auction|protocol)[-_]?\d+(?:/|$)', re.I),
+    re.compile(r'/(?:procedure|procedures|lot|lots|notice|notices)/\d+(?:/|$)', re.I),
+    re.compile(r'/marketplace-b2b/offer/ktru-', re.I),
+    re.compile(r'/ktru-okpd2/', re.I),
 ]
+
+
+PUBLIC_INSTITUTION_MARKERS = (
+    "гбу", "гбуз", "муп", "гуп", "мку", "фгбу", "фку", "гомвд", "омвд",
+    "администрация", "больница", "црб", "поликлиника", "школа", "детский сад",
+    "управление", "департамент", "министерство", "комитет", "прокуратура", "суд"
+)
+
+
+def is_public_institution_buyer(name: str) -> bool:
+    """Проверяет, является ли юрлицо государственным/муниципальным учреждением (заказчиком торгов, а не продавцом)."""
+    if not name:
+        return False
+    lower = name.lower()
+    for m in PUBLIC_INSTITUTION_MARKERS:
+        if re.search(r'(?:^|[\s"«„(])' + re.escape(m) + r'(?:$|[\s"»“)])', lower, re.I):
+            return True
+    return False
 
 
 def is_listing_url(url: str) -> bool:
@@ -983,6 +1010,9 @@ URL страницы: {url}
         # Если цена не найдена (цена "по запросу"), но поставщик и товар релевантны
         if not is_price_found or raw_price_val <= 0.0:
             comp_name = str(parsed.get("company_name") or "").strip() or domain
+            if is_public_institution_buyer(comp_name):
+                logger.debug("Rejected quote for %s: company %r is a public institution buyer, not a seller", url, comp_name)
+                return None
             inn = str(parsed.get("inn") or pre_inn or "").strip() or None
             if inn:
                 inn = re.sub(r'\D', '', inn)
@@ -1032,6 +1062,9 @@ URL страницы: {url}
                         quote.kpp = dadata_info["kpp"]
                     official_name = dadata_info.get("company_name")
                     if official_name:
+                        if is_public_institution_buyer(official_name):
+                            logger.debug("Rejected quote for %s: DaData company %r is a public institution buyer", url, official_name)
+                            return None
                         quote.company_name = official_name
                     city_or_addr = dadata_info.get("city") or dadata_info.get("legal_address")
                     extra_parts = []
@@ -1090,6 +1123,9 @@ URL страницы: {url}
 
         # Реквизиты
         comp_name = str(parsed.get("company_name") or "").strip() or domain
+        if is_public_institution_buyer(comp_name):
+            logger.debug("Rejected quote for %s: company %r is a public institution buyer, not a seller", url, comp_name)
+            return None
         inn = str(parsed.get("inn") or pre_inn or "").strip() or None
         if inn:
             inn = re.sub(r'\D', '', inn)
@@ -1140,6 +1176,9 @@ URL страницы: {url}
                     quote.kpp = dadata_info["kpp"]
                 official_name = dadata_info.get("company_name")
                 if official_name:
+                    if is_public_institution_buyer(official_name):
+                        logger.debug("Rejected quote for %s: DaData company %r is a public institution buyer", url, official_name)
+                        return None
                     quote.company_name = official_name
                 city_or_addr = dadata_info.get("city") or dadata_info.get("legal_address")
                 extra_parts = []

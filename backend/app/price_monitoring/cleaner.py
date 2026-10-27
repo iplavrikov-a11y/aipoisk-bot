@@ -125,6 +125,24 @@ def extract_generic_nomenclature_codes(name: str) -> list[str]:
     return codes
 
 
+def is_classifier_code(token: str, full_text: str = "") -> bool:
+    """
+    Проверяет, является ли токен кодом классификатора (ОКПД, ОКПД2, КТРУ, ТН ВЭД)
+    или названием справочника. Коды классификаторов не являются заводскими
+    артикулами и не должны попадать в строгие коммерческие запросы.
+    """
+    clean_tok = token.strip("()[]{}<>\"'*#№!, ;")
+    lower_tok = clean_tok.lower()
+    if lower_tok in {"окпд", "окпд2", "okpd", "okpd2", "ктру", "ktru", "тнвэд", "тн вэд", "tnved"}:
+        return True
+    # Шаблоны кодов ОКПД2 / КТРУ: 31.01.12.160, 31.01.12.160-00000005, 26.51.66.120-00000001
+    if re.fullmatch(r'\d{2}\.\d{2}\.\d{2}(?:\.\d{3})?(?:-\d{6,10})?', clean_tok):
+        return True
+    if full_text and re.search(r'\b(?:окпд2?|okpd2?|ктру|ktru|тн\s*вэд|tnved)\b\D{0,10}' + re.escape(clean_tok), full_text, re.I):
+        return True
+    return False
+
+
 def is_drawing_or_part_code(token: str, full_text: str = "") -> bool:
     """
     Определяет, является ли токен специализированным номером заводского чертежа или артикулом детали (Правило 14).
@@ -132,6 +150,8 @@ def is_drawing_or_part_code(token: str, full_text: str = "") -> bool:
     """
     token = token.strip("()[]{}<>\"'*#№!, ")
     if len(token) < 4:
+        return False
+    if is_classifier_code(token, full_text):
         return False
     if _is_measurement_or_descriptor_token(token):
         return False
@@ -174,6 +194,8 @@ def is_closed_factory_drawing(token: str, full_text: str = "") -> bool:
     """
     token = token.strip("()[]{}<>\"'*#№!, ")
     if len(token) < 5:
+        return False
+    if is_classifier_code(token, full_text):
         return False
     # Общепринятые стандарты (ГОСТ, ОСТ, ТУ, DIN, ISO) - публичные нормативные документы, а не чертежи
     if full_text and re.search(r'\b(?:гост|ост|ту|din|iso)\s*' + re.escape(token), full_text, re.I):
