@@ -71,6 +71,8 @@ def _ensure_schema() -> None:
             Base.metadata.tables["job_sources"].create(bind=connection, checkfirst=True)
         if "web_password_reset_tokens" in Base.metadata.tables:
             Base.metadata.tables["web_password_reset_tokens"].create(bind=connection, checkfirst=True)
+        if "invoices" in Base.metadata.tables:
+            Base.metadata.tables["invoices"].create(bind=connection, checkfirst=True)
         inspector = inspect(connection)
         system_settings_existing = _existing_columns(inspector, "system_settings")
         system_settings_additions = {

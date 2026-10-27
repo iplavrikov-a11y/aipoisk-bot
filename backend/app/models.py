@@ -769,3 +769,53 @@ def parse_json_dict(value: str) -> dict:
     res = parse_json_safely(value)
     return res if isinstance(res, dict) else {}
 
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    invoice_number: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    client_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc, onupdate=now_utc)
+
+    # Financials
+    amount_rub: Mapped[int] = mapped_column(Integer, nullable=False)
+    bonus_rub: Mapped[int] = mapped_column(Integer, default=0)
+    total_credit_rub: Mapped[int] = mapped_column(Integer, default=0)
+    tariff_name: Mapped[str] = mapped_column(String(255), default="Пополнение баланса")
+    service_name: Mapped[str] = mapped_column(Text, default="Предоставление права использования сервиса TenderLex")
+
+    # Buyer Requisites
+    buyer_inn: Mapped[str] = mapped_column(String(20), default="")
+    buyer_kpp: Mapped[str] = mapped_column(String(20), default="")
+    buyer_name: Mapped[str] = mapped_column(String(255), default="")
+    buyer_address: Mapped[str] = mapped_column(Text, default="")
+    buyer_email: Mapped[str] = mapped_column(String(255), default="")
+
+    # Status: issued, paid, cancelled
+    status: Mapped[str] = mapped_column(String(32), default="issued")
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "invoice_number": self.invoice_number,
+            "client_id": self.client_id,
+            "amount_rub": self.amount_rub,
+            "bonus_rub": self.bonus_rub,
+            "total_credit_rub": self.total_credit_rub,
+            "tariff_name": self.tariff_name,
+            "service_name": self.service_name,
+            "buyer_inn": self.buyer_inn,
+            "buyer_kpp": self.buyer_kpp,
+            "buyer_name": self.buyer_name,
+            "buyer_address": self.buyer_address,
+            "buyer_email": self.buyer_email,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "paid_at": self.paid_at.isoformat() if self.paid_at else None,
+        }
+
+

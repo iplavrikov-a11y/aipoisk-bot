@@ -129,6 +129,7 @@ from .models import (
     Client,
     ClientTariffOverride,
     ClientTelegramAccount,
+    Invoice,
     Job,
     JobFile,
     JobSource,
@@ -1564,6 +1565,265 @@ async def customer_start_supplier_search_route(
         "success": True,
         "message": "Поиск поставщиков успешно запущен на основе подобранных товаров и аналогов.",
         "job": customer_job_to_dict(job, db=db),
+    }
+
+
+# ==============================================================================
+# B2B INVOICES & REQUISITES (Счета для юридических лиц)
+# ==============================================================================
+
+@app.get("/api/customer/dadata/company-by-inn")
+@app.get("/api/dadata/company-by-inn")
+async def dadata_company_by_inn_api(inn: str = Query(...)) -> dict:
+    from .dadata_client import enrich_company_by_inn
+
+    cleaned = re.sub(r"\D+", "", str(inn or "")).strip()
+    if not cleaned or len(cleaned) not in (10, 12):
+        raise HTTPException(
+            status_code=400,
+            detail="ИНН должен содержать 10 цифр (для юрлиц) или 12 цифр (для ИП).",
+        )
+    try:
+        profile = await enrich_company_by_inn(cleaned)
+        if not profile or not profile.get("company_name"):
+            return {
+                "found": False,
+                "message": "Организация или ИП с таким ИНН не найдены в ФНС",
+            }
+        return {"found": True, "company": profile}
+    except Exception as e:
+        return {"found": False, "message": f"Ошибка сервиса подсказок: {e}"}
+
+
+@app.post("/api/customer/invoices")
+async def customer_create_invoice_api(
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    body = await request.json()
+    amount_rub = int(body.get("amount_rub") or 0)
+    if amount_rub < 500:
+        raise HTTPException(status_code=400, detail="Минимальная сумма счёта — 500 ₽")
+
+    buyer_inn = re.sub(r"\D+", "", str(body.get("buyer_inn") or "")).strip()
+    buyer_name = str(body.get("buyer_name") or "").strip()
+    if not buyer_inn:
+        raise HTTPException(status_code=400, detail="Укажите ИНН организации или ИП")
+    if not buyer_name:
+        raise HTTPException(status_code=400, detail="Укажите наименование организации или ИП")
+
+    buyer_kpp = str(body.get("buyer_kpp") or "").strip()
+    buyer_address = str(body.get("buyer_address") or "").strip()
+    buyer_email = str(body.get("buyer_email") or context.user.email or "").strip()
+    tariff_name = str(body.get("tariff_name") or "Пополнение баланса").strip()
+
+    from .billing import calculate_deposit_bonus_kopeks
+    from .invoice_service import next_invoice_number, notify_admin_telegram
+
+    bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, context.user.client)
+    bonus_rub = bonus_kopeks // 100
+    total_credit_rub = amount_rub + bonus_rub
+
+    invoice_num = next_invoice_number(db)
+
+    invoice = Invoice(
+        invoice_number=invoice_num,
+        client_id=context.user.client.id,
+        amount_rub=amount_rub,
+        bonus_rub=bonus_rub,
+        total_credit_rub=total_credit_rub,
+        tariff_name=tariff_name,
+        service_name="Предоставление права использования сервиса TenderLex",
+        buyer_inn=buyer_inn,
+        buyer_kpp=buyer_kpp,
+        buyer_name=buyer_name,
+        buyer_address=buyer_address,
+        buyer_email=buyer_email,
+        status="issued",
+    )
+    db.add(invoice)
+    db.commit()
+    db.refresh(invoice)
+
+    # Notify admin in Telegram in background
+    try:
+        asyncio.create_task(notify_admin_telegram(invoice))
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "invoice": invoice.to_dict(),
+        "html_url": f"/api/customer/invoices/{invoice.id}/html",
+        "download_xlsx_url": f"/api/customer/invoices/{invoice.id}/download?format=xlsx",
+        "download_pdf_url": f"/api/customer/invoices/{invoice.id}/download?format=pdf",
+    }
+
+
+@app.get("/api/customer/invoices")
+def customer_list_invoices_api(
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    invoices = (
+        db.query(Invoice)
+        .filter(Invoice.client_id == context.user.client.id)
+        .order_by(Invoice.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    return {"invoices": [inv.to_dict() for inv in invoices]}
+
+
+@app.get("/api/customer/invoices/{invoice_id}")
+def customer_get_invoice_api(
+    invoice_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice or invoice.client_id != context.user.client.id:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+    return {
+        "invoice": invoice.to_dict(),
+        "html_url": f"/api/customer/invoices/{invoice.id}/html",
+        "download_xlsx_url": f"/api/customer/invoices/{invoice.id}/download?format=xlsx",
+        "download_pdf_url": f"/api/customer/invoices/{invoice.id}/download?format=pdf",
+    }
+
+
+@app.get("/api/customer/invoices/{invoice_id}/html")
+def customer_invoice_html_api(
+    invoice_id: str,
+    db: Session = Depends(db_session),
+) -> HTMLResponse:
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+    from .invoice_service import render_invoice_html
+
+    html = render_invoice_html(invoice)
+    return HTMLResponse(content=html)
+
+
+@app.get("/api/customer/invoices/{invoice_id}/download")
+def customer_invoice_download_api(
+    invoice_id: str,
+    format: str = Query("xlsx"),
+    db: Session = Depends(db_session),
+) -> FileResponse:
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+
+    from .invoice_service import generate_invoice_pdf, generate_invoice_xlsx
+
+    storage_base = Path(config.storage_path) / "invoices"
+    storage_base.mkdir(parents=True, exist_ok=True)
+
+    fmt = str(format or "xlsx").lower().strip()
+    if fmt == "pdf":
+        file_path = storage_base / f"schet_{invoice.invoice_number}.pdf"
+        generate_invoice_pdf(invoice, str(file_path))
+        return FileResponse(
+            str(file_path),
+            media_type="application/pdf",
+            filename=f"schet_{invoice.invoice_number}.pdf",
+        )
+    else:
+        file_path = storage_base / f"schet_{invoice.invoice_number}.xlsx"
+        generate_invoice_xlsx(invoice, str(file_path))
+        return FileResponse(
+            str(file_path),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=f"schet_{invoice.invoice_number}.xlsx",
+        )
+
+
+@app.post("/api/customer/invoices/{invoice_id}/send-email")
+async def customer_invoice_send_email_api(
+    invoice_id: str,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice or invoice.client_id != context.user.client.id:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+
+    email = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            email = str(body.get("email") or "").strip()
+    except Exception:
+        pass
+    if not email:
+        email = invoice.buyer_email or context.user.email
+
+    from .invoice_service import send_invoice_email
+
+    ok, msg = send_invoice_email(invoice, email)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": f"Счёт успешно отправлен на {email}"}
+
+
+@app.get("/api/admin/invoices", dependencies=[Depends(require_admin)])
+def admin_list_invoices_api(
+    status: str | None = None,
+    limit: int = 50,
+    db: Session = Depends(db_session),
+) -> dict:
+    query = db.query(Invoice)
+    if status:
+        query = query.filter(Invoice.status == status)
+    invoices = query.order_by(Invoice.created_at.desc()).limit(limit).all()
+    return {"invoices": [inv.to_dict() for inv in invoices]}
+
+
+@app.post("/api/admin/invoices/{invoice_id}/mark-paid", dependencies=[Depends(require_admin)])
+def admin_mark_invoice_paid_api(
+    invoice_id: str,
+    db: Session = Depends(db_session),
+) -> dict:
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+    if invoice.status == "paid":
+        return {
+            "success": True,
+            "message": "Счёт уже был отмечен как оплаченный",
+            "invoice": invoice.to_dict(),
+        }
+
+    client = db.query(Client).filter(Client.id == invoice.client_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+
+    from .billing import grant_money_balance
+
+    # Credit total amount (rubles + bonus) to client balance
+    amount_kopeks = invoice.total_credit_rub * 100
+    grant_money_balance(
+        db,
+        client,
+        amount_kopeks=amount_kopeks,
+        note=f"Оплата по счету № {invoice.invoice_number} ({invoice.buyer_name})",
+        created_by="admin_invoice",
+        idempotency_key=f"invoice_paid_{invoice.id}",
+    )
+
+    invoice.status = "paid"
+    invoice.paid_at = now_utc()
+    db.commit()
+    db.refresh(invoice)
+
+    return {
+        "success": True,
+        "message": f"Счёт {invoice.invoice_number} оплачен, на баланс зачислено {invoice.total_credit_rub:,} ₽",
+        "invoice": invoice.to_dict(),
     }
 
 

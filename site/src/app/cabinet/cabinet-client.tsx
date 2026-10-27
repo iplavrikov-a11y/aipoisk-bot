@@ -39,6 +39,7 @@ import {
   Paperclip,
   Pencil,
   PlusCircle,
+  Printer,
   QrCode,
   Receipt,
   RotateCcw,
@@ -1498,6 +1499,35 @@ export function CabinetClient() {
   const [selectedTopUpPackage, setSelectedTopUpPackage] = useState<DepositPackage | null>(null);
   const [customTopUpRub, setCustomTopUpRub] = useState<number>(5000);
   const [topUpCopied, setTopUpCopied] = useState(false);
+
+  // B2B Invoice state
+  const [invoiceInn, setInvoiceInn] = useState("");
+  const [invoiceKpp, setInvoiceKpp] = useState("");
+  const [invoiceName, setInvoiceName] = useState("");
+  const [invoiceAddress, setInvoiceAddress] = useState("");
+  const [invoiceEmail, setInvoiceEmail] = useState("");
+  const [invoiceLoadingInn, setInvoiceLoadingInn] = useState(false);
+  const [invoiceInnFound, setInvoiceInnFound] = useState(false);
+  const [invoiceInnError, setInvoiceInnError] = useState("");
+  const [invoiceSubmitting, setInvoiceSubmitting] = useState(false);
+  const [invoiceSubmitError, setInvoiceSubmitError] = useState("");
+  const [invoiceCreated, setInvoiceCreated] = useState<{
+    id: string;
+    invoice_number: string;
+    amount_rub: number;
+    bonus_rub: number;
+    total_credit_rub: number;
+    buyer_name: string;
+    buyer_inn: string;
+    buyer_kpp?: string;
+    buyer_address?: string;
+    buyer_email: string;
+    tariff_name: string;
+    created_at?: string;
+  } | null>(null);
+  const [invoiceEmailSending, setInvoiceEmailSending] = useState(false);
+  const [invoiceEmailSent, setInvoiceEmailSent] = useState(false);
+  const [invoiceDetailsCopied, setInvoiceDetailsCopied] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showReferralModal, setShowReferralModal] = useState(false);
@@ -7514,87 +7544,480 @@ ${webLink}`;
               </>
             ) : null}
 
-            {/* TAB 2: B2B Invoice Stub */}
+            {/* TAB 2: Interactive B2B Invoice Generator */}
             {topUpTab === "b2b" ? (
-              <div className="space-y-3 py-1">
-                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2.5 rounded-xl bg-slate-200/70 text-slate-700 shrink-0 mt-0.5">
-                      <Building2 size={22} />
+              <div className="space-y-4 py-1">
+                {!invoiceCreated ? (
+                  <>
+                    {/* Step 1: Package / Custom Amount */}
+                    <div className="space-y-2">
+                      <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                        1. Выберите сумму или пакет:
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {(session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES).map((pkg) => {
+                          const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
+                          return (
+                            <button
+                              key={pkg.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedTopUpPackage(pkg);
+                                setCustomTopUpRub(pkg.price_rub);
+                              }}
+                              className={`p-2.5 rounded-xl border text-left transition-all relative cursor-pointer flex flex-col justify-between ${
+                                isSelected
+                                  ? "bg-emerald-50/80 border-emerald-500 ring-2 ring-emerald-500/30 shadow-xs"
+                                  : "bg-slate-50/70 border-slate-200/90 hover:bg-slate-100/80 hover:border-slate-300"
+                              }`}
+                            >
+                              {pkg.badge ? (
+                                <span className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-extrabold text-[9px] shadow-2xs">
+                                  {pkg.badge}
+                                </span>
+                              ) : null}
+                              <div>
+                                <div className="text-xs font-bold text-slate-900">{pkg.name}</div>
+                                <div className="text-sm font-black text-slate-900 mt-0.5">
+                                  {pkg.price_rub.toLocaleString("ru-RU")} ₽
+                                </div>
+                              </div>
+                              <div className="mt-2 pt-1.5 border-t border-slate-200/70 text-[11px] space-y-0.5">
+                                <div className="text-emerald-700 font-bold">
+                                  На баланс: {pkg.total_rub.toLocaleString("ru-RU")} ₽
+                                </div>
+                                {pkg.bonus_rub > 0 ? (
+                                  <div className="text-[10px] text-emerald-600 font-medium">
+                                    +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽ бонус
+                                  </div>
+                                ) : (
+                                  <div className="text-[10px] text-slate-400 font-normal">без бонуса</div>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Custom Amount */}
+                      <div className="pt-1">
+                        <label htmlFor="b2b-custom-amount" className="text-[11px] font-semibold text-slate-600 block mb-1">
+                          Или укажите произвольную сумму:
+                        </label>
+                        <div className="relative">
+                          <input
+                            id="b2b-custom-amount"
+                            type="number"
+                            min={500}
+                            step={500}
+                            value={customTopUpRub || ""}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10) || 0;
+                              setCustomTopUpRub(val);
+                              const match = (session?.deposit_packages || DEFAULT_DEPOSIT_PACKAGES).find((p) => p.price_rub === val);
+                              setSelectedTopUpPackage(match || null);
+                            }}
+                            placeholder="5000"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                            ₽
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Calculation Summary */}
+                      {(() => {
+                        const calc = (() => {
+                          if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
+                            return {
+                              bonusRub: selectedTopUpPackage.bonus_rub,
+                              totalRub: selectedTopUpPackage.total_rub,
+                              percent: selectedTopUpPackage.bonus_percent,
+                            };
+                          }
+                          return calculateDepositBonus(customTopUpRub);
+                        })();
+                        return (
+                          <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200/90 flex items-center justify-between text-xs">
+                            <div>
+                              <span className="text-slate-600">К оплате по счёту: </span>
+                              <strong className="text-slate-900 font-bold">{customTopUpRub.toLocaleString("ru-RU")} ₽</strong>
+                              {calc.bonusRub > 0 ? (
+                                <span className="ml-2 text-emerald-700 font-bold">
+                                  (+{calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус {calc.percent}%)
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="text-right">
+                              <span className="text-[10px] text-slate-500 block">Поступит на баланс:</span>
+                              <strong className="text-emerald-700 font-black text-sm">{calc.totalRub.toLocaleString("ru-RU")} ₽</strong>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-sm font-bold text-slate-900">Безналичный расчёт для юридических лиц</h3>
-                        <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px] font-extrabold">
-                          По запросу
+
+                    {/* Step 2: Company Requisites */}
+                    <div className="space-y-3 pt-1 border-t border-slate-200/80">
+                      <div className="flex items-center justify-between">
+                        <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                          2. Реквизиты вашей компании / ИП:
+                        </div>
+                        {invoiceInnFound ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-full">
+                            <Check size={12} />
+                            <span>Найдено в ФНС</span>
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {/* INN Input with DaData auto-lookup */}
+                      <div className="space-y-1">
+                        <label htmlFor="b2b-inn-input" className="text-xs font-bold text-slate-700 block">
+                          ИНН организации или ИП <span className="text-rose-500">*</span>
+                        </label>
+                        <div className="relative">
+                          <input
+                            id="b2b-inn-input"
+                            type="text"
+                            maxLength={12}
+                            value={invoiceInn}
+                            onChange={(e) => {
+                              const val = e.target.value.replace(/\D/g, "");
+                              setInvoiceInn(val);
+                              setInvoiceInnFound(false);
+                              setInvoiceInnError("");
+                              if (val.length === 10 || val.length === 12) {
+                                // Auto-fetch from DaData
+                                const handleLookup = async () => {
+                                  setInvoiceLoadingInn(true);
+                                  try {
+                                    const res = await fetch(`/api/customer/dadata/company-by-inn?inn=${val}`);
+                                    const data = await res.json();
+                                    if (data.found && data.company) {
+                                      setInvoiceName(data.company.company_name || data.company.full_name || "");
+                                      setInvoiceKpp(data.company.kpp || "");
+                                      setInvoiceAddress(data.company.legal_address || "");
+                                      setInvoiceInnFound(true);
+                                    } else {
+                                      setInvoiceInnError(data.message || "Организация не найдена в ФНС");
+                                    }
+                                  } catch (err) {
+                                    // Ignored
+                                  } finally {
+                                    setInvoiceLoadingInn(false);
+                                  }
+                                };
+                                handleLookup();
+                              }
+                            }}
+                            placeholder="Введите 10 цифр для юрлиц или 12 цифр для ИП"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-10"
+                          />
+                          {invoiceLoadingInn ? (
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-600">
+                              <Loader2 size={16} className="animate-spin" />
+                            </span>
+                          ) : (
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                              <Building2 size={16} />
+                            </span>
+                          )}
+                        </div>
+                        {invoiceInnError ? (
+                          <p className="text-[11px] text-amber-700 mt-1">{invoiceInnError}</p>
+                        ) : (
+                          <p className="text-[10px] text-slate-500">
+                            Введите ИНН — название, КПП и адрес подтянутся автоматически из ФНС.
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Company Name */}
+                      <div className="space-y-1">
+                        <label htmlFor="b2b-company-name" className="text-xs font-bold text-slate-700 block">
+                          Наименование организации или ИП <span className="text-rose-500">*</span>
+                        </label>
+                        <input
+                          id="b2b-company-name"
+                          type="text"
+                          value={invoiceName}
+                          onChange={(e) => setInvoiceName(e.target.value)}
+                          placeholder="ООО «Ромашка» или ИП Иванов И.И."
+                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {/* KPP (optional) */}
+                        <div className="space-y-1">
+                          <label htmlFor="b2b-kpp-input" className="text-xs font-bold text-slate-700 block">
+                            КПП <span className="text-[10px] font-normal text-slate-400">(для юрлиц)</span>
+                          </label>
+                          <input
+                            id="b2b-kpp-input"
+                            type="text"
+                            maxLength={9}
+                            value={invoiceKpp}
+                            onChange={(e) => setInvoiceKpp(e.target.value)}
+                            placeholder="770101001"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+                          />
+                        </div>
+
+                        {/* Legal Address */}
+                        <div className="space-y-1 sm:col-span-2">
+                          <label htmlFor="b2b-address-input" className="text-xs font-bold text-slate-700 block">
+                            Юридический адрес
+                          </label>
+                          <input
+                            id="b2b-address-input"
+                            type="text"
+                            value={invoiceAddress}
+                            onChange={(e) => setInvoiceAddress(e.target.value)}
+                            placeholder="г. Москва, ул. Тверская, д. 10"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Email for sending invoice */}
+                      <div className="space-y-1">
+                        <label htmlFor="b2b-email-input" className="text-xs font-bold text-slate-700 block">
+                          Email для получения счёта и закрывающих документов
+                        </label>
+                        <input
+                          id="b2b-email-input"
+                          type="email"
+                          value={invoiceEmail || session?.user?.email || ""}
+                          onChange={(e) => setInvoiceEmail(e.target.value)}
+                          placeholder="buh@company.ru"
+                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+                        />
+                      </div>
+
+                      {invoiceSubmitError ? (
+                        <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700">
+                          {invoiceSubmitError}
+                        </div>
+                      ) : null}
+
+                      {/* Submit Button */}
+                      <div className="pt-2">
+                        <button
+                          type="button"
+                          disabled={invoiceSubmitting || !invoiceInn.trim() || !invoiceName.trim()}
+                          onClick={async () => {
+                            if (!invoiceInn.trim()) {
+                              setInvoiceSubmitError("Укажите ИНН организации или ИП");
+                              return;
+                            }
+                            if (!invoiceName.trim()) {
+                              setInvoiceSubmitError("Укажите наименование компании или ИП");
+                              return;
+                            }
+                            setInvoiceSubmitting(true);
+                            setInvoiceSubmitError("");
+                            try {
+                              const pkgName = selectedTopUpPackage?.name || "Пополнение баланса";
+                              const emailToSend = (invoiceEmail.trim() || session?.user?.email || "").trim();
+                              const res = await fetch("/api/customer/invoices", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  amount_rub: customTopUpRub,
+                                  tariff_name: pkgName,
+                                  buyer_inn: invoiceInn.replace(/\D/g, "").trim(),
+                                  buyer_kpp: invoiceKpp.trim(),
+                                  buyer_name: invoiceName.trim(),
+                                  buyer_address: invoiceAddress.trim(),
+                                  buyer_email: emailToSend,
+                                }),
+                              });
+                              const data = await res.json();
+                              if (!res.ok) {
+                                throw new Error(data.detail || "Не удалось выставить счёт");
+                              }
+                              setInvoiceCreated(data.invoice);
+                            } catch (err: any) {
+                              setInvoiceSubmitError(err.message || "Ошибка при создании счёта");
+                            } finally {
+                              setInvoiceSubmitting(false);
+                            }
+                          }}
+                          className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                        >
+                          {invoiceSubmitting ? (
+                            <>
+                              <Loader2 size={16} className="animate-spin" />
+                              <span>Формируем счёт...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Receipt size={16} />
+                              <span>Сформировать счёт на {customTopUpRub.toLocaleString("ru-RU")} ₽</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  /* Screen 2: Invoice Successfully Created */
+                  <div className="space-y-4">
+                    <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-300 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="inline-flex items-center gap-1.5 text-xs font-extrabold text-emerald-800 bg-emerald-100 px-2.5 py-1 rounded-full">
+                          <CheckCircle2 size={14} className="text-emerald-600" />
+                          <span>Счёт сформирован</span>
+                        </div>
+                        <span className="text-xs font-mono font-bold text-slate-500">
+                          {invoiceCreated.created_at ? new Date(invoiceCreated.created_at).toLocaleDateString("ru-RU") : "Сегодня"}
                         </span>
                       </div>
-                      <p className="text-xs text-slate-600 leading-relaxed">
-                        Работаем с организациями и ИП по договору. Предоставляем полный комплект закрывающих документов (УПД) через ЭДО (Диадок / СБИС) или скан с оригинальной синей печатью.
-                      </p>
+
+                      <div>
+                        <h3 className="text-base sm:text-lg font-black text-slate-900">
+                          Счёт № {invoiceCreated.invoice_number}
+                        </h3>
+                        <p className="text-xs text-slate-600 mt-0.5">
+                          Плательщик: <b>{invoiceCreated.buyer_name}</b> (ИНН {invoiceCreated.buyer_inn})
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-emerald-200/70 text-xs">
+                        <div>
+                          <span className="text-[10px] text-slate-500 block uppercase font-semibold">Сумма к оплате:</span>
+                          <strong className="text-base font-black text-slate-900">
+                            {invoiceCreated.amount_rub.toLocaleString("ru-RU")} ₽
+                          </strong>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[10px] text-emerald-700 block uppercase font-semibold">На баланс:</span>
+                          <strong className="text-base font-black text-emerald-700">
+                            {invoiceCreated.total_credit_rub.toLocaleString("ru-RU")} ₽
+                          </strong>
+                          {invoiceCreated.bonus_rub > 0 ? (
+                            <span className="text-[10px] text-emerald-600 block">
+                              (+{invoiceCreated.bonus_rub.toLocaleString("ru-RU")} ₽ бонус)
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="p-3 bg-amber-50/80 border border-amber-200/90 rounded-lg text-xs text-amber-900 space-y-1">
-                    <p className="font-bold flex items-center gap-1.5">
-                      <Clock3 size={13} className="text-amber-700 shrink-0" />
-                      <span>Обновление платёжных реквизитов</span>
-                    </p>
-                    <p className="text-[11px] leading-relaxed text-amber-800">
-                      В данный момент расчётный счёт обновляется. Для выставления коммерческого предложения, согласования счёта и отправки реквизитов свяжитесь с нами напрямую через Telegram или отправьте карточку предприятия на email.
-                    </p>
-                  </div>
+                    {/* Action Buttons */}
+                    <div className="space-y-2">
+                      <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                        Действия со счётом:
+                      </div>
 
-                  <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
-                    <span className="text-slate-500">Ваш email аккаунта:</span>
-                    <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
-                  </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {/* Print / View PDF */}
+                        <a
+                          href={`/api/customer/invoices/${invoiceCreated.id}/html`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
+                        >
+                          <Printer size={15} className="text-teal-600 shrink-0" />
+                          <span>Распечатать / В PDF</span>
+                        </a>
 
-                  <div className="space-y-2 pt-1">
-                    <a
-                      href={`${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${encodeURIComponent(
-                        `Здравствуйте! Интересует оплата по безналичному расчету (счёт для юрлица) в сервисе TenderLex. Мой email: ${session?.user?.email || ""}`
-                      )}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
-                    >
-                      <Send size={15} />
-                      <span>Запросить счёт в Telegram</span>
-                    </a>
+                        {/* Download Excel */}
+                        <a
+                          href={`/api/customer/invoices/${invoiceCreated.id}/download?format=xlsx`}
+                          download
+                          className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
+                        >
+                          <FileSpreadsheet size={15} className="text-emerald-600 shrink-0" />
+                          <span>Скачать Excel (.xlsx)</span>
+                        </a>
 
-                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                        {/* Send Email */}
+                        <button
+                          type="button"
+                          disabled={invoiceEmailSending}
+                          onClick={async () => {
+                            setInvoiceEmailSending(true);
+                            try {
+                              const res = await fetch(`/api/customer/invoices/${invoiceCreated.id}/send-email`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ email: invoiceCreated.buyer_email || session?.user?.email }),
+                              });
+                              const data = await res.json();
+                              if (!res.ok) throw new Error(data.detail || "Ошибка отправки");
+                              setInvoiceEmailSent(true);
+                              setTimeout(() => setInvoiceEmailSent(false), 4000);
+                            } catch (err: any) {
+                              alert(err.message || "Не удалось отправить счёт");
+                            } finally {
+                              setInvoiceEmailSending(false);
+                            }
+                          }}
+                          className={`flex items-center justify-center gap-2 p-2.5 border rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer text-center ${
+                            invoiceEmailSent
+                              ? "bg-emerald-50 text-emerald-800 border-emerald-300"
+                              : "bg-white hover:bg-slate-50 text-slate-900 border-slate-300"
+                          }`}
+                        >
+                          {invoiceEmailSending ? (
+                            <Loader2 size={15} className="animate-spin text-teal-600" />
+                          ) : invoiceEmailSent ? (
+                            <Check size={15} className="text-emerald-600" />
+                          ) : (
+                            <Mail size={15} className="text-teal-600" />
+                          )}
+                          <span>{invoiceEmailSent ? "Отправлено на почту!" : "Отправить на email"}</span>
+                        </button>
+
+                        {/* Copy Bank Details for 1C/Bank-Client */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const detailsText = `Получатель: ИП Груздев Игорь Вячеславович\nИНН: 352516048881\nР/с: 40802810217430000342\nБанк: АО "АЛЬФА-БАНК"\nБИК: 044525593\nК/с: 30101810200000000593\nСумма: ${invoiceCreated.amount_rub} руб.\nНазначение: Оплата по счету № ${invoiceCreated.invoice_number} за услуги сервиса TenderLex. Без НДС.`;
+                            navigator.clipboard.writeText(detailsText).then(() => {
+                              setInvoiceDetailsCopied(true);
+                              setTimeout(() => setInvoiceDetailsCopied(false), 3000);
+                            });
+                          }}
+                          className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
+                        >
+                          {invoiceDetailsCopied ? (
+                            <Check size={15} className="text-emerald-600" />
+                          ) : (
+                            <Copy size={15} className="text-slate-600" />
+                          )}
+                          <span>{invoiceDetailsCopied ? "Реквизиты скопированы!" : "Скопировать для банк-клиента"}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Reset Button */}
+                    <div className="pt-2 text-center flex items-center justify-center gap-4">
                       <button
                         type="button"
                         onClick={() => {
-                          const copyText = `Запрос счёта для юрлица в TenderLex. Email аккаунта: ${session?.user?.email || ""}`;
-                          navigator.clipboard.writeText(copyText).then(() => {
-                            setTopUpCopied(true);
-                            setTimeout(() => setTopUpCopied(false), 2500);
-                          });
+                          setInvoiceCreated(null);
+                          setInvoiceInnFound(false);
                         }}
-                        className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
+                        className="text-xs text-slate-500 hover:text-slate-800 underline cursor-pointer"
                       >
-                        <Copy size={13} />
-                        <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать запрос"}</span>
+                        Сформировать другой счёт
                       </button>
-
-                      <a
-                        href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(
-                          `Запрос счёта для юрлица - TenderLex (${session?.user?.email || ""})`
-                        )}`}
-                        className="text-xs text-slate-500 hover:text-slate-700 underline"
-                      >
-                        Отправить реквизиты на email
-                      </a>
                     </div>
                   </div>
-                </div>
+                )}
 
-                <div className="text-center pt-1">
+                <div className="text-center pt-2 border-t border-slate-100">
                   <button
                     type="button"
-                    onClick={() => setTopUpTab("card")}
+                    onClick={() => {
+                      setTopUpTab("card");
+                      setInvoiceCreated(null);
+                    }}
                     className="text-xs text-emerald-700 hover:text-emerald-800 font-semibold underline cursor-pointer"
                   >
                     ← Вернуться к оплате картой

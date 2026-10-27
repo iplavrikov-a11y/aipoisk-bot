@@ -1,12 +1,20 @@
 # TenderLex Bot
 
-Актуальный выпуск 27 октября 2026: [устранение кодов классификаторов ОКПД2/КТРУ из запросов, блокировка тендерных агрегаторов, исключение больниц/школ как поставщиков и валидация 32 новых ТЗ](docs/CLASSIFIER_ISOLATION_AND_32TZ_BENCHMARK_RELEASE_2026-10-27.md), а также [матричное тестирование 7 режимов на 105 реальных задачах, сквозная география мониторинга цен и адаптация под Windows](docs/BENCHMARK_MATRIX_AND_GEO_SCOPE_RELEASE_2026-10-26.md). Предыдущий выпуск 25 октября: [снятие лимита позиций в подборе товара, индивидуальные тарифы по всем 5 услугам в админке и аудит задачи №977](docs/PROJECT_STATUS.md).
+Актуальный выпуск 27 октября 2026: [выставление счетов для юридических лиц и ИП по расчётному счёту (B2B)](backend/app/invoice_service.py), [устранение кодов классификаторов ОКПД2/КТРУ из запросов, блокировка тендерных агрегаторов, исключение больниц/школ как поставщиков и валидация 32 новых ТЗ](docs/CLASSIFIER_ISOLATION_AND_32TZ_BENCHMARK_RELEASE_2026-10-27.md), а также [матричное тестирование 7 режимов на 105 реальных задачах, сквозная география мониторинга цен и адаптация под Windows](docs/BENCHMARK_MATRIX_AND_GEO_SCOPE_RELEASE_2026-10-26.md).
 
-Серверный прогон выпуска 27 октября: 1 349 тестов и 54 подтеста; проведен матричный бенчмарк на 32 новых реальных промышленных ТЗ платформы (68 проверочных задач: отсечение классификаторов 100%, блокировка ЭТП 100%, отсечение бюджетных учреждений 100%).
+Серверный прогон выпуска 27 октября: 1 353 бэкенд-теста (включая полный пайплайн счетов); 108 страниц сайта собраны успешно; деплой проверен на проде.
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- B2B Bank Invoice Generation & 1C Layout with Digital Facsimile & DaData (2026-10-27):
+  - Interactive Invoice Generator in Customer Cabinet (`site/src/app/cabinet/cabinet-client.tsx`): clients can choose packages with automatic bonus calculation (+500 ₽, +1 500 ₽, +4 000 ₽, +50%) or enter custom amount (from 3 000 ₽). Instant DaData company lookup by 10/12-digit INN auto-fills legal name, KPP, and registered address.
+  - Authentic 1C Invoice Layout & Facsimile (`backend/app/invoice_service.py`): generates compliant Russian B2B invoices for ИП Груздев И.В. with official Альфа-Банк requisites, sequential numbers (`TL-2026-XXXX`), ruble amounts in words with kopeks and "Без НДС". Overlays official blue stamp and black signature PNGs with transparent alpha channels over Руководитель and Бухгалтер lines.
+  - Multi-Format Export & Print: instant in-browser print (`@media print` A4 styled layout), direct PDF download via headless LibreOffice converter, and native `.xlsx` Excel download.
+  - Real-Time Telegram Alerts: immediately notifies admin via Telegram Bot API with buyer details, INN, amount, and tariff upon invoice issuance.
+  - Admin Reconciliation: `/api/admin/invoices` and `/api/admin/invoices/{id}/mark-paid` instantly credit client balance and bonus once funds reach the bank account.
+  - Verified with 4 new dedicated E2E pipeline unit tests (`backend/tests/test_invoices.py`), 1,353 total passing tests, and live production deployment.
 
 - Classifier Code Isolation, Tender ETP & Institutional Buyer Filtering, 32-TZ Benchmark (2026-10-27):
   - Root Cause Remediated (Job #994): `is_drawing_or_part_code` in `cleaner.py` misclassified OKPD2/KTRU numbers as drawing codes, wrapping them in strict quotes (`"31.01.12.160"`), completely destroying international commercial queries and forcing Yandex onto tender aggregators where hospital buyers were misparsed as suppliers.
