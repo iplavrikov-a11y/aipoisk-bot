@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+from html import escape as html_escape
 import logging
+import os
+import threading
 import uuid
 from typing import Any
 
 import httpx
+
+from .config import config
 
 logger = logging.getLogger("tenderlex.yookassa")
 
@@ -196,4 +202,123 @@ def verify_yookassa_credentials(
             return False, f"ЮKassa вернула статус {resp.status_code}"
         except httpx.RequestError as exc:
             return False, f"Ошибка сети при проверке ЮKassa: {exc}"
+
+
+def format_payment_method_type(pm_type: str | None) -> str:
+    mapping = {
+        "bank_card": "💳 Банковская карта",
+        "sbp": "⚡ СБП (Система быстрых платежей)",
+        "sber_pay": "🟢 SberPay",
+        "sber_b2b": "🟢 SberPay B2B",
+        "tinkoff_bank": "🟡 T-Pay",
+        "mir_pay": "🇷🇺 Mir Pay",
+        "yoo_money": "🟣 ЮMoney",
+    }
+    return mapping.get(str(pm_type or "").lower(), "Онлайн-оплата (ЮKassa)")
+
+
+async def _send_yookassa_telegram_alert(text: str) -> None:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return
+    bot_token = config.bot_token
+    owner_id = str(config.owner_telegram_id or "").strip()
+    if not bot_token or not owner_id:
+        return
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": owner_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            await client.post(url, json=payload)
+    except Exception as exc:
+        logger.warning("Failed to send telegram yookassa alert: %s", exc)
+
+
+def dispatch_yookassa_telegram_alert(coro) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(coro)
+    except RuntimeError:
+        threading.Thread(target=lambda: asyncio.run(coro), daemon=True).start()
+    except Exception:
+        pass
+
+
+def notify_admin_payment_attempt(
+    *,
+    payment_id: str,
+    amount_rub: int,
+    bonus_rub: int,
+    total_credit_rub: int,
+    package_name: str,
+    user_email: str,
+    client_name: str = "",
+) -> None:
+    bonus_str = f" (+{bonus_rub:,} ₽ бонус)" if bonus_rub else ""
+    client_info = f" ({html_escape(client_name)})" if client_name and client_name != user_email else ""
+    text = (
+        f"💳 <b>Новая попытка онлайн-оплаты (ЮKassa)</b>\n\n"
+        f"<b>Пользователь:</b> {html_escape(user_email)}{client_info}\n"
+        f"<b>Сумма к оплате:</b> <b>{amount_rub:,} ₽</b>\n"
+        f"<b>Поступит на баланс:</b> {total_credit_rub:,} ₽{bonus_str}\n"
+        f"<b>Тариф:</b> {html_escape(package_name)}\n"
+        f"<b>ID платежа:</b> <code>{html_escape(payment_id)}</code>\n\n"
+        f"<i>Клиент перешел на страницу оплаты. Ожидаем подтверждения...</i>"
+    )
+    dispatch_yookassa_telegram_alert(_send_yookassa_telegram_alert(text))
+
+
+def notify_admin_payment_success(
+    *,
+    payment_id: str,
+    amount_rub: int,
+    bonus_rub: int,
+    total_credit_rub: int,
+    package_name: str,
+    user_email: str,
+    client_name: str = "",
+    payment_method_type: str = "",
+) -> None:
+    bonus_str = f" (+{bonus_rub:,} ₽ бонус)" if bonus_rub else ""
+    client_info = f" ({html_escape(client_name)})" if client_name and client_name != user_email else ""
+    pm_name = format_payment_method_type(payment_method_type)
+    text = (
+        f"🎉 <b>Успешная оплата через ЮKassa!</b>\n\n"
+        f"<b>Пользователь:</b> {html_escape(user_email)}{client_info}\n"
+        f"<b>Сумма оплаты:</b> <b>{amount_rub:,} ₽</b>\n"
+        f"<b>Зачислено на баланс:</b> <b>{total_credit_rub:,} ₽</b>{bonus_str}\n"
+        f"<b>Способ:</b> {pm_name}\n"
+        f"<b>Тариф:</b> {html_escape(package_name)}\n"
+        f"<b>ID платежа:</b> <code>{html_escape(payment_id)}</code>\n\n"
+        f"✅ <i>Баланс клиента моментально пополнен. Чек 54-ФЗ отправлен.</i>"
+    )
+    dispatch_yookassa_telegram_alert(_send_yookassa_telegram_alert(text))
+
+
+def notify_admin_payment_canceled(
+    *,
+    payment_id: str,
+    amount_rub: int,
+    package_name: str,
+    user_email: str,
+    client_name: str = "",
+    reason: str = "",
+) -> None:
+    client_info = f" ({html_escape(client_name)})" if client_name and client_name != user_email else ""
+    reason_line = f"<b>Причина:</b> {html_escape(reason)}\n" if reason else ""
+    text = (
+        f"⚠️ <b>Оплата ЮKassa не завершена / отменена</b>\n\n"
+        f"<b>Пользователь:</b> {html_escape(user_email)}{client_info}\n"
+        f"<b>Сумма:</b> {amount_rub:,} ₽\n"
+        f"<b>Тариф:</b> {html_escape(package_name)}\n"
+        f"{reason_line}"
+        f"<b>ID платежа:</b> <code>{html_escape(payment_id)}</code>"
+    )
+    dispatch_yookassa_telegram_alert(_send_yookassa_telegram_alert(text))
+
 

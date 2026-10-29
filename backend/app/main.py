@@ -200,6 +200,9 @@ from .yookassa_service import (
     YooKassaError,
     create_yookassa_payment,
     fetch_yookassa_payment,
+    notify_admin_payment_attempt,
+    notify_admin_payment_canceled,
+    notify_admin_payment_success,
     verify_yookassa_credentials,
 )
 from .security import (
@@ -1920,6 +1923,22 @@ def _process_yookassa_payment_success(
     db.commit()
     logger.info("Successfully processed YooKassa payment %s: credited %s rub to client %s", payment_id, total_credit_rub, client.id)
 
+    user_email = metadata.get("user_email") or ""
+    if not user_email:
+        first_user = client.users[0] if getattr(client, "users", None) else None
+        user_email = getattr(first_user, "email", "") or ""
+
+    notify_admin_payment_success(
+        payment_id=payment_id,
+        amount_rub=amount_rub,
+        bonus_rub=bonus_rub,
+        total_credit_rub=total_credit_rub,
+        package_name=package_name,
+        user_email=user_email,
+        client_name=getattr(client, "name", "") or "",
+        payment_method_type=pm_type,
+    )
+
 
 def _process_yookassa_payment_canceled(
     db: Session,
@@ -1933,6 +1952,20 @@ def _process_yookassa_payment_canceled(
     if record and record.status != "succeeded":
         record.status = "canceled"
         db.commit()
+
+    metadata = payment_data.get("metadata") or {}
+    user_email = metadata.get("user_email") or ""
+    reason = payment_data.get("cancellation_details", {}).get("reason") or ""
+    amount_rub = getattr(record, "amount_rub", 0) or 0
+    package_name = getattr(record, "package_name", "") or "Пополнение баланса"
+
+    notify_admin_payment_canceled(
+        payment_id=payment_id,
+        amount_rub=amount_rub,
+        package_name=package_name,
+        user_email=user_email,
+        reason=reason,
+    )
 
 
 @app.post("/api/customer/payments/yookassa/create")
@@ -2021,6 +2054,16 @@ def customer_create_yookassa_payment_api(
     payment_record.confirmation_url = conf_url
     db.commit()
     db.refresh(payment_record)
+
+    notify_admin_payment_attempt(
+        payment_id=payment_record.payment_id,
+        amount_rub=payment_record.amount_rub,
+        bonus_rub=payment_record.bonus_rub,
+        total_credit_rub=payment_record.total_credit_rub,
+        package_name=payment_record.package_name or "Пополнение баланса",
+        user_email=context.user.email or "",
+        client_name=client.name or "",
+    )
 
     return {
         "success": True,

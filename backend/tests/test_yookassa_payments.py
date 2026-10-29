@@ -234,3 +234,53 @@ def test_customer_check_payment_status_api(setup_database: Session):
     assert data["status"] == "succeeded"
     assert data["amount_rub"] == 3000
     assert data["total_credit_rub"] == 3500
+
+
+def test_admin_yookassa_telegram_alerts():
+    from app.yookassa_service import (
+        format_payment_method_type,
+        notify_admin_payment_attempt,
+        notify_admin_payment_canceled,
+        notify_admin_payment_success,
+    )
+
+    assert "Банковская" in format_payment_method_type("bank_card")
+    assert "СБП" in format_payment_method_type("sbp")
+    assert "SberPay" in format_payment_method_type("sber_pay")
+
+    def fake_dispatch(coro):
+        coro.close()
+
+    with patch("app.yookassa_service.dispatch_yookassa_telegram_alert", side_effect=fake_dispatch) as mock_dispatch:
+        notify_admin_payment_attempt(
+            payment_id="pay_1",
+            amount_rub=5000,
+            bonus_rub=1500,
+            total_credit_rub=6500,
+            package_name="Про 5 000 ₽",
+            user_email="test@user.ru",
+        )
+        assert mock_dispatch.called
+
+    with patch("app.yookassa_service.dispatch_yookassa_telegram_alert", side_effect=fake_dispatch) as mock_dispatch:
+        notify_admin_payment_success(
+            payment_id="pay_1",
+            amount_rub=5000,
+            bonus_rub=1500,
+            total_credit_rub=6500,
+            package_name="Про 5 000 ₽",
+            user_email="test@user.ru",
+            payment_method_type="sbp",
+        )
+        assert mock_dispatch.called
+
+    with patch("app.yookassa_service.dispatch_yookassa_telegram_alert", side_effect=fake_dispatch) as mock_dispatch:
+        notify_admin_payment_canceled(
+            payment_id="pay_1",
+            amount_rub=5000,
+            package_name="Про 5 000 ₽",
+            user_email="test@user.ru",
+            reason="expired",
+        )
+        assert mock_dispatch.called
+
