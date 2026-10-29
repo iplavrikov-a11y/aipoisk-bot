@@ -827,7 +827,7 @@ class YooKassaPayment(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     payment_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
-    user_id: Mapped[str] = mapped_column(ForeignKey("web_users.id"), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("web_users.id"), nullable=True, default="", index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     amount_rub: Mapped[int] = mapped_column(Integer, nullable=False)
     bonus_rub: Mapped[int] = mapped_column(Integer, default=0)
@@ -841,7 +841,7 @@ class YooKassaPayment(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     client: Mapped[Client] = relationship("Client")
-    user: Mapped[WebUser] = relationship("WebUser")
+    user: Mapped[WebUser | None] = relationship("WebUser", foreign_keys=[user_id])
 
     def to_dict(self) -> dict:
         return {

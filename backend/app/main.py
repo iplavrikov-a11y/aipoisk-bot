@@ -203,6 +203,7 @@ from .yookassa_service import (
     notify_admin_payment_attempt,
     notify_admin_payment_canceled,
     notify_admin_payment_success,
+    notify_client_payment_success,
     verify_yookassa_credentials,
 )
 from .security import (
@@ -1938,6 +1939,16 @@ def _process_yookassa_payment_success(
         client_name=getattr(client, "name", "") or "",
         payment_method_type=pm_type,
     )
+
+    tg_id = metadata.get("telegram_id") or getattr(client, "telegram_id", "")
+    if tg_id and str(tg_id).isdigit():
+        notify_client_payment_success(
+            telegram_id=str(tg_id),
+            amount_rub=amount_rub,
+            bonus_rub=bonus_rub,
+            total_credit_rub=total_credit_rub,
+            package_name=package_name,
+        )
 
 
 def _process_yookassa_payment_canceled(

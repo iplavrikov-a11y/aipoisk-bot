@@ -322,3 +322,47 @@ def notify_admin_payment_canceled(
     dispatch_yookassa_telegram_alert(_send_yookassa_telegram_alert(text))
 
 
+async def _send_client_yookassa_success_alert(telegram_id: str, text: str) -> None:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return
+    bot_token = config.bot_token
+    if not bot_token or not telegram_id:
+        return
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": telegram_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            await client.post(url, json=payload)
+    except Exception as exc:
+        logger.warning("Failed to send telegram client payment success alert to %s: %s", telegram_id, exc)
+
+
+def notify_client_payment_success(
+    *,
+    telegram_id: str,
+    amount_rub: int,
+    bonus_rub: int,
+    total_credit_rub: int,
+    package_name: str,
+) -> None:
+    if not telegram_id:
+        return
+    bonus_str = f" (включая бонус +{bonus_rub:,} ₽)" if bonus_rub else ""
+    text = (
+        f"🎉 <b>Оплата через ЮKassa успешно получена!</b>\n\n"
+        f"📦 <b>Тариф:</b> {html_escape(package_name)}\n"
+        f"💵 <b>Сумма оплаты:</b> {amount_rub:,} ₽\n"
+        f"🎁 <b>Зачислено на ваш баланс:</b> <b>{total_credit_rub:,} ₽</b>{bonus_str}\n\n"
+        f"✅ <i>Средства моментально зачислены на ваш единый баланс. Все функции TenderLex активны!</i>"
+    )
+    dispatch_yookassa_telegram_alert(_send_client_yookassa_success_alert(telegram_id, text))
+
+
+
+
