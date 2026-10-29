@@ -4382,6 +4382,10 @@ async def _initiate_yookassa_checkout(
 
     description = f"TenderLex: {package_name}"
     customer_email = getattr(client, "contact_email", "") or ""
+    if not customer_email and getattr(client, "web_users", None) and client.web_users:
+        customer_email = getattr(client.web_users[0], "email", "") or ""
+    if not customer_email or "@" not in customer_email:
+        customer_email = f"tg_{user.id}@tenderlex.ru"
     metadata = {
         "client_id": client.id,
         "telegram_id": str(user.id),

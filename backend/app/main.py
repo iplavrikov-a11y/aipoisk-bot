@@ -2185,9 +2185,9 @@ async def yookassa_webhook_api(
         return {"status": "unverified"}
 
     live_status = verified.get("status")
-    if event_type == "payment.succeeded" or live_status == "succeeded":
+    if live_status == "succeeded":
         _process_yookassa_payment_success(db, verified)
-    elif event_type == "payment.canceled" or live_status == "canceled":
+    elif live_status == "canceled":
         _process_yookassa_payment_canceled(db, verified)
 
     return {"status": "ok"}

@@ -64,10 +64,13 @@ def create_yookassa_payment(
             "description": clean_desc,
             "metadata": safe_metadata,
         }
-        if with_receipt and customer_email and "@" in customer_email:
+        if with_receipt:
+            clean_email = str(customer_email or "").strip()
+            if not clean_email or "@" not in clean_email:
+                clean_email = "receipt@tenderlex.ru"
             body["receipt"] = {
                 "customer": {
-                    "email": customer_email.strip(),
+                    "email": clean_email,
                 },
                 "items": [
                     {
@@ -112,7 +115,7 @@ def create_yookassa_payment(
             err_desc = str(err_json.get("description") or "").lower()
 
             # If receipt is required by shop but wasn't sent, retry with receipt
-            if not payload.get("receipt") and ("receipt" in err_desc or "чек" in err_desc) and customer_email:
+            if not payload.get("receipt") and ("receipt" in err_desc or "чек" in err_desc):
                 logger.info("YooKassa requires receipt, retrying with receipt data...")
                 payload_with_receipt = _build_payload(with_receipt=True)
                 retry_key = str(uuid.uuid4())
