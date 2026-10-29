@@ -129,6 +129,14 @@
   - MCP & Customer API Full Persistence (`mcp_api.py`): API jobs now write input texts to `job_files`, generate XLSX/DOCX reports into `storage/jobs/<id>/output/`, populate `supplier_results`, and link `result_path` and `evidence_path` for full admin visibility and downloads.
   - Retroactive Backfill for API Jobs #917, #918, #919: populated XLSX and DOCX report artifacts and input text files in SQLite and disk storage.
   - Verified with 907 backend tests passing (100%), clean Next.js/Vite builds, and live production deployment on `202.71.13.57`.
+- YooKassa v3 Online Payments, Unified Checkout (Cards/SBP/SberPay) & Instant Telegram Payment Alerts (2026-10-29):
+  - Unified customer balance top-up in `site/src/app/cabinet/cabinet-client.tsx` with a single intuitive "Оплата онлайн (Карта, СБП)" checkout tab supporting fixed deposit packages (1 000, 3 000, 5 000, 10 000, 25 000 ₽) and arbitrary amounts with automatic progressive bonuses (+17% to +50%).
+  - Integrated YooKassa API v3 client (`backend/app/yookassa_service.py`) supporting automatic 54-FZ fiscal receipts ("Чеки от ЮKassa", `yoo_receipt`).
+  - Implemented secure idempotent webhook `/api/payments/yookassa/webhook` verifying payment authenticity directly against YooKassa API and preventing duplicate balance credits.
+  - Added real-time payment status polling and celebration toast on client return to `/cabinet?payment_status=check`.
+  - Added real-time Telegram alerts to the administrator for online payment attempts, successful balance creditings (with payment method, tier, amount, and bonus details), and cancellation/failure events.
+  - Added admin panel testing interface with real-time credential validation before save.
+  - Verified with 5 backend test suites in `backend/tests/test_yookassa_payments.py` (100% pass) and deployed live on `202.71.13.57`.
 - Rule 14 Universal Domain-Agnostic Matching Architecture & Complete Hardcode Elimination (2026-10-19):
   - Completely eradicated all product-specific tuples, brand whitelists, bespoke model/query injections, and hardcoded TU numbers (including TU 5433-001/002) across `matcher.py` and `deep.py`.
   - Replaced ad-hoc strings with Russian Civil Code (ст. 1473 ГК РФ) legal entity structural extraction (mandatory corporate forms `ООО`, `АО`, `ПАО`, `ЗАО`, `Завод`, `Фабрика`, `Комбинат`, `Концерн`, `НПО` or industrial suffixes `пром`, `маш`, `тех`), filtering out raw equipment classification acronyms (`МДУ`, `КТП`, `ВРУ`, `СИП`) and 4+ consonant cluster noise.
@@ -442,10 +450,10 @@
 - Admin customer cards display exact registration dates for each client in the
   card header, per-account registration/linking dates for Telegram accounts, and
   both registration and last login dates for web-cabinet users.
-- Online checkout is not enabled. Customers top up through the manager, and the
-  owner credits or debits only a money amount in the admin client card. Legacy
-  YooKassa fields remain in the backend schema for a future integration, but
-  they are not the active payment workflow.
+- Online checkout is fully enabled via YooKassa v3 (bank cards, SBP, SberPay, Mir Pay, T-Pay)
+  with automatic 54-FZ fiscal receipts and instant balance top-up in the customer
+  cabinet. B2B bank invoices are also available for legal entities. Admins can configure
+  YooKassa credentials directly in the admin panel and manually adjust customer balances.
 - Public TenderLex site with no blog: supplier-search-led landing page,
   pricing, contact blocks, Telegram CTAs, SEO scenario pages, and authenticated
   customer cabinet at `/cabinet`.
