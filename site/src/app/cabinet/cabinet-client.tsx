@@ -1495,10 +1495,18 @@ export function CabinetClient() {
   const [showTariffs, setShowTariffs] = useState(false);
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
   const [showTopUpModal, setShowTopUpModal] = useState(false);
-  const [topUpTab, setTopUpTab] = useState<"card" | "b2b" | "sbp">("card");
+  const [topUpTab, setTopUpTab] = useState<"card" | "b2b">("card");
   const [selectedTopUpPackage, setSelectedTopUpPackage] = useState<DepositPackage | null>(null);
   const [customTopUpRub, setCustomTopUpRub] = useState<number>(5000);
   const [topUpCopied, setTopUpCopied] = useState(false);
+  const [isPayingOnline, setIsPayingOnline] = useState(false);
+  const [onlinePayError, setOnlinePayError] = useState("");
+  const [paymentSuccessNotice, setPaymentSuccessNotice] = useState<{
+    amountRub: number;
+    bonusRub: number;
+    totalCreditRub: number;
+  } | null>(null);
+  const [checkingPaymentStatus, setCheckingPaymentStatus] = useState(false);
 
   // B2B Invoice state
   const [invoiceInn, setInvoiceInn] = useState("");
@@ -1704,6 +1712,40 @@ export function CabinetClient() {
       setHistoryError(err instanceof Error ? err.message : "Ошибка загрузки истории операций");
     } finally {
       setHistoryLoading(false);
+    }
+  }
+
+  async function handleStartOnlinePayment() {
+    setIsPayingOnline(true);
+    setOnlinePayError("");
+    try {
+      const res = await fetch("/api/customer/payments/yookassa/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.csrf_token ? { "X-CSRF-Token": session.csrf_token } : {}),
+        },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          amount_rub: customTopUpRub,
+          package_id: selectedTopUpPackage?.id || null,
+        }),
+      });
+
+      const data = await readJson<{ detail?: string; confirmation_url?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.detail || "Не удалось создать платёж в ЮKassa");
+      }
+
+      if (data?.confirmation_url) {
+        trackGoal("cabinet_click");
+        window.location.href = data.confirmation_url;
+      } else {
+        throw new Error("Не получена ссылка для перехода на оплату");
+      }
+    } catch (err: any) {
+      setIsPayingOnline(false);
+      setOnlinePayError(err?.message || "Ошибка перехода к оплате");
     }
   }
 
@@ -2082,6 +2124,63 @@ export function CabinetClient() {
     const timer = setTimeout(() => setActiveToast(null), 15000);
     return () => clearTimeout(timer);
   }, [activeToast]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const paymentStatus = params.get("payment_status");
+    const paymentId = params.get("tenderlex_payment_id") || params.get("payment_id");
+
+    if (paymentStatus === "check" && paymentId) {
+      setCheckingPaymentStatus(true);
+      const cleanUrl = () => {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("payment_status");
+        url.searchParams.delete("tenderlex_payment_id");
+        url.searchParams.delete("payment_id");
+        window.history.replaceState({}, document.title, url.pathname + (url.search || ""));
+      };
+
+      async function verifyPayment(retries = 3) {
+        try {
+          const res = await fetch(`/api/customer/payments/${paymentId}/status`, {
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+          if (res.ok) {
+            const data = await readJson<{
+              status?: string;
+              amount_rub?: number;
+              bonus_rub?: number;
+              total_credit_rub?: number;
+            }>(res);
+            if (data?.status === "succeeded") {
+              setPaymentSuccessNotice({
+                amountRub: data.amount_rub || 0,
+                bonusRub: data.bonus_rub || 0,
+                totalCreditRub: data.total_credit_rub || 0,
+              });
+              await loadSession();
+              cleanUrl();
+              setCheckingPaymentStatus(false);
+              return;
+            }
+          }
+          if (retries > 0) {
+            setTimeout(() => void verifyPayment(retries - 1), 2500);
+          } else {
+            setCheckingPaymentStatus(false);
+            cleanUrl();
+          }
+        } catch {
+          setCheckingPaymentStatus(false);
+          cleanUrl();
+        }
+      }
+
+      void verifyPayment();
+    }
+  }, []);
 
   function toggleNotifications() {
     setNotificationsEnabled((prev) => {
@@ -5818,6 +5917,44 @@ export function CabinetClient() {
           </button>
         </div>
       ) : null}
+
+      {/* YooKassa Payment Status Checking Toast */}
+      {checkingPaymentStatus ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-2.5 bg-slate-900/95 text-white backdrop-blur-md px-5 py-2.5 rounded-full shadow-2xl text-xs font-semibold max-w-[92vw] pointer-events-auto border border-white/10"
+        >
+          <Loader2 size={16} className="animate-spin text-emerald-400" />
+          <span>Проверяем зачисление оплаты через ЮKassa...</span>
+        </div>
+      ) : null}
+
+      {/* YooKassa Payment Success Banner Toast */}
+      {paymentSuccessNotice ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed top-5 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 bg-gradient-to-r from-emerald-600 to-teal-700 text-white px-5 py-3 rounded-2xl shadow-2xl text-xs font-semibold max-w-[92vw] pointer-events-auto border border-white/20 animate-fade-in"
+        >
+          <CheckCircle2 size={20} className="text-white shrink-0" />
+          <div>
+            <div className="font-extrabold text-sm">Баланс успешно пополнен!</div>
+            <div className="text-[11px] text-emerald-100">
+              Зачислено {paymentSuccessNotice.totalCreditRub.toLocaleString("ru-RU")} ₽
+              {paymentSuccessNotice.bonusRub > 0 ? ` (+${paymentSuccessNotice.bonusRub.toLocaleString("ru-RU")} ₽ бонус)` : ""}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="p-1 text-white/80 hover:text-white rounded-full transition-colors cursor-pointer ml-2"
+            onClick={() => setPaymentSuccessNotice(null)}
+            aria-label="Закрыть"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      ) : null}
       {/* Function Guide & Workflow Compilation Modal (Spacious, Clean, Emerald/Teal Branded, Zero Blue) */}
       {showHelpModal ? (
         <div
@@ -7304,19 +7441,22 @@ ${webLink}`;
               <button
                 type="button"
                 onClick={() => setTopUpTab("card")}
-                className={`flex-1 py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`flex-1 py-2 px-3 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                   topUpTab === "card"
                     ? "bg-white text-emerald-800 font-bold shadow-xs border border-slate-200/60"
                     : "text-slate-600 hover:text-slate-900"
                 }`}
               >
-                <CreditCard size={14} className={topUpTab === "card" ? "text-emerald-600" : "text-slate-400"} />
-                <span>Оплата картой</span>
+                <div className="flex items-center gap-1">
+                  <CreditCard size={14} className={topUpTab === "card" ? "text-emerald-600" : "text-slate-400"} />
+                  <QrCode size={13} className={topUpTab === "card" ? "text-indigo-600" : "text-slate-400"} />
+                </div>
+                <span>Оплата онлайн (Карта, СБП)</span>
               </button>
               <button
                 type="button"
                 onClick={() => setTopUpTab("b2b")}
-                className={`flex-1 py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`flex-1 py-2 px-3 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                   topUpTab === "b2b"
                     ? "bg-white text-slate-900 font-bold shadow-xs border border-slate-200/60"
                     : "text-slate-600 hover:text-slate-900"
@@ -7324,19 +7464,6 @@ ${webLink}`;
               >
                 <Building2 size={14} className={topUpTab === "b2b" ? "text-slate-700" : "text-slate-400"} />
                 <span>Счёт для юрлиц</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTopUpTab("sbp")}
-                className={`py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1 cursor-pointer ${
-                  topUpTab === "sbp"
-                    ? "bg-white text-slate-900 font-bold shadow-xs border border-slate-200/60"
-                    : "text-slate-500 hover:text-slate-800"
-                }`}
-              >
-                <QrCode size={13} className={topUpTab === "sbp" ? "text-slate-700" : "text-slate-400"} />
-                <span>СБП</span>
-                <span className="text-[9px] px-1 py-0.2 rounded bg-amber-100 text-amber-800 font-bold">скоро</span>
               </button>
             </div>
 
@@ -7463,25 +7590,40 @@ ${webLink}`;
                   );
                 })()}
 
-                {/* How to Pay Instructions */}
-                <div className="space-y-2 text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200">
-                  <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                    <CreditCard size={14} className="text-emerald-700" />
-                    <span>Порядок оплаты картой:</span>
+                {/* Online Payment Badges & Details */}
+                <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
+                  <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center justify-between">
+                    <span>Способы оплаты через ЮKassa:</span>
+                    <span className="text-[10px] text-emerald-700 font-semibold flex items-center gap-1">
+                      <CheckCircle2 size={12} className="text-emerald-600" /> Без комиссии
+                    </span>
                   </div>
-                  <p className="text-[11px] text-slate-600">
-                    1. Нажмите кнопку ниже для связи в Telegram — менеджер вышлет актуальные реквизиты карты для перевода.
-                  </p>
-                  <p className="text-[11px] text-slate-600">
-                    2. После перевода отправьте подтверждение (чек или скриншот) в чат — баланс и бонус моментально зачисляются на ваш аккаунт (обычно 5–15 минут).
-                  </p>
-                  <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
-                    <span className="text-slate-500">Ваш email аккаунта:</span>
-                    <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-700">
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 font-medium text-[11px] shadow-2xs">
+                      <CreditCard size={13} className="text-emerald-600" /> Карты МИР, Visa, Mastercard
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 font-medium text-[11px] shadow-2xs">
+                      <QrCode size={13} className="text-indigo-600" /> СБП (QR-код и приложение банка)
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 font-medium text-[11px] shadow-2xs">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> SberPay / Mir Pay
+                    </span>
                   </div>
                 </div>
 
-                {/* Contact Action Buttons */}
+                {onlinePayError ? (
+                  <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 space-y-1">
+                    <div className="font-bold flex items-center gap-1.5">
+                      <AlertTriangle size={14} className="text-rose-600 shrink-0" />
+                      <span>{onlinePayError}</span>
+                    </div>
+                    <p className="text-[11px] text-rose-700">
+                      Если онлайн-оплата временно недоступна, вы можете пополнить баланс через менеджера в Telegram.
+                    </p>
+                  </div>
+                ) : null}
+
+                {/* Primary Online Payment Action */}
                 {(() => {
                   const calc = (() => {
                     if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
@@ -7501,41 +7643,42 @@ ${webLink}`;
 
                   return (
                     <div className="space-y-2 pt-1">
-                      <a
-                        href={tgUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                      <button
+                        type="button"
+                        disabled={isPayingOnline || customTopUpRub < 100}
+                        onClick={handleStartOnlinePayment}
+                        className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs sm:text-sm font-bold transition-all shadow-sm hover:shadow cursor-pointer disabled:opacity-50 active:scale-[0.99]"
                       >
-                        <Send size={15} />
-                        <span>
-                          {calc.bonusRub > 0
-                            ? `Написать в Telegram для зачисления (+${calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус)`
-                            : `Написать в Telegram для зачисления`}
+                        {isPayingOnline ? (
+                          <>
+                            <Loader2 size={16} className="animate-spin" />
+                            <span>Переход в платёжный шлюз ЮKassa...</span>
+                          </>
+                        ) : (
+                          <>
+                            <CreditCard size={16} />
+                            <span>Оплатить {customTopUpRub.toLocaleString("ru-RU")} ₽ (Карта, СБП)</span>
+                            {calc.bonusRub > 0 ? (
+                              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-emerald-700 text-[10px] font-extrabold text-white">
+                                +{calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус
+                              </span>
+                            ) : null}
+                          </>
+                        )}
+                      </button>
+
+                      <div className="flex items-center justify-between gap-2 pt-1 text-[11px] text-slate-500">
+                        <span className="flex items-center gap-1">
+                          <CheckCircle2 size={12} className="text-emerald-600" />
+                          Моментальное зачисление
                         </span>
-                      </a>
-
-                      <div className="flex items-center justify-between gap-2 pt-0.5">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const copyText = `Пополнение TenderLex: ${customTopUpRub} ₽ (пакет «${pkgName}», к зачислению: ${calc.totalRub} ₽ с бонусом). Email: ${session?.user?.email || ""}`;
-                            navigator.clipboard.writeText(copyText).then(() => {
-                              setTopUpCopied(true);
-                              setTimeout(() => setTopUpCopied(false), 2500);
-                            });
-                          }}
-                          className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
-                        >
-                          <Copy size={13} />
-                          <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать детали заявки"}</span>
-                        </button>
-
                         <a
-                          href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(`Пополнение баланса TenderLex - ${session?.user?.email || ""}`)}`}
-                          className="text-xs text-slate-500 hover:text-slate-700 underline"
+                          href={tgUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-slate-600 hover:text-slate-900 underline font-medium"
                         >
-                          Написать на email
+                          Оплата переводом через Telegram
                         </a>
                       </div>
                     </div>
@@ -8029,66 +8172,8 @@ ${webLink}`;
                     }}
                     className="text-xs text-emerald-700 hover:text-emerald-800 font-semibold underline cursor-pointer"
                   >
-                    ← Вернуться к оплате картой
+                    ← Вернуться к оплате онлайн (Карта, СБП)
                   </button>
-                </div>
-              </div>
-            ) : null}
-
-            {/* TAB 3: SBP Stub */}
-            {topUpTab === "sbp" ? (
-              <div className="space-y-3 py-1">
-                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2.5 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0 mt-0.5">
-                      <QrCode size={22} />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-sm font-bold text-slate-900">Система быстрых платежей (СБП)</h3>
-                        <span className="px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 text-[10px] font-extrabold">
-                          В процессе подключения
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-600 leading-relaxed">
-                        Прямая оплата по динамическому QR-коду СБП через любое банковское приложение без комиссии.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="p-3 bg-blue-50/80 border border-blue-200/90 rounded-lg text-xs text-blue-950 space-y-1">
-                    <p className="font-bold flex items-center gap-1.5">
-                      <Clock3 size={13} className="text-blue-700 shrink-0" />
-                      <span>Подключение платежного шлюза</span>
-                    </p>
-                    <p className="text-[11px] leading-relaxed text-blue-800">
-                      Интеграция шлюза СБП находится на финальном этапе тестирования. Пока шлюз подключается, вы можете совершить быстрый перевод на карту или связаться с администратором в Telegram для мгновенного начисления.
-                    </p>
-                  </div>
-
-                  <div className="space-y-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setTopUpTab("card")}
-                      className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
-                    >
-                      <CreditCard size={15} />
-                      <span>Перейти к оплате картой</span>
-                    </button>
-
-                    <div className="text-center pt-1">
-                      <a
-                        href={`${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${encodeURIComponent(
-                          `Здравствуйте! Хочу пополнить баланс TenderLex через СБП/карту. Мой email: ${session?.user?.email || ""}`
-                        )}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs text-slate-500 hover:text-slate-800 underline"
-                      >
-                        Или написать в Telegram для перевода по номеру телефона
-                      </a>
-                    </div>
-                  </div>
                 </div>
               </div>
             ) : null}

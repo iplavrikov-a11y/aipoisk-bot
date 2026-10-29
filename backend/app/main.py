@@ -17,6 +17,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import time
+import uuid
 
 import httpx
 import jwt
@@ -144,6 +145,7 @@ from .models import (
     WebRegistrationAttempt,
     WebSession,
     WebUser,
+    YooKassaPayment,
     configured_geo_surcharge_pct,
     new_id,
     now_utc,
@@ -178,6 +180,7 @@ from .schemas import (
     ClientTelegramAccountPatch,
     ClientTariffOverridePatch,
     BillingGrantCreate,
+    CreateYooKassaPaymentRequest,
     LoginRequest,
     ManualJobCreate,
     SettingsPatch,
@@ -192,6 +195,12 @@ from .schemas import (
     WebRegisterRequest,
 )
 from .readiness import build_readiness
+from .yookassa_service import (
+    YooKassaError,
+    create_yookassa_payment,
+    fetch_yookassa_payment,
+    verify_yookassa_credentials,
+)
 from .security import (
     ADMIN_COOKIE,
     admin_cookie_max_age,
@@ -1829,6 +1838,314 @@ def admin_mark_invoice_paid_api(
         "message": f"Счёт {invoice.invoice_number} оплачен, на баланс зачислено {invoice.total_credit_rub:,} ₽",
         "invoice": invoice.to_dict(),
     }
+
+
+def _settings_yookassa_ready(settings: SystemSettings) -> bool:
+    return bool(
+        str(settings.payment_provider or "").lower() == "yookassa"
+        and str(settings.yookassa_shop_id or "").strip()
+        and str(settings.yookassa_secret_key or "").strip()
+    )
+
+
+def _process_yookassa_payment_success(
+    db: Session,
+    payment_data: dict,
+    payment_record: YooKassaPayment | None = None,
+) -> None:
+    payment_id = payment_data.get("id")
+    if not payment_id:
+        return
+
+    record = payment_record or db.query(YooKassaPayment).filter(YooKassaPayment.payment_id == payment_id).first()
+    metadata = payment_data.get("metadata") or {}
+    client_id = getattr(record, "client_id", None) or metadata.get("client_id")
+    user_id = getattr(record, "user_id", None) or metadata.get("user_id")
+
+    if not client_id:
+        logger.error("Cannot process YooKassa payment %s: client_id missing", payment_id)
+        return
+
+    client = db.get(Client, client_id)
+    if not client:
+        logger.error("Client %s for YooKassa payment %s not found", client_id, payment_id)
+        return
+
+    amount_val = payment_data.get("amount", {}).get("value")
+    try:
+        amount_rub = int(float(amount_val))
+    except Exception:
+        amount_rub = int(getattr(record, "amount_rub", 0) or metadata.get("amount_rub") or 0)
+
+    bonus_rub = int(getattr(record, "bonus_rub", 0) or metadata.get("bonus_rub") or 0)
+    total_credit_rub = int(getattr(record, "total_credit_rub", 0) or metadata.get("total_credit_rub") or (amount_rub + bonus_rub))
+    package_name = getattr(record, "package_name", "") or metadata.get("package_name") or "Пополнение баланса"
+
+    # Credit money balance with idempotency
+    idempotency_key = f"yookassa_{payment_id}"
+    existing_tx = db.query(BillingTransaction).filter(BillingTransaction.idempotency_key == idempotency_key).first()
+    if not existing_tx:
+        from .billing import grant_money_balance
+        grant_money_balance(
+            db,
+            client,
+            amount_kopeks=total_credit_rub * 100,
+            note=f"Оплата через ЮKassa № {payment_id} ({package_name})",
+            created_by="yookassa",
+            idempotency_key=idempotency_key,
+        )
+
+    pm_type = payment_data.get("payment_method", {}).get("type") or ""
+
+    if record:
+        record.status = "succeeded"
+        record.payment_method_type = pm_type
+        record.paid_at = now_utc()
+    else:
+        new_record = YooKassaPayment(
+            payment_id=payment_id,
+            client_id=client.id,
+            user_id=user_id or "",
+            status="succeeded",
+            amount_rub=amount_rub,
+            bonus_rub=bonus_rub,
+            total_credit_rub=total_credit_rub,
+            package_name=package_name,
+            payment_method_type=pm_type,
+            paid_at=now_utc(),
+        )
+        db.add(new_record)
+
+    db.commit()
+    logger.info("Successfully processed YooKassa payment %s: credited %s rub to client %s", payment_id, total_credit_rub, client.id)
+
+
+def _process_yookassa_payment_canceled(
+    db: Session,
+    payment_data: dict,
+    payment_record: YooKassaPayment | None = None,
+) -> None:
+    payment_id = payment_data.get("id")
+    if not payment_id:
+        return
+    record = payment_record or db.query(YooKassaPayment).filter(YooKassaPayment.payment_id == payment_id).first()
+    if record and record.status != "succeeded":
+        record.status = "canceled"
+        db.commit()
+
+
+@app.post("/api/customer/payments/yookassa/create")
+def customer_create_yookassa_payment_api(
+    data: CreateYooKassaPaymentRequest,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    settings = get_or_create_settings(db)
+    if not _settings_yookassa_ready(settings):
+        raise HTTPException(
+            status_code=400,
+            detail="Онлайн-оплата временно недоступна. Пожалуйста, напишите нам в Telegram для зачисления.",
+        )
+    client = context.user.client
+    if not client:
+        raise HTTPException(status_code=400, detail="Аккаунт клиента не найден")
+
+    from .billing import calculate_deposit_bonus_kopeks
+
+    amount_rub = int(data.amount_rub)
+    bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, client)
+    bonus_rub = round(bonus_kopeks / 100)
+    total_credit_rub = amount_rub + bonus_rub
+
+    package_name = "Пополнение баланса"
+    if data.package_id:
+        package = db.get(TariffPackage, data.package_id)
+        if package:
+            package_name = package.name
+
+    base_url = (settings.public_base_url or "https://tenderlex.ru").rstrip("/")
+    desc = f"TenderLex: {package_name} ({context.user.email})"
+
+    # Generate local record first
+    payment_record = YooKassaPayment(
+        payment_id=f"temp_{uuid.uuid4().hex[:16]}",
+        client_id=client.id,
+        user_id=context.user.id,
+        status="pending",
+        amount_rub=amount_rub,
+        bonus_rub=bonus_rub,
+        total_credit_rub=total_credit_rub,
+        package_name=package_name,
+    )
+    db.add(payment_record)
+    db.flush()
+
+    metadata = {
+        "tenderlex_payment_id": payment_record.id,
+        "client_id": client.id,
+        "user_id": context.user.id,
+        "user_email": context.user.email,
+        "amount_rub": str(amount_rub),
+        "bonus_rub": str(bonus_rub),
+        "total_credit_rub": str(total_credit_rub),
+        "package_name": package_name,
+    }
+
+    actual_return_url = f"{base_url}/cabinet?payment_status=check&tenderlex_payment_id={payment_record.id}"
+
+    try:
+        res = create_yookassa_payment(
+            shop_id=settings.yookassa_shop_id,
+            secret_key=settings.yookassa_secret_key,
+            amount_rub=amount_rub,
+            return_url=actual_return_url,
+            description=desc,
+            metadata=metadata,
+            customer_email=context.user.email,
+            send_receipt=bool(getattr(settings, "yookassa_send_receipt", False)),
+        )
+    except YooKassaError as err:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(err))
+
+    yoo_payment_id = res.get("id")
+    conf = res.get("confirmation") or {}
+    conf_url = conf.get("confirmation_url") or ""
+
+    if not yoo_payment_id or not conf_url:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="ЮKassa не вернула ссылку на оплату")
+
+    payment_record.payment_id = yoo_payment_id
+    payment_record.confirmation_url = conf_url
+    db.commit()
+    db.refresh(payment_record)
+
+    return {
+        "success": True,
+        "payment_id": payment_record.payment_id,
+        "tenderlex_payment_id": payment_record.id,
+        "confirmation_url": payment_record.confirmation_url,
+        "amount_rub": payment_record.amount_rub,
+        "bonus_rub": payment_record.bonus_rub,
+        "total_credit_rub": payment_record.total_credit_rub,
+    }
+
+
+@app.get("/api/customer/payments/{payment_id}/status")
+def customer_check_yookassa_payment_status_api(
+    payment_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    clean_id = str(payment_id or "").strip()
+    payment = (
+        db.query(YooKassaPayment)
+        .filter(
+            (YooKassaPayment.payment_id == clean_id) | (YooKassaPayment.id == clean_id)
+        )
+        .first()
+    )
+    if not payment:
+        raise HTTPException(status_code=404, detail="Платёж не найден")
+    if payment.client_id != context.user.client_id:
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+    if payment.status == "succeeded":
+        client = context.user.client
+        db.refresh(client)
+        return {
+            "status": "succeeded",
+            "amount_rub": payment.amount_rub,
+            "bonus_rub": payment.bonus_rub,
+            "total_credit_rub": payment.total_credit_rub,
+            "balance_rub": round((client.money_balance_kopeks or 0) / 100, 2),
+        }
+
+    settings = get_or_create_settings(db)
+    if settings.yookassa_shop_id and settings.yookassa_secret_key:
+        live = fetch_yookassa_payment(
+            shop_id=settings.yookassa_shop_id,
+            secret_key=settings.yookassa_secret_key,
+            payment_id=payment.payment_id,
+        )
+        if live:
+            status = live.get("status")
+            if status == "succeeded":
+                _process_yookassa_payment_success(db, live, payment_record=payment)
+                client = context.user.client
+                db.refresh(client)
+                return {
+                    "status": "succeeded",
+                    "amount_rub": payment.amount_rub,
+                    "bonus_rub": payment.bonus_rub,
+                    "total_credit_rub": payment.total_credit_rub,
+                    "balance_rub": round((client.money_balance_kopeks or 0) / 100, 2),
+                }
+            elif status == "canceled":
+                payment.status = "canceled"
+                db.commit()
+
+    client = context.user.client
+    db.refresh(client)
+    return {
+        "status": payment.status,
+        "amount_rub": payment.amount_rub,
+        "bonus_rub": payment.bonus_rub,
+        "total_credit_rub": payment.total_credit_rub,
+        "balance_rub": round((client.money_balance_kopeks or 0) / 100, 2),
+    }
+
+
+@app.post("/api/payments/yookassa/webhook")
+async def yookassa_webhook_api(
+    request: Request,
+    db: Session = Depends(db_session),
+) -> dict:
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "error", "message": "Invalid JSON"}
+
+    event_type = payload.get("event")
+    payment_obj = payload.get("object") or {}
+    payment_id = payment_obj.get("id")
+
+    if not payment_id:
+        return {"status": "ignored", "reason": "No payment id"}
+
+    settings = get_or_create_settings(db)
+    if not settings.yookassa_shop_id or not settings.yookassa_secret_key:
+        logger.warning("YooKassa webhook received but credentials not configured")
+        return {"status": "not_configured"}
+
+    # Defense-in-depth: verify authentic state directly with YooKassa
+    verified = fetch_yookassa_payment(
+        shop_id=settings.yookassa_shop_id,
+        secret_key=settings.yookassa_secret_key,
+        payment_id=payment_id,
+    )
+    if not verified:
+        logger.warning("YooKassa webhook payment_id %s could not be verified with API", payment_id)
+        return {"status": "unverified"}
+
+    live_status = verified.get("status")
+    if event_type == "payment.succeeded" or live_status == "succeeded":
+        _process_yookassa_payment_success(db, verified)
+    elif event_type == "payment.canceled" or live_status == "canceled":
+        _process_yookassa_payment_canceled(db, verified)
+
+    return {"status": "ok"}
+
+
+@app.post("/api/admin/yookassa/test", dependencies=[Depends(require_admin)])
+def admin_test_yookassa_api(db: Session = Depends(db_session)) -> dict:
+    settings = get_or_create_settings(db)
+    ok, msg = verify_yookassa_credentials(
+        shop_id=settings.yookassa_shop_id,
+        secret_key=settings.yookassa_secret_key,
+    )
+    return {"success": ok, "message": msg}
 
 
 @app.post("/api/auth/login")
@@ -4464,14 +4781,6 @@ def _analytics_client_row(db: Session, client: Client, jobs: list[Job]) -> dict:
         "supplier_available": balances["supplier_search"].get("available"),
         "report_available": balances["procurement_report"].get("available"),
     }
-
-
-def _settings_yookassa_ready(settings: SystemSettings) -> bool:
-    return bool(
-        str(settings.payment_provider or "").lower() == "yookassa"
-        and str(settings.yookassa_shop_id or "").strip()
-        and str(settings.yookassa_secret_key or "").strip()
-    )
 
 
 def public_site_payload(db: Session) -> dict:

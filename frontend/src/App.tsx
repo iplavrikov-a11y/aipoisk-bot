@@ -457,6 +457,7 @@ type SettingsPayload = {
   yookassa_secret_key_set: boolean
   yookassa_secret_key?: string
   yookassa_return_url: string
+  yookassa_send_receipt?: boolean
   supplier_search_ui: SupplierSearchUi
 }
 
@@ -465,6 +466,7 @@ type SettingsPatchPayload = Partial<SettingsPayload> & {
   yandex_search_api_key?: string
   google_search_api_key?: string
   yookassa_secret_key?: string
+  yookassa_send_receipt?: boolean
 }
 
 type TariffPackage = {
@@ -5792,19 +5794,29 @@ function SettingsView({
   const [adapterKey, setAdapterKey] = useState('')
   const [yandexKey, setYandexKey] = useState('')
   const [googleKey, setGoogleKey] = useState('')
+  const [yookassaSecretKey, setYookassaSecretKey] = useState('')
+  const [testingYookassa, setTestingYookassa] = useState(false)
+  const [yookassaTestResult, setYookassaTestResult] = useState('')
   const searchUi = draft.supplier_search_ui
   useEffect(() => setDraft(settings), [settings])
   useEffect(() => {
-    void api<{ supplier_search_adapter_api_key?: string; yandex_search_api_key?: string; google_search_api_key?: string }>('/api/settings/keys')
+    void api<{
+      supplier_search_adapter_api_key?: string
+      yandex_search_api_key?: string
+      google_search_api_key?: string
+      yookassa_secret_key?: string
+    }>('/api/settings/keys')
       .then(data => {
         setAdapterKey(data.supplier_search_adapter_api_key || '')
         setYandexKey(data.yandex_search_api_key || '')
         setGoogleKey(data.google_search_api_key || '')
+        setYookassaSecretKey(data.yookassa_secret_key || '')
       })
       .catch(() => {
         setAdapterKey('')
         setYandexKey('')
         setGoogleKey('')
+        setYookassaSecretKey('')
       })
   }, [])
   async function save() {
@@ -5813,6 +5825,7 @@ function SettingsView({
       supplier_search_adapter_api_key: adapterKey,
       yandex_search_api_key: yandexKey,
       google_search_api_key: googleKey,
+      yookassa_secret_key: yookassaSecretKey || undefined,
       supplier_search_provider_order: draft.supplier_search_provider_order || 'yandex',
     }
     await api('/api/settings', {
@@ -5835,6 +5848,74 @@ function SettingsView({
         </div>
         <p className="field-help">Telegram — основной контакт. MAX-кнопка работает только по ссылке.</p>
         <TextArea className="payment-textarea" label="Инструкция для пополнения" value={draft.payment_instructions} onChange={value => setDraft({ ...draft, payment_instructions: value })} />
+      </div>
+      <div className="form-panel full">
+        <h2>Приём онлайн-платежей (ЮKassa)</h2>
+        <div className="settings-grid compact-grid">
+          <label className="field">
+            <span>Провайдер платежей</span>
+            <select
+              value={draft.payment_provider || 'manual'}
+              onChange={e => setDraft({ ...draft, payment_provider: e.target.value })}
+            >
+              <option value="manual">Только ручной перевод (Telegram)</option>
+              <option value="yookassa">ЮKassa (Банковские карты, СБП, SberPay)</option>
+            </select>
+          </label>
+          <TextField
+            label="Shop ID ЮKassa"
+            value={draft.yookassa_shop_id || ''}
+            onChange={value => setDraft({ ...draft, yookassa_shop_id: value })}
+          />
+          <SecretField
+            label={`Секретный ключ API${draft.yookassa_secret_key_set ? ' (задан)' : ''}`}
+            value={yookassaSecretKey}
+            onChange={setYookassaSecretKey}
+          />
+          <TextField
+            label="URL возврата после оплаты"
+            value={draft.yookassa_return_url || ''}
+            onChange={value => setDraft({ ...draft, yookassa_return_url: value })}
+          />
+        </div>
+        <div style={{ marginTop: '0.75rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+          <label className="switch-row" style={{ margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={draft.yookassa_send_receipt || false}
+              onChange={e => setDraft({ ...draft, yookassa_send_receipt: e.target.checked })}
+            />
+            Передавать состав чека 54-ФЗ в ЮKassa (если подключена облачная касса/Чеки от ЮKassa)
+          </label>
+          <button
+            type="button"
+            className="secondary-btn"
+            style={{ padding: '0.4rem 0.8rem', fontSize: '12px' }}
+            onClick={async () => {
+              setTestingYookassa(true)
+              setYookassaTestResult('')
+              try {
+                const res = await api<{ success: boolean; message: string }>('/api/admin/yookassa/test', { method: 'POST' })
+                setYookassaTestResult(res.message)
+              } catch (err: any) {
+                setYookassaTestResult(err.message || 'Ошибка проверки')
+              } finally {
+                setTestingYookassa(false)
+              }
+            }}
+            disabled={testingYookassa}
+          >
+            {testingYookassa ? 'Проверка...' : 'Проверить подключение'}
+          </button>
+          {yookassaTestResult && (
+            <span style={{ fontSize: '12px', fontWeight: 600, color: yookassaTestResult.includes('успешно') ? '#059669' : '#dc2626' }}>
+              {yookassaTestResult}
+            </span>
+          )}
+        </div>
+        <p className="field-help" style={{ marginTop: '0.5rem' }}>
+          Webhook URL для ЮKassa: <code style={{ userSelect: 'all', fontWeight: 600 }}>https://tenderlex.ru/api/payments/yookassa/webhook</code>
+        </p>
       </div>
       <div className="form-panel">
         <h2>Бот и хранение</h2>

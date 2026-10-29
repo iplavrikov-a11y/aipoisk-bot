@@ -58,6 +58,12 @@ class SettingsPatch(BaseModel):
     yookassa_shop_id: str | None = None
     yookassa_secret_key: str | None = None
     yookassa_return_url: str | None = None
+    yookassa_send_receipt: bool | None = None
+
+
+class CreateYooKassaPaymentRequest(BaseModel):
+    amount_rub: int = Field(..., ge=100, le=500_000)
+    package_id: str | None = None
 
 
 class LoginRequest(BaseModel):

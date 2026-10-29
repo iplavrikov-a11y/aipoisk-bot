@@ -73,6 +73,8 @@ def _ensure_schema() -> None:
             Base.metadata.tables["web_password_reset_tokens"].create(bind=connection, checkfirst=True)
         if "invoices" in Base.metadata.tables:
             Base.metadata.tables["invoices"].create(bind=connection, checkfirst=True)
+        if "yookassa_payments" in Base.metadata.tables:
+            Base.metadata.tables["yookassa_payments"].create(bind=connection, checkfirst=True)
         inspector = inspect(connection)
         system_settings_existing = _existing_columns(inspector, "system_settings")
         system_settings_additions = {
@@ -101,6 +103,7 @@ def _ensure_schema() -> None:
             "yookassa_shop_id": "VARCHAR(255) DEFAULT ''",
             "yookassa_secret_key": "TEXT DEFAULT ''",
             "yookassa_return_url": "VARCHAR(255) DEFAULT ''",
+            "yookassa_send_receipt": "BOOLEAN DEFAULT 0",
             "supplier_ai_provider": "VARCHAR(80) DEFAULT ''",
             "supplier_ai_model": "VARCHAR(160) DEFAULT ''",
             "ai_analysis_fallback_json": "TEXT DEFAULT '[]'",

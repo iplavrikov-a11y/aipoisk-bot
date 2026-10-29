@@ -87,6 +87,7 @@ class SystemSettings(Base):
     yookassa_shop_id: Mapped[str] = mapped_column(String(255), default="")
     yookassa_secret_key: Mapped[str] = mapped_column(Text, default="")
     yookassa_return_url: Mapped[str] = mapped_column(String(255), default="")
+    yookassa_send_receipt: Mapped[bool] = mapped_column(Boolean, default=False)
     price_monitoring_default_price_kopeks: Mapped[int] = mapped_column(Integer, default=5000)
     price_monitoring_max_suppliers: Mapped[int] = mapped_column(Integer, default=3)
     price_monitoring_max_positions: Mapped[int] = mapped_column(Integer, default=1000)
@@ -155,6 +156,7 @@ class SystemSettings(Base):
             "yookassa_shop_id": self.yookassa_shop_id,
             "yookassa_secret_key_set": bool(self.yookassa_secret_key),
             "yookassa_return_url": self.yookassa_return_url,
+            "yookassa_send_receipt": bool(self.yookassa_send_receipt),
             "price_monitoring_default_price_kopeks": self.price_monitoring_default_price_kopeks,
             "price_monitoring_max_suppliers": self.price_monitoring_max_suppliers,
             "price_monitoring_max_positions": self.price_monitoring_max_positions,
@@ -816,6 +818,46 @@ class Invoice(Base):
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "paid_at": self.paid_at.isoformat() if self.paid_at else None,
+        }
+
+
+class YooKassaPayment(Base):
+    __tablename__ = "yookassa_payments"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    payment_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("web_users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    amount_rub: Mapped[int] = mapped_column(Integer, nullable=False)
+    bonus_rub: Mapped[int] = mapped_column(Integer, default=0)
+    total_credit_rub: Mapped[int] = mapped_column(Integer, default=0)
+    package_name: Mapped[str] = mapped_column(String(120), default="")
+    confirmation_url: Mapped[str] = mapped_column(Text, default="")
+    payment_method_type: Mapped[str] = mapped_column(String(40), default="")
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+    client: Mapped[Client] = relationship("Client")
+    user: Mapped[WebUser] = relationship("WebUser")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "payment_id": self.payment_id,
+            "client_id": self.client_id,
+            "user_id": self.user_id,
+            "status": self.status,
+            "amount_rub": self.amount_rub,
+            "bonus_rub": self.bonus_rub,
+            "total_credit_rub": self.total_credit_rub,
+            "package_name": self.package_name,
+            "confirmation_url": self.confirmation_url,
+            "payment_method_type": self.payment_method_type,
+            "paid_at": self.paid_at.isoformat() if self.paid_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
 
