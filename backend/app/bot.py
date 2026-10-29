@@ -4457,12 +4457,14 @@ async def _initiate_yookassa_checkout(
         f"📦 <b>Тариф:</b> {html_escape(package_name)}\n"
         f"💵 <b>К оплате:</b> <b>{amount_fmt}</b>\n"
         f"💰 <b>На баланс поступит:</b> <b>{credit_fmt}</b>{bonus_line}\n\n"
-        f"Оплата картой (МИР, Visa, Mastercard), СБП, SberPay, Mir Pay без комиссии.\n"
-        f"<i>После оплаты нажмите «Проверить зачисление» — средства сразу поступят на ваш единый баланс.</i>"
+        f"Способы оплаты: банковские карты (МИР, Visa, Mastercard), СБП, SberPay, Mir Pay без комиссии.\n\n"
+        f"👉 <b>Для оплаты нажмите на зеленую кнопку «Оплатить» ниже или перейдите по прямой ссылке:</b>\n"
+        f"🔗 <a href=\"{confirmation_url}\"><b>Открыть страницу оплаты ЮKassa в браузере</b></a>\n\n"
+        f"<i>После завершения оплаты нажмите «Проверить зачисление» — средства сразу поступят на ваш баланс.</i>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"💳 Оплатить {amount_fmt}", url=confirmation_url)],
+        [InlineKeyboardButton(text=f"💳 Оплатить {amount_fmt} ↗️", url=confirmation_url)],
         [InlineKeyboardButton(text="🔄 Проверить зачисление", callback_data=f"check_yk_{yk_record.id}")],
         [InlineKeyboardButton(text="🔙 К выбору пакетов", callback_data="topup_online_menu")],
     ])

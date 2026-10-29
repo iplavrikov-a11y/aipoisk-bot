@@ -271,7 +271,7 @@ def notify_admin_payment_attempt(
         f"<b>Поступит на баланс:</b> {total_credit_rub:,} ₽{bonus_str}\n"
         f"<b>Тариф:</b> {html_escape(package_name)}\n"
         f"<b>ID платежа:</b> <code>{html_escape(payment_id)}</code>\n\n"
-        f"<i>Клиент перешел на страницу оплаты. Ожидаем подтверждения...</i>"
+        f"<i>Счёт сформирован, клиенту выдана ссылка и кнопка оплаты. Ожидаем оплату...</i>"
     )
     dispatch_yookassa_telegram_alert(_send_yookassa_telegram_alert(text))
 
