@@ -3262,7 +3262,7 @@ async def process_b2b_inn_input(message: Message) -> None:
 
     db = SessionLocal()
     try:
-        enriched = enrich_company_by_inn(raw_inn)
+        enriched = await enrich_company_by_inn(raw_inn)
         company_name = enriched.get("company_name") or enriched.get("full_name") or ""
         company_kpp = enriched.get("kpp") or ""
         company_address = enriched.get("legal_address") or ""

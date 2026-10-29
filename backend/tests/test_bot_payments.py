@@ -23,6 +23,8 @@ from app.bot import (
     low_balance_inline_keyboard,
     status_inline_keyboard,
     tariffs_inline_keyboard,
+    process_b2b_inn_input,
+    process_b2b_name_input,
     topup_b2b_keyboard,
     topup_b2b_pkg_callback,
     topup_online_keyboard,
@@ -34,9 +36,25 @@ from app.bot import (
 def setup_database():
     init_db()
     db = SessionLocal()
+    orig_settings = db.query(SystemSettings).first()
+    saved_state = None
+    if orig_settings:
+        saved_state = {
+            "payment_provider": orig_settings.payment_provider,
+            "yookassa_shop_id": orig_settings.yookassa_shop_id,
+            "yookassa_secret_key": orig_settings.yookassa_secret_key,
+        }
     try:
         yield db
     finally:
+        if saved_state:
+            fresh_db = SessionLocal()
+            curr = fresh_db.query(SystemSettings).first()
+            if curr:
+                for attr, val in saved_state.items():
+                    setattr(curr, attr, val)
+                fresh_db.commit()
+            fresh_db.close()
         db.close()
 
 
@@ -327,3 +345,45 @@ async def test_generate_and_send_b2b_invoice_in_bot(setup_database: Session):
         assert "14 000 ₽" in sent_text
         assert "АЛЬФА-БАНК" in sent_text
         mock_alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_process_b2b_inn_input_with_enrichment(setup_database: Session):
+    db = setup_database
+    chat_id = 888777
+    PENDING_B2B_INN[chat_id] = {
+        "amount_rub": 3000,
+        "bonus_rub": 500,
+        "credit_rub": 3500,
+        "package_name": "Тариф Оптимальный",
+    }
+
+    user = MagicMock()
+    user.id = chat_id
+    user.username = "client_corp"
+    user.full_name = "Client Corp"
+
+    message = AsyncMock()
+    message.chat.id = chat_id
+    message.text = "3500011486"
+    message.from_user = user
+    message.answer = AsyncMock()
+
+    mock_enrichment = {
+        "company_name": "ООО СЕВЕРТОРГ",
+        "kpp": "352501001",
+        "legal_address": "г Вологда, ул Ленина, д 1",
+    }
+
+    with patch("app.bot.enrich_company_by_inn", new_callable=AsyncMock, return_value=mock_enrichment), \
+         patch("app.bot._generate_and_send_b2b_invoice", new_callable=AsyncMock) as mock_gen:
+
+        await process_b2b_inn_input(message)
+
+        assert chat_id not in PENDING_B2B_INN
+        mock_gen.assert_called_once()
+        call_kwargs = mock_gen.call_args[1]
+        assert call_kwargs["buyer_inn"] == "3500011486"
+        assert call_kwargs["buyer_name"] == "ООО СЕВЕРТОРГ"
+        assert call_kwargs["buyer_kpp"] == "352501001"
+
