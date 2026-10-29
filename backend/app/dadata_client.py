@@ -12,6 +12,23 @@ _DADATA_FIND_URL = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/findByI
 _DADATA_SUGGEST_URL = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/party"
 
 
+def _normalize_domain(value: str) -> str:
+    """Return a hostname suitable for comparing an explicit company website."""
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    raw = re.sub(r"^https?://", "", raw)
+    raw = raw.split("/", 1)[0].split(":", 1)[0]
+    return raw[4:] if raw.startswith("www.") else raw
+
+
+def _is_explicit_site_match(page_domain: str, company_site: str) -> bool:
+    """Match only the same domain or a real subdomain, never a name-like stem."""
+    page = _normalize_domain(page_domain)
+    site = _normalize_domain(company_site)
+    return bool(page and site and (page == site or page.endswith("." + site) or site.endswith("." + page)))
+
+
 def _get_dadata_api_key() -> str:
     key = os.getenv("DADATA_API_KEY", "").strip() or os.getenv("DADATA_TOKEN", "").strip()
     if not key:
@@ -63,6 +80,21 @@ def _parse_dadata_suggestion(item: dict[str, Any]) -> dict[str, Any]:
     emails = [str(e.get("value") if isinstance(e, dict) else e).strip() for e in emails_list if e]
     sites = [str(s.get("value") if isinstance(s, dict) else s).strip() for s in sites_list if s]
 
+    # Parse OPF & filter non-commercial entities
+    opf_obj = d.get("opf") or {}
+    opf_type = str(opf_obj.get("type") or "").upper()
+    opf_short = str(opf_obj.get("short") or "").strip().upper()
+
+    non_comm_markers = (
+        "МКОУ", "МБОУ", "ГБОУ", "МАОУ", "МБДОУ", "МКДОУ", "ГБДОУ",
+        "МБУ", "ГБУ", "МКУ", "ФКУ", "ФКУЗ", "АДМИНИСТРАЦИЯ", "ОТДЕЛ ОБРАЗОВАНИЯ",
+        "ШКОЛА", "ДЕТСКИЙ САД", "ПОЛИКЛИНИКА", "БОЛЬНИЦА"
+    )
+    is_non_commercial = (
+        opf_short in non_comm_markers
+        or any(m in full_name.upper() for m in non_comm_markers)
+    )
+
     inn_val = str(d.get("inn") or "").strip()
     return {
         "inn": inn_val,
@@ -79,6 +111,9 @@ def _parse_dadata_suggestion(item: dict[str, Any]) -> dict[str, Any]:
         "status": status,
         "employee_count": d.get("employee_count"),
         "okved": str(d.get("okved") or "").strip(),
+        "opf_short": opf_short,
+        "opf_type": opf_type,
+        "is_non_commercial": is_non_commercial,
         "phones": [p for p in phones if p],
         "emails": [e for e in emails if e],
         "sites": [s for s in sites if s],
@@ -186,35 +221,42 @@ async def enrich_company_by_inn_or_query(
         cleaned_inn = re.sub(r"\D+", "", str(inn))
         if len(cleaned_inn) in (10, 12):
             res = await enrich_company_by_inn(cleaned_inn, api_key=api_key)
-            if res and res.get("inn"):
+            if res and res.get("inn") == cleaned_inn:
                 return res
 
     # 2. Поиск по чистому домену (многие компании зарегистрированы по сайту)
     if domain:
-        clean_d = domain.lower().replace("https://", "").replace("http://", "").split("/")[0]
-        if clean_d.startswith("www."):
-            clean_d = clean_d[4:]
+        clean_d = _normalize_domain(domain)
         if "." in clean_d and len(clean_d) >= 4:
-            sugs = await suggest_company_by_query(clean_d, count=1, api_key=api_key)
-            if sugs and sugs[0].get("inn"):
-                return sugs[0]
+            sugs = await suggest_company_by_query(clean_d, count=3, api_key=api_key)
+            for s in sugs:
+                if s.get("is_non_commercial"):
+                    continue
+                if any(_is_explicit_site_match(clean_d, site) for site in s.get("sites", [])):
+                    return s
+
+        # A suggestion based only on a company-name stem cannot prove that the
+        # company operates this page.  Keep the page-derived identity instead.
+        return {}
 
     # 3. Поиск по связке: Название + Город/Регион
     if query and city:
         clean_q = re.sub(r'["«»]', '', query).strip()
         clean_c = re.sub(r'(г\.|город|\s)', '', city).strip()
         if len(clean_q) >= 3 and len(clean_c) >= 3:
-            sugs = await suggest_company_by_query(f"{clean_q} {clean_c}", count=1, api_key=api_key)
-            if sugs and sugs[0].get("inn"):
-                return sugs[0]
+            sugs = await suggest_company_by_query(f"{clean_q} {clean_c}", count=3, api_key=api_key)
+            for s in sugs:
+                if not s.get("is_non_commercial") and s.get("inn"):
+                    return s
 
     # 4. Поиск по названию компании / бренда
     if query:
         clean_q = re.sub(r'["«»]', '', query).strip()
         if len(clean_q) >= 3:
-            sugs = await suggest_company_by_query(clean_q, count=1, api_key=api_key)
-            if sugs and sugs[0].get("inn"):
-                return sugs[0]
+            sugs = await suggest_company_by_query(clean_q, count=3, api_key=api_key)
+            for s in sugs:
+                if not s.get("is_non_commercial") and s.get("inn"):
+                    return s
 
     return {}
 

@@ -4,7 +4,7 @@ import { TenderLexLogo } from "@/components/logo";
 
 export function SiteFooter() {
   return (
-    <footer className="bg-white text-slate-600 text-xs border-t border-slate-200">
+    <footer className="tl-site-footer bg-white text-slate-600 text-xs border-t border-slate-200">
       {/* Main navigation columns */}
       <div className="container max-w-6xl mx-auto px-4 sm:px-6 py-12 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
         {/* Brand Column */}
@@ -123,6 +123,10 @@ export function SiteFooter() {
         <div className="container max-w-6xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
           <div className="text-slate-600">
             <span>© {new Date().getFullYear()} TenderLex. Все права защищены. Работает по всей территории РФ.</span>
+          </div>
+          <div className="text-slate-500 text-[11px]">
+            <span>ИП Груздев И. В. • ИНН 352516048881 • ОГРНИП 323352500038991 • </span>
+            <Link href="/legal" className="text-teal-700 hover:underline font-medium">Реквизиты и оферта</Link>
           </div>
         </div>
       </div>

@@ -1,0 +1,361 @@
+{
+  "classifier_leak_in_queries": 0,
+  "tender_platform_leak": 0,
+  "institutional_buyer_leak": 0,
+  "modes": {
+    "price_monitoring_world": [
+      {
+        "name": "Кресло офисное Тип 1 для руководителя",
+        "quotes": 5,
+        "status": "found",
+        "time_sec": 86.44,
+        "tender_leaks": [],
+        "hospital_leaks": [],
+        "sample_suppliers": [
+          "ИП Климов Дмитрий Геннадьевич",
+          "ООО \"ПРОСТО-КУПИ\"",
+          "ООО \"ОНЛАЙН ТРЕЙД\""
+        ]
+      },
+      {
+        "name": "Кресло офисное Тип 2 для персонала",
+        "quotes": 6,
+        "status": "found",
+        "time_sec": 185.73,
+        "tender_leaks": [],
+        "hospital_leaks": [],
+        "sample_suppliers": [
+          "ООО \"СТУЛ ГРУП\"",
+          "ОФИС ПЛЮС",
+          "ООО \"КАЛУГА-ИНН\""
+        ]
+      },
+      {
+        "name": "Стул на металлическом каркасе для посетителей",
+        "quotes": 8,
+        "status": "found",
+        "time_sec": 133.65,
+        "tender_leaks": [],
+        "hospital_leaks": [],
+        "sample_suppliers": [
+          "ИП Петров Д.Ф. (Интернет-магазин мебели «Скала»)",
+          "Офис Мебель (ОфисМебель.КОМ)",
+          "Салон-магазин «12 стульев»"
+        ]
+      }
+    ],
+    "price_monitoring_ru": [
+      {
+        "name": "Стеновые сэндвич-панели ПСТ 250 1190 100",
+        "quotes": 7,
+        "status": "found",
+        "time_sec": 173.33,
+        "foreign_leaks": [],
+        "hospital_leaks": [],
+        "sample_suppliers": [
+          "ООО \"РТС-МЕТАЛЛ\"",
+          "ООО \"СТАЛЬ ТД\"",
+          "ООО \"КОМПАНИЯ В.И.К.\""
+        ]
+      },
+      {
+        "name": "Кровельные сэндвич-панели ПКТ 220 1000 100",
+        "quotes": 8,
+        "status": "found",
+        "time_sec": 266.7,
+        "foreign_leaks": [],
+        "hospital_leaks": [],
+        "sample_suppliers": [
+          "ООО \"ПРОМЕТЕКС\"",
+          "ООО \"ПАЙП-ПРАЙС\"",
+          "ООО \"МК \"СЭНДВИЧ-ПРОМ\""
+        ]
+      },
+      {
+        "name": "Саморез для сэндвич-панелей 140х5,5",
+        "quotes": 1,
+        "status": "on_request",
+        "time_sec": 103.59,
+        "foreign_leaks": [],
+        "hospital_leaks": [],
+        "sample_suppliers": [
+          "ООО \"ТК\""
+        ]
+      }
+    ],
+    "supplier_search_world": [
+      {
+        "name": "Илоскреб радиальный для первичных отстойников",
+        "candidates": 10,
+        "sample_domains": [
+          "ecopolymer.com",
+          "agma.tech",
+          "os-nova.su"
+        ]
+      },
+      {
+        "name": "Шкаф управления оборудованием ШУО",
+        "candidates": 10,
+        "sample_domains": [
+          "owenkomplekt.ru",
+          "gaz-snab.com",
+          "atomatic-rb.ru"
+        ]
+      },
+      {
+        "name": "Лампа щелевая офтальмологическая",
+        "candidates": 9,
+        "sample_domains": [
+          "kriptomed.ru",
+          "almamed.su",
+          "oftal-med.ru"
+        ]
+      },
+      {
+        "name": "Стол приборный медицинский",
+        "candidates": 10,
+        "sample_domains": [
+          "dealmed.ru",
+          "stomshop.pro",
+          "lpu.elamed.com"
+        ]
+      },
+      {
+        "name": "Эталонный резонатор в вакуумной камере",
+        "candidates": 10,
+        "sample_domains": [
+          "sjk-crystals.com",
+          "lenlasers.ru",
+          "uve-3.ru"
+        ]
+      },
+      {
+        "name": "Инкапсулятор лабораторный",
+        "candidates": 9,
+        "sample_domains": [
+          "dia-m.ru",
+          "buchi.com",
+          "moslabo.ru"
+        ]
+      },
+      {
+        "name": "Панель ограждения железобетонная ПО-2",
+        "candidates": 10,
+        "sample_domains": [
+          "smk-1.ru",
+          "ckms-gbi.ru",
+          "zavod.one"
+        ]
+      },
+      {
+        "name": "Фундамент стаканного типа ФЖ",
+        "candidates": 9,
+        "sample_domains": [
+          "awstroy.ru",
+          "blockgbi.ru",
+          "oz-gbi.ru"
+        ]
+      },
+      {
+        "name": "Система контроля скорости шахтной установки (СКДС-ПУ)",
+        "candidates": 10,
+        "sample_domains": [
+          "cmn.ru",
+          "reestrinform.ru",
+          "studfile.net"
+        ]
+      },
+      {
+        "name": "Авиационный спасательный плот",
+        "candidates": 8,
+        "sample_domains": [
+          "iskosh.ru",
+          "uzemik.ru",
+          "spm-aero.ru"
+        ]
+      },
+      {
+        "name": "Пространственная металлическая рама",
+        "candidates": 8,
+        "sample_domains": [
+          "chiedocover.ru",
+          "leomebel.ru",
+          "ru.made-in-china.com"
+        ]
+      },
+      {
+        "name": "Каверномер скважинный геофизический",
+        "candidates": 10,
+        "sample_domains": [
+          "vniigis.com",
+          "techgis.ru",
+          "bashgeotool.ru"
+        ]
+      },
+      {
+        "name": "Гидравлическая аэродромная силовая установка",
+        "candidates": 9,
+        "sample_domains": [
+          "aerodrommash.ru",
+          "aviaway.ru",
+          "kriogenavia.ru"
+        ]
+      },
+      {
+        "name": "Вальцы резинообрабатывающие",
+        "candidates": 8,
+        "sample_domains": [
+          "tambovpolimer.ru",
+          "polymermash.ru",
+          "komed-machinery.com"
+        ]
+      },
+      {
+        "name": "Автомат редуцирования обжимки гнезд",
+        "candidates": 6,
+        "sample_domains": [
+          "russtanok.ru",
+          "stanoktr.ru",
+          "ru.made-in-china.com"
+        ]
+      }
+    ],
+    "supplier_search_cis": [
+      {
+        "name": "Илоскреб радиальный для первичных отстойников",
+        "candidates": 10,
+        "sample_domains": [
+          "ecopolymer.com",
+          "agma.tech",
+          "os-nova.su"
+        ]
+      },
+      {
+        "name": "Шкаф управления оборудованием ШУО",
+        "candidates": 10,
+        "sample_domains": [
+          "owenkomplekt.ru",
+          "gaz-snab.com",
+          "atomatic-rb.ru"
+        ]
+      },
+      {
+        "name": "Лампа щелевая офтальмологическая",
+        "candidates": 9,
+        "sample_domains": [
+          "kriptomed.ru",
+          "almamed.su",
+          "oftal-med.ru"
+        ]
+      },
+      {
+        "name": "Стол приборный медицинский",
+        "candidates": 10,
+        "sample_domains": [
+          "dealmed.ru",
+          "stomshop.pro",
+          "lpu.elamed.com"
+        ]
+      },
+      {
+        "name": "Эталонный резонатор в вакуумной камере",
+        "candidates": 10,
+        "sample_domains": [
+          "sjk-crystals.com",
+          "lenlasers.ru",
+          "uve-3.ru"
+        ]
+      },
+      {
+        "name": "Инкапсулятор лабораторный",
+        "candidates": 9,
+        "sample_domains": [
+          "dia-m.ru",
+          "buchi.com",
+          "moslabo.ru"
+        ]
+      },
+      {
+        "name": "Панель ограждения железобетонная ПО-2",
+        "candidates": 10,
+        "sample_domains": [
+          "smk-1.ru",
+          "ckms-gbi.ru",
+          "zavod.one"
+        ]
+      },
+      {
+        "name": "Фундамент стаканного типа ФЖ",
+        "candidates": 9,
+        "sample_domains": [
+          "awstroy.ru",
+          "blockgbi.ru",
+          "oz-gbi.ru"
+        ]
+      },
+      {
+        "name": "Система контроля скорости шахтной установки (СКДС-ПУ)",
+        "candidates": 10,
+        "sample_domains": [
+          "cmn.ru",
+          "reestrinform.ru",
+          "studfile.net"
+        ]
+      },
+      {
+        "name": "Авиационный спасательный плот",
+        "candidates": 8,
+        "sample_domains": [
+          "iskosh.ru",
+          "uzemik.ru",
+          "spm-aero.ru"
+        ]
+      },
+      {
+        "name": "Пространственная металлическая рама",
+        "candidates": 8,
+        "sample_domains": [
+          "chiedocover.ru",
+          "leomebel.ru",
+          "ru.made-in-china.com"
+        ]
+      },
+      {
+        "name": "Каверномер скважинный геофизический",
+        "candidates": 10,
+        "sample_domains": [
+          "vniigis.com",
+          "techgis.ru",
+          "bashgeotool.ru"
+        ]
+      },
+      {
+        "name": "Гидравлическая аэродромная силовая установка",
+        "candidates": 9,
+        "sample_domains": [
+          "aerodrommash.ru",
+          "aviaway.ru",
+          "kriogenavia.ru"
+        ]
+      },
+      {
+        "name": "Вальцы резинообрабатывающие",
+        "candidates": 8,
+        "sample_domains": [
+          "tambovpolimer.ru",
+          "polymermash.ru",
+          "komed-machinery.com"
+        ]
+      },
+      {
+        "name": "Автомат редуцирования обжимки гнезд",
+        "candidates": 6,
+        "sample_domains": [
+          "russtanok.ru",
+          "stanoktr.ru",
+          "ru.made-in-china.com"
+        ]
+      }
+    ]
+  }
+}

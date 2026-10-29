@@ -11,8 +11,10 @@ from .billing import (
     OP_GRANT,
     access_error_for_units,
     client_uses_trial_access,
+    effective_job_unit_price_kopeks,
     effective_price_kopeks,
     grant_trial_balance,
+    money_balance_summary,
     resolve_requested_billing_kinds,
 )
 from .config import config
@@ -477,6 +479,7 @@ def client_access_error(
     incoming_file_count: int = 0,
     supplier_search_count: int = 1,
     supplier_search_run_type: str = "initial",
+    geo_radius_km: int | None = None,
 ) -> str:
     if not client:
         return "Доступ не подключён. Отправьте администратору ваш Telegram ID через команду /id."
@@ -484,12 +487,25 @@ def client_access_error(
         return "Доступ отключён. Свяжитесь с администратором."
     if mode not in {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS, MODE_EXACT_PRODUCT, MODE_PRICE_MONITORING}:
         return "Неизвестный режим обработки."
+    if geo_radius_km:
+        settings = get_or_create_settings(db)
+        if not (settings.geo_radius_search_enabled_global or client.allowed_geo_radius):
+            return "Приоритет доставки пока не подключён для вашего аккаунта."
     if mode == MODE_PRICE_MONITORING:
         if not getattr(client, "allowed_price_monitoring", False):
             return "Модуль мониторинга цен не подключён для вашего аккаунта. Обратитесь к администратору."
-        price = effective_price_kopeks(db, client, KIND_PRICE_MONITORING)
-        if int(client.money_balance_kopeks or 0) < price:
-            return f"Недостаточно средств на балансе. Для запуска мониторинга требуется минимум {round(price / 100, 2)} ₽."
+        price = effective_job_unit_price_kopeks(
+            db,
+            client,
+            KIND_PRICE_MONITORING,
+            geo_radius_km=geo_radius_km,
+        )
+        available = money_balance_summary(db, client)["available_kopeks"]
+        if available < price:
+            return (
+                "Недостаточно средств на балансе. "
+                f"Доступно {round(available / 100, 2)} ₽, нужно минимум {round(price / 100, 2)} ₽."
+            )
         return ""
     supplier_units, report_units = requested_function_units(mode, supplier_search_count=supplier_search_count)
     uses_trial_access = client_uses_trial_access(db, client)

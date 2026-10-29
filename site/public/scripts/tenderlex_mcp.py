@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import urllib.request
 import urllib.error
@@ -55,6 +56,12 @@ TOOLS_DEFINITIONS = [
                     "type": "string",
                     "description": "Город или регион поставки (опционально, например 'Москва' или 'Екатеринбург')",
                     "default": "",
+                },
+                "geo_radius_km": {
+                    "type": "integer",
+                    "description": "Радиус приоритета поставщиков от города доставки в км. Указывается вместе с city.",
+                    "minimum": 10,
+                    "maximum": 5000,
                 },
                 "include_quote_request": {
                     "type": "boolean",
@@ -125,10 +132,63 @@ TOOLS_DEFINITIONS = [
             "properties": {},
         },
     },
+    {
+        "name": "tenderlex_start_queued_job",
+        "description": "Запускает задачу TenderLex в очереди. Подходит для файлов, мониторинга цен, радиуса доставки и задач с последующим выбором позиций.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["supplier_search", "procurement_report", "analysis_and_suppliers", "exact_product", "price_monitoring"]},
+                "text": {"type": "string", "description": "Текст ТЗ или документации", "default": ""},
+                "source_urls": {"type": "string", "description": "Номера извещений или URL, по одному в строке", "default": ""},
+                "city": {"type": "string", "default": ""},
+                "geo_radius_km": {"type": "integer", "minimum": 10, "maximum": 5000},
+                "supplier_search_policy": {"type": "string", "enum": ["normal", "minprom_registry_priority", "minprom_registry_only"], "default": "normal"},
+                "multi_item_mode": {"type": "string", "enum": ["balanced", "per_item"], "default": "balanced"},
+                "file_path": {"type": "string", "description": "Необязательный путь к файлу внутри TENDERLEX_MCP_UPLOAD_DIR. Путь передаётся только по явному указанию пользователя."},
+                "idempotency_key": {"type": "string", "description": "Уникальный ключ повтора; повтор с ним не создаёт вторую задачу."},
+            },
+            "required": ["mode"],
+        },
+    },
+    {
+        "name": "tenderlex_get_queued_job",
+        "description": "Показывает статус, прогресс, выбор позиций, предложение неполного результата и файлы одной очередной задачи.",
+        "inputSchema": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
+    },
+    {
+        "name": "tenderlex_choose_job_positions",
+        "description": "Подтверждает выбранные позиции после разбора ТЗ. Используйте revision и ID из position_selection задачи.",
+        "inputSchema": {"type": "object", "properties": {"job_id": {"type": "string"}, "revision": {"type": "string"}, "selected_item_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["job_id", "revision", "selected_item_ids"]},
+    },
+    {
+        "name": "tenderlex_cancel_queued_job",
+        "description": "Отменяет собственную ещё не завершённую очередь TenderLex. Резерв средств возвращается по правилам соответствующего режима.",
+        "inputSchema": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
+    },
+    {
+        "name": "tenderlex_update_queued_job",
+        "description": "Подтверждает стратегию поиска поставщиков либо решение клиента принять/отклонить неполный результат. Применяйте только после явного выбора пользователя.",
+        "inputSchema": {"type": "object", "properties": {
+            "job_id": {"type": "string"},
+            "action": {"type": "string", "enum": ["strategy", "accept", "decline"]},
+            "revision": {"type": "string", "description": "Revision исходного списка из multi_item_details; передавайте при выборе стратегии."},
+            "multi_item_mode": {"type": "string", "enum": ["balanced", "per_item"]},
+            "selected_item_ids": {"type": "array", "items": {"type": "string"}},
+        }, "required": ["job_id", "action"]},
+    },
 ]
 
 
-def _http_request(endpoint: str, method: str = "GET", payload: Optional[dict] = None) -> dict:
+for _tool in TOOLS_DEFINITIONS:
+    if _tool["name"] in {"tenderlex_find_suppliers", "tenderlex_find_exact_and_analogs", "tenderlex_analyze_procurement"}:
+        _tool["inputSchema"]["properties"]["idempotency_key"] = {
+            "type": "string",
+            "description": "Уникальный ID операции. При повторе после таймаута сохраняйте этот ID и тело запроса.",
+        }
+
+
+def _http_request(endpoint: str, method: str = "GET", payload: Optional[dict] = None, *, idempotency_key: str = "") -> dict:
     """Executes authenticated HTTP request to TenderLex API."""
     url = f"{DEFAULT_API_URL}{endpoint}"
     headers = {
@@ -138,6 +198,9 @@ def _http_request(endpoint: str, method: str = "GET", payload: Optional[dict] = 
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
         headers["X-API-Key"] = API_KEY
+
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
 
     data_bytes = None
     if payload is not None:
@@ -162,6 +225,57 @@ def _http_request(endpoint: str, method: str = "GET", payload: Optional[dict] = 
         raise RuntimeError(f"Failed to connect to TenderLex API at {url}: {err.reason}")
 
 
+def _http_multipart(endpoint: str, fields: dict[str, Any], *, file_path: str = "", idempotency_key: str = "") -> dict:
+    """Submit an explicitly user-selected file without exposing arbitrary paths."""
+    boundary = f"----TenderLexMcp{os.urandom(12).hex()}"
+    chunks: list[bytes] = []
+    for key, value in fields.items():
+        if value is None or value == "":
+            continue
+        chunks.extend((
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(),
+            str(value).encode("utf-8"),
+            b"\r\n",
+        ))
+    if file_path:
+        root_raw = os.getenv("TENDERLEX_MCP_UPLOAD_DIR", "").strip()
+        if not root_raw:
+            raise RuntimeError("Для file_path задайте TENDERLEX_MCP_UPLOAD_DIR; это защищает от чтения произвольных файлов.")
+        root = Path(root_raw).expanduser().resolve()
+        path = Path(file_path).expanduser().resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise RuntimeError("file_path должен находиться внутри TENDERLEX_MCP_UPLOAD_DIR.") from exc
+        if not path.is_file() or path.stat().st_size > 50 * 1024 * 1024:
+            raise RuntimeError("Файл не найден, не является обычным файлом или превышает 50 МБ.")
+        chunks.extend((
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="files"; filename="{path.name}"\r\n'.encode(),
+            b"Content-Type: application/octet-stream\r\n\r\n",
+            path.read_bytes(),
+            b"\r\n",
+        ))
+    chunks.append(f"--{boundary}--\r\n".encode())
+    headers = {"User-Agent": "TenderLex-MCP/1.0", "Accept": "application/json", "Content-Type": f"multipart/form-data; boundary={boundary}"}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    req = urllib.request.Request(f"{DEFAULT_API_URL}{endpoint}", data=b"".join(chunks), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        body = err.read().decode("utf-8", errors="replace")
+        try:
+            body = json.loads(body).get("detail", body)
+        except Exception:
+            pass
+        raise RuntimeError(f"TenderLex API Error ({err.code}): {body}") from err
+
+
 def handle_tool_call(name: str, arguments: dict) -> list[dict]:
     """Dispatches tool call to appropriate TenderLex endpoint."""
     if not API_KEY:
@@ -172,6 +286,7 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
                     "⚠️ Ошибка: Переменная окружения TENDERLEX_API_KEY не задана.\n"
                     "Пожалуйста, укажите ваш API-ключ TenderLex в конфигурации MCP сервера."
                 ),
+                "_tenderlex_error": True,
             }
         ]
 
@@ -180,10 +295,12 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
             res = _http_request(
                 "/api/v1/mcp/suppliers/search",
                 method="POST",
+                idempotency_key=str(arguments.get("idempotency_key") or ""),
                 payload={
                     "specification": str(arguments.get("specification") or ""),
                     "target_count": int(arguments.get("target_count") or 5),
                     "city": str(arguments.get("city") or ""),
+                    "geo_radius_km": arguments.get("geo_radius_km"),
                     "include_quote_request": bool(arguments.get("include_quote_request", True)),
                     "search_policy": str(arguments.get("search_policy") or "normal"),
                 },
@@ -231,6 +348,7 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
             res = _http_request(
                 "/api/v1/mcp/products/exact-analogs",
                 method="POST",
+                idempotency_key=str(arguments.get("idempotency_key") or ""),
                 payload={
                     "specification": str(arguments.get("specification") or ""),
                     "procurement_title": str(arguments.get("procurement_title") or ""),
@@ -238,7 +356,7 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
             )
             positions = res.get("positions", [])
             lines = [
-                "🔬 **Отчет о подборе точного товара и аналогов**",
+                "🔬 **Отчёт о подборе товара и аналогов**",
                 f"**Резюме**: {res.get('summary', '')}",
                 "",
             ]
@@ -291,6 +409,7 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
             res = _http_request(
                 "/api/v1/mcp/procurements/analyze",
                 method="POST",
+                idempotency_key=str(arguments.get("idempotency_key") or ""),
                 payload={
                     "document_text": str(arguments.get("document_text") or ""),
                 },
@@ -318,6 +437,7 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
                 ("supplier_search", "Поиск поставщиков"),
                 ("exact_product", "Подбор товара и аналогов"),
                 ("procurement_report", "Анализ документации"),
+                ("price_monitoring", "Мониторинг цен"),
             ]:
                 data = res.get(svc_key, {})
                 allowed = data.get("allowed", False)
@@ -330,12 +450,86 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
 
             return [{"type": "text", "text": "\n".join(lines)}]
 
+        elif name == "tenderlex_start_queued_job":
+            res = _http_multipart(
+                "/api/v1/mcp/jobs",
+                {
+                    "mode": str(arguments.get("mode") or ""),
+                    "text": str(arguments.get("text") or ""),
+                    "source_urls": str(arguments.get("source_urls") or ""),
+                    "delivery_city": str(arguments.get("city") or ""),
+                    "geo_radius_km": arguments.get("geo_radius_km"),
+                    "supplier_search_policy": str(arguments.get("supplier_search_policy") or "normal"),
+                    "multi_item_mode": str(arguments.get("multi_item_mode") or "balanced"),
+                },
+                file_path=str(arguments.get("file_path") or ""),
+                idempotency_key=str(arguments.get("idempotency_key") or ""),
+            )
+            job = res.get("job") or {}
+            return [{"type": "text", "text": f"Задача принята: `{job.get('id')}`. Статус: {job.get('status', 'pending')}. Используйте tenderlex_get_queued_job для прогресса и последующих действий."}]
+
+        elif name == "tenderlex_get_queued_job":
+            job_id = str(arguments.get("job_id") or "")
+            res = _http_request(f"/api/v1/mcp/jobs/{job_id}", method="GET")
+            job = res.get("job") or {}
+            selection = job.get("position_selection") or {}
+            lines = [
+                f"### Задача {job.get('job_number') or job.get('id')}",
+                f"- Статус: **{job.get('status_label') or job.get('status')}**",
+                f"- Прогресс: {job.get('progress', 0)}%",
+                f"- Сообщение: {job.get('message', '')}",
+            ]
+            if selection and not selection.get("confirmed"):
+                lines.append(f"- Ожидается выбор позиций: revision `{selection.get('revision')}`, доступно {len(selection.get('items') or [])}.")
+                lines.append(json.dumps(selection, ensure_ascii=False))
+            if job.get("multi_item_details"):
+                lines.append(json.dumps(job["multi_item_details"], ensure_ascii=False))
+            if job.get("awaiting_customer_confirmation"):
+                lines.append("- Ожидается решение по неполному результату: используйте API POST /accept или /decline.")
+            for item in job.get("result_files") or []:
+                lines.append(f"- Файл: {item.get('label') or item.get('kind')} (`{item.get('kind')}`), скачивание: GET /api/v1/mcp/jobs/{job_id}/files/{item.get('kind')}")
+            return [{"type": "text", "text": "\n".join(lines)}]
+
+        elif name == "tenderlex_choose_job_positions":
+            job_id = str(arguments.get("job_id") or "")
+            res = _http_request(
+                f"/api/v1/mcp/jobs/{job_id}/position-selection",
+                method="POST",
+                payload={"revision": str(arguments.get("revision") or ""), "selected_item_ids": list(arguments.get("selected_item_ids") or [])},
+            )
+            return [{"type": "text", "text": f"Выбор сохранён. Новый статус: {res.get('job', {}).get('status', '')}."}]
+
+        elif name == "tenderlex_update_queued_job":
+            job_id = str(arguments.get("job_id") or "")
+            action = str(arguments.get("action") or "")
+            if action not in {"strategy", "accept", "decline"}:
+                raise ValueError("Неизвестное действие задачи")
+            payload = {}
+            endpoint = action
+            if action == "strategy":
+                endpoint = "choose-strategy"
+                mode = str(arguments.get("multi_item_mode") or "")
+                if mode not in {"balanced", "per_item"}:
+                    raise ValueError("Укажите balanced или per_item")
+                payload = {"multi_item_mode": mode}
+                if "selected_item_ids" in arguments:
+                    payload["selected_item_ids"] = list(arguments["selected_item_ids"])
+                if "revision" in arguments:
+                    payload["revision"] = str(arguments["revision"])
+            res = _http_request(f"/api/v1/mcp/jobs/{job_id}/{endpoint}", method="POST", payload=payload)
+            return [{"type": "text", "text": json.dumps(res, ensure_ascii=False)}]
+
+        elif name == "tenderlex_cancel_queued_job":
+            job_id = str(arguments.get("job_id") or "")
+            res = _http_request(f"/api/v1/mcp/jobs/{job_id}/cancel", method="POST", payload={})
+            return [{"type": "text", "text": f"Задача отменена. Статус: {res.get('job', {}).get('status', '')}."}]
+
         else:
-            return [{"type": "text", "text": f"Неизвестный инструмент: '{name}'"}]
+            return [{"type": "text", "text": f"Неизвестный инструмент: '{name}'", "_tenderlex_error": True}]
 
     except Exception as exc:
         logger.error("tool_execution_failed: %s", exc, exc_info=True)
-        return [{"type": "text", "text": f"❌ Ошибка выполнения инструмента TenderLex: {str(exc)}"}]
+        return [{"type": "text", "text": f"❌ Ошибка выполнения инструмента TenderLex: {str(exc)}", "_tenderlex_error": True}]
 
 
 def run_stdio_server():
@@ -397,6 +591,7 @@ def run_stdio_server():
                 "id": req_id,
                 "result": {
                     "content": content,
+                    "isError": any(bool(item.pop("_tenderlex_error", False)) for item in content),
                 },
             }
 

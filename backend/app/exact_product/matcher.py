@@ -43,7 +43,7 @@ ProgressCallback = Any  # Callable[[int, str], Coroutine]
 
 _MAX_CANDIDATE_DOCS = 12
 
-MAX_EXACT_POSITIONS_PER_JOB = 5
+MAX_EXACT_POSITIONS_PER_JOB = 100
 _MAX_FACTS_PER_DOC = 40
 _CITY_SUFFIX_RE = re.compile(r"\s*[-–—]\s*[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s*$")
 
@@ -580,6 +580,7 @@ def extract_tz_requirements_regex(spec_text: str) -> List[Dict[str, str]]:
 
 async def parse_tz_structure(
     spec_text: str,
+    preserve_empty_positions: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     ИИ-разбор структуры ТЗ (это РАЗБОР ТЕКСТА, не выбор товара): предмет закупки без географии,
@@ -670,7 +671,7 @@ async def parse_tz_structure(
 
         search_q = [str(q).strip() for q in pos.get("search_queries") or [] if str(q).strip()]
 
-        if name and len(reqs) >= 1:
+        if name and (reqs or preserve_empty_positions):
             positions.append({
                 "name": name,
                 "requirements": reqs,
@@ -1605,17 +1606,6 @@ def _is_concrete_specific_model(m_raw: str, generic_words: Set[str]) -> bool:
     if comp in generic_words:
         return False
 
-    generic_categories = {
-        "товар", "продукция", "изделие", "оборудование", "материал",
-        "бумага", "картон", "канат", "трос", "подшипник", "панель",
-        "уплотнение", "пластина", "техпластина", "лента", "труба",
-        "кран", "вентиль", "задвижка", "клапан", "насос", "двигатель",
-        "фильтр", "датчик", "кабель", "провод", "лампа", "светильник",
-        "выключатель", "автомат", "рулон", "лист", "плита"
-    }
-    if comp in generic_categories:
-        return False
-
     # Должен содержать конкретные идентификаторы: цифры, типоразмеры (120х195), артикулы с дефисами/слэшами
     has_digits = any(c.isdigit() for c in m_clean)
     has_model_code = any(sep in m_clean for sep in ("-", "/", "_", "\\"))
@@ -2507,6 +2497,7 @@ async def detect_exact_products_characteristic_first(
     progress_callback: Optional[ProgressCallback] = None,
     full_context: Optional[str] = None,
     evidence_data: Optional[Dict[str, Any]] = None,
+    prepared_positions: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
     """
     Характеристики ТЗ → поиск товара по характеристикам → факты из документов → матрица → решение.
@@ -2539,12 +2530,15 @@ async def detect_exact_products_characteristic_first(
     # Основной путь: ИИ разбирает структуру ТЗ (понимает, где город, а где характеристики,
     # нарезает мультипозиционное ТЗ на отдельные товары). Защита от выдумывания:
     # числа каждого требования обязаны присутствовать в тексте ТЗ.
-    tz_structure = await parse_tz_structure(spec_norm)
+    tz_structure = ({"positions": prepared_positions, "item_name": procurement_title}
+                    if prepared_positions is not None else await parse_tz_structure(spec_norm))
     if tz_structure:
         item_name = tz_structure.get("item_name") or ""
         tz_positions = tz_structure.get("positions") or []
 
     # Резерв: если ИИ-структура пуста, пробуем прямое извлечение требований через ИИ
+    if not tz_positions and prepared_positions is not None:
+        return None
     if not tz_positions:
         requirements = await extract_tz_requirements(spec_norm)
         if len(requirements) < 2:

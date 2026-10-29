@@ -39,6 +39,7 @@ import {
   Paperclip,
   Pencil,
   PlusCircle,
+  Printer,
   QrCode,
   Receipt,
   RotateCcw,
@@ -59,6 +60,7 @@ import {
 type JobMode = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product" | "price_monitoring";
 type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product" | "price_monitoring";
 type SupplierSearchPolicy = "normal" | "minprom_registry_only" | "minprom_registry_priority";
+type GeoScope = "ru" | "cis" | "world";
 
 function normalizeSupplierSearchPolicy(val?: string | null): SupplierSearchPolicy {
   if (val === "minprom_registry_priority" || val === "minprom_registry_only") {
@@ -223,6 +225,32 @@ type SessionPayload = {
   message?: string;
 };
 
+type PositionSelection = {
+  revision: string;
+  max_positions: number;
+  price_kopeks: number;
+  pricing_mode?: "fixed_task" | "per_found_position" | string;
+  groups?: Array<{
+    id?: string;
+    name?: string;
+    label?: string;
+    title?: string;
+    item_ids?: string[];
+  }>;
+  items: Array<{
+    id: string;
+    position_no: number;
+    name: string;
+    requirements: unknown;
+    unit?: string;
+    quantity?: string;
+    source_excerpt?: string;
+    category?: string;
+  }>;
+  selected_ids?: string[];
+  confirmed?: boolean;
+};
+
 type CustomerJob = {
   id: string;
   job_number?: number | null;
@@ -232,6 +260,7 @@ type CustomerJob = {
   multi_item_mode?: string;
   delivery_city?: string;
   geo_radius_km?: number | null;
+  geo_scope?: GeoScope;
   status: string;
   status_label: string;
   progress: number;
@@ -245,6 +274,20 @@ type CustomerJob = {
   can_cancel: boolean;
   can_find_more_suppliers: boolean;
   can_start_supplier_search?: boolean;
+  exact_product_selection?: PositionSelection | null;
+  position_selection?: PositionSelection | null;
+  exact_product_positions?: Array<{
+    id?: string;
+    position_no?: number;
+    name: string;
+    status?: string;
+    model?: string;
+    manufacturer?: string;
+    alternatives?: string[];
+    error?: string;
+    source_url?: string;
+    can_retry_position?: boolean;
+  }>;
   exact_product_summary?: {
     primary_product?: string;
     brand?: string;
@@ -419,7 +462,7 @@ const modeCopy: Record<Scenario, {
     mode: "price_monitoring",
     formSubtitle: "Загрузите файл спецификации или ТЗ (XLSX, DOCX, PDF) либо вставьте список позиций текстом для поиска актуальных цен поставщиков.",
     uploadTitle: "Загрузить спецификацию или ТЗ",
-    uploadText: "Перетащите файлы сюда или нажмите для выбора (XLSX, DOCX, PDF, TXT, ZIP)",
+    uploadText: "Перетащите файлы сюда или нажмите для выбора (XLSX, DOCX, PDF, TXT, ZIP). Оптимально до 1 000 строк в файле.",
     multipleFiles: true,
     textLabel: "Или вставьте список позиций текстом",
     textPlaceholder: "Например:\n1. Кислород газообразный технический, м3\n2. Подшипник 13630, шт\n3. Печь для бани Атмосфера М",
@@ -449,6 +492,25 @@ const supplierPolicyOptions: Array<{ id: SupplierSearchPolicy; label: string; de
   },
 ];
 
+const geoScopeOptions: Array<{ id: GeoScope; label: string; description: string }> = [
+  {
+    id: "ru",
+    label: "Только Россия",
+    description: "поставщики и дистрибьюторы с ИНН РФ (для 44-ФЗ и нацрежима)",
+  },
+  {
+    id: "cis",
+    label: "РФ и СНГ (ЕАЭС)",
+    description: "Россия, Беларусь, Казахстан, Армения, Кыргызстан",
+  },
+  {
+    id: "world",
+    label: "Весь мир",
+    description: "прямые фабрики и производители мира без посредников",
+  },
+];
+
+
 const statusClasses: Record<string, string> = {
   pending: "pending",
   running: "running",
@@ -456,6 +518,8 @@ const statusClasses: Record<string, string> = {
   partial: "completed",
   needs_review: "review",
   awaiting_customer_confirmation: "review",
+  awaiting_exact_selection: "review",
+  awaiting_position_selection: "review",
   failed: "failed",
   customer_declined: "failed",
   cancelled: "failed",
@@ -485,7 +549,7 @@ function formatJobDuration(
   if (Number.isNaN(startTime)) return null;
 
   const isRunning = job.status === "pending" || job.status === "running" || job.status === "queued" || job.status === "in_progress";
-  
+
   let totalSeconds = 0;
   if (!isRunning) {
     const endStr = job.completed_at || job.updated_at;
@@ -541,6 +605,45 @@ function formatRubles(kopeks: number) {
 
 function formatBalanceRubles(kopeks: number) {
   return `${new Intl.NumberFormat("ru-RU").format(Math.round((kopeks || 0) / 100))} ₽`;
+}
+
+function selectionRequirementsText(requirements: unknown): string {
+  if (typeof requirements === "string") return requirements.trim();
+  if (typeof requirements === "number" || typeof requirements === "boolean") return String(requirements);
+  if (Array.isArray(requirements)) {
+    return requirements.map((item) => selectionRequirementsText(item)).filter(Boolean).join(" · ");
+  }
+  if (!requirements || typeof requirements !== "object") return "";
+
+  const record = requirements as Record<string, unknown>;
+  const label = selectionRequirementsText(record.param_name ?? record.label ?? record.name ?? record.parameter);
+  const value = selectionRequirementsText(record.tz_requirement ?? record.requirement ?? record.value ?? record.description);
+  if (label && value) return `${label}: ${value}`;
+  if (value) return value;
+  if (label) return label;
+
+  return Object.values(record)
+    .map((item) => selectionRequirementsText(item))
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function positionSelectionForJob(job: CustomerJob): PositionSelection | null | undefined {
+  return job.mode === "price_monitoring" ? job.position_selection : job.exact_product_selection;
+}
+
+function isAwaitingPositionSelection(job: CustomerJob): boolean {
+  const isExact = job.status === "awaiting_exact_selection";
+  const isMonitoring = job.mode === "price_monitoring" && job.status === "awaiting_position_selection";
+  return (isExact || isMonitoring) && Boolean(positionSelectionForJob(job)) && !positionSelectionForJob(job)?.confirmed;
+}
+
+function supplierStrategyRowCount(job: CustomerJob): number {
+  const categories = job.multi_item_details?.items || [];
+  const declaredRows = job.multi_item_details?.total_items;
+  const includedRows = categories.reduce((total, item) => total + Math.max(1, item.included_sub_items?.length || 0), 0);
+  // Older responses call the category count total_items; never let it hide source rows.
+  return Math.max(declaredRows || 0, includedRows);
 }
 
 function balanceValue(counter?: BalanceCounter) {
@@ -606,13 +709,26 @@ function pluralizeRu(value: number, [one, few, many]: [string, string, string]) 
 }
 
 function parseError(raw: string) {
+  const str = String(raw || "").trim();
+  if (str.includes("502 Bad Gateway")) {
+    return "Сервер временно обновляется или перезагружается (502 Bad Gateway). Пожалуйста, подождите пару секунд и повторите.";
+  }
+  if (str.includes("504 Gateway Time-out") || str.includes("504 Gateway Timeout")) {
+    return "Время ожидания ответа сервера истекло (504 Gateway Timeout). Попробуйте разбить файл на части или повторите попытку.";
+  }
+  if (str.includes("500 Internal Server Error")) {
+    return "Внутренняя ошибка сервера (500). Пожалуйста, повторите попытку позже.";
+  }
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(str);
     if (typeof parsed?.detail === "string") return parsed.detail;
   } catch {
-    return raw;
+    if (/<html|<!DOCTYPE|<head|<body/i.test(str)) {
+      return "Ошибка связи с сервером. Пожалуйста, повторите попытку через несколько секунд.";
+    }
+    return str || "Ошибка запроса";
   }
-  return raw || "Ошибка запроса";
+  return str || "Ошибка запроса";
 }
 
 function filenameFromResponse(response: Response, fallback: string) {
@@ -979,6 +1095,82 @@ function playNotificationChime() {
   }
 }
 
+function DeliveryPriorityControl({ geoRadiusEnabled, deliveryCity, geoRadiusKm, setGeoRadiusEnabled, setDeliveryCity, setGeoRadiusKm, surchargePct, idPrefix = "" }: {
+  geoRadiusEnabled: boolean; deliveryCity: string; geoRadiusKm: number;
+  setGeoRadiusEnabled: (value: boolean) => void; setDeliveryCity: (value: string) => void;
+  setGeoRadiusKm: (value: number) => void; surchargePct: number; idPrefix?: string;
+}) {
+  return (
+            <section className="tl-geo-filter p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2.5" aria-label="Логистический фильтр">
+              <div className="tl-geo-filter__heading flex items-center justify-between gap-3">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={geoRadiusEnabled}
+                    onChange={(e) => setGeoRadiusEnabled(e.target.checked)}
+                    className="w-4 h-4 text-teal-600 rounded border-slate-300 focus:ring-teal-500"
+                  />
+                  <span className="text-xs font-bold text-slate-800">
+                    Приоритет в радиусе доставки
+                  </span>
+                </label>
+                <span className="tl-geo-filter__badge text-[11px] font-semibold text-teal-700 bg-teal-50 border border-teal-200/80 px-2 py-0.5 rounded-full">
+                  +{surchargePct}% к стоимости задачи
+                </span>
+              </div>
+
+              {geoRadiusEnabled ? (
+                <div className="tl-geo-filter__fields pt-2 border-t border-slate-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
+                  <div className="tl-geo-filter__city sm:col-span-2">
+                    <label htmlFor={`${idPrefix}delivery-city`} className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Город объекта или поставки
+                    </label>
+                    <input
+                      id={`${idPrefix}delivery-city`}
+                      type="text"
+                      pattern=".*\S.*"
+                      value={deliveryCity}
+                      onChange={(e) => setDeliveryCity(e.target.value)}
+                      placeholder="например, Каменск-Шахтинский или Ростов-на-Дону"
+                      required={geoRadiusEnabled}
+                      aria-describedby={`${idPrefix}delivery-radius-help`}
+                      className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 placeholder:text-slate-400"
+                    />
+                  </div>
+                  <div className="tl-geo-filter__radius">
+                    <label htmlFor={`${idPrefix}delivery-radius`} className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Радиус поиска
+                    </label>
+                    <div className="relative">
+                      <input
+                        id={`${idPrefix}delivery-radius`}
+                        type="number"
+                        min={10}
+                        max={5000}
+                        required={geoRadiusEnabled}
+                        step={1}
+                        value={geoRadiusKm || ""}
+                        onChange={(e) => {
+                          const val = e.target.value === "" ? 0 : Number(e.target.value);
+                          setGeoRadiusKm(val);
+                        }}
+                        placeholder="300"
+                        className="w-full text-xs px-3 py-2 pr-9 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 font-semibold text-slate-800"
+                      />
+                      <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400 pointer-events-none">
+                        км
+                      </span>
+                    </div>
+                  </div>
+                  <div id={`${idPrefix}delivery-radius-help`} className="tl-geo-filter__helper sm:col-span-3 text-[11px] text-slate-500 leading-tight">
+                    Ближайшие поставщики идут первыми. Варианты вне радиуса и с неподтверждённым адресом помечаются отдельно. Расстояние приблизительное; склад и сроки уточняются у поставщика.
+                  </div>
+                </div>
+              ) : null}
+            </section>
+  );
+}
+
 export function CabinetClient() {
   const [nowTs, setNowTs] = useState(() => Date.now());
   useEffect(() => {
@@ -1013,7 +1205,9 @@ export function CabinetClient() {
   const [debouncedJobSearch, setDebouncedJobSearch] = useState("");
   const [jobModeFilter, setJobModeFilter] = useState("");
   const [jobPolicyFilter, setJobPolicyFilter] = useState("");
-  const [authMode, setAuthMode] = useState<"login" | "register" | "reset">("login");
+  const [authMode, setAuthMode] = useState<"login" | "register" | "reset" | "new_password">("login");
+  const [resetToken, setResetToken] = useState("");
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -1024,6 +1218,34 @@ export function CabinetClient() {
   const [emailEditOpen, setEmailEditOpen] = useState(false);
   const [scenario, setScenario] = useState<Scenario>("procurement_report");
   const [supplierSearchPolicy, setSupplierSearchPolicy] = useState<SupplierSearchPolicy>("normal");
+  const [geoScope, setGeoScope] = useState<GeoScope>("ru");
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("tenderlex_geo_scope");
+      if (saved === "ru" || saved === "cis" || saved === "world") {
+        setGeoScope(saved as GeoScope);
+      }
+    } catch {}
+  }, []);
+
+  const handleSetSupplierSearchPolicy = (policy: SupplierSearchPolicy) => {
+    setSupplierSearchPolicy(policy);
+    if (policy === "minprom_registry_only" || policy === "minprom_registry_priority") {
+      setGeoScope("ru");
+    }
+  };
+
+  const handleSetGeoScope = (scope: GeoScope) => {
+    setGeoScope(scope);
+    try {
+      localStorage.setItem("tenderlex_geo_scope", scope);
+    } catch {}
+    if (scope !== "ru" && supplierSearchPolicy === "minprom_registry_only") {
+      setSupplierSearchPolicy("normal");
+    }
+  };
+
   const [multiItemMode, setMultiItemMode] = useState<"balanced" | "per_item">("balanced");
   const [geoRadiusEnabled, setGeoRadiusEnabled] = useState(false);
   const [deliveryCity, setDeliveryCity] = useState("");
@@ -1044,6 +1266,9 @@ export function CabinetClient() {
   const [startSupplierSearchMultiItemMode, setStartSupplierSearchMultiItemMode] = useState<"balanced" | "per_item">("balanced");
   const [startSupplierSearchAlternatives, setStartSupplierSearchAlternatives] = useState<boolean>(true);
   const [startSupplierSearchPrompt, setStartSupplierSearchPrompt] = useState<string>("");
+  const [startSupplierGeoEnabled, setStartSupplierGeoEnabled] = useState(false);
+  const [startSupplierCity, setStartSupplierCity] = useState("");
+  const [startSupplierRadius, setStartSupplierRadius] = useState(300);
   const [retryConfirmJob, setRetryConfirmJob] = useState<CustomerJob | null>(null);
   const [retryPolicy, setRetryPolicy] = useState<SupplierSearchPolicy>("normal");
   const [retryMultiItemMode, setRetryMultiItemMode] = useState<"balanced" | "per_item">("balanced");
@@ -1053,6 +1278,14 @@ export function CabinetClient() {
   const [strategyError, setStrategyError] = useState<string>("");
   const [strategySubmittingJobId, setStrategySubmittingJobId] = useState<string | null>(null);
   const dismissedStrategyJobIdsRef = useRef<Set<string>>(new Set());
+  const [exactSelectionJob, setExactSelectionJob] = useState<CustomerJob | null>(null);
+  const [selectedExactItemIds, setSelectedExactItemIds] = useState<string[]>([]);
+  const [exactSelectionError, setExactSelectionError] = useState("");
+  const [exactSelectionSubmittingJobId, setExactSelectionSubmittingJobId] = useState<string | null>(null);
+  const dismissedExactSelectionJobIdsRef = useRef<Set<string>>(new Set());
+  const exactSelectionStateRef = useRef<Map<string, string[]>>(new Map());
+  const [selectionSearchQuery, setSelectionSearchQuery] = useState("");
+  const [selectionVisibleLimit, setSelectionVisibleLimit] = useState(50);
 
   function markStrategyDismissed(jobId: string) {
     dismissedStrategyJobIdsRef.current.add(jobId);
@@ -1085,6 +1318,133 @@ export function CabinetClient() {
     setSelectedStrategyItemIds(allIds);
     setStrategyError("");
     setStrategyConfirmJob(job);
+  }
+
+  function exactSelectionKey(job: CustomerJob) {
+    return `${job.id}:${positionSelectionForJob(job)?.revision || ""}`;
+  }
+
+  function openExactSelectionModal(job: CustomerJob) {
+    const selection = positionSelectionForJob(job);
+    if (!selection) return;
+    const key = exactSelectionKey(job);
+    const itemIds = new Set(selection.items.map((item) => item.id));
+    const remembered = exactSelectionStateRef.current.get(key);
+    const initial = (remembered || selection.selected_ids || []).filter((id) => itemIds.has(id));
+    setSelectedExactItemIds(initial);
+    setExactSelectionError("");
+    setSelectionSearchQuery("");
+    setSelectionVisibleLimit(50);
+    setExactSelectionJob(job);
+  }
+
+  function dismissExactSelectionModal() {
+    if (!exactSelectionJob) return;
+    dismissedExactSelectionJobIdsRef.current.add(exactSelectionKey(exactSelectionJob));
+    setExactSelectionJob(null);
+  }
+
+  function toggleExactSelectionItem(job: CustomerJob, itemId: string) {
+    const selection = positionSelectionForJob(job);
+    const isUncapped = job.mode === "exact_product" || job.mode === "price_monitoring" || selection?.pricing_mode === "per_position" || selection?.pricing_mode === "per_found_position";
+    const maxPositions = isUncapped ? (selection?.items.length || 100) : (selection?.max_positions || 5);
+    setSelectedExactItemIds((current) => {
+      const hasItem = current.includes(itemId);
+      if (hasItem) {
+        const next = current.filter((id) => id !== itemId);
+        exactSelectionStateRef.current.set(exactSelectionKey(job), next);
+        setExactSelectionError("");
+        return next;
+      }
+      if (current.length >= maxPositions) {
+        setExactSelectionError(`Можно выбрать не более ${maxPositions} позиций.`);
+        return current;
+      }
+      const next = [...current, itemId];
+      exactSelectionStateRef.current.set(exactSelectionKey(job), next);
+      setExactSelectionError("");
+      return next;
+    });
+  }
+
+  function toggleExactSelectionGroup(job: CustomerJob, itemIds: string[], groupName: string) {
+    const selection = positionSelectionForJob(job);
+    if (!selection || itemIds.length === 0) return;
+    const isUncapped = job.mode === "exact_product" || job.mode === "price_monitoring" || selection.pricing_mode === "per_position" || selection.pricing_mode === "per_found_position";
+    const maxPositions = isUncapped ? selection.items.length : (selection.max_positions || selection.items.length);
+    setSelectedExactItemIds((current) => {
+      const groupSet = new Set(itemIds);
+      const allSelected = itemIds.every((itemId) => current.includes(itemId));
+      const next = allSelected ? current.filter((itemId) => !groupSet.has(itemId)) : Array.from(new Set([...current, ...itemIds]));
+      if (!allSelected && next.length > maxPositions) {
+        setExactSelectionError(`Категория «${groupName}» содержит ${itemIds.length} позиций. С текущим выбором это превысит лимит ${maxPositions}; выберите позиции вручную.`);
+        return current;
+      }
+      exactSelectionStateRef.current.set(exactSelectionKey(job), next);
+      setExactSelectionError("");
+      return next;
+    });
+  }
+
+  async function confirmExactSelection(job: CustomerJob) {
+    const selection = positionSelectionForJob(job);
+    if (!csrf || !selection) return;
+    const isPriceMonitoring = job.mode === "price_monitoring";
+    const isUncapped = job.mode === "exact_product" || isPriceMonitoring || selection.pricing_mode === "per_position" || selection.pricing_mode === "per_found_position";
+    const maxPositions = isUncapped ? selection.items.length : (selection.max_positions || selection.items.length);
+    if (selectedExactItemIds.length === 0) {
+      setExactSelectionError(`Выберите хотя бы одну позицию для ${isPriceMonitoring ? "мониторинга цен" : "подбора"}.`);
+      return;
+    }
+    if (selectedExactItemIds.length > maxPositions) {
+      setExactSelectionError(`Можно выбрать не более ${maxPositions} позиций.`);
+      return;
+    }
+    setExactSelectionSubmittingJobId(job.id);
+    setExactSelectionError("");
+    try {
+      const response = await fetch(`/api/customer/jobs/${job.id}/${isPriceMonitoring ? "position-selection" : "exact-selection"}`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "x-csrf-token": csrf, "content-type": "application/json" },
+        body: JSON.stringify({ revision: selection.revision, selected_item_ids: selectedExactItemIds }),
+      });
+      const payload = await readJson<{ message?: string }>(response);
+      exactSelectionStateRef.current.delete(exactSelectionKey(job));
+      dismissedExactSelectionJobIdsRef.current.add(exactSelectionKey(job));
+      setExactSelectionJob(null);
+      setMessage(payload.message || `Выбрано позиций: ${selectedExactItemIds.length}. ${isPriceMonitoring ? "Начинаем мониторинг цен." : "Начинаем подбор."}`);
+      await loadSession();
+      await loadJobs();
+    } catch (err) {
+      setExactSelectionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExactSelectionSubmittingJobId(null);
+    }
+  }
+
+  async function retryExactPosition(job: CustomerJob, positionId?: string) {
+    const selection = job.exact_product_selection;
+    if (!csrf || !selection || !positionId) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/customer/jobs/${job.id}/exact-selection/retry`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "x-csrf-token": csrf, "content-type": "application/json" },
+        body: JSON.stringify({ revision: selection.revision, selected_item_ids: [positionId] }),
+      });
+      const payload = await readJson<{ message?: string }>(response);
+      setMessage(payload.message || "Создан новый подбор для выбранной позиции. Подтвердите его в списке задач.");
+      setJobsPage(1);
+      await loadSession();
+      await loadJobs(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function skipOrDismissStrategyModal() {
@@ -1135,10 +1495,47 @@ export function CabinetClient() {
   const [showTariffs, setShowTariffs] = useState(false);
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
   const [showTopUpModal, setShowTopUpModal] = useState(false);
-  const [topUpTab, setTopUpTab] = useState<"card" | "b2b" | "sbp">("card");
+  const [topUpTab, setTopUpTab] = useState<"card" | "b2b">("card");
   const [selectedTopUpPackage, setSelectedTopUpPackage] = useState<DepositPackage | null>(null);
   const [customTopUpRub, setCustomTopUpRub] = useState<number>(5000);
   const [topUpCopied, setTopUpCopied] = useState(false);
+  const [isPayingOnline, setIsPayingOnline] = useState(false);
+  const [onlinePayError, setOnlinePayError] = useState("");
+  const [paymentSuccessNotice, setPaymentSuccessNotice] = useState<{
+    amountRub: number;
+    bonusRub: number;
+    totalCreditRub: number;
+  } | null>(null);
+  const [checkingPaymentStatus, setCheckingPaymentStatus] = useState(false);
+
+  // B2B Invoice state
+  const [invoiceInn, setInvoiceInn] = useState("");
+  const [invoiceKpp, setInvoiceKpp] = useState("");
+  const [invoiceName, setInvoiceName] = useState("");
+  const [invoiceAddress, setInvoiceAddress] = useState("");
+  const [invoiceEmail, setInvoiceEmail] = useState("");
+  const [invoiceLoadingInn, setInvoiceLoadingInn] = useState(false);
+  const [invoiceInnFound, setInvoiceInnFound] = useState(false);
+  const [invoiceInnError, setInvoiceInnError] = useState("");
+  const [invoiceSubmitting, setInvoiceSubmitting] = useState(false);
+  const [invoiceSubmitError, setInvoiceSubmitError] = useState("");
+  const [invoiceCreated, setInvoiceCreated] = useState<{
+    id: string;
+    invoice_number: string;
+    amount_rub: number;
+    bonus_rub: number;
+    total_credit_rub: number;
+    buyer_name: string;
+    buyer_inn: string;
+    buyer_kpp?: string;
+    buyer_address?: string;
+    buyer_email: string;
+    tariff_name: string;
+    created_at?: string;
+  } | null>(null);
+  const [invoiceEmailSending, setInvoiceEmailSending] = useState(false);
+  const [invoiceEmailSent, setInvoiceEmailSent] = useState(false);
+  const [invoiceDetailsCopied, setInvoiceDetailsCopied] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showReferralModal, setShowReferralModal] = useState(false);
@@ -1162,7 +1559,6 @@ export function CabinetClient() {
     last_used_at: string | null;
     total_spent: number;
   }>>([]);
-  const [revealedKeyIds, setRevealedKeyIds] = useState<Record<string, boolean>>({});
   const [loadingApiKeys, setLoadingApiKeys] = useState(false);
   const [generatingApiKey, setGeneratingApiKey] = useState(false);
   const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
@@ -1275,7 +1671,7 @@ export function CabinetClient() {
   const emailVerified = session?.user?.is_email_verified !== false;
   const supplierMultiFileWarning = scenario === "supplier_search" && selectedFiles.length > 1;
   const activeJobs = useMemo(
-    () => jobs.filter((job) => ["pending", "running", "awaiting_customer_confirmation"].includes(job.status)).length,
+    () => jobs.filter((job) => ["pending", "running", "awaiting_customer_confirmation", "awaiting_exact_selection", "awaiting_position_selection"].includes(job.status)).length,
     [jobs],
   );
   const jobsPageCount = Math.max(1, Math.ceil(jobsTotal / jobsPageSize));
@@ -1316,6 +1712,40 @@ export function CabinetClient() {
       setHistoryError(err instanceof Error ? err.message : "Ошибка загрузки истории операций");
     } finally {
       setHistoryLoading(false);
+    }
+  }
+
+  async function handleStartOnlinePayment() {
+    setIsPayingOnline(true);
+    setOnlinePayError("");
+    try {
+      const res = await fetch("/api/customer/payments/yookassa/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.csrf_token ? { "X-CSRF-Token": session.csrf_token } : {}),
+        },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          amount_rub: customTopUpRub,
+          package_id: selectedTopUpPackage?.id || null,
+        }),
+      });
+
+      const data = await readJson<{ detail?: string; confirmation_url?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.detail || "Не удалось создать платёж в ЮKassa");
+      }
+
+      if (data?.confirmation_url) {
+        trackGoal("cabinet_click");
+        window.location.href = data.confirmation_url;
+      } else {
+        throw new Error("Не получена ссылка для перехода на оплату");
+      }
+    } catch (err: any) {
+      setIsPayingOnline(false);
+      setOnlinePayError(err?.message || "Ошибка перехода к оплате");
     }
   }
 
@@ -1433,6 +1863,14 @@ export function CabinetClient() {
 
   function selectScenario(next: Scenario) {
     setScenario(next);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("tenderlex_cabinet_launcher_scenario", next);
+      } catch {}
+    }
+    setGeoRadiusEnabled(false);
+    setDeliveryCity("");
+    setGeoRadiusKm(300);
     if (next === "procurement_report") setSupplierSearchPolicy("normal");
     setText("");
     setSourceUrls("");
@@ -1459,10 +1897,24 @@ export function CabinetClient() {
     }).catch((err) => setError(err instanceof Error ? err.message : String(err)));
     const params = new URLSearchParams(window.location.search);
     const scenarioParam = params.get("scenario") || params.get("mode");
+    const validScenarios: Scenario[] = ["procurement_report", "supplier_search", "analysis_and_suppliers", "exact_product", "price_monitoring"];
     if (scenarioParam === "doc_analysis") {
       setScenario("procurement_report");
-    } else if (scenarioParam === "exact_product" || scenarioParam === "supplier_search" || scenarioParam === "procurement_report" || scenarioParam === "analysis_and_suppliers") {
-      setScenario(scenarioParam);
+      if (typeof window !== "undefined") {
+        try { localStorage.setItem("tenderlex_cabinet_launcher_scenario", "procurement_report"); } catch {}
+      }
+    } else if (scenarioParam && validScenarios.includes(scenarioParam as Scenario)) {
+      setScenario(scenarioParam as Scenario);
+      if (typeof window !== "undefined") {
+        try { localStorage.setItem("tenderlex_cabinet_launcher_scenario", scenarioParam); } catch {}
+      }
+    } else if (typeof window !== "undefined") {
+      try {
+        const savedScenario = localStorage.getItem("tenderlex_cabinet_launcher_scenario");
+        if (savedScenario && validScenarios.includes(savedScenario as Scenario)) {
+          setScenario(savedScenario as Scenario);
+        }
+      } catch {}
     }
     const textParam = params.get("text") || params.get("q");
     if (textParam) {
@@ -1519,6 +1971,7 @@ export function CabinetClient() {
 
     const verified = params.get("email_verified");
     const verifyToken = params.get("email_verify_token");
+    const resetTokenParam = params.get("reset_token");
     const authError = params.get("auth_error");
     if (verified === "1") setMessage("Email подтверждён. Теперь можно запускать задачи.");
     if (verified === "0") setError("Ссылка подтверждения недействительна или устарела.");
@@ -1539,10 +1992,17 @@ export function CabinetClient() {
       confirmEmailToken(verifyToken).catch((err) => setError(err instanceof Error ? err.message : String(err)));
       params.delete("email_verify_token");
     }
+    if (resetTokenParam) {
+      setResetToken(resetTokenParam);
+      setAuthMode("new_password");
+      setError("");
+      setMessage("Задайте новый пароль для входа в кабинет.");
+      params.delete("reset_token");
+    }
     if (verified) {
       params.delete("email_verified");
     }
-    if (verified || verifyToken || authError) {
+    if (verified || verifyToken || authError || resetTokenParam) {
       const nextQuery = params.toString();
       window.history.replaceState(null, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`);
     }
@@ -1620,6 +2080,24 @@ export function CabinetClient() {
     }
   }, [jobs, strategyConfirmJob]);
 
+  useEffect(() => {
+    if (exactSelectionJob) return;
+    const pendingJob = jobs.find((job) => {
+      return isAwaitingPositionSelection(job) && !dismissedExactSelectionJobIdsRef.current.has(exactSelectionKey(job));
+    });
+    if (pendingJob) openExactSelectionModal(pendingJob);
+  }, [jobs, exactSelectionJob]);
+
+  useEffect(() => {
+    if (!exactSelectionJob) return;
+    const refreshedJob = jobs.find((job) => job.id === exactSelectionJob.id);
+    if (!refreshedJob || !isAwaitingPositionSelection(refreshedJob)) {
+      setExactSelectionJob(null);
+    } else if (positionSelectionForJob(refreshedJob)?.revision !== positionSelectionForJob(exactSelectionJob)?.revision) {
+      openExactSelectionModal(refreshedJob);
+    }
+  }, [jobs, exactSelectionJob]);
+
   // Close modal on Escape
   useEffect(() => {
     if (!strategyConfirmJob) return;
@@ -1633,10 +2111,76 @@ export function CabinetClient() {
   }, [strategyConfirmJob]);
 
   useEffect(() => {
+    if (!exactSelectionJob) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") dismissExactSelectionModal();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [exactSelectionJob]);
+
+  useEffect(() => {
     if (!activeToast) return;
     const timer = setTimeout(() => setActiveToast(null), 15000);
     return () => clearTimeout(timer);
   }, [activeToast]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const paymentStatus = params.get("payment_status");
+    const paymentId = params.get("tenderlex_payment_id") || params.get("payment_id");
+
+    if (paymentStatus === "check" && paymentId) {
+      setCheckingPaymentStatus(true);
+      const cleanUrl = () => {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("payment_status");
+        url.searchParams.delete("tenderlex_payment_id");
+        url.searchParams.delete("payment_id");
+        window.history.replaceState({}, document.title, url.pathname + (url.search || ""));
+      };
+
+      async function verifyPayment(retries = 3) {
+        try {
+          const res = await fetch(`/api/customer/payments/${paymentId}/status`, {
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+          if (res.ok) {
+            const data = await readJson<{
+              status?: string;
+              amount_rub?: number;
+              bonus_rub?: number;
+              total_credit_rub?: number;
+            }>(res);
+            if (data?.status === "succeeded") {
+              setPaymentSuccessNotice({
+                amountRub: data.amount_rub || 0,
+                bonusRub: data.bonus_rub || 0,
+                totalCreditRub: data.total_credit_rub || 0,
+              });
+              await loadSession();
+              cleanUrl();
+              setCheckingPaymentStatus(false);
+              return;
+            }
+          }
+          if (retries > 0) {
+            setTimeout(() => void verifyPayment(retries - 1), 2500);
+          } else {
+            setCheckingPaymentStatus(false);
+            cleanUrl();
+          }
+        } catch {
+          setCheckingPaymentStatus(false);
+          cleanUrl();
+        }
+      }
+
+      void verifyPayment();
+    }
+  }, []);
 
   function toggleNotifications() {
     setNotificationsEnabled((prev) => {
@@ -1677,6 +2221,35 @@ export function CabinetClient() {
     setError("");
     setMessage("");
     try {
+      if (authMode === "new_password") {
+        if (!resetToken) {
+          setError("Ссылка сброса пароля недействительна. Запросите новую ссылку.");
+          return;
+        }
+        if (password.length < 8) {
+          setError("Пароль должен содержать не менее 8 символов.");
+          return;
+        }
+        if (password !== newPasswordConfirm) {
+          setError("Пароли не совпадают.");
+          return;
+        }
+        const response = await fetch("/api/customer/auth/password-reset/confirm", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: resetToken, new_password: password }),
+        });
+        const payload = await readJson<SessionPayload>(response);
+        setSession(payload);
+        if (payload.authenticated) trackGoal("login_success");
+        setPassword("");
+        setNewPasswordConfirm("");
+        setResetToken("");
+        setAuthMode("login");
+        setMessage(payload.message || "Пароль успешно обновлён. Вы вошли в личный кабинет.");
+        return;
+      }
       if (authMode === "reset") {
         const response = await fetch("/api/customer/auth/password-reset/request", {
           method: "POST",
@@ -1685,7 +2258,7 @@ export function CabinetClient() {
           body: JSON.stringify({ email }),
         });
         const payload = await readJson<{ message?: string }>(response);
-        setMessage(payload.message || "Заявка отправлена. Мы поможем восстановить доступ.");
+        setMessage(payload.message || "Мы отправили ссылку для сброса пароля на ваш email.");
         return;
       }
       const response = await fetch(`/api/customer/auth/${authMode}`, {
@@ -1823,8 +2396,14 @@ export function CabinetClient() {
       const form = new FormData();
       form.append("mode", selectedMode);
       form.append("supplier_search_policy", selectedMode === "procurement_report" ? "normal" : supplierSearchPolicy);
+      const isMinpromPolicy = supplierSearchPolicy === "minprom_registry_only" || supplierSearchPolicy === "minprom_registry_priority";
+      const effectiveGeoScope = isMinpromPolicy ? "ru" : geoScope;
+      form.append("geo_scope", effectiveGeoScope);
       form.append("multi_item_mode", multiItemMode);
-      if (geoRadiusEnabled && deliveryCity.trim()) {
+      if (geoRadiusEnabled && session?.user?.allowed_geo_radius && ["supplier_search", "analysis_and_suppliers", "price_monitoring"].includes(selectedMode)) {
+        if (!deliveryCity.trim() || !Number.isInteger(geoRadiusKm) || geoRadiusKm < 10 || geoRadiusKm > 5000) {
+          throw new Error("Укажите город и целый радиус от 10 до 5000 км.");
+        }
         form.append("delivery_city", deliveryCity.trim());
         form.append("geo_radius_km", String(geoRadiusKm));
       }
@@ -2169,6 +2748,11 @@ export function CabinetClient() {
     const multiItemToSend = startSupplierSearchMultiItemMode;
     const includeAlts = startSupplierSearchAlternatives;
     const promptToSend = startSupplierSearchPrompt.trim();
+    if (startSupplierGeoEnabled && (!startSupplierCity.trim() || !Number.isInteger(startSupplierRadius) || startSupplierRadius < 10 || startSupplierRadius > 5000)) {
+      setError("Укажите город и целый радиус от 10 до 5000 км.");
+      setBusy(false);
+      return;
+    }
     setStartSupplierSearchConfirmJob(null);
     try {
       const response = await fetch(`/api/customer/jobs/${job.id}/start-supplier-search`, {
@@ -2183,6 +2767,7 @@ export function CabinetClient() {
           multi_item_mode: multiItemToSend,
           include_alternatives: includeAlts,
           additional_prompt: promptToSend,
+          ...(startSupplierGeoEnabled && session?.user?.allowed_geo_radius ? { delivery_city: startSupplierCity.trim(), geo_radius_km: startSupplierRadius } : {}),
         }),
       });
       const payload = await readJson<{ message?: string; job?: CustomerJob }>(response);
@@ -2282,7 +2867,12 @@ export function CabinetClient() {
             {authMode === "reset" ? (
               <div className="space-y-1 pb-2 border-b border-slate-200/80 mb-2">
                 <h2 className="text-lg font-bold text-slate-900">Восстановить доступ</h2>
-                <p className="text-xs text-slate-500">Укажите email кабинета. Мы проверим заявку и поможем войти снова.</p>
+                <p className="text-xs text-slate-500">Укажите email кабинета. Мы пришлём ссылку для сброса пароля.</p>
+              </div>
+            ) : authMode === "new_password" ? (
+              <div className="space-y-1 pb-2 border-b border-slate-200/80 mb-2">
+                <h2 className="text-lg font-bold text-slate-900">Новый пароль</h2>
+                <p className="text-xs text-slate-500">Задайте новый пароль для входа в кабинет TenderLex.</p>
               </div>
             ) : (
               <div className="grid grid-cols-2 p-1 bg-slate-200/60 rounded-xl mb-3 text-xs font-bold" role="tablist" aria-label="Режим входа">
@@ -2303,7 +2893,7 @@ export function CabinetClient() {
               </div>
             )}
 
-            {authMode !== "reset" ? (
+            {authMode !== "reset" && authMode !== "new_password" ? (
               <div className="space-y-2.5 pt-1">
                 <a
                   href="/api/customer/auth/yandex/login"
@@ -2355,20 +2945,51 @@ export function CabinetClient() {
               </label>
             ) : null}
 
-            <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
-              <span>Email</span>
-              <input
-                className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                type="email"
-                autoComplete="email"
-                placeholder="name@company.ru"
-                required
-              />
-            </label>
+            {authMode !== "new_password" ? (
+              <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
+                <span>Email</span>
+                <input
+                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  type="email"
+                  autoComplete="email"
+                  placeholder="name@company.ru"
+                  required
+                />
+              </label>
+            ) : null}
 
-            {authMode !== "reset" ? (
+            {authMode === "new_password" ? (
+              <>
+                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
+                  <span>Новый пароль</span>
+                  <input
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={8}
+                    placeholder="Не менее 8 символов"
+                    required
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
+                  <span>Повторите новый пароль</span>
+                  <input
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                    value={newPasswordConfirm}
+                    onChange={(event) => setNewPasswordConfirm(event.target.value)}
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={8}
+                    placeholder="Повторите новый пароль"
+                    required
+                  />
+                </label>
+              </>
+            ) : authMode !== "reset" ? (
               <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
                 <span>Пароль</span>
                 <input
@@ -2440,10 +3061,33 @@ export function CabinetClient() {
               disabled={busy}
             >
               {busy ? <Loader2 size={18} className="animate-spin" aria-hidden="true" /> : null}
-              <span>{authMode === "reset" ? "Отправить заявку" : authMode === "login" ? "Войти" : "Создать кабинет"}</span>
+              <span>
+                {authMode === "reset"
+                  ? "Отправить ссылку на почту"
+                  : authMode === "new_password"
+                  ? "Сохранить новый пароль и войти"
+                  : authMode === "login"
+                  ? "Войти"
+                  : "Создать кабинет"}
+              </span>
             </button>
 
-            {authMode === "login" ? (
+            {authMode === "new_password" ? (
+              <button
+                className="w-full text-center text-xs font-bold text-teal-700 hover:text-teal-900 transition-colors py-2 border-t border-slate-200/60 mt-2 block cursor-pointer"
+                type="button"
+                onClick={() => {
+                  setError("");
+                  setMessage("");
+                  setPassword("");
+                  setNewPasswordConfirm("");
+                  setResetToken("");
+                  setAuthMode("login");
+                }}
+              >
+                Отмена / Ко входу
+              </button>
+            ) : authMode === "login" ? (
               <button
                 className="w-full text-center text-xs font-bold text-teal-700 hover:text-teal-900 transition-colors py-2 border-t border-slate-200/60 mt-2 block cursor-pointer"
                 type="button"
@@ -2739,7 +3383,7 @@ export function CabinetClient() {
                     <div className={`px-2 py-1 ${exactIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
                       <span className="truncate mr-2 font-semibold text-slate-700">2. Подбор товара и аналогов</span>
                       <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
-                        {formatRubles(exactPriceKopeks)}
+                        {formatRubles(exactPriceKopeks)} / поз.
                       </b>
                     </div>
                     <div className={`px-2 py-1 ${reportIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
@@ -2982,7 +3626,7 @@ export function CabinetClient() {
                       ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs font-bold text-slate-900"
                       : "bg-white border-slate-200/90 text-slate-700 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
                   }`}
-                  onClick={() => setSupplierSearchPolicy(opt.id)}
+                  onClick={() => handleSetSupplierSearchPolicy(opt.id)}
                 >
                   <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
                     supplierSearchPolicy === opt.id ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
@@ -2998,73 +3642,61 @@ export function CabinetClient() {
             </div>
           ) : null}
 
-          {(scenario === "supplier_search" || scenario === "analysis_and_suppliers" || scenario === "price_monitoring") && session?.user?.allowed_geo_radius ? (
-            <section className="tl-geo-filter p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2.5" aria-label="Логистический фильтр">
-              <div className="tl-geo-filter__heading flex items-center justify-between gap-3">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={geoRadiusEnabled}
-                    onChange={(e) => setGeoRadiusEnabled(e.target.checked)}
-                    className="w-4 h-4 text-teal-600 rounded border-slate-300 focus:ring-teal-500"
-                  />
-                  <span className="text-xs font-bold text-slate-800">
-                    Поиск в радиусе доставки
-                  </span>
-                </label>
-                <span className="tl-geo-filter__badge text-[11px] font-semibold text-teal-700 bg-teal-50 border border-teal-200/80 px-2 py-0.5 rounded-full">
-                  +{session?.user?.geo_radius_surcharge_pct ?? 30}% к стоимости задачи
+          {scenario === "supplier_search" || scenario === "analysis_and_suppliers" || scenario === "price_monitoring" ? (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between px-0.5">
+                <span className="text-[11px] font-semibold text-slate-700 tracking-tight flex items-center gap-1.5">
+                  <span>{scenario === "price_monitoring" ? "География мониторинга цен:" : "География поиска поставщиков:"}</span>
+                  {(supplierSearchPolicy === "minprom_registry_only" || supplierSearchPolicy === "minprom_registry_priority") && (
+                    <span className="text-[10px] text-teal-800 bg-teal-50 border border-teal-200/80 px-1.5 py-0.5 rounded font-normal">
+                      Реестр Минпромторга действует только в РФ
+                    </span>
+                  )}
                 </span>
               </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-1.5 bg-slate-50 border border-slate-200/90 rounded-xl">
+                {geoScopeOptions.map((opt) => {
+                  const isLockedByMinprom = (supplierSearchPolicy === "minprom_registry_only" || supplierSearchPolicy === "minprom_registry_priority") && opt.id !== "ru";
+                  const isSelected = isLockedByMinprom ? false : geoScope === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      disabled={isLockedByMinprom}
+                      title={isLockedByMinprom ? "При поиске по реестру Минпромторга доступна только территория РФ" : opt.description}
+                      className={`p-2.5 rounded-lg text-left border text-xs transition-all flex items-start gap-2 ${
+                        isLockedByMinprom
+                          ? "bg-slate-100 border-slate-200 text-slate-400 opacity-60 cursor-not-allowed"
+                          : isSelected
+                          ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs font-bold text-slate-900 cursor-pointer"
+                          : "bg-white border-slate-200/90 text-slate-700 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs cursor-pointer"
+                      }`}
+                      onClick={() => !isLockedByMinprom && handleSetGeoScope(opt.id)}
+                    >
+                      <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                        isSelected ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
+                      }`}>
+                        {isSelected ? <div className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
+                      </div>
+                      <div className="min-w-0">
+                        <strong className="block font-bold text-xs leading-tight text-slate-900 truncate">
+                          {opt.label}
+                        </strong>
+                        <span className="text-[10px] text-slate-500 font-normal leading-tight block mt-0.5">
+                          {opt.description}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
 
-              {geoRadiusEnabled ? (
-                <div className="tl-geo-filter__fields pt-2 border-t border-slate-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
-                  <div className="tl-geo-filter__city sm:col-span-2">
-                    <label htmlFor="delivery-city" className="block text-[11px] font-bold text-slate-700 mb-1">
-                      Город объекта или поставки
-                    </label>
-                    <input
-                      id="delivery-city"
-                      type="text"
-                      pattern=".*\S.*"
-                      value={deliveryCity}
-                      onChange={(e) => setDeliveryCity(e.target.value)}
-                      placeholder="например, Каменск-Шахтинский или Ростов-на-Дону"
-                      required={geoRadiusEnabled}
-                      aria-describedby="delivery-radius-help"
-                      className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 placeholder:text-slate-400"
-                    />
-                  </div>
-                  <div className="tl-geo-filter__radius">
-                    <label htmlFor="delivery-radius" className="block text-[11px] font-bold text-slate-700 mb-1">
-                      Радиус поиска
-                    </label>
-                    <div className="relative">
-                      <input
-                        id="delivery-radius"
-                        type="number"
-                        min={10}
-                        max={5000}
-                        step={1}
-                        value={geoRadiusKm || ""}
-                        onChange={(e) => {
-                          const val = e.target.value === "" ? 0 : Number(e.target.value);
-                          setGeoRadiusKm(val);
-                        }}
-                        placeholder="300"
-                        className="w-full text-xs px-3 py-2 pr-9 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 font-semibold text-slate-800"
-                      />
-                      <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400 pointer-events-none">
-                        км
-                      </span>
-                    </div>
-                  </div>
-                  <div id="delivery-radius-help" className="tl-geo-filter__helper sm:col-span-3 text-[11px] text-slate-500 leading-tight">
-                    Укажите точку доставки и радиус поиска. Доступность доставки и срок уточняются у поставщика.
-                  </div>
-                </div>
-              ) : null}
-            </section>
+          {(scenario === "supplier_search" || scenario === "analysis_and_suppliers" || scenario === "price_monitoring") && session?.user?.allowed_geo_radius ? (
+            <DeliveryPriorityControl geoRadiusEnabled={geoRadiusEnabled} deliveryCity={deliveryCity} geoRadiusKm={geoRadiusKm}
+              setGeoRadiusEnabled={setGeoRadiusEnabled} setDeliveryCity={setDeliveryCity} setGeoRadiusKm={setGeoRadiusKm}
+              surchargePct={session?.user?.geo_radius_surcharge_pct ?? 30} />
           ) : null}
 
           <div className="space-y-2">
@@ -3351,17 +3983,21 @@ export function CabinetClient() {
           <div className="hidden md:grid grid-cols-12 gap-4 pb-3 border-b border-slate-200 text-[11px] font-bold text-slate-400 uppercase tracking-wider px-4">
             <span className="col-span-3">Задача</span>
             <span className="col-span-2">Режим</span>
-            <span className="col-span-1">Статус</span>
+            <span className="col-span-2">Статус</span>
             <span className="col-span-2">Прогресс</span>
-            <span className="col-span-4 text-right">Результат</span>
+            <span className="col-span-3 text-right">Результат</span>
           </div>
 
           {jobs.length ? (
             jobs.map((job) => {
               const offer = (job as unknown as { result_offer?: { kind?: string; can_accept?: boolean; can_decline?: boolean } }).result_offer;
               const isFailed = job.status === "failed" || job.status === "error";
+              const isCancelledOrDeclined = job.status === "cancelled" || job.status === "customer_declined";
+              const isExpired = job.status === "confirmation_expired" || job.status === "delivery_expired";
               const isPending = job.status === "pending" || job.status === "running";
               const isAwaiting = job.status === "awaiting_customer_confirmation";
+              const isAwaitingExactSelection = isAwaitingPositionSelection(job);
+              const jobPositionSelection = positionSelectionForJob(job);
               const isCompletedWithResult = job.status === "done" || (Boolean(job.result_files?.length) && !isPending && !isFailed);
               const jobCreatedTs = job.created_at ? new Date(apiDateValue(job.created_at)).getTime() : 0;
               const isCreatedAfterFeature = !Number.isNaN(jobCreatedTs) && jobCreatedTs >= NOTIFICATION_FEATURE_START_TS;
@@ -3413,18 +4049,27 @@ export function CabinetClient() {
                         📍 {job.delivery_city}{job.geo_radius_km ? ` (до ${job.geo_radius_km} км)` : ""}
                       </span>
                     ) : null}
+                    {job.geo_scope && job.geo_scope !== "ru" ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200/90 px-1.5 py-0.5 rounded-md">
+                        {job.geo_scope === "cis" ? "РФ и СНГ (ЕАЭС)" : "Весь мир"}
+                      </span>
+                    ) : null}
                   </div>
 
-                  <div className="col-span-6 md:col-span-1 flex flex-col gap-1 min-w-0">
+                  <div className="col-span-6 md:col-span-2 flex flex-col items-start gap-1 min-w-0">
                     <span
-                      className={`inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-bold border w-max max-w-full ${
+                      className={`inline-flex items-center justify-center text-center px-2.5 py-0.5 rounded-full text-[11px] font-bold border whitespace-nowrap leading-tight w-max max-w-full ${
                         job.status_label === "нет в реестре"
                           ? "bg-slate-100 text-slate-700 border-slate-300"
                           : isFailed
                           ? "bg-rose-50 text-rose-700 border-rose-200"
+                          : isCancelledOrDeclined
+                          ? "bg-slate-100 text-slate-600 border-slate-200"
+                          : isExpired
+                          ? "bg-amber-50 text-amber-700 border-amber-200"
                           : isPending
                           ? "bg-amber-50 text-amber-800 border-amber-200 animate-pulse"
-                          : isAwaiting
+                          : isAwaiting || isAwaitingExactSelection
                           ? "bg-sky-50 text-sky-800 border-sky-200"
                           : "bg-emerald-50 text-emerald-700 border-emerald-200"
                       }`}
@@ -3451,8 +4096,8 @@ export function CabinetClient() {
                     <span className="text-[11px] text-slate-600 leading-snug truncate">{job.message || `${job.progress}%`}</span>
                   </div>
 
-                  <div className="col-span-12 md:col-span-4 flex flex-wrap items-center gap-1.5 md:justify-end min-w-0">
-                    {isFailed ? (
+                  <div className="col-span-12 md:col-span-3 flex flex-wrap items-center gap-1.5 md:justify-end min-w-0">
+                    {isFailed || isExpired || isCancelledOrDeclined ? (
                       <>
                         {job.mode === "supplier_search" && (job.supplier_search_policy === "minprom_registry_only" || job.error?.toLowerCase().includes("реестр") || job.message?.toLowerCase().includes("реестр")) ? (
                           <button
@@ -3488,7 +4133,34 @@ export function CabinetClient() {
                       </>
                     ) : null}
 
-                    {job.awaiting_customer_confirmation ? (
+                    {isAwaitingExactSelection ? (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            dismissedExactSelectionJobIdsRef.current.delete(exactSelectionKey(job));
+                            openExactSelectionModal(job);
+                          }}
+                        >
+                          <CheckCircle2 size={14} aria-hidden="true" />
+                          <span>Выбрать позиции ({jobPositionSelection?.items.length || 0})</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void cancelJob(job);
+                          }}
+                          disabled={busy}
+                        >
+                          <XCircle size={14} aria-hidden="true" />
+                          <span>Отменить</span>
+                        </button>
+                      </div>
+                    ) : job.awaiting_customer_confirmation ? (
                       job.confirmation_kind === "multi_item_strategy" ? (
                         (() => {
                           const items = job.multi_item_details?.items || [];
@@ -3504,7 +4176,7 @@ export function CabinetClient() {
                                 }}
                               >
                                 <Sliders size={14} aria-hidden="true" />
-                                <span>Выбрать стратегию{items.length > 0 ? ` (${items.length} поз.)` : ""}</span>
+                                <span>Выбрать стратегию{items.length > 0 ? ` (${items.length} ${pluralizeRu(items.length, ["категория", "категории", "категорий"])})` : ""}</span>
                               </button>
                               <button
                                 type="button"
@@ -3638,6 +4310,9 @@ export function CabinetClient() {
                               setStartSupplierSearchMultiItemMode(normalizeMultiItemMode(job.multi_item_mode));
                               setStartSupplierSearchAlternatives(true);
                               setStartSupplierSearchPrompt("");
+                              setStartSupplierGeoEnabled(false);
+                              setStartSupplierCity("");
+                              setStartSupplierRadius(300);
                             }}
                             disabled={busy}
                             title="Найти поставщиков по подобранным товарам и аналогам"
@@ -3694,6 +4369,61 @@ export function CabinetClient() {
                       </>
                     )}
                   </div>
+                  {job.mode === "exact_product" && job.exact_product_positions?.length ? (
+                    <div className="col-span-12 mt-2 p-2.5 rounded-xl bg-slate-50/90 border border-slate-200/90 text-xs">
+                      <details className="group">
+                        <summary className="flex items-center justify-between gap-2 cursor-pointer list-none select-none">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-bold text-[11px] bg-teal-50 text-teal-800 border border-teal-200">
+                              <CheckCircle2 size={12} aria-hidden="true" />
+                              Результаты по позициям
+                            </span>
+                            <span className="text-slate-600 font-medium text-[11px]">
+                              {job.exact_product_positions.length} {pluralizeRu(job.exact_product_positions.length, ["позиция", "позиции", "позиций"])}
+                            </span>
+                          </div>
+                          <span className="text-teal-700 text-[11px] font-semibold flex items-center gap-1">
+                            <span className="group-open:hidden">Показать</span>
+                            <span className="hidden group-open:inline">Скрыть</span>
+                            <ChevronDown size={13} className="group-open:rotate-180 transition-transform duration-200" aria-hidden="true" />
+                          </span>
+                        </summary>
+                        <div className="mt-2.5 pt-2 border-t border-slate-200 space-y-2">
+                          {job.exact_product_positions.map((position, index) => (
+                            <div key={position.id || `${position.position_no || index}-${position.name}`} className="rounded-lg bg-white border border-slate-200 p-2.5 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                              <div className="min-w-0">
+                                <p className="font-bold text-slate-900">
+                                  {position.position_no || index + 1}. {position.name}
+                                </p>
+                                <p className="mt-0.5 text-[11px] text-slate-600">
+                                  {({ found: "Модель подтверждена", needs_clarification: "Требуется уточнение характеристик", not_found: "Модель не найдена", error: "Ошибка проверки" } as Record<string, string>)[position.status || ""] || position.status || (position.model ? "Подобрана модель" : "Требуется проверка")}
+                                  {position.model ? ` · ${position.model}` : ""}
+                                  {position.manufacturer ? ` · ${position.manufacturer}` : ""}
+                                </p>
+                                {position.error ? <p className="mt-1 text-[11px] text-amber-800">{position.error}</p> : null}
+                                {position.source_url ? <a className="mt-1 inline-flex text-[11px] font-semibold text-teal-700 hover:text-teal-900 underline" href={position.source_url} target="_blank" rel="noreferrer">Источник для проверки</a> : null}
+                              </div>
+                              {position.can_retry_position && position.id && job.exact_product_selection ? (
+                                <button
+                                  type="button"
+                                  className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-amber-50 text-amber-800 border border-amber-300 rounded-md text-[11px] font-bold transition-colors cursor-pointer disabled:opacity-50"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void retryExactPosition(job, position.id);
+                                  }}
+                                  disabled={busy}
+                                >
+                                  <RotateCcw size={13} aria-hidden="true" />
+                                  Новый подбор
+                                </button>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    </div>
+                  ) : null}
+
                   {job.admin_comment ? (
                     <div className="col-span-12 mt-2 p-3 rounded-md bg-teal-50/90 border border-teal-200 text-slate-800 text-xs">
                       <div className="flex items-center gap-1.5 font-bold text-teal-900 mb-1">
@@ -3715,7 +4445,7 @@ export function CabinetClient() {
                               {job.multi_item_mode === "per_item" ? "🔍 Попозиционный поиск" : "⚖️ Сбалансированный поиск"}
                             </span>
                             <span className="text-slate-600 font-medium text-[11px]">
-                              Позиций ТЗ: <strong>{job.multi_item_details.items.length}</strong>
+                              Категорий: <strong>{job.multi_item_details.items.length}</strong> · Товарных строк: <strong>{supplierStrategyRowCount(job)}</strong>
                             </span>
                           </div>
                           <span className="text-teal-700 text-[11px] font-semibold flex items-center gap-1 cursor-pointer">
@@ -4300,6 +5030,11 @@ export function CabinetClient() {
                 </div>
               </label>
 
+              {session?.user?.allowed_geo_radius ? <DeliveryPriorityControl geoRadiusEnabled={startSupplierGeoEnabled}
+                deliveryCity={startSupplierCity} geoRadiusKm={startSupplierRadius} setGeoRadiusEnabled={setStartSupplierGeoEnabled}
+                setDeliveryCity={setStartSupplierCity} setGeoRadiusKm={setStartSupplierRadius}
+                surchargePct={session?.user?.geo_radius_surcharge_pct ?? 30} idPrefix="exact-supplier-" /> : null}
+
               {/* Additional Wishes Input */}
               <div className="space-y-1">
                 <label htmlFor="exact-suppliers-prompt-input" className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
@@ -4321,7 +5056,7 @@ export function CabinetClient() {
               <div className="flex items-center gap-2 text-xs text-slate-600 leading-tight">
                 <span className="w-5 h-5 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center shrink-0 text-xs">💡</span>
                 <span>
-                  <strong className="text-slate-800 font-bold">1 поиск с баланса</strong> · Итоговая Excel-таблица с прямыми контактами и КП
+                  <strong className="text-slate-800 font-bold">{startSupplierSearchMultiItemMode === "per_item" ? "По тарифу попозиционного поиска" : "1 поиск с баланса"}</strong> · Реестр контактов и запрос КП
                 </span>
               </div>
               <div className="flex items-center gap-2.5 shrink-0 ml-auto">
@@ -4354,6 +5089,8 @@ export function CabinetClient() {
         );
         const currentJobIndex = pendingStrategyJobs.findIndex((j) => j.id === strategyConfirmJob.id);
         const totalPending = pendingStrategyJobs.length;
+        const strategyCategoryCount = strategyConfirmJob.multi_item_details?.items?.length || 0;
+        const strategyRowCount = supplierStrategyRowCount(strategyConfirmJob);
 
         return (
           <div
@@ -4404,12 +5141,12 @@ export function CabinetClient() {
 
             {/* Content Body */}
             <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[75vh]">
-              {(strategyConfirmJob.multi_item_details?.items?.length || 0) >= 10 ? (
+              {strategyRowCount >= 10 ? (
                 <div className="p-3 rounded-xl bg-amber-50/90 border border-amber-200/90 text-amber-950 text-xs flex items-start gap-2.5 leading-relaxed">
                   <span className="text-base leading-none shrink-0 mt-0.5">💡</span>
                   <div className="space-y-1">
                     <div className="font-bold text-amber-950">
-                      Крупная спецификация ({strategyConfirmJob.multi_item_details?.total_items || strategyConfirmJob.multi_item_details?.items?.length} позиций)
+                      Крупная спецификация ({strategyRowCount} товарных строк)
                     </div>
                     <p className="text-amber-900/90 text-[11px] sm:text-xs">
                       Поставщики специализируются по рынкам сбыта (электрика, вентиляция, металл, отделка). Для максимального отклика рекомендуется <strong>разбивать ТЗ на отдельные файлы по направлениям</strong>. Либо выберите «⚖️ Сбалансированный поиск» (1 задача) для сводного реестра по ключевым системам.
@@ -4424,9 +5161,9 @@ export function CabinetClient() {
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                       <Sparkles size={14} className="text-teal-600" aria-hidden="true" />
-                      <span>Выделено категорий снабжения:</span>
+                      <span>Категории и товарные строки:</span>
                       <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 text-[11px] font-extrabold">
-                        {strategyConfirmJob.multi_item_details.total_items || strategyConfirmJob.multi_item_details.items.length}
+                        {strategyCategoryCount} {pluralizeRu(strategyCategoryCount, ["категория", "категории", "категорий"])} / {strategyRowCount} {pluralizeRu(strategyRowCount, ["товарная строка", "товарные строки", "товарных строк"])}
                       </span>
                     </span>
                     {selectedStrategyMode === "per_item" ? (
@@ -4590,8 +5327,8 @@ export function CabinetClient() {
                           {selectedStrategyItemIds.length === 0
                             ? "Ничего не выбрано"
                             : selectedStrategyItemIds.length === 1
-                            ? "1 позиция (1 списание)"
-                            : `${selectedStrategyItemIds.length} поз. (${selectedStrategyItemIds.length} списания)`}
+                            ? "1 категория (1 списание)"
+                            : `${selectedStrategyItemIds.length} ${pluralizeRu(selectedStrategyItemIds.length, ["категория", "категории", "категорий"])} (${selectedStrategyItemIds.length} ${pluralizeRu(selectedStrategyItemIds.length, ["списание", "списания", "списаний"])})`}
                         </span>
                       </div>
                       <p className="text-[11px] sm:text-xs text-slate-600 font-normal leading-relaxed">
@@ -4657,6 +5394,281 @@ export function CabinetClient() {
       );
     })() : null}
 
+      {exactSelectionJob && positionSelectionForJob(exactSelectionJob) ? (() => {
+        const selection = positionSelectionForJob(exactSelectionJob)!;
+        const isPriceMonitoring = exactSelectionJob.mode === "price_monitoring";
+        const units = new Set(selection.items.map((item) => item.unit?.trim()).filter(Boolean));
+        const itemById = new Map(selection.items.map((item) => [item.id, item]));
+        const groupedIds = new Set<string>();
+        const selectionGroups = (selection.groups || []).map((group, index) => {
+          const items = (group.item_ids || [])
+            .filter((itemId) => !groupedIds.has(itemId))
+            .map((itemId) => itemById.get(itemId))
+            .filter((item): item is PositionSelection["items"][number] => Boolean(item));
+          items.forEach((item) => groupedIds.add(item.id));
+          return { id: group.id || `group-${index}`, name: group.name || group.label || group.title || `Категория ${index + 1}`, items };
+        }).filter((group) => group.items.length > 0);
+        const remainingByCategory = new Map<string, PositionSelection["items"]>();
+        selection.items.filter((item) => !groupedIds.has(item.id)).forEach((item) => {
+          const category = item.category || "Без категории";
+          remainingByCategory.set(category, [...(remainingByCategory.get(category) || []), item]);
+        });
+        remainingByCategory.forEach((items, name) => selectionGroups.push({ id: `category-${name}`, name, items }));
+        const groupCount = selectionGroups.length;
+        const isExactProduct = exactSelectionJob.mode === "exact_product";
+        const isUncapped = isExactProduct || isPriceMonitoring || selection.pricing_mode === "per_position" || selection.pricing_mode === "per_found_position";
+        const maxPositions = isUncapped ? selection.items.length : (selection.max_positions || selection.items.length);
+        const canSelectAll = selection.items.length <= maxPositions;
+        const submitting = exactSelectionSubmittingJobId === exactSelectionJob.id;
+
+        const searchNorm = selectionSearchQuery.trim().toLowerCase();
+        const matchesSearch = (item: PositionSelection["items"][number]) => {
+          if (!searchNorm) return true;
+          if (item.name?.toLowerCase().includes(searchNorm)) return true;
+          if (item.source_excerpt?.toLowerCase().includes(searchNorm)) return true;
+          const reqText = selectionRequirementsText(item.requirements).toLowerCase();
+          return reqText.includes(searchNorm);
+        };
+
+        const filteredGroups = selectionGroups
+          .map((g) => ({ ...g, items: g.items.filter(matchesSearch) }))
+          .filter((g) => g.items.length > 0);
+
+        const totalFilteredItems = filteredGroups.reduce((acc, g) => acc + g.items.length, 0);
+
+        let runningCount = 0;
+        const visibleGroups = filteredGroups
+          .map((g) => {
+            if (runningCount >= selectionVisibleLimit) return null;
+            const sliceEnd = Math.min(g.items.length, selectionVisibleLimit - runningCount);
+            runningCount += sliceEnd;
+            return { ...g, items: g.items.slice(0, sliceEnd) };
+          })
+          .filter((g): g is NonNullable<typeof g> => g !== null && g.items.length > 0);
+        return (
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) dismissExactSelectionModal();
+            }}
+          >
+            <section
+              className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="exact-selection-title"
+              aria-describedby="exact-selection-description"
+            >
+              <header className="px-6 py-4 border-b border-slate-200/90 flex items-center justify-between bg-gradient-to-r from-slate-50 to-teal-50/40 shrink-0">
+                <div className="flex items-center gap-3 min-w-0 pr-2">
+                  <div className="w-10 h-10 rounded-2xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                    <CheckCircle2 size={20} aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 id="exact-selection-title" className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">Выберите позиции</h2>
+                    <p id="exact-selection-description" className="text-[11px] text-slate-500 font-medium truncate mt-0.5 max-w-md sm:max-w-lg">
+                      {exactSelectionJob.job_number ? `#${exactSelectionJob.job_number} · ` : ""}{exactSelectionJob.human_title} · {isPriceMonitoring ? "мониторинг цен" : "подбор товара и аналогов"}
+                    </p>
+                  </div>
+                </div>
+                <button type="button" className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer" onClick={dismissExactSelectionModal} aria-label="Закрыть выбор позиций" disabled={submitting}>
+                  <X size={18} aria-hidden="true" />
+                </button>
+              </header>
+
+              <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[70vh]">
+                <div className="rounded-2xl border border-teal-200 bg-teal-50/70 p-3.5 text-xs text-slate-700">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-bold text-slate-900">
+                      {isPriceMonitoring
+                        ? "Выберите позиции для мониторинга цен."
+                        : "Выберите позиции для подбора модели и аналогов."}
+                    </p>
+                    <span className="px-2 py-0.5 rounded-full bg-white border border-teal-200 text-teal-800 font-extrabold whitespace-nowrap">
+                      Выбрано: {selectedExactItemIds.length} из {selection.items.length}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 leading-relaxed">
+                    {isPriceMonitoring
+                      ? selection.price_kopeks
+                        ? `Стоимость рассчитывается по результату: ${formatRubles(selection.price_kopeks)} за позицию с найденной ценой. Максимальная сумма при выборе ${selection.items.length} позиций: ${formatRubles(selection.items.length * selection.price_kopeks)}. Позиции без найденной цены не учитываются.`
+                        : "Стоимость рассчитывается только по позициям с найденной ценой."
+                      : selection.price_kopeks
+                        ? `Стоимость подбора: ${formatRubles(selection.price_kopeks)} за позицию. Выбрано ${selectedExactItemIds.length} ${pluralizeRu(selectedExactItemIds.length, ["позиция", "позиции", "позиций"])} на сумму ${formatRubles(selectedExactItemIds.length * selection.price_kopeks)}.`
+                        : "Стоимость рассчитывается по выбранным позициям."}
+                    {" "}Перед запуском проверьте требования каждой позиции.
+                  </p>
+                </div>
+
+                {/* Поиск по позициям */}
+                {selection.items.length > 8 ? (
+                  <div className="relative">
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
+                    <input
+                      type="text"
+                      value={selectionSearchQuery}
+                      onChange={(e) => setSelectionSearchQuery(e.target.value)}
+                      placeholder="Быстрый поиск по названию, характеристикам или фрагменту ТЗ..."
+                      className="w-full pl-8.5 pr-8 py-2 bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 focus:border-teal-500 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/20 transition-all"
+                    />
+                    {selectionSearchQuery ? (
+                      <button
+                        type="button"
+                        onClick={() => setSelectionSearchQuery("")}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs p-1"
+                        aria-label="Очистить поиск"
+                      >
+                        ✕
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <span className="font-semibold text-slate-600">
+                    В ТЗ: {selection.items.length} товарных строк
+                    {selectionSearchQuery ? ` · Найдено: ${totalFilteredItems}` : ""}
+                    · Единицы: {units.size ? Array.from(units).join(", ") : "не указаны"}
+                    {groupCount ? ` · Категорий: ${groupCount}` : ""}
+                  </span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {!canSelectAll ? (
+                      <>
+                        <button
+                          type="button"
+                          className="font-bold text-teal-700 hover:text-teal-900 underline cursor-pointer disabled:text-slate-400 disabled:no-underline"
+                          onClick={() => {
+                            const next = selection.items.slice(0, maxPositions).map((item) => item.id);
+                            setSelectedExactItemIds(next);
+                            exactSelectionStateRef.current.set(exactSelectionKey(exactSelectionJob), next);
+                            setExactSelectionError("");
+                          }}
+                          disabled={submitting}
+                          title={`Выбрать первые ${maxPositions} позиций по порядку`}
+                        >
+                          Выбрать первые {maxPositions}
+                        </button>
+                        <span className="text-slate-300">·</span>
+                      </>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="font-bold text-teal-700 hover:text-teal-900 disabled:text-slate-400 disabled:no-underline underline cursor-pointer disabled:cursor-not-allowed"
+                      onClick={() => {
+                        const next = selection.items.map((item) => item.id);
+                        setSelectedExactItemIds(next);
+                        exactSelectionStateRef.current.set(exactSelectionKey(exactSelectionJob), next);
+                        setExactSelectionError("");
+                      }}
+                      disabled={submitting}
+                      title="Выбрать все позиции"
+                    >
+                      Выбрать все
+                    </button>
+                    <span className="text-slate-300">·</span>
+                    <button
+                      type="button"
+                      className="font-bold text-teal-700 hover:text-teal-900 disabled:text-slate-400 underline cursor-pointer disabled:cursor-not-allowed"
+                      onClick={() => {
+                        setSelectedExactItemIds([]);
+                        exactSelectionStateRef.current.set(exactSelectionKey(exactSelectionJob), []);
+                        setExactSelectionError("");
+                      }}
+                      disabled={selectedExactItemIds.length === 0 || submitting}
+                    >
+                      Очистить
+                    </button>
+                  </div>
+                </div>
+                {!canSelectAll ? <p className="-mt-2 text-[11px] text-amber-800">В спецификации больше {maxPositions} позиций, поэтому выберите нужные вручную или нажмите «Выбрать первые {maxPositions}».</p> : null}
+
+                <div className="space-y-3" role="group" aria-label={isPriceMonitoring ? "Позиции для мониторинга цен" : "Позиции для подбора"}>
+                  {visibleGroups.map((group) => {
+                    const groupItemIds = group.items.map((item) => item.id);
+                    const groupSelected = groupItemIds.length > 0 && groupItemIds.every((itemId) => selectedExactItemIds.includes(itemId));
+                    const wouldExceedLimit = !groupSelected && new Set([...selectedExactItemIds, ...groupItemIds]).size > maxPositions;
+                    return (
+                      <section key={group.id} className="rounded-2xl border border-slate-200 bg-slate-50/60 overflow-hidden">
+                        <header className="px-3.5 py-2.5 border-b border-slate-200/80 flex flex-wrap items-center justify-between gap-2 bg-white">
+                          <div className="min-w-0">
+                            <h3 className="text-xs font-extrabold text-slate-900 truncate">{group.name}</h3>
+                            <p className="text-[10px] font-medium text-slate-500 mt-0.5">{group.items.length} {pluralizeRu(group.items.length, ["товарная строка", "товарные строки", "товарных строк"])}</p>
+                          </div>
+                          <button
+                            type="button"
+                            className="shrink-0 rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1.5 text-[11px] font-bold text-teal-800 hover:bg-teal-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                            onClick={() => toggleExactSelectionGroup(exactSelectionJob, groupItemIds, group.name)}
+                            disabled={submitting}
+                            title={wouldExceedLimit ? `Выбор категории превысит лимит ${maxPositions}; выберите строки вручную.` : undefined}
+                          >
+                            {groupSelected ? "Снять категорию" : "Выбрать категорию"}
+                          </button>
+                        </header>
+                        {wouldExceedLimit ? <p className="px-3.5 pt-2 text-[10px] leading-relaxed text-amber-800">Выбор всей категории превысит лимит {maxPositions}; выберите нужные строки вручную.</p> : null}
+                        <div className="space-y-2 p-2.5">
+                          {group.items.map((item) => {
+                            const checked = selectedExactItemIds.includes(item.id);
+                            const requirements = selectionRequirementsText(item.requirements);
+                            return (
+                              <label key={item.id} className={`block rounded-xl border p-3 transition-colors cursor-pointer ${checked ? "border-teal-500 bg-teal-50/50 ring-1 ring-teal-500/20" : "border-slate-200 bg-white hover:border-teal-300"}`}>
+                                <span className="flex items-start gap-3">
+                                  <input type="checkbox" checked={checked} onChange={() => toggleExactSelectionItem(exactSelectionJob, item.id)} disabled={submitting} className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500" />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                      <strong className="text-xs text-slate-900">{item.position_no}. {item.name}</strong>
+                                      {item.quantity ? <span className="text-[11px] text-slate-500">{item.quantity} {item.unit || ""}</span> : null}
+                                    </span>
+                                    {requirements ? <span className="mt-1 block text-[11px] leading-relaxed text-slate-600">{requirements}</span> : null}
+                                    {item.source_excerpt ? <span className="mt-1.5 block rounded-md bg-slate-50 px-2 py-1 text-[10px] leading-relaxed text-slate-500">Фрагмент ТЗ: {item.source_excerpt}</span> : null}
+                                  </span>
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </section>
+                    );
+                  })}
+                </div>
+
+                {/* Пагинация и подгрузка при большом количестве строк */}
+                {totalFilteredItems > runningCount ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-slate-100 rounded-2xl text-xs text-slate-600">
+                    <span>Показано {runningCount} из {totalFilteredItems} позиций</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="px-3 py-1.5 bg-white border border-slate-300 hover:border-teal-500 rounded-lg font-bold text-teal-800 hover:bg-slate-50 cursor-pointer text-xs transition-colors"
+                        onClick={() => setSelectionVisibleLimit((v) => v + 50)}
+                      >
+                        Показать ещё 50
+                      </button>
+                      <button
+                        type="button"
+                        className="px-3 py-1.5 bg-white border border-slate-300 hover:border-teal-500 rounded-lg font-bold text-teal-800 hover:bg-slate-50 cursor-pointer text-xs transition-colors"
+                        onClick={() => setSelectionVisibleLimit(totalFilteredItems)}
+                      >
+                        Показать все ({totalFilteredItems})
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              {exactSelectionError ? <div role="alert" className="mx-6 mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 flex items-center gap-2"><AlertTriangle size={15} aria-hidden="true" /><span>{exactSelectionError}</span></div> : null}
+
+              <footer className="px-6 py-3.5 bg-slate-50 border-t border-slate-200/80 flex items-center justify-between gap-3 shrink-0">
+                <button type="button" className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-all cursor-pointer" onClick={dismissExactSelectionModal} disabled={submitting}>Позже</button>
+                <button type="button" className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50" onClick={() => void confirmExactSelection(exactSelectionJob)} disabled={selectedExactItemIds.length === 0 || submitting}>
+                  {submitting ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={15} aria-hidden="true" />}
+                  <span>Подтвердить выбор</span>
+                </button>
+              </footer>
+            </section>
+          </div>
+        );
+      })() : null}
+
       {retryConfirmJob ? (
         <div
           className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
@@ -4684,6 +5696,8 @@ export function CabinetClient() {
                       ? "Повторить подбор товара и аналогов?"
                       : retryConfirmJob.mode === "procurement_report"
                       ? "Повторить анализ документации?"
+                      : retryConfirmJob.mode === "price_monitoring"
+                      ? "Повторить мониторинг цен?"
                       : "Повторить поиск поставщиков?"}
                   </h2>
                   <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5 max-w-md">
@@ -4816,6 +5830,16 @@ export function CabinetClient() {
                     Система заново проверит техническое задание, нормативные требования (ГОСТ/ТУ) и сформирует готовый отчёт в формате Word (.docx).
                   </p>
                 </div>
+              ) : retryConfirmJob.mode === "price_monitoring" ? (
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-700 space-y-2">
+                  <div className="flex items-center gap-2 font-bold text-slate-900">
+                    <Sparkles size={16} className="text-teal-600 shrink-0" aria-hidden="true" />
+                    <span>Повторный мониторинг цен поставщиков</span>
+                  </div>
+                  <p className="text-slate-600 leading-relaxed font-normal">
+                    Система заново выделит позиции спецификации и откроет окно выбора строк для мониторинга цен.
+                  </p>
+                </div>
               ) : (
                 <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-700 space-y-2">
                   <div className="flex items-center gap-2 font-bold text-slate-900">
@@ -4890,6 +5914,44 @@ export function CabinetClient() {
             aria-label="Закрыть оповещение"
           >
             <X size={12} aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+
+      {/* YooKassa Payment Status Checking Toast */}
+      {checkingPaymentStatus ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-2.5 bg-slate-900/95 text-white backdrop-blur-md px-5 py-2.5 rounded-full shadow-2xl text-xs font-semibold max-w-[92vw] pointer-events-auto border border-white/10"
+        >
+          <Loader2 size={16} className="animate-spin text-emerald-400" />
+          <span>Проверяем зачисление оплаты через ЮKassa...</span>
+        </div>
+      ) : null}
+
+      {/* YooKassa Payment Success Banner Toast */}
+      {paymentSuccessNotice ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed top-5 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 bg-gradient-to-r from-emerald-600 to-teal-700 text-white px-5 py-3 rounded-2xl shadow-2xl text-xs font-semibold max-w-[92vw] pointer-events-auto border border-white/20 animate-fade-in"
+        >
+          <CheckCircle2 size={20} className="text-white shrink-0" />
+          <div>
+            <div className="font-extrabold text-sm">Баланс успешно пополнен!</div>
+            <div className="text-[11px] text-emerald-100">
+              Зачислено {paymentSuccessNotice.totalCreditRub.toLocaleString("ru-RU")} ₽
+              {paymentSuccessNotice.bonusRub > 0 ? ` (+${paymentSuccessNotice.bonusRub.toLocaleString("ru-RU")} ₽ бонус)` : ""}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="p-1 text-white/80 hover:text-white rounded-full transition-colors cursor-pointer ml-2"
+            onClick={() => setPaymentSuccessNotice(null)}
+            aria-label="Закрыть"
+          >
+            <X size={16} />
           </button>
         </div>
       ) : null}
@@ -5225,6 +6287,14 @@ export function CabinetClient() {
                           • <strong>Обычный</strong> — поиск по всем поставщикам РФ.<br />
                           • <strong>Только реестр (ГИСП)</strong> — отбор компаний из реестра; применимость записи проверяется для конкретного товара и закупки.<br />
                           • <strong>Реестр в приоритете</strong> — производители из ГИСП первыми. Соответствие требованиям ПП РФ № 1875 нужно подтвердить отдельно.
+                        </p>
+                      </div>
+                      <div className="pt-2 border-t border-slate-200/80">
+                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">География поиска:</strong>
+                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                          • <strong>Только Россия</strong> — строгий фильтр отечественных компаний с ИНН РФ (для 44-ФЗ, 223-ФЗ и нацрежима).<br />
+                          • <strong>РФ и СНГ (ЕАЭС)</strong> — поставщики и заводы России, Беларуси, Казахстана, Армении, Кыргызстана.<br />
+                          • <strong>Весь мир</strong> — прямые зарубежные фабрики и производители мира без посредников (для параллельного импорта и прямых контрактов).
                         </p>
                       </div>
                     </div>
@@ -5819,14 +6889,14 @@ ${webLink}`;
 
       {/* API & MCP Integration Modal */}
       {showApiModal ? (() => {
-        const activeKey = apiKeys.find((k) => k.is_active) || null;
-        const currentApiKey = newlyGeneratedKey || activeKey?.raw_key || activeKey?.key_prefix || "";
+        const currentApiKey = newlyGeneratedKey || "";
         const effectiveKeyPlaceholder = currentApiKey || "<ВАШ_API_КЛЮЧ>";
         const balanceRub = (session?.balance?.money?.available_kopeks || 0) / 100.0;
 
         const aiPromptText = `Интегрируй API сервиса TenderLex в нашу систему / CRM.
 Базовый URL: https://tenderlex.ru/api/v1/mcp
 Авторизация: Header "Authorization: Bearer ${effectiveKeyPlaceholder}"
+Для каждой новой операции создавай уникальный Idempotency-Key. При повторе после таймаута используй прежний ключ и то же тело; новый ключ означает новую платную задачу.
 
 Требуемые функции:
 1. Поиск прямых поставщиков и заводов по ТЗ / закупке:
@@ -5880,11 +6950,21 @@ ${webLink}`;
        "report_markdown": "<подробный аудит рисков>"
      }
 
-4. Проверка остатка баланса:
+4. Файлы, мониторинг цен и выбор исходных позиций:
+   - POST /api/v1/mcp/jobs: multipart/form-data; Header Idempotency-Key.
+   - mode: supplier_search, analysis_and_suppliers, exact_product, procurement_report, price_monitoring.
+   - Передай text / source_urls / files; для геоприоритета город и geo_radius_km вместе (10–5000 км).
+   - GET /api/v1/mcp/jobs/{job_id}: статус и исходные позиции.
+   - POST /api/v1/mcp/jobs/{job_id}/position-selection: revision, selected_item_ids из полученного списка.
+   - POST /api/v1/mcp/jobs/{job_id}/choose-strategy: multi_item_mode, selected_item_ids.
+   - POST /api/v1/mcp/jobs/{job_id}/cancel; GET /api/v1/mcp/jobs/{job_id}/download.
+   - Мониторинг оплачивается за найденные выбранные позиции; подбор товара и аналогов — по тарифу за каждую выбранную позицию.
+
+5. Проверка остатка баланса:
    - Метод: GET https://tenderlex.ru/api/v1/mcp/balance
 
 Правила списания:
-- Оплата списывается за каждый выполненный запрос с баланса аккаунта.
+- Перед запуском резервируется стоимость операции. Списание и возврат зависят от результата и тарифа; повтор с прежним Idempotency-Key не создаёт новый поиск.
 - При нехватке средств на балансе выведи пользователю уведомление: "Баланс в TenderLex исчерпан. Пополните счёт в личном кабинете tenderlex.ru".`;
 
         const mcpConfigText = JSON.stringify(
@@ -5906,6 +6986,7 @@ ${webLink}`;
 
         const curlExampleText = `curl -X POST https://tenderlex.ru/api/v1/mcp/suppliers/search \\
   -H "Authorization: Bearer ${effectiveKeyPlaceholder}" \\
+  -H "Idempotency-Key: <УНИКАЛЬНЫЙ_ID_ОПЕРАЦИИ>" \\
   -H "Content-Type: application/json" \\
   -d '{
     "specification": "Кабель ВВГнг-LS 3х2.5 ГОСТ 31996-2012",
@@ -6041,7 +7122,7 @@ ${webLink}`;
                         </button>
                       </div>
                       <div className="text-[11px] text-emerald-800">
-                        Ключ сохранён и автоматически подставлен во все примеры запросов и инструкций на соседних вкладках.
+                        Скопируйте и сохраните ключ сейчас: после перезагрузки он не показывается. В этой сессии ключ подставлен в примеры на соседних вкладках.
                       </div>
                     </div>
                   )}
@@ -6054,39 +7135,23 @@ ${webLink}`;
                     </div>
                   ) : apiKeys.length > 0 ? (
                     <div className="space-y-3">
-                      <div className="text-xs font-bold text-slate-700">Ваш активный ключ доступа:</div>
+                      <div className="text-xs font-bold text-slate-700">Ваши активные ключи доступа:</div>
+                      <p className="text-[11px] text-slate-600">Полный ключ показывается только после создания. Если он не сохранён, создайте новый; прежний продолжает работать до отзыва.</p>
                       {apiKeys.map((k) => {
-                        const fullKey = k.raw_key || k.key_prefix;
-                        const isRevealed = revealedKeyIds[k.id];
                         return (
                           <div key={k.id} className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <span className="font-mono font-bold text-xs text-slate-800 bg-white px-2.5 py-1 rounded border border-slate-200 select-all max-w-[260px] sm:max-w-xs truncate">
-                                  {isRevealed ? fullKey : `${k.key_prefix}••••••••••••`}
+                                  {`${k.key_prefix}••••••••••••`}
                                 </span>
-                                <button
-                                  type="button"
-                                  onClick={() => setRevealedKeyIds((prev) => ({ ...prev, [k.id]: !prev[k.id] }))}
-                                  className="p-1 text-slate-500 hover:text-slate-700 rounded transition-colors cursor-pointer"
-                                  title={isRevealed ? "Скрыть" : "Показать полный ключ"}
-                                  aria-label={isRevealed ? "Скрыть" : "Показать полный ключ"}
-                                >
-                                  {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
-                                </button>
+
                                 <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
                                   Активен
                                 </span>
                               </div>
                               <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => copyApiText(fullKey, `full_${k.id}`)}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors cursor-pointer"
-                                >
-                                  {apiCopiedField === `full_${k.id}` ? <Check size={12} /> : <Copy size={12} />}
-                                  <span>{apiCopiedField === `full_${k.id}` ? "Скопировано" : "Копировать ключ"}</span>
-                                </button>
+
                                 <button
                                   type="button"
                                   onClick={() => revokeCustomerApiKey(k.id)}
@@ -6209,6 +7274,14 @@ ${webLink}`;
                         Проверка текущего рублёвого остатка и статуса авторизации.
                       </p>
                     </div>
+                  </div>
+
+                  <div className="rounded-xl border border-teal-200 bg-teal-50 p-3 space-y-2">
+                    <strong className="text-teal-900">Файлы, мониторинг цен и попозиционный выбор</strong>
+                    <p><code>POST /jobs</code>: multipart/form-data, режим, текст или файлы и уникальный <code>Idempotency-Key</code>. Для геоприоритета передайте вместе город и радиус 10–5000 км.</p>
+                    <p><code>GET /jobs/&#123;id&#125;</code> возвращает статус и список позиций. Передайте выбранные ID и ревизию в <code>POST /jobs/&#123;id&#125;/position-selection</code>. Результат: <code>GET /jobs/&#123;id&#125;/download</code>.</p>
+                    <p>Ближайшие поставщики идут первыми; дальние и неизвестные адреса отмечаются отдельно. Подбор товара формирует отчёт Word.</p>
+                    <p>При 429 дождитесь <code>Retry-After</code>. После таймаута сохраняйте ключ той же операции вместо нового платного запуска.</p>
                   </div>
 
                   {/* cURL snippet */}
@@ -6368,19 +7441,22 @@ ${webLink}`;
               <button
                 type="button"
                 onClick={() => setTopUpTab("card")}
-                className={`flex-1 py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`flex-1 py-2 px-3 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                   topUpTab === "card"
                     ? "bg-white text-emerald-800 font-bold shadow-xs border border-slate-200/60"
                     : "text-slate-600 hover:text-slate-900"
                 }`}
               >
-                <CreditCard size={14} className={topUpTab === "card" ? "text-emerald-600" : "text-slate-400"} />
-                <span>Оплата картой</span>
+                <div className="flex items-center gap-1">
+                  <CreditCard size={14} className={topUpTab === "card" ? "text-emerald-600" : "text-slate-400"} />
+                  <QrCode size={13} className={topUpTab === "card" ? "text-indigo-600" : "text-slate-400"} />
+                </div>
+                <span>Оплата онлайн (Карта, СБП)</span>
               </button>
               <button
                 type="button"
                 onClick={() => setTopUpTab("b2b")}
-                className={`flex-1 py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`flex-1 py-2 px-3 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                   topUpTab === "b2b"
                     ? "bg-white text-slate-900 font-bold shadow-xs border border-slate-200/60"
                     : "text-slate-600 hover:text-slate-900"
@@ -6388,19 +7464,6 @@ ${webLink}`;
               >
                 <Building2 size={14} className={topUpTab === "b2b" ? "text-slate-700" : "text-slate-400"} />
                 <span>Счёт для юрлиц</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTopUpTab("sbp")}
-                className={`py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1 cursor-pointer ${
-                  topUpTab === "sbp"
-                    ? "bg-white text-slate-900 font-bold shadow-xs border border-slate-200/60"
-                    : "text-slate-500 hover:text-slate-800"
-                }`}
-              >
-                <QrCode size={13} className={topUpTab === "sbp" ? "text-slate-700" : "text-slate-400"} />
-                <span>СБП</span>
-                <span className="text-[9px] px-1 py-0.2 rounded bg-amber-100 text-amber-800 font-bold">скоро</span>
               </button>
             </div>
 
@@ -6527,25 +7590,40 @@ ${webLink}`;
                   );
                 })()}
 
-                {/* How to Pay Instructions */}
-                <div className="space-y-2 text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200">
-                  <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                    <CreditCard size={14} className="text-emerald-700" />
-                    <span>Порядок оплаты картой:</span>
+                {/* Online Payment Badges & Details */}
+                <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
+                  <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center justify-between">
+                    <span>Способы оплаты через ЮKassa:</span>
+                    <span className="text-[10px] text-emerald-700 font-semibold flex items-center gap-1">
+                      <CheckCircle2 size={12} className="text-emerald-600" /> Без комиссии
+                    </span>
                   </div>
-                  <p className="text-[11px] text-slate-600">
-                    1. Нажмите кнопку ниже для связи в Telegram — менеджер вышлет актуальные реквизиты карты для перевода.
-                  </p>
-                  <p className="text-[11px] text-slate-600">
-                    2. После перевода отправьте подтверждение (чек или скриншот) в чат — баланс и бонус моментально зачисляются на ваш аккаунт (обычно 5–15 минут).
-                  </p>
-                  <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
-                    <span className="text-slate-500">Ваш email аккаунта:</span>
-                    <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-700">
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 font-medium text-[11px] shadow-2xs">
+                      <CreditCard size={13} className="text-emerald-600" /> Карты МИР, Visa, Mastercard
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 font-medium text-[11px] shadow-2xs">
+                      <QrCode size={13} className="text-indigo-600" /> СБП (QR-код и приложение банка)
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 font-medium text-[11px] shadow-2xs">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> SberPay / Mir Pay
+                    </span>
                   </div>
                 </div>
 
-                {/* Contact Action Buttons */}
+                {onlinePayError ? (
+                  <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 space-y-1">
+                    <div className="font-bold flex items-center gap-1.5">
+                      <AlertTriangle size={14} className="text-rose-600 shrink-0" />
+                      <span>{onlinePayError}</span>
+                    </div>
+                    <p className="text-[11px] text-rose-700">
+                      Если онлайн-оплата временно недоступна, вы можете пополнить баланс через менеджера в Telegram.
+                    </p>
+                  </div>
+                ) : null}
+
+                {/* Primary Online Payment Action */}
                 {(() => {
                   const calc = (() => {
                     if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
@@ -6565,41 +7643,42 @@ ${webLink}`;
 
                   return (
                     <div className="space-y-2 pt-1">
-                      <a
-                        href={tgUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                      <button
+                        type="button"
+                        disabled={isPayingOnline || customTopUpRub < 100}
+                        onClick={handleStartOnlinePayment}
+                        className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs sm:text-sm font-bold transition-all shadow-sm hover:shadow cursor-pointer disabled:opacity-50 active:scale-[0.99]"
                       >
-                        <Send size={15} />
-                        <span>
-                          {calc.bonusRub > 0
-                            ? `Написать в Telegram для зачисления (+${calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус)`
-                            : `Написать в Telegram для зачисления`}
+                        {isPayingOnline ? (
+                          <>
+                            <Loader2 size={16} className="animate-spin" />
+                            <span>Переход в платёжный шлюз ЮKassa...</span>
+                          </>
+                        ) : (
+                          <>
+                            <CreditCard size={16} />
+                            <span>Оплатить {customTopUpRub.toLocaleString("ru-RU")} ₽ (Карта, СБП)</span>
+                            {calc.bonusRub > 0 ? (
+                              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-emerald-700 text-[10px] font-extrabold text-white">
+                                +{calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус
+                              </span>
+                            ) : null}
+                          </>
+                        )}
+                      </button>
+
+                      <div className="flex items-center justify-between gap-2 pt-1 text-[11px] text-slate-500">
+                        <span className="flex items-center gap-1">
+                          <CheckCircle2 size={12} className="text-emerald-600" />
+                          Моментальное зачисление
                         </span>
-                      </a>
-
-                      <div className="flex items-center justify-between gap-2 pt-0.5">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const copyText = `Пополнение TenderLex: ${customTopUpRub} ₽ (пакет «${pkgName}», к зачислению: ${calc.totalRub} ₽ с бонусом). Email: ${session?.user?.email || ""}`;
-                            navigator.clipboard.writeText(copyText).then(() => {
-                              setTopUpCopied(true);
-                              setTimeout(() => setTopUpCopied(false), 2500);
-                            });
-                          }}
-                          className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
-                        >
-                          <Copy size={13} />
-                          <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать детали заявки"}</span>
-                        </button>
-
                         <a
-                          href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(`Пополнение баланса TenderLex - ${session?.user?.email || ""}`)}`}
-                          className="text-xs text-slate-500 hover:text-slate-700 underline"
+                          href={tgUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-slate-600 hover:text-slate-900 underline font-medium"
                         >
-                          Написать на email
+                          Оплата переводом через Telegram
                         </a>
                       </div>
                     </div>
@@ -6608,149 +7687,493 @@ ${webLink}`;
               </>
             ) : null}
 
-            {/* TAB 2: B2B Invoice Stub */}
+            {/* TAB 2: Interactive B2B Invoice Generator */}
             {topUpTab === "b2b" ? (
-              <div className="space-y-3 py-1">
-                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2.5 rounded-xl bg-slate-200/70 text-slate-700 shrink-0 mt-0.5">
-                      <Building2 size={22} />
+              <div className="space-y-4 py-1">
+                {!invoiceCreated ? (
+                  <>
+                    {/* Step 1: Package / Custom Amount */}
+                    <div className="space-y-2">
+                      <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                        1. Выберите сумму или пакет:
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {(session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES).map((pkg) => {
+                          const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
+                          return (
+                            <button
+                              key={pkg.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedTopUpPackage(pkg);
+                                setCustomTopUpRub(pkg.price_rub);
+                              }}
+                              className={`p-2.5 rounded-xl border text-left transition-all relative cursor-pointer flex flex-col justify-between ${
+                                isSelected
+                                  ? "bg-emerald-50/80 border-emerald-500 ring-2 ring-emerald-500/30 shadow-xs"
+                                  : "bg-slate-50/70 border-slate-200/90 hover:bg-slate-100/80 hover:border-slate-300"
+                              }`}
+                            >
+                              {pkg.badge ? (
+                                <span className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-extrabold text-[9px] shadow-2xs">
+                                  {pkg.badge}
+                                </span>
+                              ) : null}
+                              <div>
+                                <div className="text-xs font-bold text-slate-900">{pkg.name}</div>
+                                <div className="text-sm font-black text-slate-900 mt-0.5">
+                                  {pkg.price_rub.toLocaleString("ru-RU")} ₽
+                                </div>
+                              </div>
+                              <div className="mt-2 pt-1.5 border-t border-slate-200/70 text-[11px] space-y-0.5">
+                                <div className="text-emerald-700 font-bold">
+                                  На баланс: {pkg.total_rub.toLocaleString("ru-RU")} ₽
+                                </div>
+                                {pkg.bonus_rub > 0 ? (
+                                  <div className="text-[10px] text-emerald-600 font-medium">
+                                    +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽ бонус
+                                  </div>
+                                ) : (
+                                  <div className="text-[10px] text-slate-400 font-normal">без бонуса</div>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Custom Amount */}
+                      <div className="pt-1">
+                        <label htmlFor="b2b-custom-amount" className="text-[11px] font-semibold text-slate-600 block mb-1">
+                          Или укажите произвольную сумму:
+                        </label>
+                        <div className="relative">
+                          <input
+                            id="b2b-custom-amount"
+                            type="number"
+                            min={500}
+                            step={500}
+                            value={customTopUpRub || ""}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10) || 0;
+                              setCustomTopUpRub(val);
+                              const match = (session?.deposit_packages || DEFAULT_DEPOSIT_PACKAGES).find((p) => p.price_rub === val);
+                              setSelectedTopUpPackage(match || null);
+                            }}
+                            placeholder="5000"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                            ₽
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Calculation Summary */}
+                      {(() => {
+                        const calc = (() => {
+                          if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
+                            return {
+                              bonusRub: selectedTopUpPackage.bonus_rub,
+                              totalRub: selectedTopUpPackage.total_rub,
+                              percent: selectedTopUpPackage.bonus_percent,
+                            };
+                          }
+                          return calculateDepositBonus(customTopUpRub);
+                        })();
+                        return (
+                          <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200/90 flex items-center justify-between text-xs">
+                            <div>
+                              <span className="text-slate-600">К оплате по счёту: </span>
+                              <strong className="text-slate-900 font-bold">{customTopUpRub.toLocaleString("ru-RU")} ₽</strong>
+                              {calc.bonusRub > 0 ? (
+                                <span className="ml-2 text-emerald-700 font-bold">
+                                  (+{calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус {calc.percent}%)
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="text-right">
+                              <span className="text-[10px] text-slate-500 block">Поступит на баланс:</span>
+                              <strong className="text-emerald-700 font-black text-sm">{calc.totalRub.toLocaleString("ru-RU")} ₽</strong>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-sm font-bold text-slate-900">Безналичный расчёт для юридических лиц</h3>
-                        <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px] font-extrabold">
-                          По запросу
+
+                    {/* Step 2: Company Requisites */}
+                    <div className="space-y-3 pt-1 border-t border-slate-200/80">
+                      <div className="flex items-center justify-between">
+                        <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                          2. Реквизиты вашей компании / ИП:
+                        </div>
+                        {invoiceInnFound ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-full">
+                            <Check size={12} />
+                            <span>Найдено в ФНС</span>
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {/* INN Input with DaData auto-lookup */}
+                      <div className="space-y-1">
+                        <label htmlFor="b2b-inn-input" className="text-xs font-bold text-slate-700 block">
+                          ИНН организации или ИП <span className="text-rose-500">*</span>
+                        </label>
+                        <div className="relative">
+                          <input
+                            id="b2b-inn-input"
+                            type="text"
+                            maxLength={12}
+                            value={invoiceInn}
+                            onChange={(e) => {
+                              const val = e.target.value.replace(/\D/g, "");
+                              setInvoiceInn(val);
+                              setInvoiceInnFound(false);
+                              setInvoiceInnError("");
+                              if (val.length === 10 || val.length === 12) {
+                                // Auto-fetch from DaData
+                                const handleLookup = async () => {
+                                  setInvoiceLoadingInn(true);
+                                  try {
+                                    const res = await fetch(`/api/customer/dadata/company-by-inn?inn=${val}`);
+                                    const data = await res.json();
+                                    if (data.found && data.company) {
+                                      setInvoiceName(data.company.company_name || data.company.full_name || "");
+                                      setInvoiceKpp(data.company.kpp || "");
+                                      setInvoiceAddress(data.company.legal_address || "");
+                                      setInvoiceInnFound(true);
+                                    } else {
+                                      setInvoiceInnError(data.message || "Организация не найдена в ФНС");
+                                    }
+                                  } catch (err) {
+                                    // Ignored
+                                  } finally {
+                                    setInvoiceLoadingInn(false);
+                                  }
+                                };
+                                handleLookup();
+                              }
+                            }}
+                            placeholder="Введите 10 цифр для юрлиц или 12 цифр для ИП"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-10"
+                          />
+                          {invoiceLoadingInn ? (
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-600">
+                              <Loader2 size={16} className="animate-spin" />
+                            </span>
+                          ) : (
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                              <Building2 size={16} />
+                            </span>
+                          )}
+                        </div>
+                        {invoiceInnError ? (
+                          <p className="text-[11px] text-amber-700 mt-1">{invoiceInnError}</p>
+                        ) : (
+                          <p className="text-[10px] text-slate-500">
+                            Введите ИНН — название, КПП и адрес подтянутся автоматически из ФНС.
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Company Name */}
+                      <div className="space-y-1">
+                        <label htmlFor="b2b-company-name" className="text-xs font-bold text-slate-700 block">
+                          Наименование организации или ИП <span className="text-rose-500">*</span>
+                        </label>
+                        <input
+                          id="b2b-company-name"
+                          type="text"
+                          value={invoiceName}
+                          onChange={(e) => setInvoiceName(e.target.value)}
+                          placeholder="ООО «Ромашка» или ИП Иванов И.И."
+                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {/* KPP (optional) */}
+                        <div className="space-y-1">
+                          <label htmlFor="b2b-kpp-input" className="text-xs font-bold text-slate-700 block">
+                            КПП <span className="text-[10px] font-normal text-slate-400">(для юрлиц)</span>
+                          </label>
+                          <input
+                            id="b2b-kpp-input"
+                            type="text"
+                            maxLength={9}
+                            value={invoiceKpp}
+                            onChange={(e) => setInvoiceKpp(e.target.value)}
+                            placeholder="770101001"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+                          />
+                        </div>
+
+                        {/* Legal Address */}
+                        <div className="space-y-1 sm:col-span-2">
+                          <label htmlFor="b2b-address-input" className="text-xs font-bold text-slate-700 block">
+                            Юридический адрес
+                          </label>
+                          <input
+                            id="b2b-address-input"
+                            type="text"
+                            value={invoiceAddress}
+                            onChange={(e) => setInvoiceAddress(e.target.value)}
+                            placeholder="г. Москва, ул. Тверская, д. 10"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Email for sending invoice */}
+                      <div className="space-y-1">
+                        <label htmlFor="b2b-email-input" className="text-xs font-bold text-slate-700 block">
+                          Email для получения счёта и закрывающих документов
+                        </label>
+                        <input
+                          id="b2b-email-input"
+                          type="email"
+                          value={invoiceEmail || session?.user?.email || ""}
+                          onChange={(e) => setInvoiceEmail(e.target.value)}
+                          placeholder="buh@company.ru"
+                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+                        />
+                      </div>
+
+                      {invoiceSubmitError ? (
+                        <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700">
+                          {invoiceSubmitError}
+                        </div>
+                      ) : null}
+
+                      {/* Submit Button */}
+                      <div className="pt-2">
+                        <button
+                          type="button"
+                          disabled={invoiceSubmitting || !invoiceInn.trim() || !invoiceName.trim()}
+                          onClick={async () => {
+                            if (!invoiceInn.trim()) {
+                              setInvoiceSubmitError("Укажите ИНН организации или ИП");
+                              return;
+                            }
+                            if (!invoiceName.trim()) {
+                              setInvoiceSubmitError("Укажите наименование компании или ИП");
+                              return;
+                            }
+                            setInvoiceSubmitting(true);
+                            setInvoiceSubmitError("");
+                            try {
+                              const pkgName = selectedTopUpPackage?.name || "Пополнение баланса";
+                              const emailToSend = (invoiceEmail.trim() || session?.user?.email || "").trim();
+                              const res = await fetch("/api/customer/invoices", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  amount_rub: customTopUpRub,
+                                  tariff_name: pkgName,
+                                  buyer_inn: invoiceInn.replace(/\D/g, "").trim(),
+                                  buyer_kpp: invoiceKpp.trim(),
+                                  buyer_name: invoiceName.trim(),
+                                  buyer_address: invoiceAddress.trim(),
+                                  buyer_email: emailToSend,
+                                }),
+                              });
+                              const data = await res.json();
+                              if (!res.ok) {
+                                throw new Error(data.detail || "Не удалось выставить счёт");
+                              }
+                              setInvoiceCreated(data.invoice);
+                            } catch (err: any) {
+                              setInvoiceSubmitError(err.message || "Ошибка при создании счёта");
+                            } finally {
+                              setInvoiceSubmitting(false);
+                            }
+                          }}
+                          className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                        >
+                          {invoiceSubmitting ? (
+                            <>
+                              <Loader2 size={16} className="animate-spin" />
+                              <span>Формируем счёт...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Receipt size={16} />
+                              <span>Сформировать счёт на {customTopUpRub.toLocaleString("ru-RU")} ₽</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  /* Screen 2: Invoice Successfully Created */
+                  <div className="space-y-4">
+                    <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-300 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="inline-flex items-center gap-1.5 text-xs font-extrabold text-emerald-800 bg-emerald-100 px-2.5 py-1 rounded-full">
+                          <CheckCircle2 size={14} className="text-emerald-600" />
+                          <span>Счёт сформирован</span>
+                        </div>
+                        <span className="text-xs font-mono font-bold text-slate-500">
+                          {invoiceCreated.created_at ? new Date(invoiceCreated.created_at).toLocaleDateString("ru-RU") : "Сегодня"}
                         </span>
                       </div>
-                      <p className="text-xs text-slate-600 leading-relaxed">
-                        Работаем с организациями и ИП по договору. Предоставляем полный комплект закрывающих документов (УПД) через ЭДО (Диадок / СБИС) или скан с оригинальной синей печатью.
-                      </p>
+
+                      <div>
+                        <h3 className="text-base sm:text-lg font-black text-slate-900">
+                          Счёт № {invoiceCreated.invoice_number}
+                        </h3>
+                        <p className="text-xs text-slate-600 mt-0.5">
+                          Плательщик: <b>{invoiceCreated.buyer_name}</b> (ИНН {invoiceCreated.buyer_inn})
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-emerald-200/70 text-xs">
+                        <div>
+                          <span className="text-[10px] text-slate-500 block uppercase font-semibold">Сумма к оплате:</span>
+                          <strong className="text-base font-black text-slate-900">
+                            {invoiceCreated.amount_rub.toLocaleString("ru-RU")} ₽
+                          </strong>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[10px] text-emerald-700 block uppercase font-semibold">На баланс:</span>
+                          <strong className="text-base font-black text-emerald-700">
+                            {invoiceCreated.total_credit_rub.toLocaleString("ru-RU")} ₽
+                          </strong>
+                          {invoiceCreated.bonus_rub > 0 ? (
+                            <span className="text-[10px] text-emerald-600 block">
+                              (+{invoiceCreated.bonus_rub.toLocaleString("ru-RU")} ₽ бонус)
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="p-3 bg-amber-50/80 border border-amber-200/90 rounded-lg text-xs text-amber-900 space-y-1">
-                    <p className="font-bold flex items-center gap-1.5">
-                      <Clock3 size={13} className="text-amber-700 shrink-0" />
-                      <span>Обновление платёжных реквизитов</span>
-                    </p>
-                    <p className="text-[11px] leading-relaxed text-amber-800">
-                      В данный момент расчётный счёт обновляется. Для выставления коммерческого предложения, согласования счёта и отправки реквизитов свяжитесь с нами напрямую через Telegram или отправьте карточку предприятия на email.
-                    </p>
-                  </div>
+                    {/* Action Buttons */}
+                    <div className="space-y-2">
+                      <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                        Действия со счётом:
+                      </div>
 
-                  <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
-                    <span className="text-slate-500">Ваш email аккаунта:</span>
-                    <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
-                  </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {/* Download PDF */}
+                        <a
+                          href={`/api/customer/invoices/${invoiceCreated.id}/download?format=pdf`}
+                          download
+                          className="flex items-center justify-center gap-2 p-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer text-center"
+                        >
+                          <Download size={15} className="shrink-0" />
+                          <span>Скачать PDF (.pdf)</span>
+                        </a>
 
-                  <div className="space-y-2 pt-1">
-                    <a
-                      href={`${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${encodeURIComponent(
-                        `Здравствуйте! Интересует оплата по безналичному расчету (счёт для юрлица) в сервисе TenderLex. Мой email: ${session?.user?.email || ""}`
-                      )}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
-                    >
-                      <Send size={15} />
-                      <span>Запросить счёт в Telegram</span>
-                    </a>
+                        {/* Download Excel */}
+                        <a
+                          href={`/api/customer/invoices/${invoiceCreated.id}/download?format=xlsx`}
+                          download
+                          className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
+                        >
+                          <FileSpreadsheet size={15} className="text-emerald-600 shrink-0" />
+                          <span>Скачать Excel (.xlsx)</span>
+                        </a>
 
-                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                        {/* Print / View A4 HTML */}
+                        <a
+                          href={`/api/customer/invoices/${invoiceCreated.id}/html`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
+                        >
+                          <Printer size={15} className="text-slate-600 shrink-0" />
+                          <span>Печать и просмотр (А4)</span>
+                        </a>
+
+                        {/* Send Email */}
+                        <button
+                          type="button"
+                          disabled={invoiceEmailSending}
+                          onClick={async () => {
+                            setInvoiceEmailSending(true);
+                            try {
+                              const res = await fetch(`/api/customer/invoices/${invoiceCreated.id}/send-email`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ email: invoiceCreated.buyer_email || session?.user?.email }),
+                              });
+                              const data = await res.json();
+                              if (!res.ok) throw new Error(data.detail || "Ошибка отправки");
+                              setInvoiceEmailSent(true);
+                              setTimeout(() => setInvoiceEmailSent(false), 4000);
+                            } catch (err: any) {
+                              alert(err.message || "Не удалось отправить счёт");
+                            } finally {
+                              setInvoiceEmailSending(false);
+                            }
+                          }}
+                          className={`flex items-center justify-center gap-2 p-2.5 border rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer text-center ${
+                            invoiceEmailSent
+                              ? "bg-emerald-50 text-emerald-800 border-emerald-300"
+                              : "bg-white hover:bg-slate-50 text-slate-900 border-slate-300"
+                          }`}
+                        >
+                          {invoiceEmailSending ? (
+                            <Loader2 size={15} className="animate-spin text-teal-600" />
+                          ) : invoiceEmailSent ? (
+                            <Check size={15} className="text-emerald-600" />
+                          ) : (
+                            <Mail size={15} className="text-teal-600" />
+                          )}
+                          <span>{invoiceEmailSent ? "Отправлено на почту!" : "Отправить на email"}</span>
+                        </button>
+
+                        {/* Copy Bank Details for 1C/Bank-Client */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const detailsText = `Получатель: ИП Груздев Игорь Вячеславович\nИНН: 352516048881\nР/с: 40802810217430000342\nБанк: АО "АЛЬФА-БАНК"\nБИК: 044525593\nК/с: 30101810200000000593\nСумма: ${invoiceCreated.amount_rub} руб.\nНазначение: Оплата по счету № ${invoiceCreated.invoice_number} за услуги сервиса TenderLex. Без НДС.`;
+                            navigator.clipboard.writeText(detailsText);
+                            setInvoiceDetailsCopied(true);
+                            setTimeout(() => setInvoiceDetailsCopied(false), 2500);
+                          }}
+                          className="sm:col-span-2 flex items-center justify-center gap-2 p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 transition-all cursor-pointer text-center"
+                        >
+                          {invoiceDetailsCopied ? (
+                            <Check size={15} className="text-emerald-600" />
+                          ) : (
+                            <Copy size={15} className="text-slate-600" />
+                          )}
+                          <span>{invoiceDetailsCopied ? "Реквизиты скопированы!" : "Скопировать реквизиты для банк-клиента / 1С"}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Reset Button */}
+                    <div className="pt-2 text-center flex items-center justify-center gap-4">
                       <button
                         type="button"
                         onClick={() => {
-                          const copyText = `Запрос счёта для юрлица в TenderLex. Email аккаунта: ${session?.user?.email || ""}`;
-                          navigator.clipboard.writeText(copyText).then(() => {
-                            setTopUpCopied(true);
-                            setTimeout(() => setTopUpCopied(false), 2500);
-                          });
+                          setInvoiceCreated(null);
+                          setInvoiceInnFound(false);
                         }}
-                        className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
+                        className="text-xs text-slate-500 hover:text-slate-800 underline cursor-pointer"
                       >
-                        <Copy size={13} />
-                        <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать запрос"}</span>
+                        Сформировать другой счёт
                       </button>
-
-                      <a
-                        href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(
-                          `Запрос счёта для юрлица - TenderLex (${session?.user?.email || ""})`
-                        )}`}
-                        className="text-xs text-slate-500 hover:text-slate-700 underline"
-                      >
-                        Отправить реквизиты на email
-                      </a>
                     </div>
                   </div>
-                </div>
+                )}
 
-                <div className="text-center pt-1">
+                <div className="text-center pt-2 border-t border-slate-100">
                   <button
                     type="button"
-                    onClick={() => setTopUpTab("card")}
+                    onClick={() => {
+                      setTopUpTab("card");
+                      setInvoiceCreated(null);
+                    }}
                     className="text-xs text-emerald-700 hover:text-emerald-800 font-semibold underline cursor-pointer"
                   >
-                    ← Вернуться к оплате картой
+                    ← Вернуться к оплате онлайн (Карта, СБП)
                   </button>
-                </div>
-              </div>
-            ) : null}
-
-            {/* TAB 3: SBP Stub */}
-            {topUpTab === "sbp" ? (
-              <div className="space-y-3 py-1">
-                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2.5 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0 mt-0.5">
-                      <QrCode size={22} />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-sm font-bold text-slate-900">Система быстрых платежей (СБП)</h3>
-                        <span className="px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 text-[10px] font-extrabold">
-                          В процессе подключения
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-600 leading-relaxed">
-                        Прямая оплата по динамическому QR-коду СБП через любое банковское приложение без комиссии.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="p-3 bg-blue-50/80 border border-blue-200/90 rounded-lg text-xs text-blue-950 space-y-1">
-                    <p className="font-bold flex items-center gap-1.5">
-                      <Clock3 size={13} className="text-blue-700 shrink-0" />
-                      <span>Подключение платежного шлюза</span>
-                    </p>
-                    <p className="text-[11px] leading-relaxed text-blue-800">
-                      Интеграция шлюза СБП находится на финальном этапе тестирования. Пока шлюз подключается, вы можете совершить быстрый перевод на карту или связаться с администратором в Telegram для мгновенного начисления.
-                    </p>
-                  </div>
-
-                  <div className="space-y-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setTopUpTab("card")}
-                      className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
-                    >
-                      <CreditCard size={15} />
-                      <span>Перейти к оплате картой</span>
-                    </button>
-
-                    <div className="text-center pt-1">
-                      <a
-                        href={`${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${encodeURIComponent(
-                          `Здравствуйте! Хочу пополнить баланс TenderLex через СБП/карту. Мой email: ${session?.user?.email || ""}`
-                        )}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs text-slate-500 hover:text-slate-800 underline"
-                      >
-                        Или написать в Telegram для перевода по номеру телефона
-                      </a>
-                    </div>
-                  </div>
                 </div>
               </div>
             ) : null}

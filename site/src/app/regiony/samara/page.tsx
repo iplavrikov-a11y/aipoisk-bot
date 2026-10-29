@@ -23,7 +23,7 @@ export const metadata: Metadata = {
     type: "website",
     url: "/regiony/samara",
     title: "Поиск поставщиков и заводов в Самаре и Поволжье | TenderLex",
-    description: "Автоматизированный подбор контрагентов под спецификации закупки в Самарской области и ПФО.",
+    description: "Поиск потенциальных поставщиков по спецификациям закупки в Самарской области и ПФО.",
     siteName: "TenderLex",
     images: ["/tenderlex-product-preview.png"],
   },

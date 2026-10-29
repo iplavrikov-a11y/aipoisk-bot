@@ -58,6 +58,17 @@ class SettingsPatch(BaseModel):
     yookassa_shop_id: str | None = None
     yookassa_secret_key: str | None = None
     yookassa_return_url: str | None = None
+    yookassa_send_receipt: bool | None = None
+
+
+class CreateYooKassaPaymentRequest(BaseModel):
+    amount_rub: int = Field(..., ge=100, le=500_000)
+    package_id: str | None = None
+
+
+class YooKassaTestRequest(BaseModel):
+    shop_id: str | None = None
+    secret_key: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -98,6 +109,11 @@ class WebEmailChangeRequest(BaseModel):
 class WebPasswordResetComplete(BaseModel):
     password: str = Field(default="", max_length=256)
     note: str = ""
+
+
+class WebPasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+    new_password: str = Field(min_length=8, max_length=256)
 
 
 class ClientCreate(BaseModel):

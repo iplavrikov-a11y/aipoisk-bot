@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, List, Optional
 
 GISP_PRODUCT_REGISTRY_URL = "https://gisp.gov.ru/pp719v2/pub/prod/"
-MAX_EXACT_POSITIONS_PER_JOB: int = 5
+MAX_EXACT_POSITIONS_PER_JOB: int = 100
 MAX_YANDEX_QUERIES_PER_JOB: int = 20
 
 
@@ -77,9 +77,27 @@ class ExactProductPosition:
     datasheet_url: str = ""
     inn: str = ""
     region: str = ""
+    position_id: str = ""
+    status: str = "found"
+    error: str = ""
+
+    @property
+    def is_resolved(self) -> bool:
+        if self.status == "found":
+            return True
+        if self.status in ("not_found", "error") and not self.identified_model and not self.alternative_brands:
+            return False
+        if bool((self.identified_model or "").strip() or (self.identified_brand or "").strip()):
+            return True
+        if bool(self.alternative_brands):
+            return True
+        if self.gisp_match and getattr(self.gisp_match, "registry_number", None):
+            return True
+        return False
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        data["is_resolved"] = self.is_resolved
         data["specs_breakdown"] = [
             s.to_dict() if isinstance(s, SpecParameterMatch) else s
             for s in self.specs_breakdown
@@ -92,6 +110,41 @@ class ExactProductPosition:
         return data
 
 
+def is_exact_position_resolved(pos: Any) -> bool:
+    if pos is None:
+        return False
+    if hasattr(pos, "is_resolved"):
+        return bool(pos.is_resolved)
+    if isinstance(pos, dict):
+        status = pos.get("status", "found")
+        if status == "found":
+            return True
+        if status in ("not_found", "error") and not pos.get("identified_model") and not pos.get("alternative_brands"):
+            return False
+        if bool((pos.get("identified_model") or "").strip() or (pos.get("identified_brand") or "").strip()):
+            return True
+        if bool(pos.get("alternative_brands")):
+            return True
+        gisp = pos.get("gisp_match")
+        if gisp and (isinstance(gisp, dict) and gisp.get("registry_number") or getattr(gisp, "registry_number", None)):
+            return True
+        return False
+    status = getattr(pos, "status", "found")
+    if status == "found":
+        return True
+    if status in ("not_found", "error") and not getattr(pos, "identified_model", "") and not getattr(pos, "alternative_brands", None):
+        return False
+    if bool((getattr(pos, "identified_model", "") or "").strip() or (getattr(pos, "identified_brand", "") or "").strip()):
+        return True
+    if bool(getattr(pos, "alternative_brands", None)):
+        return True
+    gisp = getattr(pos, "gisp_match", None)
+    if gisp and getattr(gisp, "registry_number", None):
+        return True
+    return False
+
+
+
 @dataclass
 class ExactProductReport:
     procurement_title: str
@@ -101,12 +154,14 @@ class ExactProductReport:
     disclaimer: str = (
         "Отчёт сформирован на основе сопоставления технического задания с открытыми веб-источниками, "
         "каталогами производителей, PDF-паспортами изделий и реестром Минпромторга РФ (ГИСП). "
-        "Все показатели проверены первоисточниками без искусственной подгонки под ТЗ заказчика по 44-ФЗ и 223-ФЗ."
+        "Степень подтверждения каждого параметра указана отдельно. Неподтверждённые характеристики "
+        "требуют уточнения; наличие отчёта само по себе не подтверждает соответствие товара условиям закупки."
     )
     yandex_requests_count: int = 0
     yandex_cost_rub: float = 0.0
     web_sources: list[str] = field(default_factory=list)
     verified_documents: list[dict[str, Any]] = field(default_factory=list)
+    search_metrics_available: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,9 +174,10 @@ class ExactProductReport:
             "yandex_cost_rub": self.yandex_cost_rub,
             "web_sources": self.web_sources,
             "verified_documents": self.verified_documents,
+            "search_metrics_available": self.search_metrics_available,
         }
 
 
-MAX_EXACT_POSITIONS_PER_JOB: int = 5
+MAX_EXACT_POSITIONS_PER_JOB: int = 100
 MAX_YANDEX_QUERIES_PER_JOB: int = 20
 

@@ -5,11 +5,11 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 
 ## Scope
 
-- SEO landing page plus customer cabinet.
+- Home v3 public landing page (interactive five-step ТЗ walkthrough) plus customer cabinet.
 - Dedicated scenario pages for procurement-document analysis, supplier search, and Minpromtorg-related registry context.
 - No blog, no CMS, no public admin panel.
 - Contacts and active tariffs come from the existing FastAPI backend through `GET /api/public/site`.
-- The first screen must lead with the main product promise: supplier/contact
+- The homepage is a server-rendered Home v3 page with a progressive-enhancement client for the five-step walkthrough. The first screen must lead with the main product promise: supplier/contact
   search under a customer's specification or procurement task. Procurement
   documentation analysis remains visible, but it is positioned as an optional
   supporting check for complex tender work, not as the dominant public-site
@@ -52,7 +52,7 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 
 ## Knowledge Base & Content Hub (`/baza-znaniy`)
 
-- The Knowledge Base (`site/src/app/baza-znaniy`) is an SEO and educational hub containing 55 comprehensive, authoritative procurement guides.
+- The Knowledge Base (`site/src/app/baza-znaniy`) is an SEO and educational hub containing 58 authoritative procurement guides.
 - Structured into 8 primary procurement clusters:
   1. *Поиск поставщиков и заводов* (8 articles)
   2. *ИИ и сопоставление номенклатуры* (7 articles)
@@ -62,23 +62,33 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
   6. *НМЦК, КП и обоснование цен* (7 articles)
   7. *Логистика и снижение затрат на 30%* (6 articles)
   8. *Проверка контрагентов и дилеров* (6 articles)
-- Built on a dynamic static generation architecture: `site/src/app/baza-znaniy/[slug]/page.tsx` renders all 55 articles at build time using `generateStaticParams()` and dataset in `site/src/data/knowledge-base.ts`.
+- Built on a dynamic static generation architecture: `site/src/app/baza-znaniy/[slug]/page.tsx` renders all 58 articles at build time using `generateStaticParams()` and dataset in `site/src/data/knowledge-base.ts`.
 - Uses a light, clean aesthetic aligned with the homepage design system (`bg-[#f6f8f7]`, `bg-white`, `border-[#d8e3e1]`, `text-[#075b63]`, `text-[#172120]`).
 - Includes comprehensive Schema.org JSON-LD microdata on every page (`TechArticle`, `HowTo`, `FAQPage`, `BreadcrumbList`, `CollectionPage`).
-- All 55 article URLs are dynamically published in `sitemap.xml` and registered in `llms.txt` for AI/LLM search indexing.
+- All 58 article URLs are dynamically published in `sitemap.xml` and registered in `llms.txt` for AI/LLM search indexing.
 
 ## SEO And Verification
 
 - `site/src/app/layout.tsx` owns the public metadata, canonical URLs, Open Graph tags, and optional verification/analytics wiring.
-- `TENDERLEX_YANDEX_METRIKA_ID` enables the Yandex Metrika component (Counter ID `109753178`).
+- `TENDERLEX_YANDEX_METRIKA_ID` or `YANDEX_METRIKA_COUNTER_ID` enables the consent-gated Yandex Metrika component (production counter `109753178`).
 - `TENDERLEX_YANDEX_VERIFICATION` injects the `yandex-verification` meta tag for Yandex Webmaster (`b3b74a829ce4a7c6`).
 - `TENDERLEX_GOOGLE_SITE_VERIFICATION` is available for meta-based verification, but the current Google Search Console setup uses DNS TXT verification for the domain property (`SQ1BHThiHjN4LaqsyR6McEc7DI90g2jBhtDmNw_zwfY`).
 - `site/public/yandex_b3b74a829ce4a7c6.html` is the Yandex Webmaster HTML verification file.
-- `site/src/app/sitemap.ts` includes all public SEO pages and 55 knowledge base articles so Search Console and Yandex discover them from the canonical sitemap.
-- `robots.txt` allows public pages, keeps `/api/` and `/cabinet` out of indexing, and points crawlers to the canonical sitemap. The deprecated `Host` directive is intentionally omitted.
+- `site/src/app/sitemap.ts` includes all public SEO pages and 58 knowledge base articles; article `lastmod` comes from each article `updatedDate`.
+- `robots.txt` allows public pages, keeps `/api/`, `/cabinet`, `/v2`, `/test-buttons` and `/demo-*` out of indexing, and points crawlers to the canonical sitemap. The deprecated `Host` directive is intentionally omitted. `/v2` is also `noindex, nofollow` with canonical `/`.
 - `site/src/app/layout.tsx` default metadata aligns with homepage positioning.
 - `site/src/app/favicon.ico`, `site/public/favicon.png`, `site/src/app/icon.png`, and `site/src/app/apple-icon.png` are the public icon set. The Yandex-facing favicon paths include a `120x120` asset.
 - Production SEO envs are loaded from `/etc/systemd/system/tenderlex-site.service.d/seo.conf` so the live site picks them up automatically.
+
+
+## Home v3 And SEO Release (2026-10-20)
+
+- The production homepage is Home v3: server-rendered markup in `site/src/app/home-v3-content.ts`, scoped styles in `site/src/app/home-v3.css`, and progressive interactions in `site/src/components/home-v3-interactions.tsx`.
+- The five-step walkthrough covers specification, extracted fields with source tracing, supplier candidates, analog differences and an RFQ draft with a self-check. Step state is shareable via `?step=1..5`; the first step is visible without JavaScript.
+- Commercial landing pages `/zapros-kp-po-tz`, `/ocenka-riskov-zakupki`, `/poisk-postavshchikov-dlya-tendera`, `/poisk-proizvoditeley-po-tz` and `/postavshchiki-dlya-zaprosa-kp` were expanded with unique sections and FAQs (776–977 words in main content). All knowledge articles link to the four main commercial services in the sidebar.
+- Technical SEO: article `datePublished`/per-article `lastmod`, shortened long titles, Organization contact data, 1200×630 Open Graph image, `llms.txt` covering 91/91 sitemap URLs, noindex 404, HTTP/2 enabled.
+- Google Search Console is the live read-only reporting source. Yandex Webmaster API is unreachable from the VPS (IPv4 timeout, no IPv6); Wordstat API is unavailable. Cached admin values are stale until network access is restored.
+- Changed URLs were submitted through IndexNow (12 URLs, HTTP 200). Sitemap and llms.txt are current; search-ranking effects should be evaluated after 4–8 weeks.
 
 ## Customer API Contract
 

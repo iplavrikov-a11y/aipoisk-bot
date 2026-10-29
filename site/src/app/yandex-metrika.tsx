@@ -89,7 +89,7 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
   return <>
     {consent === "unknown" ? (
       <aside className="cookie-consent" aria-label="Настройки аналитики">
-        <p>TenderLex использует необходимые данные для работы сайта. С вашего разрешения Яндекс Метрика учитывает посещения и действия, чтобы улучшать сервис. <a href="/privacy#cookies">Подробнее</a></p>
+        <p>TenderLex использует cookie и аналитику для сохранения истории проверок ТЗ и корректной работы сервиса. С вашего разрешения Яндекс Метрика учитывает посещения и действия, чтобы улучшать сервис. <a href="/privacy#cookies">Подробнее</a></p>
         <div>
           <button type="button" className="cookie-secondary" onClick={() => choose("denied")}>Только необходимые</button>
           <button type="button" className="cookie-primary" onClick={() => choose("granted")}>Разрешить аналитику</button>

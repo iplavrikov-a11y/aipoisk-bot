@@ -371,9 +371,22 @@ export function OutreachView() {
     } catch {}
   }
 
-  const [loading, setLoading] = useState(false)
+  const [searchStarting, setSearchStarting] = useState(false)
+  const [campaignCreating, setCampaignCreating] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [leadsLoading, setLeadsLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const leadsRequestIdRef = useRef(0)
+  const leadsForegroundRequestIdRef = useRef<number | null>(null)
+  const leadsBackgroundRequestIdRef = useRef<number | null>(null)
+  const tasksRequestIdRef = useRef(0)
+  const inboxRequestIdRef = useRef(0)
+  const inboxForegroundRequestIdRef = useRef<number | null>(null)
+  const inboxBackgroundRequestIdRef = useRef<number | null>(null)
+  const searchStatusRequestIdRef = useRef(0)
+  const searchStatusPollingRef = useRef(false)
+  const restoredInitialTaskRef = useRef(false)
 
   // Templates state
   const [templates, setTemplates] = useState<EmailTemplate[]>(() => {
@@ -693,8 +706,15 @@ export function OutreachView() {
 
   // Fetch leads for the selected task
   const fetchLeads = useCallback(
-    async (taskId: string, p = 1, search = '', status = '', wave?: number | null) => {
-      setLoading(true)
+    async (taskId: string, p = 1, search = '', status = '', wave?: number | null, background = false) => {
+      if (background && (leadsForegroundRequestIdRef.current !== null || leadsBackgroundRequestIdRef.current !== null)) return
+      const requestId = ++leadsRequestIdRef.current
+      if (background) {
+        leadsBackgroundRequestIdRef.current = requestId
+      } else {
+        leadsForegroundRequestIdRef.current = requestId
+        setLeadsLoading(true)
+      }
       try {
         const activeWave = wave !== undefined ? wave : selectedWave
         const params = new URLSearchParams({
@@ -710,13 +730,20 @@ export function OutreachView() {
         const data = await outreachFetch<{ items: Lead[]; total: number; page: number }>(
           `/api/outreach/leads?${params.toString()}`
         )
+        if (requestId !== leadsRequestIdRef.current) return
         setLeads(data.items || [])
         setLeadTotal(data.total || 0)
         setPage(data.page || 1)
       } catch (e: any) {
-        showError(e.message)
+        if (requestId === leadsRequestIdRef.current && !background) showError(e.message)
       } finally {
-        setLoading(false)
+        if (background && leadsBackgroundRequestIdRef.current === requestId) {
+          leadsBackgroundRequestIdRef.current = null
+        }
+        if (!background && leadsForegroundRequestIdRef.current === requestId) {
+          leadsForegroundRequestIdRef.current = null
+          setLeadsLoading(false)
+        }
       }
     },
     [selectedWave]
@@ -746,6 +773,13 @@ export function OutreachView() {
       const activeFilter = filter ?? inboxFilterRef.current
       const activeSearch = search ?? inboxSearchRef.current
       const activeLimit = limit ?? inboxLimitRef.current
+      if (silent && (inboxForegroundRequestIdRef.current !== null || inboxBackgroundRequestIdRef.current !== null)) return
+      const requestId = ++inboxRequestIdRef.current
+      if (silent) {
+        inboxBackgroundRequestIdRef.current = requestId
+      } else {
+        inboxForegroundRequestIdRef.current = requestId
+      }
       try {
         const categoryParam =
           activeFilter === 'bounces'
@@ -767,6 +801,7 @@ export function OutreachView() {
         const data = await outreachFetch<{ items: IncomingMessage[]; total?: number; counts?: InboxCounts }>(
           `/api/outreach/inbox?${params.toString()}`
         )
+        if (requestId !== inboxRequestIdRef.current) return
         const items = data.items || []
 
         setInboxMessages((prev) => {
@@ -829,6 +864,9 @@ export function OutreachView() {
         })
       } catch {
         // ignore
+      } finally {
+        if (silent && inboxBackgroundRequestIdRef.current === requestId) inboxBackgroundRequestIdRef.current = null
+        if (!silent && inboxForegroundRequestIdRef.current === requestId) inboxForegroundRequestIdRef.current = null
       }
     },
     []
@@ -871,15 +909,20 @@ export function OutreachView() {
 
   // Fetch all tasks and restore selected task on page refresh
   const fetchTasks = useCallback(async () => {
+    const requestId = ++tasksRequestIdRef.current
     try {
       const data = await outreachFetch<{ items: SearchTask[] }>('/api/outreach/tasks')
+      if (requestId !== tasksRequestIdRef.current) return
       const items = data.items || []
       setTasks(items)
 
-      // Restore previously opened task on page refresh
-      const savedTaskId = localStorage.getItem('tenderlex_outreach_selected_task_id')
-      if (savedTaskId && items.length > 0) {
-        const found = items.find((t) => t.id === savedTaskId)
+      // Restore the saved workspace once. Later polling only refreshes the
+      // selected task metadata, so it cannot erase filters or edited prompts.
+      const currentSelected = selectedTaskRef.current
+      if (!restoredInitialTaskRef.current) {
+        restoredInitialTaskRef.current = true
+        const savedTaskId = localStorage.getItem('tenderlex_outreach_selected_task_id')
+        const found = savedTaskId ? items.find((t) => t.id === savedTaskId) : undefined
         if (found) {
           setSelectedTask(found)
           const savedSubTab = (localStorage.getItem('tenderlex_outreach_subtab') || 'leads') as TaskSubTab
@@ -888,6 +931,11 @@ export function OutreachView() {
           fetchTaskStats(found.id)
           fetchLeads(found.id, 1, '', '')
           fetchCampaigns(found.id)
+        }
+      } else if (currentSelected) {
+        const updated = items.find((t) => t.id === currentSelected.id)
+        if (updated) {
+          setSelectedTask((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev))
         }
       }
 
@@ -900,6 +948,7 @@ export function OutreachView() {
         if (current) setSearchStatus(current)
       }
     } catch (e: any) {
+      if (requestId !== tasksRequestIdRef.current) return
       console.error('fetchTasks error:', e)
       showError(`Ошибка загрузки задач: ${e.message}`)
     }
@@ -914,6 +963,12 @@ export function OutreachView() {
 
   // When a task is selected, load its workspace data
   const handleSelectTask = useCallback((task: SearchTask, customSubTab?: TaskSubTab) => {
+    // A response for the previously selected task must not replace this
+    // workspace after the user has switched context.
+    leadsRequestIdRef.current += 1
+    leadsForegroundRequestIdRef.current = null
+    leadsBackgroundRequestIdRef.current = null
+    setLeadsLoading(false)
     setSelectedTask(task)
     const targetTab = customSubTab || taskSubTab || 'leads'
     setTaskSubTab(targetTab)
@@ -946,25 +1001,36 @@ export function OutreachView() {
       return
     }
     const interval = setInterval(async () => {
+      if (searchStatusPollingRef.current) return
+      searchStatusPollingRef.current = true
+      const requestId = ++searchStatusRequestIdRef.current
       try {
         const data = await outreachFetch<any>(`/api/outreach/search/status/${activeTaskId}`)
+        if (requestId !== searchStatusRequestIdRef.current) return
         if (!data || data.status !== 'running') {
           setActiveTaskId(null)
           setSearchStatus(null)
           fetchTasks()
-          if (selectedTask && selectedTask.id === activeTaskId) {
-            fetchTaskStats(selectedTask.id)
-            fetchLeads(selectedTask.id, 1, searchFilter, statusFilter, selectedWave)
+          const currentSelected = selectedTaskRef.current
+          if (currentSelected && currentSelected.id === activeTaskId) {
+            fetchTaskStats(currentSelected.id)
+            fetchLeads(currentSelected.id, 1, searchFilter, statusFilter, selectedWave, true)
           }
         } else {
           setSearchStatus(data)
         }
       } catch {
-        setActiveTaskId(null)
-        setSearchStatus(null)
+        // A transient polling failure must not imply that a server-side search
+        // has stopped. Keep the current task visible until a real status reply.
+      } finally {
+        if (requestId === searchStatusRequestIdRef.current) searchStatusPollingRef.current = false
       }
     }, 2000)
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      searchStatusRequestIdRef.current += 1
+      searchStatusPollingRef.current = false
+    }
   }, [activeTaskId, selectedTask, searchFilter, statusFilter, selectedWave, fetchTasks, fetchTaskStats, fetchLeads])
 
   // Realtime polling for active campaigns and task stats
@@ -986,7 +1052,7 @@ export function OutreachView() {
             }
           } else if (searchStatus && searchStatus.id === selectedTask.id && stats.task.status !== 'running') {
             setSearchStatus(null)
-            fetchLeads(selectedTask.id, 1, searchFilter, statusFilter, selectedWave)
+            fetchLeads(selectedTask.id, 1, searchFilter, statusFilter, selectedWave, true)
           }
         }
 
@@ -1211,7 +1277,7 @@ export function OutreachView() {
       showError('Введите описание целевой аудитории для поиска')
       return
     }
-    setLoading(true)
+    setSearchStarting(true)
     try {
       const data = await outreachFetch<any>('/api/outreach/search/start', {
         method: 'POST',
@@ -1241,7 +1307,7 @@ export function OutreachView() {
     } catch (e: any) {
       showError(`Ошибка запуска: ${e.message}`)
     } finally {
-      setLoading(false)
+      setSearchStarting(false)
     }
   }
 
@@ -1620,7 +1686,7 @@ export function OutreachView() {
       showError('Укажите тему и текст рассылки')
       return
     }
-    setLoading(true)
+    setCampaignCreating(true)
     try {
       const payload: any = {
         name: `Рассылка по задаче «${selectedTask.name}»`,
@@ -1644,7 +1710,7 @@ export function OutreachView() {
     } catch (e: any) {
       showError(`Ошибка создания рассылки: ${e.message}`)
     } finally {
-      setLoading(false)
+      setCampaignCreating(false)
     }
   }
 
@@ -2014,7 +2080,7 @@ export function OutreachView() {
   // Save Settings
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault()
-    setLoading(true)
+    setSettingsSaving(true)
     try {
       const payload: any = { ...settings }
       if (smtpPassword) payload.smtp_password = smtpPassword
@@ -2030,7 +2096,7 @@ export function OutreachView() {
     } catch (e: any) {
       showError(`Ошибка сохранения: ${e.message}`)
     } finally {
-      setLoading(false)
+      setSettingsSaving(false)
     }
   }
 
@@ -2391,7 +2457,7 @@ export function OutreachView() {
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button
                     type="submit"
-                    disabled={loading}
+                    disabled={searchStarting}
                     className="outreach-btn outreach-btn-primary"
                     style={{ padding: '8px 18px', fontSize: 13 }}
                   >
@@ -3553,7 +3619,7 @@ export function OutreachView() {
                       </tr>
                     </thead>
                     <tbody>
-                      {loading ? (
+                      {leadsLoading ? (
                         <tr>
                           <td colSpan={9} style={{ textAlign: 'center', padding: '40px 0', color: '#94a3b8' }}>
                             <RefreshCw size={22} className="animate-spin" style={{ margin: '0 auto 8px', color: '#0f766e' }} />
@@ -3961,7 +4027,7 @@ export function OutreachView() {
 
                     <button
                       type="submit"
-                      disabled={loading}
+                      disabled={campaignCreating}
                       className="outreach-btn outreach-btn-emerald"
                       style={{ padding: '8px 22px', fontSize: 13, fontWeight: 700 }}
                     >
@@ -5148,11 +5214,11 @@ export function OutreachView() {
         <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
           <button
             type="submit"
-            disabled={loading}
+            disabled={settingsSaving}
             className="outreach-btn outreach-btn-primary"
             style={{ padding: '8px 18px', fontSize: 13 }}
           >
-            {loading ? 'Сохранение...' : 'Сохранить настройки'}
+            {settingsSaving ? 'Сохранение...' : 'Сохранить настройки'}
           </button>
         </div>
       </form>

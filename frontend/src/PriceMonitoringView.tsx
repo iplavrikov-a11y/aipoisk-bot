@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Coins,
   RefreshCw,
@@ -31,6 +31,12 @@ type ClientItem = {
   custom_price_rub: number | null
   effective_price_rub: number
   has_override: boolean
+}
+
+type ClientEdit = {
+  allowed: boolean
+  custom_price_rub: string
+  dirty: boolean
 }
 
 type JobItem = {
@@ -75,15 +81,17 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
   const [clientPage, setClientPage] = useState<number>(1)
   const [clientPageSize, setClientPageSize] = useState<number>(10)
   const [savingClientId, setSavingClientId] = useState<string | null>(null)
-  const [clientEdits, setClientEdits] = useState<Record<string, { allowed: boolean; custom_price_rub: string }>>({})
+  const [clientEdits, setClientEdits] = useState<Record<string, ClientEdit>>({})
   const [savedClientId, setSavedClientId] = useState<string | null>(null)
 
   // Jobs History State & Pagination
   const [jobs, setJobs] = useState<JobItem[]>([])
   const [jobPage, setJobPage] = useState<number>(1)
   const [jobPageSize, setJobPageSize] = useState<number>(10)
+  const latestLoadRequest = useRef(0)
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (savedClient?: Pick<ClientItem, 'id'> & Pick<ClientEdit, 'allowed' | 'custom_price_rub'>) => {
+    const requestId = ++latestLoadRequest.current
     try {
       setRefreshing(true)
       const [settingsRes, clientsRes, jobsRes] = await Promise.all([
@@ -92,7 +100,9 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
         fetch('/api/price-monitoring/jobs', { credentials: 'same-origin' }),
       ])
 
-      if (settingsRes.ok) {
+      if (requestId !== latestLoadRequest.current) return
+
+      if (settingsRes.ok && !savedClient) {
         const sData = await settingsRes.json()
         setDefaultPriceRub(sData.default_price_rub ?? 50)
         setMaxSuppliers(sData.max_suppliers_per_item ?? sData.max_suppliers ?? 5)
@@ -108,14 +118,29 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
         const cData = await clientsRes.json()
         const clientList: ClientItem[] = cData.clients || []
         setClients(clientList)
-        const initialEdits: Record<string, { allowed: boolean; custom_price_rub: string }> = {}
-        clientList.forEach((c) => {
-          initialEdits[c.id] = {
-            allowed: c.allowed,
-            custom_price_rub: c.custom_price_rub !== null ? String(c.custom_price_rub) : '',
-          }
+        setClientEdits((currentEdits) => {
+          const refreshedEdits: Record<string, ClientEdit> = {}
+          clientList.forEach((c) => {
+            const serverEdit: ClientEdit = {
+              allowed: c.allowed,
+              custom_price_rub: c.custom_price_rub !== null ? String(c.custom_price_rub) : '',
+              dirty: false,
+            }
+            const currentEdit = currentEdits[c.id]
+            const savedValueStillCurrent =
+              savedClient?.id === c.id &&
+              currentEdit?.allowed === savedClient.allowed &&
+              currentEdit.custom_price_rub === savedClient.custom_price_rub
+            // Keep only edits made after the latest server value. If an
+            // administrator changes the saved row while its request is in
+            // flight, that newer local input remains intact as well.
+            refreshedEdits[c.id] =
+              currentEdit?.dirty && !savedValueStillCurrent
+                ? currentEdit
+                : serverEdit
+          })
+          return refreshedEdits
         })
-        setClientEdits(initialEdits)
       }
 
       if (jobsRes.ok) {
@@ -125,8 +150,10 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
     } catch (err) {
       console.error('Failed to load price monitoring data', err)
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (requestId === latestLoadRequest.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }, [])
 
@@ -184,7 +211,11 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
       if (res.ok) {
         setSavedClientId(clientId)
         setTimeout(() => setSavedClientId(null), 2500)
-        void loadData()
+        void loadData({
+          id: clientId,
+          allowed: edit.allowed,
+          custom_price_rub: edit.custom_price_rub,
+        })
       }
     } catch (err) {
       console.error(err)
@@ -269,7 +300,7 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
             </button>
           )}
           <button
-            onClick={loadData}
+            onClick={() => void loadData()}
             disabled={refreshing}
             className="btn btn-secondary"
             style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', fontSize: '13px' }}
@@ -621,7 +652,11 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
                           onChange={(e) =>
                             setClientEdits((prev) => ({
                               ...prev,
-                              [client.id]: { ...edit, allowed: e.target.checked },
+                              [client.id]: {
+                                ...(prev[client.id] ?? edit),
+                                allowed: e.target.checked,
+                                dirty: true,
+                              },
                             }))
                           }
                           style={{ width: '15px', height: '15px', accentColor: '#059669' }}
@@ -639,7 +674,11 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
                         onChange={(e) =>
                           setClientEdits((prev) => ({
                             ...prev,
-                            [client.id]: { ...edit, custom_price_rub: e.target.value },
+                              [client.id]: {
+                                ...(prev[client.id] ?? edit),
+                                custom_price_rub: e.target.value,
+                                dirty: true,
+                              },
                           }))
                         }
                         className="form-input"

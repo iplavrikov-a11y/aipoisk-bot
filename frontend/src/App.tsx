@@ -1,5 +1,5 @@
 import { SeoTrafficView } from './SeoTrafficView'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
 import {
   X,
   AlertTriangle,
@@ -243,6 +243,19 @@ type GrantDraft = {
   debit_amount_rub?: string
 }
 
+type ExactSelection = {
+  mode?: string
+  pricing_mode?: string
+  revision: string
+  max_positions: number
+  price_kopeks: number
+  selected_ids: string[]
+  confirmed: boolean
+  items: Array<{ id: string; position_no: number; name: string; name_in_tz?: string }>
+}
+
+type MultiItemSelection = Pick<ExactSelection, 'items' | 'selected_ids' | 'confirmed'> & { mode?: string; revision?: string }
+
 type Job = {
   id: string
   job_number?: number | null
@@ -259,6 +272,10 @@ type Job = {
   supplier_search_policy: string
   supplier_search_run_type: string
   multi_item_mode?: string
+  delivery_city?: string
+  geo_radius_km?: number | null
+  geo_scope?: string
+  confirmation_expires_at?: string | null
   confirmation_kind?: string
   confirmation_outcome?: string
   offer_delivery_outcome?: string
@@ -296,11 +313,20 @@ type Job = {
   sources?: JobSource[]
   parent_job_id?: string
   is_admin_rerun?: boolean
+  position_selection?: ExactSelection | null
+  multi_item_selection?: MultiItemSelection | null
+  exact_product_selection?: ExactSelection | null
   admin_rerun?: JobAdminRerunInfo | null
   admin_reruns?: JobAdminRerunInfo[]
 }
 
 type JobAdminRerunInfo = {
+  mode?: string
+  confirmation_kind?: string
+  multi_item_mode?: string
+  position_selection?: ExactSelection | null
+  multi_item_selection?: MultiItemSelection | null
+  exact_product_selection?: ExactSelection | null
   id: string
   job_number?: number | null
   status: string
@@ -431,6 +457,7 @@ type SettingsPayload = {
   yookassa_secret_key_set: boolean
   yookassa_secret_key?: string
   yookassa_return_url: string
+  yookassa_send_receipt?: boolean
   supplier_search_ui: SupplierSearchUi
 }
 
@@ -439,6 +466,7 @@ type SettingsPatchPayload = Partial<SettingsPayload> & {
   yandex_search_api_key?: string
   google_search_api_key?: string
   yookassa_secret_key?: string
+  yookassa_send_receipt?: boolean
 }
 
 type TariffPackage = {
@@ -743,6 +771,9 @@ const statusLabels: Record<string, string> = {
   failed: 'ошибка',
   cancelled: 'отменено',
   awaiting_customer_confirmation: 'ожидает клиента',
+  awaiting_exact_selection: 'ожидает выбора товаров',
+  awaiting_position_selection: 'ожидает выбора позиций',
+  settling: 'сохраняется результат',
   customer_declined: 'отклонено',
   confirmation_expired: 'истёк срок',
   delivery_expired: 'срок выдачи истёк',
@@ -1173,6 +1204,67 @@ function getInitialView(): View {
     if (VALID_VIEWS.includes(saved)) return saved
   } catch {}
   return 'dashboard'
+}
+
+interface ErrorBoundaryProps {
+  children: ReactNode
+  sectionName?: string
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean
+  error: Error | null
+}
+
+class AdminErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('AdminErrorBoundary caught error:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 24, margin: '20px auto', maxWidth: 640, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, color: '#991b1b' }}>
+          <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Ошибка отображения раздела {this.props.sectionName ? `«${this.props.sectionName}»` : ''}</h3>
+          <p style={{ margin: '0 0 12px 0', fontSize: 13, color: '#7f1d1d' }}>
+            {this.state.error?.message || 'Произошла непредвиденная ошибка при отображении данных.'}
+          </p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="ghost small-text"
+              style={{ background: '#fff', border: '1px solid #fca5a5', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
+              onClick={() => {
+                this.setState({ hasError: false, error: null })
+              }}
+            >
+              Попробовать снова
+            </button>
+            <button
+              type="button"
+              className="ghost small-text"
+              style={{ background: '#0f766e', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
+              onClick={() => {
+                window.location.reload()
+              }}
+            >
+              Перезагрузить страницу
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
 }
 
 export function App() {
@@ -1735,29 +1827,39 @@ export function App() {
         )}
         {isReady && view === 'seo' && <SeoTrafficView />}
         {isReady && view === 'clients' && (
-          <ClientsView
-            clients={clients}
-            passwordResets={passwordResets}
-            onChange={loadAll}
-            onNavigateToClientJobs={handleNavigateToClientJobs}
-            onNavigateToMcp={() => setView('mcp')}
-            isSyncing={isClientsSyncing}
-            lastSyncAt={lastClientsSyncAt}
-            onManualSync={handleManualClientsSync}
-            recentNewClientIds={recentNewClientIds}
-            selectedClientIdFromParent={selectedClientIdForView}
-            onClearSelectedClientFromParent={() => setSelectedClientIdForView('')}
-          />
+          <AdminErrorBoundary sectionName="Клиенты">
+            <ClientsView
+              clients={clients}
+              passwordResets={passwordResets}
+              onChange={loadAll}
+              onNavigateToClientJobs={handleNavigateToClientJobs}
+              onNavigateToMcp={() => setView('mcp')}
+              isSyncing={isClientsSyncing}
+              lastSyncAt={lastClientsSyncAt}
+              onManualSync={handleManualClientsSync}
+              recentNewClientIds={recentNewClientIds}
+              selectedClientIdFromParent={selectedClientIdForView}
+              onClearSelectedClientFromParent={() => setSelectedClientIdForView('')}
+            />
+          </AdminErrorBoundary>
         )}
         {isReady && view === 'jobs' && (
-          <JobsView
-            jobs={jobs}
-            clients={clients}
-            selectedClientId={selectedClientForJobs}
-            onClearSelectedClient={() => setSelectedClientForJobs('')}
-            onChange={loadAll}
-            loading={jobsLoading}
-          />
+          <AdminErrorBoundary sectionName="Задачи">
+            <JobsView
+              jobs={jobs}
+              clients={clients}
+              selectedClientId={selectedClientForJobs}
+              onClearSelectedClient={() => setSelectedClientForJobs('')}
+              onChange={async jobId => {
+                if (jobId) {
+                  const updated = await api<Job>(`/api/jobs/${jobId}`)
+                  setJobs(current => current.map(job => job.id === jobId ? updated : job))
+                }
+                await loadAll()
+              }}
+              loading={jobsLoading}
+            />
+          </AdminErrorBoundary>
         )}
         {isReady && view === 'outreach' && <OutreachView />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
@@ -3499,7 +3601,7 @@ function ClientsView({
                     <details className="compact-form-details price-settings-details">
                       <summary>Индивидуальные цены</summary>
                       <div className="price-settings-panel">
-                        {(['supplier_search', 'procurement_report', 'supplier_search_extra', 'exact_product'] as const).map(kind => {
+                        {(['supplier_search', 'exact_product', 'procurement_report', 'supplier_search_extra', 'price_monitoring'] as const).map(kind => {
                           const price = client.usage?.effective_prices?.[kind]
                           const fallbackKopeks = price?.price_kopeks || 0
                           return (
@@ -3634,13 +3736,15 @@ function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
 
 function humanBillingKind(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор поставщиков'
-  if (kind === 'exact_product') return 'Точный товар и аналоги'
-  return kind === 'procurement_report' ? 'Анализ документации' : 'Поставщики'
+  if (kind === 'exact_product') return 'Подбор товара и аналогов'
+  if (kind === 'price_monitoring') return 'Мониторинг цен'
+  return kind === 'procurement_report' ? 'Анализ документации' : 'Поиск поставщиков'
 }
 
 function priceBillingLabel(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор'
-  if (kind === 'exact_product') return 'Точный товар'
+  if (kind === 'exact_product') return 'Подбор товара'
+  if (kind === 'price_monitoring') return 'Мониторинг цен'
   return kind === 'procurement_report' ? 'Анализ' : 'Поиск'
 }
 
@@ -3721,6 +3825,64 @@ function getPrimaryReport(job: Job): { file: JobResultFile; isAdmin: boolean; jo
   return null
 }
 
+const selectionWaitingStatuses = ['awaiting_exact_selection', 'awaiting_position_selection']
+const activeExpertStatuses = ['pending', 'running', 'settling', ...selectionWaitingStatuses, 'awaiting_customer_confirmation']
+
+function jobSelection(job?: Pick<Job, 'position_selection' | 'exact_product_selection' | 'multi_item_selection'> | null): ExactSelection | null {
+  if (!job) return null
+  const ps = job.position_selection
+  if (ps && Array.isArray(ps.items) && ps.items.length > 0) {
+    return {
+      ...ps,
+      items: ps.items,
+      selected_ids: Array.isArray(ps.selected_ids) ? ps.selected_ids : [],
+    }
+  }
+  const eps = job.exact_product_selection
+  if (eps && Array.isArray(eps.items) && eps.items.length > 0) {
+    return {
+      ...eps,
+      items: eps.items,
+      selected_ids: Array.isArray(eps.selected_ids) ? eps.selected_ids : [],
+    }
+  }
+  const strategy = job.multi_item_selection
+  if (!strategy || !Array.isArray(strategy.items) || strategy.items.length === 0) return null
+  const items = strategy.items.map((row, index) => ({
+    ...row,
+    id: String(row.id || `item-${index}`),
+    position_no: row.position_no || index + 1,
+    name: row.name || row.name_in_tz || `Позиция ${index + 1}`,
+  }))
+  return {
+    ...strategy,
+    items,
+    selected_ids: Array.isArray(strategy.selected_ids) ? strategy.selected_ids : [],
+    mode: 'supplier_search',
+    revision: strategy.revision || '',
+    max_positions: items.length,
+    price_kopeks: 0,
+  }
+}
+
+function needsAdminSelection(job: Pick<Job, 'status' | 'confirmation_kind' | 'position_selection' | 'exact_product_selection' | 'multi_item_selection'>) {
+  return selectionWaitingStatuses.includes(job.status) ||
+    (job.status === 'awaiting_customer_confirmation' && job.confirmation_kind === 'multi_item_strategy') ||
+    Boolean(jobSelection(job)?.items?.length && !jobSelection(job)?.confirmed)
+}
+
+function expertScope(job: Job) {
+  const selection = jobSelection(job)
+  const rows = selection?.confirmed ? `Подтверждённые позиции: ${selection.selected_ids?.length || 0}. ` : ''
+  const geoScopeLabel = job.geo_scope === 'cis' ? 'РФ и СНГ (ЕАЭС)' : job.geo_scope === 'world' ? 'Весь мир' : 'Только РФ'
+  const geography = job.delivery_city
+    ? `География: ${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''} (${geoScopeLabel}). `
+    : (job.geo_scope && job.geo_scope !== 'ru' ? `География: ${geoScopeLabel}. ` : '')
+  const strategy = ['supplier_search', 'analysis_and_suppliers'].includes(job.mode)
+    ? `Стратегия: ${job.multi_item_mode === 'per_item' ? 'попозиционный поиск' : 'сбалансированный поиск'}. ` : ''
+  return `${humanMode(job.mode)}. ${rows}${strategy}${geography}`
+}
+
 function JobsView({
   jobs,
   clients = [],
@@ -3733,7 +3895,7 @@ function JobsView({
   clients?: Client[]
   selectedClientId?: string
   onClearSelectedClient?: () => void
-  onChange: () => Promise<void>
+  onChange: (jobId?: string) => Promise<void>
   loading?: boolean
 }) {
   const [nowTs, setNowTs] = useState(() => Date.now())
@@ -3877,12 +4039,16 @@ function JobsView({
     { id: 'completed', label: 'Готово' },
     { id: 'partial', label: 'Частично готово' },
     { id: 'awaiting_customer_confirmation', label: 'Ожидает клиента' },
+    { id: 'awaiting_exact_selection', label: 'Ожидает выбора товаров' },
+    { id: 'awaiting_position_selection', label: 'Ожидает выбора позиций' },
+    { id: 'confirmation_expired', label: 'Срок выбора истёк' },
     { id: 'failed', label: 'Ошибка' },
     { id: 'cancelled', label: 'Отменено' },
   ], [])
   const modeOptions = useMemo(() => [
     { id: 'supplier_search', label: 'Поиск поставщиков' },
     { id: 'exact_product', label: 'Подбор товара и аналогов' },
+    { id: 'price_monitoring', label: 'Мониторинг цен' },
     { id: 'procurement_report', label: 'Анализ документации' },
     { id: 'analysis_and_suppliers', label: 'Анализ + поиск' },
   ], [])
@@ -3913,31 +4079,25 @@ function JobsView({
   }, [showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery])
 
   async function adminRerun(job: Job) {
-    if (job.admin_rerun && (job.admin_rerun.status === 'pending' || job.admin_rerun.status === 'running')) {
-      alert(`По задаче #${job.job_number || job.id} уже выполняется экспертный перерасчет (${job.admin_rerun.progress}%). Дождитесь завершения.`)
-      return
-    }
-    if (job.admin_rerun && job.admin_rerun.status === 'completed') {
-      const ok = window.confirm(
-        `По задаче #${job.job_number || job.id} уже есть готовый админ-итог (${job.admin_rerun.verified_count || 0} пост.).\n\nЗапустить новый перерасчет? В карточке отобразится самый свежий результат.`
-      )
-      if (!ok) return
-    }
+    if (needsAdminSelection(job) || (job.admin_rerun && activeExpertStatuses.includes(job.admin_rerun.status))) return
+    if (!window.confirm(
+      `Создать новый экспертный поиск по задаче #${job.job_number || job.id}?\n\n${expertScope(job)}\nСостав позиций и условия сохраняются. Баланс клиента не списывается. Результат не отправляется автоматически — используйте «Дополнить отчёт».`
+    )) return
     try {
       await api(`/api/jobs/${job.id}/admin-rerun`, { method: 'POST' })
-      await onChange()
+      await onChange(job.id)
     } catch (err: any) {
       alert(err.message || 'Ошибка перезапуска задачи')
     }
   }
   async function resolveJob(job: Job) {
     await api(`/api/jobs/${job.id}/resolve`, { method: 'POST' })
-    await onChange()
+    await onChange(job.id)
   }
   async function cancelJob(job: Job) {
     if (!window.confirm('Отменить задачу?')) return
     await api(`/api/jobs/${job.id}/cancel`, { method: 'POST' })
-    await onChange()
+    await onChange(job.id)
   }
   async function toggleJobDetails(job: Job) {
     const nextExpanded = !expandedJobs[job.id]
@@ -4122,6 +4282,11 @@ function JobsView({
           const supplierRunLabel = supplierRunTypeLabel(job)
           const fallbackOffer = registryFallbackOffer(job)
           const fallbackStatusLabel = registryFallbackStatusLabel(job)
+          const selection = jobSelection(job)
+          const awaitingSelection = selectionWaitingStatuses.includes(job.status) || (job.status === 'awaiting_customer_confirmation' && job.confirmation_kind === 'multi_item_strategy')
+          const expiredSelection = job.status === 'confirmation_expired' && Boolean(selection && !selection.confirmed)
+          const reruns = job.admin_reruns?.length ? job.admin_reruns : job.admin_rerun ? [job.admin_rerun] : []
+          const expertActive = reruns.some(rerun => activeExpertStatuses.includes(rerun.status))
           const isFinished = job.status === 'completed' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled'
           const showProgress = !isFinished || (job.status === 'running' || job.status === 'pending')
           const hasResult = job.has_result || (job.result_files && job.result_files.length > 0)
@@ -4236,7 +4401,7 @@ function JobsView({
                         className="meta-item"
                         title={job.multi_item_mode === 'per_item' ? 'Глубокий независимый поиск под каждую позицию спецификации' : 'Единая квота распределяется по всем позициям со вкладками в Excel'}
                       >
-                        {job.multi_item_mode === 'per_item' ? '🔍 Попозиционный' : '⚖️ Сбалансированный'}
+                        {awaitingSelection ? 'Стратегия ещё не подтверждена' : job.multi_item_mode === 'per_item' ? '🔍 Попозиционный' : '⚖️ Сбалансированный'}
                       </span>
                     </>
                   )}
@@ -4250,14 +4415,30 @@ function JobsView({
 
                   <span className="meta-sep">·</span>
                   <span className="meta-item count">
-                    {job.mode === 'procurement_report'
+                    {awaitingSelection ? 'Ожидает выбора позиций'
+                      : expiredSelection ? 'Срок выбора истёк · поиск не запущен'
+                      : !hasResult && ['pending', 'running', 'settling'].includes(job.status) ? 'Поиск ещё выполняется'
+                      : job.mode === 'procurement_report'
                       ? 'Анализ ТЗ'
                       : job.mode === 'exact_product'
-                      ? `${job.verified_count || 1} тов.`
+                      ? `${job.verified_count || 0} тов.`
                       : job.mode === 'price_monitoring'
                       ? `${job.verified_count || 0} поз.`
                       : `${supplierCountLabel(job)} пост.`}
                   </span>
+
+                  {selection && Boolean(selection.items?.length) && (
+                    <span className="meta-item">
+                      Распознано: {selection.items?.length || 0} · Подтверждено: {selection.confirmed ? (selection.selected_ids?.length || 0) : 0}
+                    </span>
+                  )}
+                  {awaitingSelection && job.confirmation_expires_at && <span className="meta-item">Подтвердить до: {formatDate(job.confirmation_expires_at)}</span>}
+                  {job.delivery_city && <span className="meta-item">📍 {job.delivery_city}{job.geo_radius_km ? ` · ${job.geo_radius_km} км` : ''}</span>}
+                  {job.geo_scope && job.geo_scope !== 'ru' && (
+                    <span className="meta-item" style={{ color: '#4f46e5', fontWeight: 600 }}>
+                      {job.geo_scope === 'cis' ? 'СНГ' : 'Весь мир'}
+                    </span>
+                  )}
 
                   {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) ? (
                     <>
@@ -4542,15 +4723,11 @@ function JobsView({
                   type="button"
                   className={`icon-button small ${job.admin_rerun?.status === 'completed' ? 'has-rerun' : ''}`}
                   style={job.admin_rerun?.status === 'completed' ? { color: '#047857', borderColor: '#a7f3d0', background: '#ecfdf5' } : undefined}
-                  disabled={job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'}
+                  disabled={needsAdminSelection(job) || expertActive}
                   onClick={() => void adminRerun(job)}
-                  title={
-                    job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'
-                      ? `Идет экспертный перерасчет (${job.admin_rerun.progress}%)...`
-                      : job.admin_rerun?.status === 'completed'
-                      ? `Повторный экспертный перерасчет (уже есть итог: ${job.admin_rerun.verified_count || 0} пост.)`
-                      : 'Экспертный перезапуск администратора'
-                  }
+                  title={expertActive ? 'Экспертная задача уже активна; продолжите её в карточке'
+                    : needsAdminSelection(job) ? 'Сначала подтвердите позиции в карточке задачи'
+                    : 'Новый экспертный поиск без списания с клиента'}
                 >
                   {job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running' ? (
                     <Loader2 size={13} className="spin" />
@@ -4562,6 +4739,27 @@ function JobsView({
                 </button>
               </div>
             </div>
+
+            {(awaitingSelection || expiredSelection) && selection && Boolean(selection.items?.length) && !expertActive && (
+              <AdminExactSelection key={`${job.id}:${selection.revision}`} jobId={job.id} selection={selection}
+                mode={job.mode} multiItemMode={job.multi_item_mode} reissue={expiredSelection}
+                geography={job.delivery_city ? `${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''}` : ''} onChange={() => onChange(job.id)} />
+            )}
+            {job.admin_rerun && (selectionWaitingStatuses.includes(job.admin_rerun.status) ||
+              (job.admin_rerun.status === 'awaiting_customer_confirmation' && job.admin_rerun.confirmation_kind === 'multi_item_strategy')) &&
+              Boolean(jobSelection(job.admin_rerun)?.items?.length) && (
+              <AdminExactSelection key={`${job.admin_rerun.id}:${jobSelection(job.admin_rerun)!.revision}`} jobId={job.admin_rerun.id}
+                selection={jobSelection(job.admin_rerun)!} mode={job.admin_rerun.mode || job.mode} multiItemMode={job.admin_rerun.multi_item_mode}
+                internal onChange={() => onChange(job.id)} />
+            )}
+
+            {reruns.length > 0 && <details style={{ marginTop: 8, fontSize: 12 }}>
+              <summary>Экспертные поиски: {reruns.length} · последний: {humanStatus(reruns[0].status)}</summary>
+              {reruns.slice(0, 5).map(rerun => <div key={rerun.id} style={{ marginTop: 4 }}>
+                #{rerun.job_number || rerun.id} · {humanStatus(rerun.status)} · {rerun.message || 'Нет описания'}
+              </div>)}
+              {reruns.length > 5 && <div>Ещё: {reruns.length - 5}. Готовые файлы доступны в списке отчётов.</div>}
+            </details>}
 
             {job.admin_rerun && (job.admin_rerun.status === 'pending' || job.admin_rerun.status === 'running') && (
               <div className="job-progress-compact" style={{ marginTop: 6, padding: '6px 10px', background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}>
@@ -4608,11 +4806,74 @@ function JobsView({
         <AdminSupplementModal
           job={supplementModalJob}
           onClose={() => setSupplementModalJob(null)}
-          onSuccess={onChange}
+          onSuccess={() => onChange(supplementModalJob.id)}
         />
       )}
     </section>
   )
+}
+
+function AdminExactSelection({ jobId, selection, mode, multiItemMode, reissue = false, internal = false, geography = '', onChange }: {
+  jobId: string; selection: ExactSelection; mode?: string; multiItemMode?: string; reissue?: boolean; internal?: boolean; geography?: string; onChange: () => Promise<void>
+}) {
+  const [selected, setSelected] = useState<string[]>(selection.selected_ids || [])
+  const [strategy, setStrategy] = useState(multiItemMode || 'balanced')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const maximum = selection.max_positions || (selection.pricing_mode === 'per_position' ? (selection.items?.length || 100) : 5)
+  const monitoring = mode === 'price_monitoring' || selection.pricing_mode === 'per_found_position'
+  const supplier = ['supplier_search', 'analysis_and_suppliers'].includes(mode || selection.mode || '')
+  const balanced = supplier && strategy === 'balanced'
+  const effectiveIds = selected
+  const noCharge = reissue || internal
+  const billing = noCharge ? 'Экспертная задача без списания с клиента. Результат не отправляется автоматически.'
+    : supplier ? 'Продолжение исходной задачи по тарифу клиента. Попозиционный режим может потребовать дополнительный резерв за позиции.'
+    : monitoring ? `За найденную позицию: ${formatMoney(selection.price_kopeks)}. Максимальный резерв: ${formatMoney(selection.price_kopeks * selected.length)}.`
+    : selection.pricing_mode === 'per_position' ? `За выбранную позицию: ${formatMoney(selection.price_kopeks)}. Итого: ${formatMoney(selection.price_kopeks * selected.length)}.`
+    : `Стоимость исходной задачи: ${formatMoney(selection.price_kopeks)} за выбор до ${maximum} товаров.`
+  async function confirm() {
+    if (!effectiveIds.length || effectiveIds.length > maximum || busy) return
+    if (!window.confirm(`${reissue ? 'Создать новую экспертную задачу' : 'Подтвердить продолжение задачи'}?\n\nПозиций: ${effectiveIds.length}. ${supplier ? `Стратегия: ${balanced ? 'сбалансированная' : 'попозиционная'}. ` : ''}${geography ? `География: ${geography}. ` : ''}\n${billing}\n\n${selection.items.filter(row => effectiveIds.includes(row.id)).map(row => `${row.position_no}. ${row.name}`).join('\n')}`)) return
+    setBusy(true)
+    setError('')
+    try {
+      if (supplier && !reissue) {
+        const query = new URLSearchParams({ multi_item_mode: strategy, revision: selection.revision })
+        selected.forEach(id => query.append('selected_item_ids', id))
+        await api(`/api/jobs/${jobId}/choose-strategy?${query}`, { method: 'POST' })
+      } else {
+        await api(`/api/jobs/${jobId}/${reissue ? 'admin-rerun' : monitoring ? 'position-selection' : 'exact-selection'}${supplier ? `?multi_item_mode=${strategy}` : ''}`, {
+          method: 'POST', body: JSON.stringify({ revision: selection.revision, selected_item_ids: effectiveIds }),
+        })
+      }
+      await onChange()
+    } catch (err) {
+      setError(formatError(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <section aria-label={supplier ? 'Выбор позиций и стратегии поставщиков' : monitoring ? 'Выбор позиций для мониторинга' : 'Выбор товаров для подбора'} style={{ border: '1px solid #a7c9bd', borderRadius: 10, padding: 14, marginTop: 12, minWidth: 0 }}>
+    <strong>{reissue ? 'Срок подтверждения истёк. Выберите позиции для новой экспертной задачи' : supplier ? 'Подтвердите позиции и стратегию поиска поставщиков' : monitoring ? 'Выберите позиции для мониторинга цен' : selection.pricing_mode === 'per_position' ? 'Выберите позиции для подбора модели и аналогов' : `Выберите до ${maximum} товаров для подбора`}</strong>
+    <p>Выбрано: {effectiveIds.length} из {maximum}. {billing}</p>
+    {supplier && <label style={{ display: 'block', marginBottom: 10 }}>Стратегия поиска поставщиков{' '}
+      <select aria-label="Стратегия поиска поставщиков" value={strategy} disabled={busy} onChange={event => setStrategy(event.target.value)}>
+        <option value="balanced">Сбалансированный — единая квота по отмеченным позициям</option>
+        <option value="per_item">Попозиционный — независимый поиск по отмеченным позициям</option>
+      </select>
+    </label>}
+    <div style={{ maxHeight: 280, overflowY: 'auto', display: 'grid', gap: 10, marginBottom: 12 }}>
+      {selection.items.map(row => <label key={row.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', overflowWrap: 'anywhere' }}>
+        <input type="checkbox" checked={effectiveIds.includes(row.id)} disabled={busy || (!selected.includes(row.id) && selected.length >= maximum)}
+          onChange={() => setSelected(current => current.includes(row.id) ? current.filter(id => id !== row.id) : [...current, row.id])} />
+        <span>{row.position_no}. {row.name}</span>
+      </label>)}
+    </div>
+    {error && <p role="alert">{error}</p>}
+    <button type="button" disabled={busy || !effectiveIds.length || effectiveIds.length > maximum} onClick={() => void confirm()}>
+      {busy ? 'Подтверждаем…' : reissue ? 'Создать экспертный поиск с выбранными позициями' : supplier ? 'Подтвердить позиции и стратегию' : monitoring ? 'Подтвердить позиции для мониторинга' : 'Подтвердить выбор товаров'}
+    </button>
+  </section>
 }
 
 function cleanItemNameForComment(rawTitle: string): string {
@@ -4769,7 +5030,7 @@ function AdminSupplementModal({
     <div className="server-modal-backdrop" onClick={onClose}>
       <div className="server-modal-card supplement-modal" style={{ maxWidth: 640 }} onClick={e => e.stopPropagation()}>
         <div className="server-modal-header">
-          <h3>ДОПОЛНИТЬ ОТЧЕТ ЭКСПЕРТОМ</h3>
+          <h3>ДОПОЛНИТЬ ОТЧЁТ: КОММЕНТАРИЙ И ФАЙЛЫ</h3>
           <button className="server-modal-close" onClick={onClose} title="Закрыть">
             <X size={16} />
           </button>
@@ -4777,6 +5038,7 @@ function AdminSupplementModal({
 
         <form onSubmit={handleSubmit} className="supplement-modal-form">
           <div className="supplement-modal-scroll-body">
+            <p style={{ fontSize: 12, margin: 0 }}>Прикрепите комментарий и готовые файлы к задаче клиента. Новый поиск не запускается. Доставка в Telegram зависит от отметки ниже.</p>
             <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', fontSize: 12 }}>
               <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: 2 }}>
                 {job.job_number ? `[#${job.job_number}] ` : ''}{job.human_title || job.title}
@@ -4987,7 +5249,7 @@ function AdminSupplementModal({
             </button>
             <button type="submit" className="primary" disabled={loading} style={{ background: '#0d9488', borderColor: '#0d9488', fontSize: 12, padding: '6px 16px' }}>
               {loading ? <Loader2 size={13} className="spin" /> : <Send size={13} />}
-              <span>{loading ? 'Отправка...' : 'Отправить клиенту'}</span>
+              <span>{loading ? 'Сохранение...' : notifyTelegram ? 'Сохранить и отправить в Telegram' : 'Сохранить дополнение в кабинете'}</span>
             </button>
           </div>
         </form>
@@ -5532,19 +5794,29 @@ function SettingsView({
   const [adapterKey, setAdapterKey] = useState('')
   const [yandexKey, setYandexKey] = useState('')
   const [googleKey, setGoogleKey] = useState('')
+  const [yookassaSecretKey, setYookassaSecretKey] = useState('')
+  const [testingYookassa, setTestingYookassa] = useState(false)
+  const [yookassaTestResult, setYookassaTestResult] = useState('')
   const searchUi = draft.supplier_search_ui
   useEffect(() => setDraft(settings), [settings])
   useEffect(() => {
-    void api<{ supplier_search_adapter_api_key?: string; yandex_search_api_key?: string; google_search_api_key?: string }>('/api/settings/keys')
+    void api<{
+      supplier_search_adapter_api_key?: string
+      yandex_search_api_key?: string
+      google_search_api_key?: string
+      yookassa_secret_key?: string
+    }>('/api/settings/keys')
       .then(data => {
         setAdapterKey(data.supplier_search_adapter_api_key || '')
         setYandexKey(data.yandex_search_api_key || '')
         setGoogleKey(data.google_search_api_key || '')
+        setYookassaSecretKey(data.yookassa_secret_key || '')
       })
       .catch(() => {
         setAdapterKey('')
         setYandexKey('')
         setGoogleKey('')
+        setYookassaSecretKey('')
       })
   }, [])
   async function save() {
@@ -5553,6 +5825,7 @@ function SettingsView({
       supplier_search_adapter_api_key: adapterKey,
       yandex_search_api_key: yandexKey,
       google_search_api_key: googleKey,
+      yookassa_secret_key: yookassaSecretKey || undefined,
       supplier_search_provider_order: draft.supplier_search_provider_order || 'yandex',
     }
     await api('/api/settings', {
@@ -5575,6 +5848,80 @@ function SettingsView({
         </div>
         <p className="field-help">Telegram — основной контакт. MAX-кнопка работает только по ссылке.</p>
         <TextArea className="payment-textarea" label="Инструкция для пополнения" value={draft.payment_instructions} onChange={value => setDraft({ ...draft, payment_instructions: value })} />
+      </div>
+      <div className="form-panel full">
+        <h2>Приём онлайн-платежей (ЮKassa)</h2>
+        <div className="settings-grid compact-grid">
+          <label className="field">
+            <span>Провайдер платежей</span>
+            <select
+              value={draft.payment_provider || 'manual'}
+              onChange={e => setDraft({ ...draft, payment_provider: e.target.value })}
+            >
+              <option value="manual">Только ручной перевод (Telegram)</option>
+              <option value="yookassa">ЮKassa (Банковские карты, СБП, SberPay)</option>
+            </select>
+          </label>
+          <TextField
+            label="Shop ID ЮKassa"
+            value={draft.yookassa_shop_id || ''}
+            onChange={value => setDraft({ ...draft, yookassa_shop_id: value })}
+          />
+          <SecretField
+            label={`Секретный ключ API${draft.yookassa_secret_key_set ? ' (задан)' : ''}`}
+            value={yookassaSecretKey}
+            onChange={setYookassaSecretKey}
+          />
+          <TextField
+            label="URL возврата после оплаты"
+            value={draft.yookassa_return_url || ''}
+            onChange={value => setDraft({ ...draft, yookassa_return_url: value })}
+          />
+        </div>
+        <div style={{ marginTop: '0.75rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+          <label className="switch-row" style={{ margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={draft.yookassa_send_receipt || false}
+              onChange={e => setDraft({ ...draft, yookassa_send_receipt: e.target.checked })}
+            />
+            Передавать состав чека 54-ФЗ в ЮKassa (если подключена облачная касса/Чеки от ЮKassa)
+          </label>
+          <button
+            type="button"
+            className="secondary-btn"
+            style={{ padding: '0.4rem 0.8rem', fontSize: '12px' }}
+            onClick={async () => {
+              setTestingYookassa(true)
+              setYookassaTestResult('')
+              try {
+                const res = await api<{ success: boolean; message: string }>('/api/admin/yookassa/test', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    shop_id: draft.yookassa_shop_id,
+                    secret_key: yookassaSecretKey || undefined,
+                  }),
+                })
+                setYookassaTestResult(res.message)
+              } catch (err: any) {
+                setYookassaTestResult(err.message || 'Ошибка проверки')
+              } finally {
+                setTestingYookassa(false)
+              }
+            }}
+            disabled={testingYookassa}
+          >
+            {testingYookassa ? 'Проверка...' : 'Проверить подключение'}
+          </button>
+          {yookassaTestResult && (
+            <span style={{ fontSize: '12px', fontWeight: 600, color: yookassaTestResult.includes('успешно') ? '#059669' : '#dc2626' }}>
+              {yookassaTestResult}
+            </span>
+          )}
+        </div>
+        <p className="field-help" style={{ marginTop: '0.5rem' }}>
+          Webhook URL для ЮKassa: <code style={{ userSelect: 'all', fontWeight: 600 }}>https://tenderlex.ru/api/payments/yookassa/webhook</code>
+        </p>
       </div>
       <div className="form-panel">
         <h2>Бот и хранение</h2>

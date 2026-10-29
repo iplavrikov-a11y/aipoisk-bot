@@ -6,7 +6,9 @@ import io
 import json
 import logging
 import os
+import re
 import statistics
+from datetime import datetime, timezone
 from typing import Any, Callable, List, Optional
 from urllib.parse import urlparse
 
@@ -16,16 +18,21 @@ import openpyxl
 from ..ai import call_llm
 from ..exact_product.yandex_search import YandexSearchEngine, YandexSearchResult
 from ..models import SystemSettings, parse_json_list
+from ..supplier_locations import annotate_price_quotes_radius_status, sort_quotes_by_radius_priority
 from .cleaner import (
     build_commercial_search_queries,
     build_fallback_broad_queries,
     clean_nomenclature_name,
+    extract_generic_nomenclature_codes,
+    is_classifier_code,
+    is_drawing_or_part_code,
     normalize_unit,
 )
 from .excel_report import generate_price_monitoring_excel
 from .extractor import (
     extract_supplier_quote,
     fetch_page_content_and_meta,
+    find_price_grounding_match,
     is_foreign_source,
     is_valid_domain,
 )
@@ -101,6 +108,37 @@ KNOWN_MAJOR_RETAILERS: dict[str, dict[str, str]] = {
         "contacts": "+7 (800) 600-08-88",
     },
 }
+
+
+def _domain_matches(candidate_domain: str, registered_domain: str) -> bool:
+    """Match only the registered retailer domain itself or one of its subdomains."""
+    candidate = str(candidate_domain or "").lower().strip(".")
+    registered = str(registered_domain or "").lower().strip(".")
+    return bool(candidate and registered and (candidate == registered or candidate.endswith("." + registered)))
+
+
+def _is_measurement_like_identifier(token: str) -> bool:
+    """Exclude quantities such as 1.2V and 1000mAh from exact product identifiers."""
+    compact = re.sub(r"\s+", "", str(token or "").lower())
+    return bool(
+        re.fullmatch(
+            r"\d+(?:[.,]\d+)?(?:г|кг|мг|т|л|мл|м|см|мм|км|шт|в|вт|квт|а|ма(?:/ч)?|ач|гц|v|w|kw|hz|mah|ah)",
+            compact,
+            re.I,
+        )
+    )
+
+
+def _price_evidence_excerpt(text: str, price_match: Optional[re.Match[str]], limit: int = 500) -> str:
+    """Return a bounded source window around the exact grounding match."""
+    source = str(text or "")
+    if limit <= 0 or price_match is None:
+        return ""
+    start = max(0, price_match.start() - (limit // 2))
+    end = min(len(source), start + limit)
+    if end - start < limit:
+        start = max(0, end - limit)
+    return " ".join(source[start:end].split())[:limit]
 
 
 def parse_input_excel(file_bytes: bytes) -> List[tuple[str, str]]:
@@ -246,7 +284,10 @@ def cluster_and_reconcile_item_quotes(
                     q.comment = f"⚠️ Цена {q.price_rub:,.0f} ₽ указана за штуку, а не за м³."
 
                 # 7. Упаковки по 100 шт vs штука
-                elif norm_u == "шт" and 70.0 <= q_ratio <= 130.0 and "100" in item_lower:
+                elif norm_u == "шт" and 70.0 <= q_ratio <= 130.0 and (
+                    bool(re.search(r'\b100\s*(?:шт|штук|ед|ш)\b', item_lower))
+                    or bool(re.search(r'\b(?:уп|упак|пач|пачка|короб|кор)\S*\s*(?:по\s*)?100\b', item_lower))
+                ):
                     converted = round(q.price_rub / 100.0, 2)
                     q.price_rub = converted
                     q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за уп (100 шт) -> {converted:,.2f} ₽/шт"
@@ -288,22 +329,37 @@ def cluster_and_reconcile_item_quotes(
         min_cp = min(q.price_rub for q in best_homogeneous_subset)
         max_cp = max(q.price_rub for q in best_homogeneous_subset)
         for q in item_res.quotes:
-            if id(q) not in best_ids:
+            if q.price_rub > 0 and id(q) not in best_ids:
                 q.is_outlier = True
                 q.comment = f"⚠️ Исключена: цена {q.price_rub:,.2f} ₽ не вошла в однородную группу V={best_v:.1f}% ({min_cp:,.2f} - {max_cp:,.2f} ₽)"
     else:
         # Цены не образуют однородной совокупности (разброс > max_variation_pct)
         all_v = calculate_variation_coefficient([q.price_rub for q in valid_quotes])
         for q in item_res.quotes:
-            q.is_outlier = True
-            q.comment = f"⚠️ Неоднородная цена: вариация {all_v:.1f}% превышает лимит {max_variation_pct:.0f}% (Приказ №567)"
+            if q.price_rub > 0:
+                q.is_outlier = True
+                q.comment = f"⚠️ Неоднородная цена: вариация {all_v:.1f}% превышает лимит {max_variation_pct:.0f}% (Приказ №567)"
 
-    # Сортируем: сначала подтвержденный кластер по возрастанию цены, затем исключенные
-    item_res.quotes.sort(key=lambda q: (q.is_outlier, q.price_rub if q.price_rub > 0 else 999_999_999))
+    # Сортируем: сначала подтвержденный кластер по возрастанию цены, затем котировки "по запросу", затем исключенные выбросы
+    item_res.quotes.sort(key=lambda q: (
+        2 if q.is_outlier else (1 if q.price_rub <= 0 else 0),
+        q.price_rub if q.price_rub > 0 else 0
+    ))
 
 
 # Псевдоним для обратной совместимости
 validate_and_reconcile_item_quotes = cluster_and_reconcile_item_quotes
+
+
+def _attach_source_position(result: ItemPriceResult, source: dict[str, Any]) -> None:
+    result.position_id = str(source.get("position_id") or source.get("id") or "")
+    result.source_position_no = source.get("source_position_no") or source.get("position_no")
+    result.source_file = str(source.get("source_file") or "")
+    result.source_sheet = str(source.get("source_sheet") or "")
+    result.source_row = source.get("source_row")
+    result.source_excerpt = str(source.get("source_excerpt") or "")
+    result.quantity = str(source.get("quantity") or "")
+    result.requirements = [dict(requirement) for requirement in source.get("requirements") or [] if isinstance(requirement, dict)]
 
 
 def _save_checkpoint(checkpoint_path: str, results: list[ItemPriceResult], total: int, yandex_requests: int = 0) -> None:
@@ -314,17 +370,7 @@ def _save_checkpoint(checkpoint_path: str, results: list[ItemPriceResult], total
             "total": total,
             "completed": len(results),
             "yandex_requests": yandex_requests,
-            "items": [
-                {
-                    "row_number": r.row_number,
-                    "raw_name": r.raw_name,
-                    "clean_name": r.clean_name,
-                    "unit": r.unit,
-                    "status": r.status,
-                    "quotes": [asdict(q) for q in r.quotes],
-                }
-                for r in results
-            ],
+            "items": [asdict(result) for result in results],
         }
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -352,7 +398,10 @@ def _load_checkpoint(checkpoint_path: str) -> tuple[list[ItemPriceResult], int]:
                     unit=it["unit"],
                     quotes=quotes,
                     status=it.get("status", "found"),
+                    not_found_reason=str(it.get("not_found_reason", "") or ""),
+                    search_diagnostics=dict(it.get("search_diagnostics", {}) or {}),
                 )
+                _attach_source_position(item_obj, it)
                 results.append(item_obj)
         logger.info("Loaded %d completed items from checkpoint %s (yandex reqs=%d)", len(results), checkpoint_path, yandex_requests)
     except Exception as exc:
@@ -383,12 +432,26 @@ async def generate_monitoring_queries_ai(
     clean_city = str(city or "").strip()
     city_context = f'\nРегион/город объекта поставки: "{clean_city}" (приоритет поставщикам, дилерам и складам с наличием или доставкой в этом регионе)' if clean_city else ""
 
+    nom_codes = extract_generic_nomenclature_codes(clean_name)
+    exact_codes = [
+        c for c in nom_codes
+        if is_drawing_or_part_code(c, clean_name) and not _is_measurement_like_identifier(c)
+    ]
+    drawing_instruction = ""
+    if exact_codes:
+        primary_drawing = exact_codes[0]
+        drawing_instruction = f"""
+ВНИМАНИЕ (ТОЧНЫЕ ИДЕНТИФИКАТОРЫ):
+Позиция содержит точный артикул, модель или номер чертежа: {exact_codes}.
+Каждый поисковый запрос ОБЯЗАН содержать точный идентификатор в строгих кавычках: '"{primary_drawing}"'.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО исключать идентификатор из запросов во избежание омонимов и поиска по общим словам!"""
+
     prompt = f"""Ты — ведущий эксперт по корпоративным закупкам и поисковой оптимизации (ПРАВИЛО 14: СЕМАНТИЧЕСКИЙ АНАЛИЗ И ФОРМИРОВАНИЕ ПОИСКОВЫХ ЗАПРОСОВ БЕЗ ЖЕСТКИХ СЛОВАРЕЙ).
 Твоя задача — составить 3-5 естественных, высокоточных поисковых запросов для поисковой системы (Яндекс), чтобы найти актуальные коммерческие цены поставщиков и прайс-листы.
 
 Наименование позиции: "{clean_name}"
 Требуемая единица измерения: "{unit}"
-Цель запросов: {wave_desc} (волна #{wave}){city_context}
+Цель запросов: {wave_desc} (волна #{wave}){city_context}{drawing_instruction}
 
 ТРЕБОВАНИЯ (ПРАВИЛО 14):
 1. Семантически определи физическую суть товара, класс оборудования/материала, точную марку, артикул, ГОСТ или чертеж.
@@ -412,6 +475,11 @@ async def generate_monitoring_queries_ai(
                 if isinstance(q, str):
                     q_str = " ".join(q.strip(" \"'\t\r\n").split())
                     if q_str and len(q_str) >= 5 and q_str.lower() not in seen:
+                        # Если позиция содержит точный артикул, модель или чертеж, запрос обязан сохранить его.
+                        if exact_codes:
+                            has_draw = all(re.search(re.escape(dc), q_str, re.I) for dc in exact_codes)
+                            if not has_draw:
+                                continue
                         seen.add(q_str.lower())
                         res.append(q_str)
             if res:
@@ -420,6 +488,40 @@ async def generate_monitoring_queries_ai(
         logger.debug("generate_monitoring_queries_ai error for '%s': %s", clean_name, exc)
 
     return []
+
+
+async def synthesize_missing_reason_ai(
+    item_name: str,
+    unit: str,
+    status: str,
+    snippets: list[str],
+    quotes_summary: str,
+    settings: Any,
+) -> str:
+    """
+    Формирует с помощью ИИ реальную, объективную причину отсутствия открытой цены
+    для конкретной позиции спецификации с практической рекомендацией для заказчика.
+    """
+    if not getattr(settings, "has_active_ai_provider", False):
+        return ""
+    snip_text = "\n".join(f"- {s}" for s in snippets[:4]) if snippets else "Результатов в выдаче нет"
+    prompt = f"""Ты — старший эксперт по закупкам ТМЦ и расчету НМЦК (44-ФЗ, 223-ФЗ).
+Позиция спецификации: {item_name} ({unit}).
+Статус поиска: {status}.
+{quotes_summary}
+Фрагменты поисковой выдачи:
+{snip_text}
+
+Сформулируй краткую (до 130 символов) профессиональную причину, почему открытой рыночной цены нет в интернет-магазинах, и деловую рекомендацию для заказчика.
+Пиши емко, строго по факту этого товара, без кавычек и вводных слов."""
+    try:
+        ans = await call_llm(settings, prompt, tier="light")
+        ans = ans.strip(" \"'\t\r\n")
+        if ans and len(ans) >= 10:
+            return ans[:160]
+    except Exception as exc:
+        logger.debug("Failed to synthesize missing reason via AI: %s", exc)
+    return ""
 
 
 async def process_single_item(
@@ -435,6 +537,9 @@ async def process_single_item(
     filter_foreign: bool = True,
     max_variation_pct: float = 33.0,
     city: str = "",
+    geo_radius_km: Optional[int] = None,
+    source_position: Optional[dict[str, Any]] = None,
+    geo_scope: str = "ru",
 ) -> ItemPriceResult:
     row_idx, raw_name, unit = item_tuple
     clean = clean_nomenclature_name(raw_name)
@@ -444,6 +549,60 @@ async def process_single_item(
         clean_name=clean,
         unit=unit,
     )
+    if source_position is not None:
+        _attach_source_position(item_res, source_position)
+        # Only this selected row's explicit requirements influence query and offer matching.
+        # Filter out tender classification metadata (ОКПД2, КТРУ, ТН ВЭД) from requirements_text
+        requirements_text = "; ".join(
+            f"{requirement.get('param_name')}: {requirement.get('tz_requirement')}"
+            for requirement in item_res.requirements
+            if requirement.get("param_name") and requirement.get("tz_requirement")
+            and not is_classifier_code(str(requirement.get("param_name", "")))
+            and not is_classifier_code(str(requirement.get("tz_requirement", "")))
+            and not any(k in str(requirement.get("param_name", "")).lower() for k in ("окпд", "ктру", "тнвэд", "тн вэд", "okpd", "ktru"))
+        )
+        if requirements_text:
+            clean = f"{clean}; {requirements_text}"
+
+    nom_codes = extract_generic_nomenclature_codes(clean)
+    exact_identifier_codes = [
+        c for c in nom_codes
+        if is_drawing_or_part_code(c, clean) and not _is_measurement_like_identifier(c) and not is_classifier_code(c, clean)
+    ]
+
+    diagnostics: dict[str, Any] = {
+        "search_queries": 0,
+        "search_errors": 0,
+        "search_results": 0,
+        "unique_candidate_urls": 0,
+        "distinct_domains": 0,
+        "fetch_attempts": 0,
+        "fetch_unavailable": 0,
+        "snippet_fallbacks": 0,
+        "foreign_rejections": 0,
+        "extraction_attempts": 0,
+        "extraction_rejected": 0,
+        "quotes_accepted": 0,
+        "duplicate_suppliers": 0,
+        "domain_attempt_limit": 0,
+        "budget_exhausted": False,
+        "waves_run": [],
+    }
+    item_res.search_diagnostics = diagnostics
+
+    def _preserve_exact_codes(search_queries: list[str]) -> list[str]:
+        """Keep exact product, model, and factory identifiers quoted in every wave."""
+        if not exact_identifier_codes:
+            return search_queries
+        strict_prefix = " ".join(f'"{code}"' for code in exact_identifier_codes)
+        protected: list[str] = []
+        for query in search_queries:
+            query_without_codes = str(query or "")
+            for code in exact_identifier_codes:
+                query_without_codes = re.sub(re.escape(code), " ", query_without_codes, flags=re.I)
+            query_without_codes = " ".join(query_without_codes.replace('"', " ").split())
+            protected.append(f"{strict_prefix} {query_without_codes}".strip())
+        return protected
 
     candidate_urls: list[str] = []
     url_to_meta: dict[str, YandexSearchResult] = {}
@@ -454,27 +613,37 @@ async def process_single_item(
         queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=1, city=city)
     if not queries:
         queries = build_commercial_search_queries(clean, unit, city=city)
+    queries = _preserve_exact_codes(queries)
+    diagnostics["waves_run"].append(1)
 
     async with search_semaphore:
         for q in queries[:4]:
+            diagnostics["search_queries"] += 1
             try:
                 results = await engine.search(
                     q, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
                 )
+                diagnostics["search_results"] += len(results)
                 for r in results:
-                    if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign):
+                    if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign, geo_scope=geo_scope):
                         url_to_meta[r.url] = r
                         if r.url not in candidate_urls:
                             candidate_urls.append(r.url)
             except Exception as e:
+                diagnostics["search_errors"] += 1
                 logger.warning("Search query error for %s: %s", q, e)
             if len(candidate_urls) >= 30:
                 break
 
     seen_domains: set[str] = set()
     seen_inns: set[str] = set()
+    attempted_urls: set[str] = set()
+    base_domain_attempts: dict[str, int] = {}
     target_suppliers = min_target_suppliers or max_suppliers
-    MAX_LLM_EXTRACTIONS_PER_ITEM = max(20, target_suppliers * 4)
+    MAX_LLM_EXTRACTIONS_PER_ITEM = 20
+    WAVE_1_EXTRACTION_LIMIT = 12
+    WAVE_2_EXTRACTION_LIMIT = 18
+    MAX_ATTEMPTS_PER_BASE_DOMAIN = 2
     llm_extractions_done = 0
 
     def _get_base_domain(d: str) -> str:
@@ -497,11 +666,11 @@ async def process_single_item(
         )
         return len([q for q in item_res.quotes if q.price_rub > 0 and not q.is_outlier])
 
-    async def _evaluate_candidates(urls: list[str]) -> None:
+    async def _evaluate_candidates(urls: list[str], extraction_limit: int) -> None:
         nonlocal llm_extractions_done
         for url in urls:
-            if llm_extractions_done >= MAX_LLM_EXTRACTIONS_PER_ITEM:
-                logger.debug("LLM extraction budget reached (%d) for '%s'", MAX_LLM_EXTRACTIONS_PER_ITEM, clean)
+            if llm_extractions_done >= min(extraction_limit, MAX_LLM_EXTRACTIONS_PER_ITEM):
+                logger.debug("Wave extraction budget reached (%d) for '%s'", extraction_limit, clean)
                 break
             if _get_consensus_count() >= target_suppliers:
                 logger.debug("Target consensus reached (%d suppliers) for '%s'", target_suppliers, clean)
@@ -513,8 +682,18 @@ async def process_single_item(
                 base_domain = _get_base_domain(domain)
                 if domain in seen_domains or base_domain in seen_domains:
                     continue
+                if url in attempted_urls:
+                    continue
+                if base_domain_attempts.get(base_domain, 0) >= MAX_ATTEMPTS_PER_BASE_DOMAIN:
+                    diagnostics["domain_attempt_limit"] += 1
+                    continue
+
+                attempted_urls.add(url)
+                base_domain_attempts[base_domain] = base_domain_attempts.get(base_domain, 0) + 1
+                diagnostics["fetch_attempts"] += 1
 
                 page_text, inn, kpp, contacts = await fetch_page_content_and_meta(http_client, url)
+                raw_page_text = str(page_text or "")
                 meta = url_to_meta.get(url)
 
                 # Объединяем сниппет поисковой выдачи со страницей (критично при WAF, динамическом JS или капче)
@@ -523,7 +702,9 @@ async def process_single_item(
                     snippet_block = f"[ПОИСКОВЫЙ СНИППЕТ ЯНДЕКСА]: {meta.title} | {meta.snippet}\n\n"
 
                 if not page_text or len(page_text) < 60:
+                    diagnostics["fetch_unavailable"] += 1
                     if snippet_block:
+                        diagnostics["snippet_fallbacks"] += 1
                         page_text = snippet_block + f"Источник: {url}"
                     else:
                         continue
@@ -534,14 +715,16 @@ async def process_single_item(
                     continue
 
                 # Дополнительная проверка на иностранный язык контента
-                if filter_foreign and is_foreign_source(url, page_text):
+                if filter_foreign and is_foreign_source(url, page_text, geo_scope=geo_scope):
+                    diagnostics["foreign_rejections"] += 1
                     logger.debug("Skip foreign source by content for %s", url)
                     continue
 
                 llm_extractions_done += 1
+                diagnostics["extraction_attempts"] = llm_extractions_done
                 # Реестр федеральных сетей
                 for kd, kdata in KNOWN_MAJOR_RETAILERS.items():
-                    if kd in domain:
+                    if _domain_matches(domain, kd):
                         if not inn:
                             inn = kdata["inn"]
                         if not contacts:
@@ -558,15 +741,81 @@ async def process_single_item(
                     pre_kpp=kpp,
                     pre_contacts=contacts,
                 )
-                if quote and quote.is_price_found and quote.price_rub > 0:
+                if quote and (quote.price_rub > 0 or not quote.is_price_found):
+                    if quote.price_rub > 0:
+                        grounding_price = quote.raw_price_rub or quote.price_rub
+                        page_price_match = find_price_grounding_match(grounding_price, raw_page_text)
+                        snippet_price_match = find_price_grounding_match(grounding_price, snippet_block)
+                        if page_price_match is not None:
+                            quote.evidence_level = "page_content"
+                            evidence_text = raw_page_text
+                            evidence_match = page_price_match
+                        elif snippet_price_match is not None:
+                            quote.evidence_level = "search_snippet"
+                            evidence_text = snippet_block
+                            evidence_match = snippet_price_match
+                        else:
+                            quote.evidence_level = "unknown"
+                            evidence_text = ""
+                            evidence_match = None
+                        quote.retrieved_at = datetime.now(timezone.utc).isoformat()
+                        quote.source_excerpt = _price_evidence_excerpt(evidence_text, evidence_match)
+                    else:
+                        quote.evidence_level = "catalog_offer"
+                        quote.retrieved_at = datetime.now(timezone.utc).isoformat()
+                        quote.source_excerpt = "Товар в каталоге поставщика (цена по запросу)"
+
                     for kd, kdata in KNOWN_MAJOR_RETAILERS.items():
-                        if kd in domain:
+                        if _domain_matches(domain, kd):
                             quote.company_name = kdata["company_name"]
                             quote.inn = kdata["inn"]
                             if not quote.contacts:
                                 quote.contacts = kdata["contacts"]
                             break
+
+                    # Если ИНН поставщика всё ещё не найден, выполняем быстрый целевой добор по домену через поиск
+                    if not quote.inn and isinstance(engine, YandexSearchEngine):
+                        try:
+                            inn_query = f'"{domain}" ИНН'
+                            async with search_semaphore:
+                                inn_res = await engine.search(inn_query, max_results=3, enrich_query=False, filter_marketplaces=False)
+                            for ir in inn_res:
+                                text_c = f"{ir.title} {ir.snippet}"
+                                m_inns = re.findall(r'(?:ИНН|инн)[\s:№#«"\'\xa0]{0,10}(\d{10}|\d{12})\b', text_c)
+                                if m_inns:
+                                    quote.inn = m_inns[0]
+                                    from ..dadata_client import enrich_company_by_inn
+                                    d_info = await enrich_company_by_inn(quote.inn)
+                                    if d_info:
+                                        if d_info.get("company_name"):
+                                            quote.company_name = d_info["company_name"]
+                                        if not quote.kpp and d_info.get("kpp"):
+                                            quote.kpp = d_info["kpp"]
+                                        city_or_addr = d_info.get("city") or d_info.get("legal_address")
+                                        if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                                            quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                                    break
+                        except Exception as e_inn:
+                            logger.debug("Fallback domain INN search failed for %s: %s", domain, e_inn)
+
+                    # Если ИНН найден, но официальное наименование компании не заполнено или равно домену, обогащаем через DaData
+                    clean_cname = (quote.company_name or "").lower().replace("www.", "").strip()
+                    if quote.inn and (not clean_cname or clean_cname == domain or "." in clean_cname or not quote.kpp):
+                        try:
+                            from ..dadata_client import enrich_company_by_inn
+                            d_info = await enrich_company_by_inn(quote.inn)
+                            if d_info:
+                                if d_info.get("company_name"):
+                                    quote.company_name = d_info["company_name"]
+                                if not quote.kpp and d_info.get("kpp"):
+                                    quote.kpp = d_info["kpp"]
+                                city_or_addr = d_info.get("city") or d_info.get("legal_address")
+                                if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                                    quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                        except Exception as e_enrich:
+                            logger.debug("DaData company enrichment failed for %s (INN %s): %s", domain, quote.inn, e_enrich)
                     if quote.inn and quote.inn in seen_inns:
+                        diagnostics["duplicate_suppliers"] += 1
                         logger.debug("Skip duplicate supplier INN %s for %s", quote.inn, url)
                         continue
                     if quote.inn:
@@ -574,51 +823,58 @@ async def process_single_item(
                     seen_domains.add(domain)
                     seen_domains.add(base_domain)
                     item_res.quotes.append(quote)
+                    diagnostics["quotes_accepted"] += 1
+                else:
+                    diagnostics["extraction_rejected"] += 1
             except Exception as exc:
                 logger.debug("Error processing url %s: %s", url, exc)
 
-    await _evaluate_candidates(candidate_urls)
+    await _evaluate_candidates(candidate_urls, WAVE_1_EXTRACTION_LIMIT)
 
     # ВОЛНА 2 (АДАПТИВНЫЙ ПОИСК ДЛЯ ДОСТИЖЕНИЯ ЦЕЛЕВОГО КОЛИЧЕСТВА ПОСТАВЩИКОВ):
     consensus_count = _get_consensus_count()
+    wave2_urls: list[str] = []
     if consensus_count < target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
         fallback_queries: list[str] = []
         if settings.has_active_ai_provider:
             fallback_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=2, city=city)
         if not fallback_queries:
             fallback_queries = build_fallback_broad_queries(clean, unit, city=city)
-        wave2_urls: list[str] = []
+        fallback_queries = _preserve_exact_codes(fallback_queries)
+        diagnostics["waves_run"].append(2)
         async with search_semaphore:
             for bq in fallback_queries[:4]:
+                diagnostics["search_queries"] += 1
                 try:
                     b_results = await engine.search(
                         bq, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
                     )
+                    diagnostics["search_results"] += len(b_results)
                     for r in b_results:
-                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign):
+                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign, geo_scope=geo_scope):
                             url_to_meta[r.url] = r
                             if r.url not in candidate_urls and r.url not in wave2_urls:
                                 wave2_urls.append(r.url)
                 except Exception as b_exc:
+                    diagnostics["search_errors"] += 1
                     logger.warning("Broad search query error for %s: %s", bq, b_exc)
                 if len(candidate_urls) + len(wave2_urls) >= 45:
                     break
 
         if wave2_urls:
-            await _evaluate_candidates(wave2_urls)
+            await _evaluate_candidates(wave2_urls, WAVE_2_EXTRACTION_LIMIT)
             consensus_count = _get_consensus_count()
 
     # ВОЛНА 3 (СВЕРХШИРОКИЙ ДОБОР ДЛЯ ДОСТИЖЕНИЯ ЦЕЛЕВОГО КОЛИЧЕСТВА ПОСТАВЩИКОВ):
-    has_any_price = any(q.price_rub > 0 for q in item_res.quotes)
     should_run_wave3 = (
         consensus_count < target_suppliers
-        and has_any_price
         and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM
     )
+    wave3_urls: list[str] = []
     if should_run_wave3:
         wave3_queries: list[str] = []
         if settings.has_active_ai_provider:
-            wave3_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=3)
+            wave3_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=3, city=city)
         if not wave3_queries:
             tokens = clean.split()
             wave3_queries = [
@@ -628,26 +884,39 @@ async def process_single_item(
             if len(tokens) >= 2:
                 short_clean = " ".join(dict.fromkeys(tokens[:3]))
                 wave3_queries.append(f"{short_clean} купить цена")
+        wave3_queries = _preserve_exact_codes(wave3_queries)
+        diagnostics["waves_run"].append(3)
 
-        wave3_urls: list[str] = []
         async with search_semaphore:
-            for wq in wave3_queries:
+            for wq in wave3_queries[:4]:
+                diagnostics["search_queries"] += 1
                 try:
                     w_results = await engine.search(
                         wq, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
                     )
+                    diagnostics["search_results"] += len(w_results)
                     for r in w_results:
-                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign):
+                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign, geo_scope=geo_scope):
                             url_to_meta[r.url] = r
                             if r.url not in candidate_urls and r.url not in wave2_urls and r.url not in wave3_urls:
                                 wave3_urls.append(r.url)
                 except Exception as w_exc:
+                    diagnostics["search_errors"] += 1
                     logger.warning("Wave 3 search query error for %s: %s", wq, w_exc)
                 if len(candidate_urls) + len(wave2_urls) + len(wave3_urls) >= 55:
                     break
 
         if wave3_urls:
-            await _evaluate_candidates(wave3_urls)
+            await _evaluate_candidates(wave3_urls, MAX_LLM_EXTRACTIONS_PER_ITEM)
+
+    # If broad waves produced no usable candidates, use the remaining fixed budget on
+    # previously unattempted primary URLs instead of silently discarding their tail.
+    if consensus_count < target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
+        await _evaluate_candidates(candidate_urls, MAX_LLM_EXTRACTIONS_PER_ITEM)
+    if consensus_count < target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
+        await _evaluate_candidates(wave2_urls, MAX_LLM_EXTRACTIONS_PER_ITEM)
+    if consensus_count < target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
+        await _evaluate_candidates(wave3_urls, MAX_LLM_EXTRACTIONS_PER_ITEM)
 
     # Итоговая кластеризация цен и жесткая отсечка выбросов по 44-ФЗ (V <= max_variation_pct)
     cluster_and_reconcile_item_quotes(
@@ -656,14 +925,102 @@ async def process_single_item(
         max_suppliers=max_suppliers,
         max_variation_pct=max_variation_pct,
     )
+    if city and geo_radius_km:
+        geo_stats = annotate_price_quotes_radius_status(item_res.quotes, city, geo_radius_km)
+        sort_quotes_by_radius_priority(item_res.quotes)
+        diagnostics["geo_radius"] = {
+            "delivery_city": city,
+            "radius_km": geo_radius_km,
+            **geo_stats,
+            "quotes": [
+                {
+                    "company_name": quote.company_name,
+                    "supplier_city": quote.supplier_city,
+                    "distance_km": quote.supplier_distance_km,
+                    "status": quote.supplier_distance_radius_status,
+                    "location_source": quote.supplier_location_source,
+                    "location_confidence": quote.supplier_location_confidence,
+                }
+                for quote in item_res.quotes
+            ],
+        }
 
     confirmed_count = len([q for q in item_res.quotes if q.price_rub > 0 and not q.is_outlier])
+    budget_exhausted = (
+        llm_extractions_done >= MAX_LLM_EXTRACTIONS_PER_ITEM
+        and confirmed_count < target_suppliers
+    )
+    diagnostics["budget_exhausted"] = budget_exhausted
     if confirmed_count >= 1:
         item_res.status = "found"
     elif any(q.price_rub > 0 for q in item_res.quotes):
         item_res.status = "divergent"
+    elif any(q.price_rub == 0 and not q.is_outlier and (q.url or q.company_name) for q in item_res.quotes):
+        item_res.status = "on_request"
     else:
         item_res.status = "not_found"
+        if budget_exhausted:
+            item_res.not_found_reason = "budget_exhausted"
+        elif diagnostics["search_results"] == 0 or not url_to_meta:
+            item_res.not_found_reason = "no_results"
+        elif diagnostics["extraction_attempts"] == 0 and diagnostics["fetch_unavailable"] > 0:
+            item_res.not_found_reason = "network"
+        else:
+            item_res.not_found_reason = "all_rejected"
+
+    # Если цена не найдена или группа неоднородна, формулируем реальную причину через ИИ
+    if confirmed_count == 0 and getattr(settings, "has_active_ai_provider", False):
+        snips = [f"{r.title}: {r.snippet}" for r in list(url_to_meta.values())[:4] if r.snippet or r.title]
+        q_summary = ""
+        if item_res.quotes:
+            valid_p = [q.price_rub for q in item_res.quotes if q.price_rub > 0]
+            unpriced_c = len([q for q in item_res.quotes if q.price_rub == 0 and not q.is_outlier])
+            if valid_p:
+                q_summary = f"Найдено {len(valid_p)} предложений с ценами от {min(valid_p):,.0f} до {max(valid_p):,.0f} ₽ (вариация > 33%)"
+            elif unpriced_c:
+                q_summary = f"Товар обнаружен у {unpriced_c} поставщиков (цена по запросу/опросному листу)"
+        ai_ans = await synthesize_missing_reason_ai(
+            clean,
+            unit,
+            item_res.status,
+            snips,
+            q_summary,
+            settings,
+        )
+        if ai_ans:
+            item_res.ai_reason = ai_ans
+            diagnostics["ai_reason"] = ai_ans
+
+    # Проверка наличия официального отечественного производителя в Реестре Минпромторга (ГИСП)
+    if confirmed_count == 0:
+        try:
+            from ..exact_product.minprom import find_minprom_gisp_match
+            minprom_m = find_minprom_gisp_match(brand="", manufacturer="", model="", name_in_tz=clean)
+            if minprom_m and minprom_m.matched and minprom_m.manufacturer:
+                diagnostics["minprom_match"] = {
+                    "registry_number": minprom_m.registry_number,
+                    "manufacturer": minprom_m.manufacturer,
+                    "product": minprom_m.product,
+                    "inn": minprom_m.inn,
+                    "conclusion_number": minprom_m.conclusion_number,
+                }
+                reg_info = f"В Реестре Минпромторга РФ (ГИСП) найден завод: {minprom_m.manufacturer}"
+                if minprom_m.registry_number:
+                    reg_info += f" (запись № {minprom_m.registry_number})"
+                if not getattr(item_res, "not_found_reason", "") or item_res.not_found_reason in ("no_results", "all_rejected", "budget_exhausted"):
+                    item_res.not_found_reason = reg_info
+        except Exception as e_minprom:
+            logger.debug("GISP registry check in price_monitoring skipped: %s", e_minprom)
+
+    all_candidate_urls = candidate_urls + wave2_urls + wave3_urls
+    diagnostics["unique_candidate_urls"] = len(dict.fromkeys(all_candidate_urls))
+    diagnostics["distinct_domains"] = len(
+        {
+            _get_base_domain(urlparse(url).netloc.lower().replace("www.", ""))
+            for url in all_candidate_urls
+            if urlparse(url).netloc
+        }
+    )
     return item_res
 
 
@@ -683,6 +1040,8 @@ async def run_price_monitoring_pipeline(
     items: Optional[List[tuple[str, str]]] = None,
     delivery_city: str = "",
     geo_radius_km: Optional[int] = None,
+    source_positions: Optional[List[dict[str, Any]]] = None,
+    geo_scope: str = "ru",
 ) -> BatchMonitoringResult:
     """Полный пайплайн мониторинга цен с защитой от сбоев (чекпоинты) и кластеризацией цен."""
     if items is not None and len(items) > 0:
@@ -690,6 +1049,14 @@ async def run_price_monitoring_pipeline(
     else:
         parsed_items = parse_input_excel(file_bytes)
     total = len(parsed_items)
+    if source_positions is not None:
+        if len(source_positions) != total:
+            raise ValueError("Количество исходных позиций не совпадает с выбранным списком")
+        for source, (name, unit) in zip(source_positions, parsed_items):
+            if not isinstance(source, dict) or str(source.get("name") or source.get("name_in_tz") or "").strip() != str(name).strip():
+                raise ValueError("Исходные позиции не соответствуют выбранным наименованиям")
+            if source.get("unit") and normalize_unit(str(source["unit"])) != normalize_unit(unit):
+                raise ValueError("Единицы исходных позиций не совпадают с выбранным списком")
     if total == 0:
         raise ValueError("В загруженном файле не найдено строк с номенклатурой.")
 
@@ -714,6 +1081,13 @@ async def run_price_monitoring_pipeline(
     if checkpoint_path and os.path.exists(checkpoint_path):
         results, prev_yandex_reqs = _load_checkpoint(checkpoint_path)
         engine.total_requests += prev_yandex_reqs
+        # Failed rows remain explicit outcomes; an interrupted run retries them fresh.
+        results = [r for r in results if r.status != "error"]
+        if source_positions is not None:
+            results = [r for r in results if 1 <= r.row_number <= total
+                       and r.position_id == str(source_positions[r.row_number - 1].get("position_id") or source_positions[r.row_number - 1].get("id") or "")
+                       and r.raw_name == parsed_items[r.row_number - 1][0]
+                       and r.requirements == (source_positions[r.row_number - 1].get("requirements") or [])]
         completed_rows = {r.row_number for r in results}
         if completed_rows and progress_callback:
             progress_callback(
@@ -743,16 +1117,30 @@ async def run_price_monitoring_pipeline(
                         filter_foreign=filter_foreign,
                         max_variation_pct=max_variation_pct,
                         city=delivery_city,
+                        geo_radius_km=geo_radius_km,
+                        geo_scope=geo_scope,
+                        **({"source_position": source_positions[item[0] - 1]} if source_positions is not None else {}),
                     )
                     for item in chunk_to_process
                 ]
                 chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
-                for r in chunk_results:
+                for input_item, r in zip(chunk_to_process, chunk_results):
                     if isinstance(r, ItemPriceResult):
+                        if source_positions is not None:
+                            _attach_source_position(r, source_positions[input_item[0] - 1])
                         results.append(r)
                         completed_rows.add(r.row_number)
                     else:
                         logger.error("Item processing exception: %s", r)
+                        number, name, unit = input_item
+                        results.append(ItemPriceResult(
+                            row_number=number, raw_name=name, clean_name=name, unit=unit,
+                            status="error", not_found_reason="processing_error",
+                            search_diagnostics={"error_type": type(r).__name__},
+                        ))
+                        if source_positions is not None:
+                            _attach_source_position(results[-1], source_positions[number - 1])
+                        completed_rows.add(number)
 
                 # Сохраняем промежуточный чекпоинт каждые batch_size строк
                 if checkpoint_path:

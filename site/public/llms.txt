@@ -6,13 +6,12 @@ TenderLex: https://tenderlex.ru. Онлайн-сервис для отделов
 - Поиск поставщиков по ТЗ: кандидаты, доступные контакты и черновик запроса КП. Контакты, полномочия, наличие и цены подтверждают у поставщика. https://tenderlex.ru/poisk-postavshchikov-po-tz
 - Подбор товара и аналогов: сопоставление характеристик, варианты для проверки и отчёт Word (DOCX). Соответствие закупке проверяют по документации производителя и применимым правилам. https://tenderlex.ru/podbor-tovara-i-analogov-po-tz
 - Анализ документации: отчёт об условиях, сроках, штрафах и рисках для последующей проверки. Это помощь в анализе, а не юридическое заключение или гарантия допуска. https://tenderlex.ru/analiz-zakupochnoi-dokumentacii
-- B2B API и интеграции (1C, ERP, MCP): автоматический поиск поставщиков, подбор аналогов и аудит ТЗ по протоколам REST / JSON-RPC / MCP. Двухфазное списание с единого баланса. https://tenderlex.ru/api-integracii
 
 Национальный режим: проверяйте применимость ПП РФ №1875 в действующей редакции, код товара, извещение, ограничения и исключения. Наличие записи в реестре само по себе не подтверждает соответствие всем требованиям.
 
 ## Основные ссылки
+- Главная: https://tenderlex.ru
 - Кабинет: https://tenderlex.ru/cabinet
-- B2B API и интеграции: https://tenderlex.ru/api-integracii
 - База знаний: https://tenderlex.ru/baza-znaniy
 - Нацрежим и реестры: https://tenderlex.ru/reestr-minpromtorga-v-zakupkah
 - О сервисе: https://tenderlex.ru/about
@@ -26,9 +25,9 @@ TenderLex: https://tenderlex.ru. Онлайн-сервис для отделов
 ## Индекс материалов
 - Автоматизация закупок через API и интеграция с 1С:Предприятие 8.3: https://tenderlex.ru/baza-znaniy/avtomatizaciya-zakupok-cherez-api-1c
 - Как найти поставщика по техническому заданию и спецификации: пошаговый алгоритм: https://tenderlex.ru/baza-znaniy/kak-naiti-postavshchika-po-tz
-- Как выйти напрямую на завод-изготовитель в обход перекупщиков и посредников: https://tenderlex.ru/baza-znaniy/kak-vyiti-napryamuyu-na-zavod-izgotovitel
+- Как найти прямой контакт завода-изготовителя и сравнить каналы поставки: https://tenderlex.ru/baza-znaniy/kak-vyiti-napryamuyu-na-zavod-izgotovitel
 - Поиск поставщиков строительных материалов оптом от заводов: чек-лист закупщика: https://tenderlex.ru/baza-znaniy/poisk-postavshchikov-stroitelnyh-materialov-optom
-- Как выбрать поставщика кабельно-проводниковой продукции и избежать контрафакта: https://tenderlex.ru/baza-znaniy/kak-vybrat-postavshchika-kabelno-provodnikovoi-produkcii
+- Как выбрать поставщика кабельно-проводниковой продукции и снизить риск контрафакта: https://tenderlex.ru/baza-znaniy/kak-vybrat-postavshchika-kabelno-provodnikovoi-produkcii
 - Поставщики трубопроводной арматуры и фланцев: критерии отбора и входной контроль: https://tenderlex.ru/baza-znaniy/postavshchiki-truboprovodnoi-armatury-i-flancev
 - Закупка СИЗ и спецодежды оптом: требования ТР ТС 019/2011 и реестр Минпромторга: https://tenderlex.ru/baza-znaniy/postavshchiki-siz-i-specodezhdy-optom
 - Как выбрать поставщика серверов и IT-оборудования для закупки: https://tenderlex.ru/baza-znaniy/postavshchiki-it-oborudovaniya-i-serverov-reestr-repa
@@ -37,7 +36,7 @@ TenderLex: https://tenderlex.ru. Онлайн-сервис для отделов
 - Нормализация и очистка справочника НСИ промышленного предприятия с помощью ИИ: https://tenderlex.ru/baza-znaniy/normalizaciya-i-ochistka-spravochnika-nsi-predpriyatiya
 - Как подготовить запрос коммерческого предложения по ТЗ: https://tenderlex.ru/baza-znaniy/avtomaticheskoe-formirovanie-kp-za-15-minut
 - Распознавание сканированных ТЗ и смет в PDF с помощью компьютерного зрения (OCR): https://tenderlex.ru/baza-znaniy/raspoznavanie-skanirovannyh-tz-i-smet-v-pdf
-- ИИ-аудит закупочной документации: автоматический поиск скрытых рисков и ловушек: https://tenderlex.ru/baza-znaniy/ai-audit-zakupochnoi-dokumentacii-na-riski
+- ИИ-аудит закупочной документации: первичная проверка рисков и противоречий: https://tenderlex.ru/baza-znaniy/ai-audit-zakupochnoi-dokumentacii-na-riski
 - Прогнозирование цен на сырье и материалы в закупках с помощью прогнозных моделей: https://tenderlex.ru/baza-znaniy/prognozirovanie-cen-na-syre-i-materialy-s-pomoshchyu-ai
 - Автоматический мониторинг цен конкурентов в госзакупках и тендерах: https://tenderlex.ru/baza-znaniy/avtomaticheskii-monitoring-cen-konkurentov-v-goszakupkah
 - Как составить и проверить ТЗ: требования, ГОСТ и рабочий чек-лист: https://tenderlex.ru/baza-znaniy/generator-tz-po-gost-44-fz-standarty
@@ -69,7 +68,7 @@ TenderLex: https://tenderlex.ru. Онлайн-сервис для отделов
 - Затратный метод расчета НМЦК: документы о расходах и прибыли: https://tenderlex.ru/baza-znaniy/zatratnyi-metod-rascheta-ceny-edinstvennyi-postavshchik
 - Переговоры о снижении цены с поставщиком: 7 работающих техник для закупщика: https://tenderlex.ru/baza-znaniy/peregovory-o-snizhenii-ceny-s-postavshchikom-tehniki
 - Расчёт логистических затрат в закупке: доставка и полная стоимость: https://tenderlex.ru/baza-znaniy/raschet-logistiki-dostavki-v-zakupkah-snizhenie-zatrat
-- Оптимизация цепочки поставок (Supply Chain) в B2B: сокращение сроков и издержек: https://tenderlex.ru/baza-znaniy/optimizaciya-cepochki-postavok-supply-chain-v-b2b
+- Оптимизация цепочки поставок в B2B-закупках: сокращение сроков и издержек: https://tenderlex.ru/baza-znaniy/optimizaciya-cepochki-postavok-supply-chain-v-b2b
 - Международная логистика и оплата поставщикам в Китай и ЕАЭС в 2026 году: https://tenderlex.ru/baza-znaniy/mezhdunarodnaya-finansovaya-logistika-i-oplaty-v-kitai-i-eaes
 - Выбор транспортной компании для B2B-перевозок: критерии надежности и страхование грузов: https://tenderlex.ru/baza-znaniy/vybor-transportnoi-kompanii-dlya-b2b-perevozok
 - Погрузо-разгрузочные работы (ПРР), упаковка и тара в спецификации ТЗ: https://tenderlex.ru/baza-znaniy/pogruzo-razgruzochnye-raboty-i-tara-v-specifikacii-tz
@@ -79,6 +78,31 @@ TenderLex: https://tenderlex.ru. Онлайн-сервис для отделов
 - Картотека арбитражных дел: как анализировать судебные риски поставщика (КАД Арбитр): https://tenderlex.ru/baza-znaniy/kartoteka-arbitrazhnyh-del-analiz-sudebnyh-riskov-postavshchika
 - Реестр недобросовестных поставщиков (РНП): как проверить компанию и учредителей: https://tenderlex.ru/baza-znaniy/reestr-nedobrosovestnyh-postavshchikov-rnp-proverka
 - Бухгалтерская отчетность поставщика: экспресс-анализ финансовой устойчивости: https://tenderlex.ru/baza-znaniy/buhgalterskaya-otchetnost-postavshchika-analiz-finansov
-- Проверка производственных мощностей и складов поставщика: аудит на месте (Field Audit): https://tenderlex.ru/baza-znaniy/proverka-proizvodstvennyh-moshchnostei-i-skladov-postavshchika
+- Проверка производственных мощностей и складов поставщика: выездной технический аудит: https://tenderlex.ru/baza-znaniy/proverka-proizvodstvennyh-moshchnostei-i-skladov-postavshchika
 - Как заполнить таблицу показателей товара («Форму 2») по 44-ФЗ: https://tenderlex.ru/baza-znaniy/kak-zapolnit-formu-2-dlya-zayavki-44-fz-konkretnye-pokazateli
 - Как определить скрытого производителя по ТЗ в госзакупках: методы раскрытия 'заточек': https://tenderlex.ru/baza-znaniy/kak-opredelit-skrytogo-proizvoditelya-po-tz-44-fz
+
+## Дополнительные страницы
+- Поиск поставщиков под тендер: https://tenderlex.ru/poisk-postavshchikov-dlya-tendera
+- Поиск заводов-производителей по ТЗ: https://tenderlex.ru/poisk-proizvoditeley-po-tz
+- Поставщики для запроса КП: https://tenderlex.ru/postavshchiki-dlya-zaprosa-kp
+- Оценка рисков закупки: https://tenderlex.ru/ocenka-riskov-zakupki
+- Анализ рынка и подготовка НМЦК: https://tenderlex.ru/analiz-rynka-44-fz
+- Генератор запроса КП: https://tenderlex.ru/zapros-kp-po-tz
+- API и интеграции: https://tenderlex.ru/api-integracii
+- Политика обработки данных: https://tenderlex.ru/personal-data
+- Все отрасли: https://tenderlex.ru/otrasli
+- Металлопрокат: https://tenderlex.ru/otrasli/metalloprokat
+- Кабель и провод: https://tenderlex.ru/otrasli/kabel-i-provod
+- Трубопроводная арматура: https://tenderlex.ru/otrasli/truboprovodnaya-armatura
+- Строительные материалы: https://tenderlex.ru/otrasli/stroitelnye-materialy
+- СИЗ и спецодежда: https://tenderlex.ru/otrasli/siz-i-specodezhda
+- Все регионы: https://tenderlex.ru/regiony
+- Москва и МО: https://tenderlex.ru/regiony/moskva
+- Санкт-Петербург: https://tenderlex.ru/regiony/sankt-peterburg
+- Екатеринбург: https://tenderlex.ru/regiony/ekaterinburg
+- Новосибирск: https://tenderlex.ru/regiony/novosibirsk
+- Казань и Татарстан: https://tenderlex.ru/regiony/kazan
+- Нижний Новгород: https://tenderlex.ru/regiony/nizhny-novgorod
+- Краснодар и Юг: https://tenderlex.ru/regiony/krasnodar
+- Самара и Поволжье: https://tenderlex.ru/regiony/samara

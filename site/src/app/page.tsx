@@ -1,52 +1,26 @@
 import type { Metadata } from "next";
-import Link from "next/link";
-import {
-  Building2,
-  CheckCircle2,
-  FileText,
-  Mail,
-  Search,
-  Send,
-  ShieldAlert,
-  ShieldCheck,
-  Sparkles,
-  Users,
-  Layers,
-  Zap,
-  TrendingUp,
-  FileCheck,
-  Code2,
-  Terminal,
-  ArrowRight,
-  Cpu,
-} from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import { formatRubles, getSiteData, type PublicTariff } from "@/lib/site-data";
+import { SiteFooter } from "@/components/site-footer";
+import { SiteHeader } from "@/components/site-header";
+import { HomeV3Interactions } from "@/components/home-v3-interactions";
 import {
   buildFaqJsonLd,
-  buildOrganizationJsonLd,
-  buildSoftwareApplicationJsonLd,
+  buildServiceJsonLd,
   buildWebSiteJsonLd,
   type FaqItem,
 } from "@/lib/seo";
-import { SiteHeader } from "@/components/site-header";
-import { SiteFooter } from "@/components/site-footer";
-import { ContactSection } from "@/components/contact-section";
-import { RfqPreviewWidget } from "@/components/rfq-preview-widget";
-import { ProcurementCalculator } from "@/components/procurement-calculator";
-import { ComparisonSection } from "@/components/comparison-section";
-import { ScrollWorldViewer } from "@/components/scroll-world/scroll-world-viewer";
-import { TrustRegistryBar } from "@/components/trust-registry-bar";
+
+import { HOME_V3_HTML } from "./home-v3-content";
+import "./home-v3.css";
 
 export const revalidate = 300;
 
 export const metadata: Metadata = {
   title: {
-    absolute: "TenderLex — Поиск поставщиков, подбор аналогов по ТЗ и анализ закупок",
+    absolute: "Поиск поставщиков и подбор аналогов по ТЗ за 3 минуты — TenderLex",
   },
   description:
-    "Поиск поставщиков по ТЗ, подбор товара и аналогов, анализ закупочной документации. Подготовьте данные для проверки и запроса КП.",
+    "Сервис поиска прямых поставщиков и подбора аналогов товаров по ТЗ за 3 минуты. Проверка по реестрам РФ и ЕАЭС, контакты отделов продаж, расчет НМЦК и проект запроса КП.",
   keywords: [
     "поиск поставщиков по ТЗ",
     "подбор аналогов по ТЗ",
@@ -58,642 +32,113 @@ export const metadata: Metadata = {
     "реестр минпромторга аналоги",
     "анализ рисков 44-ФЗ и 223-ФЗ",
     "коммерческие закупки",
+    "интерактивный разбор ТЗ",
     "TenderLex",
   ],
-  alternates: {
-    canonical: "/",
-  },
+  alternates: { canonical: "/" },
   openGraph: {
-    title: "TenderLex — Поиск поставщиков по ТЗ и анализ любых закупок",
+    title: "Поиск поставщиков и подбор аналогов по ТЗ за 3 минуты — TenderLex",
     description:
-      "ИИ-помощник для разбора ТЗ, поиска кандидатов на поставку и анализа условий закупки перед проверкой.",
+      "TenderLex: кандидаты на поставку, сравнение аналогов и разбор условий контракта. Интерактивный разбор ТЗ из 5 шагов с источниками для проверки.",
     url: "https://tenderlex.ru",
     siteName: "TenderLex",
     locale: "ru_RU",
     type: "website",
-    images: ["/tenderlex-product-preview.png"],
+    images: ["/tenderlex-og-1200x630.png"],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Поиск поставщиков и подбор аналогов по ТЗ за 3 минуты — TenderLex",
+    description:
+      "Кандидаты, аналоги и условия контракта из вашего ТЗ. Интерактивный разбор из 5 шагов и источники для проверки.",
+    images: ["/tenderlex-og-1200x630.png"],
   },
 };
 
 const mainFaqItems: FaqItem[] = [
   {
-    question: "Как TenderLex находит поставщиков по всей России?",
+    question: "Это уже новый рабочий сайт?",
     answer:
-      "TenderLex помогает разобрать ТЗ или спецификацию, выделить маркоразмеры, ГОСТы и технические требования, затем сформировать список кандидатов и проект запроса КП. Роль компании, контакты, наличие товара, цену и срок поставки нужно подтвердить у поставщика и по его документам.",
+      "Да, это обновлённая главная страница TenderLex. Интерактивный разбор показывает структуру результата и логику шагов. Рабочий сервис, кабинет и тарифы доступны по прежним адресам.",
   },
   {
-    question: "Как формируется готовый Запрос коммерческого предложения (КП)?",
+    question: "Что можно передать в TenderLex?",
     answer:
-      "На основе номенклатуры ТЗ модуль готовит проект запроса с позициями и вопросами о поставке. Перед отправкой проверьте объёмы, сроки, адрес, комплектность, документы и адресата.",
+      "Техническое задание, спецификацию, документы закупки, ссылку на процедуру или текст задачи. В демонстрации на этой странице файлы не загружаются и никуда не отправляются.",
   },
   {
-    question: "Что проверяет модуль анализа документации 44-ФЗ и 223-ФЗ?",
+    question: "Можно ли использовать результат без проверки?",
     answer:
-      "Модуль помогает структурировать проект контракта и извещение: сроки, приемку, оплату, обеспечение, штрафы и требования национального режима. Выводы сверяют с первичными документами процедуры и применимыми нормами.",
+      "Нет. Результат помогает подготовить решение: кандидатов, сравнение и вопросы. Роль компании, контакты, наличие, цену и условия поставки подтверждают у поставщика и по первоисточникам.",
   },
   {
-    question: "Как работает подбор товара и аналогов по ТЗ?",
+    question: "Чем демонстрация отличается от запуска задачи?",
     answer:
-      "Модуль сопоставляет параметры спецификации с доступными документами изготовителей, помогает сформировать гипотезы о модели и кандидаты на замену, а также рабочий отчёт в Word (DOCX). Гипотезу, применимость аналога, происхождение и каждый показатель проверяют по первоисточникам и условиям закупки.",
+      "Демонстрация показывает структуру результата и логику шагов. Она не запускает поиск, не отправляет запросы и не расходует баланс. Запуск задачи происходит в кабинете на ваших данных.",
   },
   {
-    question: "Где посмотреть условия запуска и тарифы?",
+    question: "Какая география поиска поддерживается — только РФ или весь мир?",
     answer:
-      "Доступные пакеты и условия запуска отображаются в личном кабинете. Они управляются в системе, поэтому до запуска проверьте актуальные объём, стоимость и доступность пробного доступа.",
+      "В личном кабинете TenderLex можно гибко выбрать охват: «Только Россия» (строго отечественные поставщики и производители с ИНН РФ для закупок с нацрежимом), «РФ и СНГ (ЕАЭС)» (поставщики России, Беларуси, Казахстана, Армении и Кыргызстана) или «Весь мир» для поиска прямых фабрик и параллельного импорта.",
+  },
+  {
+    question: "Где посмотреть тарифы и условия?",
+    answer:
+      "Актуальные тарифы и доступные пакеты отображаются в кабинете до запуска. Стоимость и доступность управляются в системе, поэтому на этой странице нет захардкоженных цен.",
   },
 ];
 
-export default async function HomePage() {
-  const data = await getSiteData();
-  const botUrl = data.bot.telegram_url;
-  const cabinetUrl = "/cabinet";
-  const depositPackages = (
-    data.deposit_packages && data.deposit_packages.length > 0
-      ? data.deposit_packages
-      : data.tariff_groups?.deposit || []
-  ).filter((p) => (p as any).is_active !== false);
-  const supplierTariffs = data.tariff_groups?.supplier_search || [];
-  const exactProductTariffs = data.tariff_groups?.exact_product || [];
-  const reportTariffs = data.tariff_groups?.procurement_report || [];
+const serviceSchemas = [
+  buildServiceJsonLd({
+    name: "Поиск поставщиков по ТЗ",
+    description:
+      "Поиск кандидатов на поставку по спецификации или техническому заданию: роль компании, регион, источники и проект запроса КП.",
+    path: "/poisk-postavshchikov-po-tz",
+    serviceType: "B2B supplier search",
+  }),
+  buildServiceJsonLd({
+    name: "Подбор товара и аналогов по ТЗ",
+    description:
+      "Сопоставление требований ТЗ с характеристиками товаров и подготовка сравнения аналогов с отличиями и источниками для проверки.",
+    path: "/podbor-tovara-i-analogov-po-tz",
+    serviceType: "B2B product and analog matching",
+  }),
+  buildServiceJsonLd({
+    name: "Анализ закупочной документации",
+    description:
+      "Разбор проекта контракта и извещения: сроки, оплата, приёмка, обеспечение и вопросы, которые стоит уточнить до заявки.",
+    path: "/analiz-zakupochnoi-dokumentacii",
+    serviceType: "Procurement document analysis",
+  }),
+];
 
-  const websiteSchema = buildWebSiteJsonLd();
-  const faqSchema = buildFaqJsonLd(mainFaqItems);
+const htmlWithSkipLink = '<a class="skip-link" href="#main-content">К содержанию</a>' + HOME_V3_HTML;
 
+export default function HomePage() {
   return (
     <>
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteSchema) }}
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(buildWebSiteJsonLd()) }}
       />
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }}
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(buildFaqJsonLd(mainFaqItems)) }}
       />
-
-      <main className="bg-slate-50 text-slate-900 min-h-screen font-sans">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(serviceSchemas) }}
+      />
+      <main className="tl-public">
         <SiteHeader />
-
-        {/* HERO SECTION WITH INTERACTIVE SCROLL-WORLD */}
-        <section className="relative pt-10 pb-16 border-b border-slate-200 bg-gradient-to-b from-teal-50/50 via-slate-50 to-white">
-          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
-            {/* Hero Top Copy */}
-            <div className="max-w-3xl mx-auto text-center space-y-4 mb-8">
-              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-bold shadow-2xs">
-                <Sparkles size={14} className="text-teal-600 animate-pulse" />
-                <span>ИИ-поиск поставщиков • Подбор аналогов по ТЗ • Экспресс-аудит 44-ФЗ и 223-ФЗ</span>
-              </div>
-
-              <h1 className="text-3xl sm:text-4xl lg:text-[44px] font-extrabold text-slate-900 leading-[1.2] tracking-tight">
-                Поиск надежных поставщиков и подбор аналогов
-              </h1>
-
-              <p className="text-base sm:text-lg text-slate-600 font-normal leading-relaxed max-w-2xl mx-auto">
-                От разбора требований ТЗ и сопоставления вариантов до подготовки запроса КП и проверки условий проекта контракта.
-              </p>
-
-              {/* Responsive Quick-Action CTAs for Mobile & Desktop CRO */}
-              <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3.5 max-w-lg mx-auto">
-                <Button asChild className="w-full sm:w-auto bg-teal-600 hover:bg-teal-700 text-white font-extrabold px-7 h-12 text-sm shadow-lg shadow-teal-600/25 transition-all">
-                  <Link href={cabinetUrl} className="flex items-center justify-center gap-2">
-                    <span>Открыть кабинет</span>
-                  </Link>
-                </Button>
-                <Button asChild variant="secondary" className="w-full sm:w-auto border-2 border-slate-300 hover:border-teal-600 hover:text-teal-700 bg-white font-bold px-6 h-12 text-sm text-slate-800 shadow-2xs transition-all">
-                  <a href={botUrl} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-2">
-                    <Send className="w-4 h-4 text-cyan-600" />
-                    <span>Запустить в Telegram</span>
-                  </a>
-                </Button>
-              </div>
-
-              {/* Conversion Trust Micro-Badges */}
-              <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-xs text-slate-500 font-medium pt-1">
-                <span className="flex items-center gap-1.5">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
-                  Условия доступа — в кабинете
-                </span>
-                <span className="hidden sm:inline text-slate-300">•</span>
-                <span className="flex items-center gap-1.5">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
-                  Выберите нужный модуль
-                </span>
-                <span className="hidden sm:inline text-slate-300">•</span>
-                <span className="flex items-center gap-1.5">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
-                  Проверяйте результат по первоисточникам
-                </span>
-              </div>
-            </div>
-
-            {/* WOW SCROLL-WORLD INTERACTIVE COMPONENT */}
-            <div className="mb-10">
-              <ScrollWorldViewer />
-            </div>
-
-            {/* Metrics Bar */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-6 bg-white rounded-2xl border border-slate-200 shadow-sm text-center">
-              <div>
-                <strong className="block text-2xl font-black text-teal-700">ТЗ и спецификация</strong>
-                <span className="text-xs text-slate-500">анализ номенклатуры и требований</span>
-              </div>
-              <div>
-                <strong className="block text-2xl font-black text-teal-700">Яндекс & Google</strong>
-                <span className="text-xs text-slate-500">живой поиск по сайтам РФ</span>
-              </div>
-              <div>
-                <strong className="block text-2xl font-black text-teal-700">Сравнение вариантов</strong>
-                <span className="text-xs text-slate-500">для обоснованного выбора поставщика</span>
-              </div>
-              <div>
-                <strong className="block text-2xl font-black text-teal-700">Карта рисков</strong>
-                <span className="text-xs text-slate-500">для проверки условий до подачи заявки</span>
-              </div>
-            </div>
-
-            {/* OFFICIAL REGISTRIES & TRUST VERIFICATION BAR */}
-            <TrustRegistryBar />
-          </div>
-        </section>
-
-        {/* THREE PRIMARY MODULES (Core Platform Architecture) */}
-        <section className="py-16 sm:py-24 bg-white border-b border-slate-200">
-          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
-            <div className="text-center max-w-3xl mx-auto mb-16 space-y-3">
-              <span className="text-xs font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
-                Возможности платформы
-              </span>
-              <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
-                Инструменты для снабжения и участия в закупках
-              </h2>
-              <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
-                TenderLex помогает решать три ключевые задачи снабжения: поиск поставщиков, подбор товара и аналогов и анализ закупочной документации.
-              </p>
-            </div>
-
-            <div className="grid md:grid-cols-3 gap-6">
-              {/* Module 1: Поиск поставщиков (First as requested) */}
-              <div className="p-7 bg-slate-50 rounded-3xl border-2 border-slate-200 flex flex-col justify-between space-y-6 shadow-sm hover:border-teal-500 transition-all">
-                <div className="space-y-4">
-                  <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
-                    <Search className="w-6 h-6" />
-                  </div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">1. Поиск поставщиков</span>
-                  <h3 className="text-xl font-extrabold text-slate-900 leading-snug">
-                    Поиск поставщиков по ТЗ
-                  </h3>
-                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                    Разбор спецификации, список кандидатов для запроса КП и проект обращения. Роль компании и контакты подтверждаются перед заказом.
-                  </p>
-
-                  <ul className="space-y-2.5 pt-2 border-t border-slate-200">
-                    <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Кандидаты и контакты для проверки</span>
-                    </li>
-                    <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Проверка роли изготовителя или дилера</span>
-                    </li>
-                    <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Проект запроса коммерческого предложения</span>
-                    </li>
-                  </ul>
-                </div>
-
-                <div className="pt-2">
-                  <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-10 text-xs shadow-md shadow-teal-600/20">
-                    <Link href="/poisk-postavshchikov-po-tz">
-                      <span>Подробнее о поставщиках</span>
-                    </Link>
-                  </Button>
-                </div>
-              </div>
-
-              {/* Module 2: Подбор товара и аналогов (Second as requested) */}
-              <div className="p-7 bg-slate-50 rounded-3xl border-2 border-slate-200 flex flex-col justify-between space-y-6 shadow-sm hover:border-teal-500 transition-all">
-                <div className="space-y-4">
-                  <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
-                    <Layers className="w-6 h-6" />
-                  </div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">2. Подбор товара</span>
-                  <h3 className="text-xl font-extrabold text-slate-900 leading-snug">
-                    Подбор товара и аналогов по ТЗ
-                  </h3>
-                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                    Сопоставление параметров с доступными документами изготовителя и варианты для дальнейшей проверки эквивалентности.
-                  </p>
-
-                  <ul className="space-y-2.5 pt-2 border-t border-slate-200">
-                    <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Требования ТЗ и сведения для проверки</span>
-                    </li>
-                    <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Кандидаты на замену при наличии подтверждений</span>
-                    </li>
-                    <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Выгрузка подробного отчета в Word (DOCX)</span>
-                    </li>
-                  </ul>
-                </div>
-
-                <div className="pt-2">
-                  <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-10 text-xs shadow-md shadow-teal-600/20">
-                    <Link href="/podbor-tovara-i-analogov-po-tz">
-                      <span>Подробнее о подборе аналогов</span>
-                    </Link>
-                  </Button>
-                </div>
-              </div>
-
-              {/* Module 3: Анализ документации (Third as requested) */}
-              <div className="p-7 bg-slate-50 rounded-3xl border-2 border-slate-200 flex flex-col justify-between space-y-6 shadow-sm hover:border-teal-500 transition-all">
-                <div className="space-y-4">
-                  <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
-                    <ShieldAlert className="w-6 h-6" />
-                  </div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">3. Анализ документации</span>
-                  <h3 className="text-xl font-extrabold text-slate-900 leading-snug">
-                    Экспресс-аудит документации: 44-ФЗ, 223-ФЗ
-                  </h3>
-                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                    Рабочая структура условий проекта контракта: сроки, обеспечение, штрафы, приёмка и национальный режим для дальнейшей проверки.
-                  </p>
-
-                  <ul className="space-y-2.5 pt-2 border-t border-slate-200">
-                    <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Сверка графиков поставки и сроков приемки</span>
-                    </li>
-                    <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Аудит штрафов по ПП РФ № 1042</span>
-                    </li>
-                    <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Проверка требований национального режима</span>
-                    </li>
-                  </ul>
-                </div>
-
-                <div className="pt-2">
-                  <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-10 text-xs shadow-md shadow-teal-600/20">
-                    <Link href="/analiz-zakupochnoi-dokumentacii">
-                      <span>Подробнее об анализе документации</span>
-                    </Link>
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* COMPARISON SECTION */}
-        <section className="py-16 sm:py-24 bg-slate-50 border-b border-slate-200">
-          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
-            <div className="text-center max-w-2xl mx-auto mb-12 sm:mb-16 space-y-3">
-              <span className="text-xs font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
-                Сравнение подходов
-              </span>
-              <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
-                Ручной поиск в поисковиках против ИИ TenderLex
-              </h2>
-              <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
-                    Когда полезно структурировать требования и проверять кандидатов перед запросом КП.
-              </p>
-            </div>
-
-            <ComparisonSection />
-          </div>
-        </section>
-
-        {/* RFQ GENERATOR WIDGET */}
-        <section className="py-16 sm:py-24 bg-white border-b border-slate-200">
-          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
-            <RfqPreviewWidget />
-          </div>
-        </section>
-
-        {/* PROCUREMENT CALCULATOR */}
-        <section id="calculator" className="py-16 sm:py-24 bg-slate-50 border-b border-slate-200">
-          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
-            <ProcurementCalculator />
-          </div>
-        </section>
-
-        {/* B2B API & INTEGRATIONS SECTION */}
-        <section className="py-16 sm:py-24 bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 text-white relative overflow-hidden border-b border-slate-800">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(13,148,136,0.15),transparent_50%)] pointer-events-none" />
-          <div className="container max-w-6xl mx-auto px-4 sm:px-6 relative z-10">
-            <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-8 mb-12">
-              <div className="max-w-2xl space-y-3">
-                <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-teal-400 bg-teal-950/80 px-3 py-1 rounded-full border border-teal-700/60">
-                  <Terminal className="w-3.5 h-3.5" />
-                  B2B API & Интеграции
-                </span>
-                <h2 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight">
-                  Автоматизируйте закупки в 1С, ERP и корпоративных ИИ-агентах
-                </h2>
-                <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
-                  Подключите поиск поставщиков, подбор аналогов и аудит ТЗ напрямую в корпоративные контуры. Единый лицевой счет компании, безопасное двухфазное списание и открытый протокол MCP.
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                <Button asChild className="bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold px-6 h-11 text-sm shadow-lg shadow-teal-500/20">
-                  <Link href="/api-integracii">
-                    <span>Документация и примеры кода</span>
-                    <ArrowRight className="w-4 h-4 ml-2" />
-                  </Link>
-                </Button>
-                <Button asChild variant="secondary" className="border-slate-700 text-slate-200 bg-slate-800 hover:text-white hover:bg-slate-750 h-11 text-sm">
-                  <Link href="/cabinet#api">
-                    <span>Подключить в кабинете</span>
-                  </Link>
-                </Button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="p-6 rounded-2xl bg-slate-800/60 border border-slate-700/80 hover:border-teal-500/60 transition-all space-y-3">
-                <div className="w-10 h-10 rounded-xl bg-teal-950 border border-teal-500/40 text-teal-400 flex items-center justify-center font-mono font-bold text-sm">
-                  1С
-                </div>
-                <h3 className="text-base font-bold text-white">Интеграция с 1С:Предприятие 8.3</h3>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Поиск заводов-изготовителей и расчет цен прямо из документов «Заказ поставщику» или спецификаций ТЗ без переключения менеджеров в сторонние вкладки.
-                </p>
-              </div>
-
-              <div className="p-6 rounded-2xl bg-slate-800/60 border border-slate-700/80 hover:border-teal-500/60 transition-all space-y-3">
-                <div className="w-10 h-10 rounded-xl bg-teal-950 border border-teal-500/40 text-teal-400 flex items-center justify-center">
-                  <Cpu className="w-5 h-5" />
-                </div>
-                <h3 className="text-base font-bold text-white">Model Context Protocol (MCP)</h3>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Подключение к Claude Desktop, Cursor или локальным LLM-агентам снабжения. Модели вызывают инструменты TenderLex как стандартные нативные функции.
-                </p>
-              </div>
-
-              <div className="p-6 rounded-2xl bg-slate-800/60 border border-slate-700/80 hover:border-teal-500/60 transition-all space-y-3">
-                <div className="w-10 h-10 rounded-xl bg-teal-950 border border-teal-500/40 text-teal-400 flex items-center justify-center">
-                  <ShieldCheck className="w-5 h-5" />
-                </div>
-                <h3 className="text-base font-bold text-white">Двухфазный биллинг и гарантия</h3>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Списание происходит с единого баланса личного кабинета только после успешного завершения задачи. Если поставщики не найдены или произошел сбой — резерв возвращается.
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* PRICING & TARIFFS */}
-        <section id="pricing" className="py-16 sm:py-24 bg-white border-b border-slate-200">
-          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
-            <div className="text-center max-w-3xl mx-auto mb-10 space-y-3">
-              <span className="text-xs font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
-                Тарифы и единый баланс
-              </span>
-              <h2 className="text-2xl sm:text-4xl lg:text-5xl font-black text-slate-900 tracking-tight">
-                Единый баланс на все модули. Чем больше сумма — тем выше выгода
-              </h2>
-              <p className="text-slate-600 text-sm sm:text-base max-w-2xl mx-auto mt-2">
-                Баланс расходуется на любые задачи сервиса и никогда не сгорает. Списание происходит только за результат по прозрачному фиксированному прайсу.
-              </p>
-            </div>
-
-            {/* Flat Rate Base Pricing Bar */}
-            <div className="max-w-4xl mx-auto mb-10 p-4 sm:p-5 bg-gradient-to-br from-slate-50 to-teal-50/20 border border-slate-200/90 rounded-3xl shadow-xs">
-              <div className="flex items-center justify-between flex-wrap gap-2 mb-3 px-1">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
-                  <Zap size={14} className="text-teal-600" />
-                  Фиксированная стоимость списания с баланса:
-                </span>
-                <span className="text-[11px] text-teal-800 font-semibold bg-teal-100/70 px-2 py-0.5 rounded-full">
-                  без абонентской платы и скрытых комиссий
-                </span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-center text-xs">
-                <div className="p-3 bg-white rounded-2xl border border-slate-200/90 shadow-2xs hover:border-teal-300 transition-colors">
-                  <span className="block text-slate-500 text-[11px] font-medium">Поиск поставщиков</span>
-                  <strong className="text-base sm:text-lg font-black text-slate-900">99 ₽</strong>
-                  <span className="block text-[10px] text-teal-700 font-bold mt-0.5">добор: 49 ₽</span>
-                </div>
-                <div className="p-3 bg-white rounded-2xl border border-slate-200/90 shadow-2xs hover:border-teal-300 transition-colors">
-                  <span className="block text-slate-500 text-[11px] font-medium">Подбор товара и аналогов</span>
-                  <strong className="text-base sm:text-lg font-black text-slate-900">99 ₽</strong>
-                  <span className="block text-[10px] text-teal-700 font-bold mt-0.5">по ТЗ и ГОСТ</span>
-                </div>
-                <div className="p-3 bg-white rounded-2xl border border-slate-200/90 shadow-2xs hover:border-teal-300 transition-colors">
-                  <span className="block text-slate-500 text-[11px] font-medium">Анализ документации</span>
-                  <strong className="text-base sm:text-lg font-black text-slate-900">99 ₽</strong>
-                  <span className="block text-[10px] text-teal-700 font-bold mt-0.5">риски и условия</span>
-                </div>
-                <div className="p-3 bg-white rounded-2xl border border-slate-200/90 shadow-2xs hover:border-teal-300 transition-colors">
-                  <span className="block text-slate-500 text-[11px] font-medium">Анализ + поиск</span>
-                  <strong className="text-base sm:text-lg font-black text-slate-900">198 ₽</strong>
-                  <span className="block text-[10px] text-teal-700 font-bold mt-0.5">комбо в 1 клик</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Deposit Packages Grid */}
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5 max-w-7xl mx-auto mb-10 items-stretch">
-              {depositPackages.slice(0, 4).map((pkg) => {
-                const isPro = pkg.badge === "Хит" || pkg.name.toLowerCase().includes("про");
-                const bonusRub = (pkg as any).bonus_rub || Math.round(((pkg as any).bonus_kopeks || 0) / 100);
-                const creditRub = (pkg as any).credit_rub || Math.round(((pkg as any).credit_kopeks || pkg.price_kopeks) / 100);
-                const payRub = Math.round(pkg.price_kopeks / 100);
-                const taskCount = pkg.units || Math.round(creditRub / 99);
-                const bonusPercent = payRub > 0 ? Math.round((bonusRub / payRub) * 100) : 0;
-                const unitPrice = Math.round(payRub / taskCount);
-
-                return (
-                  <div
-                    key={pkg.id}
-                    className={`relative p-5 sm:p-6 rounded-3xl border-2 flex flex-col justify-between transition-all duration-200 ${
-                      isPro
-                        ? "bg-gradient-to-b from-teal-50/70 via-white to-white border-teal-600 shadow-xl shadow-teal-600/10 ring-2 ring-teal-500/25 sm:-translate-y-2 hover:sm:-translate-y-3"
-                        : "bg-white border-slate-200/90 shadow-sm hover:border-teal-400/60 hover:shadow-lg hover:-translate-y-1"
-                    }`}
-                  >
-                    {isPro ? (
-                      <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 bg-gradient-to-r from-teal-700 to-emerald-700 text-white text-[10px] font-black uppercase tracking-wider px-3.5 py-1 rounded-full shadow-md flex items-center gap-1.5 whitespace-nowrap">
-                        <Sparkles size={11} className="text-amber-300" />
-                        <span>ХИТ ПРОДАЖ • ВЫБОР ЗАКУПЩИКОВ</span>
-                      </div>
-                    ) : null}
-
-                    <div>
-                      {/* Title on its own row: never truncates or collides */}
-                      <div className="mb-1">
-                        <h3 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
-                          {pkg.name}
-                        </h3>
-                      </div>
-
-                      {/* Price Row with compact bonus pill: strictly 1 row without wrapping */}
-                      <div className="flex items-center justify-between gap-2 mb-3.5">
-                        <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight whitespace-nowrap">
-                          {formatRubles(pkg.price_kopeks)}
-                        </span>
-                        {bonusPercent > 0 ? (
-                          <span className="shrink-0 whitespace-nowrap text-xs font-black text-emerald-800 bg-emerald-100/90 border border-emerald-300/80 px-2 py-0.5 rounded-full shadow-2xs">
-                            +{bonusPercent}%
-                          </span>
-                        ) : (
-                          <span className="shrink-0 whitespace-nowrap text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
-                            Базовый
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Balance Credit Highlight Callout */}
-                      <div className={`p-3 rounded-2xl border text-xs mb-4 transition-colors ${
-                        isPro
-                          ? "bg-emerald-500/10 border-emerald-300/80 text-emerald-950"
-                          : "bg-slate-50 border-slate-200/80 text-slate-700"
-                      }`}>
-                        <div className="flex items-center justify-between text-[10px] uppercase font-bold tracking-wider text-slate-400 mb-0.5">
-                          <span>На баланс:</span>
-                          {bonusRub > 0 ? (
-                            <span className="text-emerald-700 font-extrabold whitespace-nowrap">
-                              +{bonusRub.toLocaleString("ru-RU")} ₽ бонус
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 font-medium">без бонуса</span>
-                          )}
-                        </div>
-                        <div className="flex items-baseline justify-between mt-0.5">
-                          <strong className="text-lg sm:text-xl font-black text-teal-800 tracking-tight">
-                            {creditRub.toLocaleString("ru-RU")} ₽
-                          </strong>
-                          <span className="text-[11px] text-slate-500 font-medium">
-                            {bonusRub > 0 ? `к оплате ${formatRubles(pkg.price_kopeks)}` : "100% на счёт"}
-                          </span>
-                        </div>
-                      </div>
-
-                      <p className="text-xs text-slate-600 mb-5 min-h-[36px] leading-relaxed">
-                        {pkg.description || "Пополнение баланса для решения закупочных задач."}
-                      </p>
-
-                      {/* Clean Checklist with Checkmarks */}
-                      <div className="space-y-2 border-t border-slate-100 pt-4 mb-6 text-xs text-slate-700">
-                        <div className="flex items-center gap-2">
-                          <CheckCircle2 size={14} className="text-teal-600 shrink-0" />
-                          <span className="text-slate-600">
-                            Ориентир: <strong className="text-slate-900 font-bold">~{taskCount} процедур</strong>
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <CheckCircle2 size={14} className="text-teal-600 shrink-0" />
-                          <span className="text-slate-600">
-                            Цена за задачу: <strong className="text-teal-700 font-black">~{unitPrice} ₽</strong>
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <CheckCircle2 size={14} className="text-teal-600 shrink-0" />
-                          <span className="text-slate-600">Все 3 модуля платформы</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-[11px] text-slate-500">
-                          <CheckCircle2 size={14} className="text-slate-400 shrink-0" />
-                          <span>Срок: бессрочно, не сгорает</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <Button
-                      asChild
-                      className={`w-full font-black h-11 text-xs rounded-xl shadow-sm transition-all ${
-                        isPro
-                          ? "bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white shadow-teal-700/20"
-                          : "bg-slate-900 hover:bg-slate-800 text-white"
-                      }`}
-                    >
-                      <a href={`${cabinetUrl}?topup=${pkg.id}`} className="flex items-center justify-center gap-1.5">
-                        <span>Выбрать «{pkg.name}»</span>
-                        <ArrowRight size={13} />
-                      </a>
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Corporate Tier Banner */}
-            <div className="max-w-5xl mx-auto p-5 sm:p-7 bg-gradient-to-br from-slate-950 via-slate-900 to-teal-950 text-white rounded-3xl shadow-xl border border-slate-800 flex flex-col md:flex-row items-center justify-between gap-6">
-              <div className="space-y-2 text-center md:text-left flex-1">
-                <div className="flex items-center justify-center md:justify-start gap-2.5 flex-wrap">
-                  <span className="text-[10px] font-black uppercase tracking-wider bg-teal-500/20 text-teal-300 px-2.5 py-1 rounded-lg border border-teal-500/30">
-                    Корпоративный тариф от 25 000 ₽
-                  </span>
-                  <span className="text-xs text-amber-300 font-extrabold bg-amber-400/10 px-2 py-0.5 rounded-md border border-amber-400/20">
-                    +50% к балансу (+12 500 ₽)
-                  </span>
-                </div>
-                <h4 className="text-lg sm:text-xl font-black text-white">
-                  Для дистрибьюторов, интеграторов и отделов закупок
-                </h4>
-                <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
-                  Пополнение от 25 000 ₽ даёт 37 500 ₽ на баланс (~375 задач по ~66 ₽), доступ по API и 1С, персональное сопровождение, официальный договор и закрывающие акты для юридических лиц.
-                </p>
-                <div className="flex items-center justify-center md:justify-start gap-3 pt-1 text-[11px] text-teal-200/80 font-medium flex-wrap">
-                  <span>✓ 37 500 ₽ на счёт</span>
-                  <span>•</span>
-                  <span>✓ Доступ по API и MCP</span>
-                  <span>•</span>
-                  <span>✓ Договор и акты (ЭДО)</span>
-                  <span>•</span>
-                  <span>✓ Персональный менеджер</span>
-                </div>
-              </div>
-              <Button
-                asChild
-                className="bg-gradient-to-r from-teal-400 to-emerald-400 hover:from-teal-300 hover:to-emerald-300 text-slate-950 font-black text-xs h-11 px-6 rounded-xl shrink-0 shadow-lg shadow-teal-500/20"
-              >
-                <a href={data.contacts.telegram_url || botUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
-                  <Send size={14} />
-                  <span>Обсудить с менеджером</span>
-                </a>
-              </Button>
-            </div>
-          </div>
-        </section>
-
-        {/* FAQ SECTION */}
-        <section id="faq" className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
-          <div className="container max-w-4xl mx-auto px-4 sm:px-6">
-            <div className="text-center mb-12 space-y-3">
-              <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">Часто задаваемые вопросы</h2>
-              <p className="text-slate-600 text-sm">Ответы на ключевые вопросы о работе сервиса.</p>
-            </div>
-
-            <div className="space-y-4">
-              {mainFaqItems.map((faq, idx) => (
-                <details key={idx} className="group bg-white p-6 rounded-2xl border-2 border-slate-200 text-left shadow-2xs">
-                  <summary className="font-bold text-slate-900 text-base cursor-pointer flex justify-between items-center list-none">
-                    <span>{faq.question}</span>
-                    <span className="transition group-open:rotate-180 text-teal-700">▼</span>
-                  </summary>
-                  <p className="mt-4 text-sm text-slate-700 font-normal leading-relaxed border-t border-slate-200 pt-4">
-                    {faq.answer}
-                  </p>
-                </details>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* CONTACT SECTION */}
-        <ContactSection />
-
+        <div
+          className="home-v3"
+          id="main-content"
+          dangerouslySetInnerHTML={{ __html: htmlWithSkipLink }}
+        />
         <SiteFooter />
       </main>
+      <HomeV3Interactions />
     </>
   );
 }

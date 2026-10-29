@@ -9,6 +9,8 @@ import urllib.parse
 
 import logging
 import shutil
+import tempfile
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
@@ -20,6 +22,8 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, ForceReply, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, MenuButtonDefault, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .account_linking import (
     TELEGRAM_TO_WEB,
@@ -38,6 +42,9 @@ from .billing import (
     KIND_SUPPLIER_SEARCH,
     KIND_SUPPLIER_SEARCH_EXTRA,
     BillingError,
+    calculate_deposit_bonus_kopeks,
+    cancel_price_monitoring_job,
+    cancel_exact_product_job,
     charge_job_reservation,
     client_uses_trial_access,
     client_service_balance_summary,
@@ -46,12 +53,20 @@ from .billing import (
     expire_stale_confirmations,
     grant_money_balance,
     job_has_unsettled_reservation,
+    list_deposit_packages,
     list_tariffs,
     release_job_reservation,
     reserve_job_units,
     tariff_to_dict,
 )
 from .config import config
+from .position_selection import (
+    AWAITING_EXACT_SELECTION,
+    AWAITING_POSITION_SELECTION,
+    confirm_position_selection,
+    read_selection,
+    toggle_exact_draft_position,
+)
 from .db import SessionLocal, init_db
 from .document_parser import sanitize_filename
 from .jobs import (
@@ -70,6 +85,7 @@ from .jobs import (
     job_dir,
     package_job_output_files,
     package_job_output_items,
+    sanitize_customer_error,
     update_dobor_context_dict,
 )
 from .main import create_additional_supplier_search_for_client, create_supplier_search_from_exact_product, job_can_find_more_suppliers
@@ -84,7 +100,29 @@ from .legal import (
     TERMS_URL,
     record_legal_acceptance,
 )
-from .models import BillingTransaction, Client, Job, now_utc
+from .models import BillingTransaction, Client, Invoice, Job, SystemSettings, TariffPackage, YooKassaPayment, now_utc
+from .dadata_client import enrich_company_by_inn
+from .invoice_service import (
+    SELLER_ACCOUNT,
+    SELLER_BANK_BIK,
+    SELLER_BANK_CORR,
+    SELLER_BANK_NAME,
+    SELLER_INN,
+    SELLER_NAME,
+    format_date_ru,
+    generate_invoice_pdf,
+    generate_invoice_xlsx,
+    next_invoice_number,
+    notify_admin_telegram as notify_admin_invoice_telegram,
+)
+from .yookassa_service import (
+    YooKassaError,
+    create_yookassa_payment,
+    fetch_yookassa_payment,
+    notify_admin_payment_attempt,
+    notify_admin_payment_success,
+    notify_admin_payment_canceled,
+)
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import client_access_error, get_client_by_telegram_id, get_or_create_settings, get_or_create_trial_client_by_telegram_id, seed_owner_client, supplier_target_for_client
 from .result_offers import (
@@ -111,6 +149,12 @@ group_safety_router.callback_query.filter(F.message.chat.type != ChatType.PRIVAT
 logger = logging.getLogger(__name__)
 PENDING_MODES: dict[int, str] = {}
 PENDING_SUPPLIER_POLICIES: dict[int, str] = {}
+PENDING_GEO: dict[int, tuple[str, int | None]] = {}
+PENDING_GEO_INPUT: set[int] = set()
+PENDING_CUSTOM_TOPUP: set[int] = set()
+PENDING_B2B_CUSTOM_AMOUNT: set[int] = set()
+PENDING_B2B_INN: dict[int, dict] = {}
+PENDING_B2B_NAME: dict[int, dict] = {}
 SCENARIO_SUPPLIERS = "supplier_search"
 SCENARIO_REPORT = "report"
 SCENARIO_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
@@ -161,14 +205,17 @@ INDIVIDUAL_TERMS_NOTE = (
     "Возможен индивидуальный подход: стоимость поиска, анализа и добора можно настроить под вашу задачу."
 )
 BOT_PAYMENT_INSTRUCTIONS = (
-    "🧾 Чтобы пополнить баланс:\n"
-    "1. Выберите подходящий пакет пополнения или произвольную сумму.\n"
-    "2. Напишите владельцу сервиса в Telegram (кнопка ниже).\n"
-    "3. После перевода на карту или по реквизитам баланс с бонусом будет зачислен моментально."
+    "🧾 <b>Способы оплаты и пополнения баланса:</b>\n"
+    "1. <b>Онлайн через ЮKassa:</b> банковские карты (МИР, Visa, Mastercard), СБП, SberPay, Mir Pay — моментальное зачисление с бонусом.\n"
+    "2. <b>По безналичному расчёту:</b> автоматическое выставление счёта на оплату для юридических лиц и ИП с печатью и УПД по ЭДО."
 )
 OWNER_ALERT_STATUSES = {"failed", "needs_review"}
 OWNER_ALERTED_KEYS: set[tuple[str, str]] = set()
-BOT_TERMINAL_JOB_STATUSES = set(TERMINAL_JOB_STATUSES) | {"delivery_expired"}
+BOT_TERMINAL_JOB_STATUSES = set(TERMINAL_JOB_STATUSES) | {
+    "delivery_expired",
+    AWAITING_EXACT_SELECTION,
+    AWAITING_POSITION_SELECTION,
+}
 
 
 @dataclass
@@ -178,6 +225,8 @@ class PendingBatch:
     files: list[tuple[str, bytes]]
     sources: list[dict] = field(default_factory=list)
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL
+    delivery_city: str = ""
+    geo_radius_km: int | None = None
 
 
 @dataclass
@@ -261,15 +310,30 @@ def _scenario_job_mode(scenario: str) -> str:
 
 
 def _clear_pending_state(chat_id: int) -> bool:
-    had_state = any(chat_id in state for state in (PENDING_UPLOADS, PENDING_MODES, PENDING_SUPPLIER_POLICIES))
+    had_state = (
+        any(chat_id in state for state in (PENDING_UPLOADS, PENDING_MODES, PENDING_SUPPLIER_POLICIES, PENDING_GEO, PENDING_B2B_INN, PENDING_B2B_NAME))
+        or chat_id in PENDING_GEO_INPUT
+        or chat_id in PENDING_CUSTOM_TOPUP
+        or chat_id in PENDING_B2B_CUSTOM_AMOUNT
+    )
     PENDING_UPLOADS.pop(chat_id, None)
     PENDING_MODES.pop(chat_id, None)
     PENDING_SUPPLIER_POLICIES.pop(chat_id, None)
+    PENDING_GEO.pop(chat_id, None)
+    PENDING_GEO_INPUT.discard(chat_id)
+    PENDING_CUSTOM_TOPUP.discard(chat_id)
+    PENDING_B2B_CUSTOM_AMOUNT.discard(chat_id)
+    PENDING_B2B_INN.pop(chat_id, None)
+    PENDING_B2B_NAME.pop(chat_id, None)
     return had_state
 
 
 def _select_scenario(chat_id: int, scenario: str) -> bool:
     expected_mode = _scenario_job_mode(scenario)
+    from .geo_policy import GEO_SUPPORTED_MODES
+    PENDING_GEO_INPUT.discard(chat_id)
+    if expected_mode not in GEO_SUPPORTED_MODES:
+        PENDING_GEO.pop(chat_id, None)
     pending = PENDING_UPLOADS.get(chat_id)
     cleared_incompatible = bool(pending and pending.mode != expected_mode)
     if cleared_incompatible:
@@ -372,12 +436,15 @@ def analysis_and_suppliers_keyboard(
 
 
 def cabinet_inline_keyboard(web_url: str = "", *, has_web_user: bool = False, contact_url: str = "") -> InlineKeyboardMarkup:
-    rows = []
-    if contact_url:
-        rows.append([InlineKeyboardButton(text="💬 Пополнить баланс в Telegram", url=contact_url)])
+    rows = [
+        [InlineKeyboardButton(text="💳 Пополнить онлайн (ЮKassa)", callback_data="topup_online_menu")],
+        [InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")],
+    ]
     if web_url:
         label = "🌐 Открыть веб-кабинет" if has_web_user else "🌐 Создать веб-кабинет"
         rows.append([InlineKeyboardButton(text=label, url=web_url)])
+    if contact_url:
+        rows.append([InlineKeyboardButton(text="💬 Написать в Telegram", url=contact_url)])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -385,18 +452,68 @@ def cabinet_inline_keyboard(web_url: str = "", *, has_web_user: bool = False, co
 def status_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Оплатить онлайн (Карта, СБП)", callback_data="topup_online_menu")],
+            [InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")],
+            [InlineKeyboardButton(text="💳 Все тарифы", callback_data="open_tariffs")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
         ]
     )
 
 
-def tariffs_inline_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📞 Связаться с поддержкой", callback_data="open_contacts")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
-        ]
-    )
+def tariffs_inline_keyboard(web_url: str = "") -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="💳 Оплатить онлайн (Карта, СБП)", callback_data="topup_online_menu")],
+        [InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")],
+    ]
+    if web_url:
+        rows.append([InlineKeyboardButton(text="🌐 Открыть веб-кабинет", url=web_url)])
+    rows.append([
+        InlineKeyboardButton(text="📞 Поддержка", callback_data="open_contacts"),
+        InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def topup_online_keyboard(packages: list[TariffPackage]) -> InlineKeyboardMarkup:
+    rows = []
+    for pkg in packages:
+        amount_rub = pkg.price_kopeks // 100
+        bonus_rub = (pkg.bonus_kopeks or 0) // 100
+        badge = "🔥 " if pkg.badge or bonus_rub == 1500 else "💳 "
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_part = f" (+{bonus_fmt})" if bonus_rub > 0 else ""
+        if amount_rub == 25000:
+            bonus_part = " (+50%)"
+        label = f"{badge}{pkg.name} — {amount_fmt}{bonus_part}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"topup_yk_pkg_{pkg.id}")])
+    rows.append([InlineKeyboardButton(text="✏️ Произвольная сумма", callback_data="topup_yk_custom")])
+    rows.append([
+        InlineKeyboardButton(text="🏢 Счёт для юрлиц", callback_data="topup_b2b_menu"),
+        InlineKeyboardButton(text="🔙 К тарифам", callback_data="open_tariffs"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def topup_b2b_keyboard(packages: list[TariffPackage]) -> InlineKeyboardMarkup:
+    rows = []
+    for pkg in packages:
+        amount_rub = pkg.price_kopeks // 100
+        bonus_rub = (pkg.bonus_kopeks or 0) // 100
+        badge = "🔥 " if pkg.badge or bonus_rub == 1500 else "📄 "
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_part = f" (+{bonus_fmt})" if bonus_rub > 0 else ""
+        if amount_rub == 25000:
+            bonus_part = " (+50%)"
+        label = f"{badge}{pkg.name} — {amount_fmt}{bonus_part}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"topup_b2b_pkg_{pkg.id}")])
+    rows.append([InlineKeyboardButton(text="✏️ Произвольная сумма", callback_data="topup_b2b_custom")])
+    rows.append([
+        InlineKeyboardButton(text="💳 Оплатить картой / СБП", callback_data="topup_online_menu"),
+        InlineKeyboardButton(text="🔙 К тарифам", callback_data="open_tariffs"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def help_inline_keyboard() -> InlineKeyboardMarkup:
@@ -433,6 +550,9 @@ def batch_inline_keyboard(pending: PendingBatch) -> InlineKeyboardMarkup:
         sub_row.append(InlineKeyboardButton(text="⚙️ Режим поиска", callback_data="batch:policy"))
     sub_row.append(InlineKeyboardButton(text="🗑 Очистить", callback_data="batch:cancel"))
     rows.append(sub_row)
+    if pending.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        geo_label = f"📍 {pending.delivery_city} · {pending.geo_radius_km} км" if pending.geo_radius_km else "📍 Приоритет доставки"
+        rows.append([InlineKeyboardButton(text=geo_label, callback_data="batch:geo")])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -665,6 +785,7 @@ def _supplier_multi_intro_text() -> str:
 
 def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources: int = 0) -> str:
     policy_label = _supplier_policy_label(pending.supplier_search_policy)
+    geo_note = f"\n📍 Приоритет: {html_escape(pending.delivery_city)}, до {pending.geo_radius_km} км. Вне радиуса и неизвестные адреса помечаются отдельно.\n" if pending.geo_radius_km else ""
     if pending.mode == MODE_SUPPLIER_SEARCH:
         lines = [
             "✅ ТЗ добавлено",
@@ -680,7 +801,7 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
         else:
             lines.append("Если одно ТЗ состоит из нескольких файлов, загрузите эти файлы одним архивом.")
         lines.append("👇 Добавьте ещё ТЗ через скрепку 📎 или нажмите «▶️ Запустить поиск» под сообщением:")
-        return "\n".join(lines)
+        return "\n".join(lines) + geo_note
     lines = [
         "✅ Материалы добавлены",
         f"• Файлов: {len(pending.files)}/{max_files}",
@@ -690,7 +811,7 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
     if pending.mode == MODE_ANALYSIS_AND_SUPPLIERS:
         lines.append(f"• Режим поиска: {policy_label}")
     lines.extend(["", "👇 Добавьте ещё материалы через скрепку 📎 или нажмите кнопку «▶️ Запустить» под сообщением:"])
-    return "\n".join(lines)
+    return "\n".join(lines) + geo_note
 
 
 def _source_added_text(pending: PendingBatch) -> str:
@@ -812,7 +933,7 @@ def _chat_has_processing_job(chat_id: int) -> bool:
         return bool(
             db.query(Job.id)
             .filter(Job.created_by_telegram_id == str(chat_id))
-            .filter(Job.status.in_(["pending", "running"]))
+            .filter(Job.status.in_(["pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION]))
             .first()
         )
     except Exception:
@@ -828,15 +949,28 @@ def _active_processing_jobs_for_chat(db, chat_id: int) -> list[Job]:
     return (
         db.query(Job)
         .filter(Job.created_by_telegram_id == str(chat_id))
-        .filter(Job.status.in_(["pending", "running"]))
+        .filter(Job.status.in_(["pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION]))
         .order_by(Job.created_at.desc())
         .all()
     )
 
 
 def _cancel_processing_job(db, job: Job, *, note: str, message: str) -> bool:
-    if job.status not in {"pending", "running"}:
+    if job.status not in {
+        "pending",
+        "running",
+        AWAITING_EXACT_SELECTION,
+        AWAITING_POSITION_SELECTION,
+        STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+    }:
         return False
+    if job.mode in {"price_monitoring", MODE_EXACT_PRODUCT}:
+        cancel_atomic = cancel_price_monitoring_job if job.mode == "price_monitoring" else cancel_exact_product_job
+        if not cancel_atomic(db, job, note=note, message=message):
+            return False
+        cancel_running_job(str(job.id))
+        BOT_CANCEL_NOTIFIED_JOBS.add(str(job.id))
+        return True
     release_job_reservation(db, job, note=note)
     now = now_utc()
     job.status = "cancelled"
@@ -897,7 +1031,7 @@ def _mode_to_billing_kind(mode: str) -> str:
         return KIND_EXACT_PRODUCT
     if mode in (MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS):
         return KIND_PROCUREMENT_REPORT
-    if mode == MODE_SUPPLIER_SEARCH_EXTRA:
+    if mode == KIND_SUPPLIER_SEARCH_EXTRA:
         return KIND_SUPPLIER_SEARCH_EXTRA
     return KIND_SUPPLIER_SEARCH
 
@@ -941,6 +1075,10 @@ def _progress_heading(snapshot: JobProgressSnapshot) -> str:
         return f"⛔ Задача отменена{num_suffix}"
     if snapshot.status == "failed":
         return f"⚠️ Не удалось подготовить файл{num_suffix}"
+    if snapshot.status == AWAITING_EXACT_SELECTION:
+        return f"Выберите товары для подбора{num_suffix}"
+    if snapshot.status == AWAITING_POSITION_SELECTION:
+        return f"Выберите позиции для мониторинга цен{num_suffix}"
     if snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         return f"⚠️ Нужно подтвердить выдачу отчёта{num_suffix}"
     if snapshot.status == STATUS_CUSTOMER_DECLINED:
@@ -1092,26 +1230,23 @@ def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None 
     if snapshot.status == "failed":
         err_lower = (snapshot.error or "").lower()
         msg_lower = (snapshot.message or "").lower()
+        friendly_err = sanitize_customer_error(snapshot.error, message=snapshot.message)
         if (
-            "нет содержимого" in err_lower
-            or "шаблон" in err_lower
-            or "пустой" in err_lower
-            or "нет содержимого" in msg_lower
-            or "нет позиций" in err_lower
+            "нет позиций" in friendly_err.lower()
+            or "не найдены" in friendly_err.lower()
+            or "шаблон" in friendly_err.lower()
+            or "пустой" in friendly_err.lower()
             or "нет позиций" in msg_lower
+            or "нет позиций" in err_lower
+            or "0 items" in err_lower
             or "пустая форма" in err_lower
             or "нет закупаемых позиций" in err_lower
         ):
-            title = (
-                "⚠️ В файле нет позиций для поиска"
-                if ("нет позиций" in msg_lower or "нет позиций" in err_lower or "пустая форма" in err_lower or "нет закупаемых позиций" in err_lower)
-                else "⚠️ В документе нет содержимого"
-            )
             return "\n".join(
                 [
-                    title,
+                    "⚠️ В файле нет позиций для поиска",
                     "",
-                    snapshot.error or "В загруженном файле отсутствует текст ТЗ или закупаемые позиции.",
+                    friendly_err,
                     "",
                     "💳 Баланс не списан (0 ₽).",
                     "Пожалуйста, загрузите файл со спецификацией/перечнем товаров или отправьте характеристики текстом прямо в этот чат.",
@@ -1668,7 +1803,9 @@ async def watch_job_progress(
             last_key = key
             last_heartbeat = now
 
-    if snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+    if snapshot.status in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION}:
+        await _send_exact_selection(message, job_id)
+    elif snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         await _edit_or_send_status(
             status_message,
             _partial_confirmation_text(snapshot),
@@ -1768,9 +1905,12 @@ def _low_balance_contact_info(settings, client: Client | None = None, mode: str 
 
 def low_balance_inline_keyboard(settings, client: Client | None = None, mode: str = "") -> InlineKeyboardMarkup:
     _, contact_url = _low_balance_contact_info(settings, client, mode=mode)
-    rows = []
+    rows = [
+        [InlineKeyboardButton(text="💳 Пополнить баланс онлайн (ЮKassa)", callback_data="topup_online_menu")],
+        [InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")],
+    ]
     if contact_url:
-        rows.append([InlineKeyboardButton(text="💬 Написать в Telegram для пополнения", url=contact_url)])
+        rows.append([InlineKeyboardButton(text="💬 Написать в Telegram", url=contact_url)])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1997,7 +2137,7 @@ def _tariffs_text(db, settings) -> str:
         "",
         "<b>Стоимость операций (списание с баланса):</b>",
         "• 🔎 Поиск поставщиков: 99 ₽",
-        "• 🎯 Подбор товара и аналогов: 99 ₽",
+        "• 🎯 Подбор товара и аналогов: 99 ₽ / поз.",
         "• 📄 Анализ документации: 99 ₽",
         "• ⚡ Анализ + поиск: 198 ₽",
     ])
@@ -2048,9 +2188,16 @@ def _default_extra_supplier_price_kopeks(item: dict) -> int:
 def _bot_payment_instructions(settings) -> str:
     instructions = str(settings.payment_instructions or "").strip()
     lowered = instructions.casefold()
-    if "max" in lowered or "макс" in lowered:
+    if "max" in lowered or "макс" in lowered or "напишите владельцу" in lowered:
         instructions = ""
-    return html_escape(instructions or BOT_PAYMENT_INSTRUCTIONS)
+    return instructions or BOT_PAYMENT_INSTRUCTIONS
+
+
+def _bot_yookassa_ready(settings: SystemSettings) -> bool:
+    return bool(
+        str(getattr(settings, "yookassa_shop_id", "") or "").strip()
+        and str(getattr(settings, "yookassa_secret_key", "") or "").strip()
+    )
 
 
 def _partial_confirmation_text(snapshot: JobProgressSnapshot) -> str:
@@ -2090,6 +2237,111 @@ def _registry_fallback_confirmation_text(snapshot: JobProgressSnapshot) -> str:
         "При отказе списания за поиск поставщиков не будет.\n\n"
         "Получить отчёт без подтверждения реестра?"
     )
+
+
+def _exact_selection_view(job: Job, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
+    selection = read_selection(job)
+    items = selection.get("items") or []
+    selected = set(selection.get("selected_ids") or [])
+    page_count = max(1, (len(items) + 6) // 7)
+    page = max(0, min(int(page), page_count - 1))
+    rows = []
+    for index in range(page * 7, min(len(items), (page + 1) * 7)):
+        item = items[index]
+        checked = "☑" if item["id"] in selected else "☐"
+        rows.append([InlineKeyboardButton(text=f"{checked} №{item.get('position_no', index + 1)} {item['name']}"[:64],
+                                         callback_data=f"exact_toggle:{job.id}:{index}")])
+    navigation = []
+    if page > 0:
+        navigation.append(InlineKeyboardButton(text="← Назад", callback_data=f"exact_page:{job.id}:{page - 1}"))
+    if page + 1 < page_count:
+        navigation.append(InlineKeyboardButton(text="Далее →", callback_data=f"exact_page:{job.id}:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([InlineKeyboardButton(text=f"Подтвердить выбор ({len(selected)})", callback_data=f"exact_confirm:{job.id}")])
+    rows.append([InlineKeyboardButton(text="Отменить задачу", callback_data=f"cancel_job:{job.id}")])
+    if job.mode == "price_monitoring":
+        maximum = max(1, int(selection.get("max_positions") or len(items) or 1))
+        unit_price = max(0, int(selection.get("price_kopeks") or 0))
+        text = (
+            f"Выберите позиции для мониторинга цен — {len(selected)} из {maximum}.\n"
+            f"Страница {page + 1} из {page_count}, всего позиций: {len(items)}.\n"
+            f"Стоимость: {unit_price / 100:.2f} ₽ за позицию с подтверждённой ценой.\n"
+            f"Максимум при выборе: {maximum * unit_price / 100:.2f} ₽. Итоговое списание — только за найденные цены.\n"
+            "Мониторинг начнётся после подтверждения.")
+    else:
+        maximum = max(1, int(selection.get("max_positions") or len(items) or 1))
+        unit_price = max(0, int(selection.get("price_kopeks") or 0))
+        total_price = len(selected) * unit_price
+        price_str = f"Стоимость: {unit_price / 100:.2f} ₽ за позицию"
+        if len(selected) > 0:
+            price_str += f" (выбрано на сумму: {total_price / 100:.2f} ₽)"
+        text = (f"Выберите позиции для подбора товара и аналогов — {len(selected)} из {maximum}.\n"
+                f"Страница {page + 1} из {page_count}, всего позиций: {len(items)}.\n"
+                f"{price_str}.\n"
+                "Подбор начнётся после подтверждения. Результат — общий Word-отчёт по выбранным строкам.")
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _send_exact_selection(message: Message, job_id: str, page: int = 0) -> None:
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job or job.status not in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION}:
+            return
+        text, keyboard = _exact_selection_view(job, page)
+    finally:
+        db.close()
+    await message.answer(text, reply_markup=keyboard, parse_mode=None)
+
+
+@router.callback_query(F.data.startswith("exact_toggle:"))
+@router.callback_query(F.data.startswith("exact_page:"))
+@router.callback_query(F.data.startswith("exact_confirm:"))
+async def exact_selection_callback(callback: CallbackQuery) -> None:
+    parts = str(callback.data or "").split(":")
+    if len(parts) < 2 or not callback.message:
+        return
+    action, job_id = parts[:2]
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
+    db = SessionLocal()
+    confirmed = False
+    try:
+        job = db.get(Job, job_id)
+        if not job or job.mode not in {MODE_EXACT_PRODUCT, "price_monitoring"}:
+            raise ValueError("Задача не найдена.")
+        page = 0
+        if action == "exact_toggle":
+            index = int(parts[2])
+            toggle_exact_draft_position(db, job, index)
+            page = index // 7
+        elif action == "exact_page":
+            page = int(parts[2])
+        else:
+            selection = read_selection(job)
+            confirmed = confirm_position_selection(db, job, selection.get("revision"), selection.get("selected_ids"))
+        text, keyboard = _exact_selection_view(job, page)
+    except (ValueError, IndexError) as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    finally:
+        db.close()
+    await callback.answer("Выбор подтверждён" if confirmed else "Выбор обновлён")
+    if confirmed:
+        enqueue_job(job_id)
+        started_text = (
+            "Мониторинг выбранных позиций запущен."
+            if job.mode == "price_monitoring"
+            else "Подбор выбранных товаров запущен."
+        )
+        await callback.message.edit_text(started_text, reply_markup=None, parse_mode=None)
+        snapshot = await watch_job_progress(callback.message, job_id, status_message=callback.message)
+        if snapshot and snapshot.status == "completed":
+            await _send_job_outputs(callback.message, job_id, snapshot)
+    else:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
 
 
 def _partial_confirmation_keyboard(job_id: str, confirmation_kind: str = "") -> InlineKeyboardMarkup:
@@ -2380,6 +2632,7 @@ async def show_status(message: Message) -> None:
     partial_confirmations: list[tuple[str, JobProgressSnapshot]] = []
     recoverable_result_offers: list[tuple[str, JobProgressSnapshot]] = []
     recoverable_outputs: list[tuple[str, JobProgressSnapshot]] = []
+    position_selections: list[str] = []
     db = SessionLocal()
     try:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
@@ -2418,6 +2671,8 @@ async def show_status(message: Message) -> None:
         for job in jobs:
             snapshot = _job_snapshot(job, db)
             job_id = str(job.id)
+            if job.status in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION}:
+                position_selections.append(job_id)
             if (
                 snapshot.confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK
                 and snapshot.confirmation_outcome == "accepted"
@@ -2435,6 +2690,8 @@ async def show_status(message: Message) -> None:
         db.close()
     for job_id, snapshot in partial_confirmations:
         await _send_partial_confirmation(message, job_id, snapshot)
+    for job_id in position_selections:
+        await _send_exact_selection(message, job_id)
     for job_id, _snapshot in recoverable_result_offers:
         await message.answer("✅ Вы уже согласились получить вариант без подтверждения реестра. Повторяю выдачу файла.")
         try:
@@ -2718,6 +2975,357 @@ async def policy_button(message: Message) -> None:
     )
 
 
+def _parse_delivery_input(text: str, *, mode: str) -> tuple[str, int | None]:
+    if text.strip().casefold() in {"выкл", "off"}:
+        return "", None
+    city, separator, radius = text.rpartition(";")
+    if not separator:
+        raise ValueError("Введите город и радиус через точку с запятой: Москва; 300. Для отключения: выкл.")
+    from .geo_policy import validate_geo_request
+    return validate_geo_request(city, radius.strip(), mode=mode)
+
+
+async def _apply_delivery_choice(message: Message, value: str) -> None:
+    chat_id = int(message.chat.id)
+    mode = _scenario_job_mode(PENDING_MODES.get(chat_id, SCENARIO_SUPPLIERS))
+    try:
+        city, radius = _parse_delivery_input(value, mode=mode)
+    except ValueError as exc:
+        await message.answer(html_escape(str(exc)))
+        return
+    with SessionLocal() as db:
+        client = get_client_by_telegram_id(db, str(message.from_user.id if message.from_user else ""))
+        settings = get_or_create_settings(db)
+        allowed = bool(getattr(settings, "geo_radius_search_enabled_global", False) or (client and client.allowed_geo_radius))
+        if radius and not allowed:
+            await message.answer("Приоритет доставки пока не подключён для вашего аккаунта.")
+            return
+        surcharge = float(getattr(settings, "geo_radius_surcharge_pct", 30) or 0)
+    PENDING_GEO_INPUT.discard(chat_id)
+    if radius:
+        PENDING_GEO[chat_id] = (city, radius)
+    else:
+        PENDING_GEO.pop(chat_id, None)
+    pending = PENDING_UPLOADS.get(chat_id)
+    if pending:
+        pending.delivery_city, pending.geo_radius_km = city, radius
+    note = (f"📍 Приоритет: {html_escape(city)}, до {radius} км. Надбавка: {surcharge:g}%. "
+            "Ближайшие поставщики идут первыми; варианты вне радиуса и без подтверждённого адреса помечаются отдельно. "
+            "Расстояние приблизительное. Для отключения: /delivery выкл.") if radius else "Приоритет доставки отключён."
+    await message.answer(note, reply_markup=batch_inline_keyboard(pending) if pending else main_menu())
+
+
+@router.message(Command("delivery"))
+async def delivery_command(message: Message, command: CommandObject) -> None:
+    if await _reject_if_chat_processing(message):
+        return
+    mode = _scenario_job_mode(PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS))
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        await message.answer("Приоритет доставки доступен в поиске поставщиков и в режиме «Анализ + поиск».")
+        return
+    if command.args:
+        await _apply_delivery_choice(message, command.args)
+    else:
+        PENDING_GEO_INPUT.add(int(message.chat.id))
+        await message.answer("Введите город и радиус: Москва; 300. Диапазон — от 10 до 5000 км. Для отключения: выкл.")
+
+
+@router.callback_query(F.data == "batch:geo")
+async def delivery_prompt_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.")
+        return
+    mode = _scenario_job_mode(PENDING_MODES.get(callback.message.chat.id, SCENARIO_SUPPLIERS))
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        await callback.answer("Выберите поиск поставщиков или анализ + поиск.", show_alert=True)
+        return
+    PENDING_GEO_INPUT.add(int(callback.message.chat.id))
+    await callback.answer()
+    await callback.message.answer("Введите город и радиус: Москва; 300. Ближайшие поставщики будут первыми, варианты вне радиуса помечаются отдельно. Для отключения: выкл.")
+
+
+@router.message(lambda message: message.chat.id in PENDING_GEO_INPUT and bool(message.text) and not message.text.startswith("/"))
+async def delivery_text_input(message: Message) -> None:
+    await _apply_delivery_choice(message, str(message.text or ""))
+
+
+async def _generate_and_send_b2b_invoice(
+    message: Message,
+    db: Session,
+    user,
+    ctx: dict,
+    buyer_inn: str,
+    buyer_name: str,
+    buyer_kpp: str,
+    buyer_address: str,
+) -> None:
+    client, _ = get_or_create_trial_client_by_telegram_id(
+        db,
+        str(user.id),
+        username=user.username or "",
+        name=user.full_name or "",
+    )
+    if not client:
+        await message.answer("Ошибка: клиент не найден.")
+        return
+
+    amount_rub = int(ctx.get("amount_rub", 1000) or 1000)
+    bonus_rub = int(ctx.get("bonus_rub", 0) or 0)
+    credit_rub = int(ctx.get("credit_rub", amount_rub + bonus_rub) or (amount_rub + bonus_rub))
+    package_name = str(ctx.get("package_name") or "Пополнение баланса")
+
+    inv_num = next_invoice_number(db)
+    invoice = Invoice(
+        invoice_number=inv_num,
+        client_id=client.id,
+        amount_rub=amount_rub,
+        bonus_rub=bonus_rub,
+        total_credit_rub=credit_rub,
+        tariff_name=package_name,
+        service_name="Предоставление права использования сервиса TenderLex",
+        buyer_inn=buyer_inn,
+        buyer_kpp=buyer_kpp,
+        buyer_name=buyer_name,
+        buyer_address=buyer_address,
+        buyer_email=f"TG:{user.id} (@{user.username})" if user.username else f"TG:{user.id}",
+        status="issued",
+    )
+    db.add(invoice)
+    db.commit()
+    db.refresh(invoice)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        pdf_path = os.path.join(tmp_dir, f"invoice_{inv_num}.pdf")
+        xlsx_path = os.path.join(tmp_dir, f"invoice_{inv_num}.xlsx")
+
+        has_pdf = False
+        try:
+            generate_invoice_pdf(invoice, pdf_path)
+            has_pdf = os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0
+        except Exception as exc:
+            logger.warning("Failed to generate PDF invoice %s: %s", inv_num, exc)
+
+        has_xlsx = False
+        try:
+            generate_invoice_xlsx(invoice, xlsx_path)
+            has_xlsx = os.path.exists(xlsx_path) and os.path.getsize(xlsx_path) > 0
+        except Exception as exc:
+            logger.warning("Failed to generate XLSX invoice %s: %s", inv_num, exc)
+
+        date_str = format_date_ru(invoice.created_at)
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        credit_fmt = f"{credit_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_str = f" (включая бонус +{bonus_fmt})" if bonus_rub > 0 else ""
+        text = (
+            f"📄 <b>Счёт на оплату № <code>{invoice.invoice_number}</code> от {date_str}</b>\n\n"
+            f"🏢 <b>Плательщик:</b> {html_escape(buyer_name)}\n"
+            f"<b>ИНН:</b> <code>{buyer_inn}</code>"
+            f"{f' | КПП: <code>{buyer_kpp}</code>' if buyer_kpp else ''}\n"
+            f"💵 <b>Сумма к оплате:</b> <b>{amount_fmt}</b> (Без НДС, УСН)\n"
+            f"🎁 <b>Зачисление на баланс:</b> <b>{credit_fmt}</b>{bonus_str}\n\n"
+            f"🏛 <b>Банковские реквизиты для оплаты:</b>\n"
+            f"• <b>Получатель:</b> {SELLER_NAME}\n"
+            f"• <b>ИНН:</b> <code>{SELLER_INN}</code>\n"
+            f"• <b>Банк:</b> {SELLER_BANK_NAME}\n"
+            f"• <b>БИК:</b> <code>{SELLER_BANK_BIK}</code>\n"
+            f"• <b>Р/с:</b> <code>{SELLER_ACCOUNT}</code>\n"
+            f"• <b>Корр. счёт:</b> <code>{SELLER_BANK_CORR}</code>\n"
+            f"• <b>Назначение платежа:</b> <code>Оплата по счету № {invoice.invoice_number} от {date_str} за информационные услуги TenderLex. Без НДС.</code>\n\n"
+            f"📎 <i>Официальный счёт с синей печатью и подписью прикреплён файлами ниже. Закрывающие документы (УПД) передаются по ЭДО (Диадок / СБИС). Средства поступят на баланс сразу после межбанковского зачисления.</i>"
+        )
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💼 Мой кабинет", callback_data="open_cabinet")],
+            [InlineKeyboardButton(text="📞 Поддержка / Отправить платёжку", callback_data="open_contacts")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+        ])
+
+        await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+        if has_pdf:
+            pdf_file = FSInputFile(pdf_path, filename=f"Schet_{invoice.invoice_number}.pdf")
+            await message.answer_document(pdf_file, caption=f"📄 Счёт на оплату № {invoice.invoice_number} (PDF с печатью)")
+        if has_xlsx:
+            xlsx_file = FSInputFile(xlsx_path, filename=f"Schet_{invoice.invoice_number}.xlsx")
+            await message.answer_document(xlsx_file, caption=f"📊 Счёт на оплату № {invoice.invoice_number} (Excel)")
+
+    try:
+        await notify_admin_invoice_telegram(invoice)
+    except Exception as exc:
+        logger.warning("Failed to alert admin on invoice generation: %s", exc)
+
+
+@router.message(lambda message: message.chat.id in PENDING_CUSTOM_TOPUP and bool(message.text) and not message.text.startswith("/"))
+async def process_custom_topup_amount(message: Message) -> None:
+    chat_id = message.chat.id
+    raw = message.text.strip().replace(" ", "").replace("₽", "").replace("руб", "")
+    if not raw.isdigit():
+        await message.answer("⚠️ Пожалуйста, введите сумму числом (например: <code>3000</code>) или нажмите /cancel для отмены:", parse_mode=ParseMode.HTML)
+        return
+    amount_rub = int(raw)
+    if amount_rub < 500:
+        await message.answer("⚠️ Минимальная сумма пополнения — <b>500 ₽</b>. Введите сумму от 500 ₽ или нажмите /cancel:", parse_mode=ParseMode.HTML)
+        return
+
+    PENDING_CUSTOM_TOPUP.discard(chat_id)
+    user = message.from_user
+    if not user:
+        return
+
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        if not _bot_yookassa_ready(settings):
+            await message.answer("Оплата онлайн временно недоступна. Пожалуйста, воспользуйтесь счётом для юрлиц или обратитесь в поддержку.")
+            return
+
+        client, _ = get_or_create_trial_client_by_telegram_id(db, str(user.id), username=user.username or "", name=user.full_name or "")
+        if not client:
+            await message.answer("Клиент не найден.")
+            return
+
+        bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, client)
+        bonus_rub = bonus_kopeks // 100
+        credit_rub = amount_rub + bonus_rub
+        package_name = f"Пополнение {amount_rub:,} ₽"
+
+        await _initiate_yookassa_checkout(message, db, settings, client, user, amount_rub, bonus_rub, credit_rub, package_name)
+    finally:
+        db.close()
+
+
+@router.message(lambda message: message.chat.id in PENDING_B2B_CUSTOM_AMOUNT and bool(message.text) and not message.text.startswith("/"))
+async def process_custom_b2b_amount(message: Message) -> None:
+    chat_id = message.chat.id
+    raw = message.text.strip().replace(" ", "").replace("₽", "").replace("руб", "")
+    if not raw.isdigit():
+        await message.answer("⚠️ Пожалуйста, введите сумму числом (например: <code>10000</code>) или нажмите /cancel для отмены:", parse_mode=ParseMode.HTML)
+        return
+    amount_rub = int(raw)
+    if amount_rub < 500:
+        await message.answer("⚠️ Минимальная сумма счёта — <b>500 ₽</b>. Введите сумму от 500 ₽ или нажмите /cancel:", parse_mode=ParseMode.HTML)
+        return
+
+    PENDING_B2B_CUSTOM_AMOUNT.discard(chat_id)
+    user = message.from_user
+    db = SessionLocal()
+    try:
+        client, _ = get_or_create_trial_client_by_telegram_id(db, str(user.id if user else ""), username=user.username if user else "", name=user.full_name if user else "")
+        bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, client)
+        bonus_rub = bonus_kopeks // 100
+        credit_rub = amount_rub + bonus_rub
+        package_name = f"Пополнение {amount_rub:,} ₽"
+
+        PENDING_B2B_INN[chat_id] = {
+            "amount_rub": amount_rub,
+            "bonus_rub": bonus_rub,
+            "credit_rub": credit_rub,
+            "package_name": package_name,
+        }
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        credit_fmt = f"{credit_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_line = f" (на баланс <b>{credit_fmt}</b>, бонус +{bonus_fmt})" if bonus_rub > 0 else ""
+        text = (
+            f"🏢 <b>Счёт на сумму {amount_fmt}</b>{bonus_line}\n\n"
+            f"Введите <b>ИНН вашей организации или ИП</b> (10 или 12 цифр):\n"
+            f"<i>Реквизиты компании (наименование, КПП, адрес) будут определены автоматически через базу ФНС.</i>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Отмена", callback_data="topup_b2b_menu")]
+        ])
+        await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    finally:
+        db.close()
+
+
+@router.message(lambda message: message.chat.id in PENDING_B2B_INN and bool(message.text) and not message.text.startswith("/"))
+async def process_b2b_inn_input(message: Message) -> None:
+    chat_id = message.chat.id
+    raw_inn = re.sub(r"\D+", "", str(message.text or "")).strip()
+    if len(raw_inn) not in (10, 12):
+        await message.answer(
+            "⚠️ <b>Некорректный ИНН.</b>\n"
+            "ИНН юридического лица состоит из 10 цифр, а ИП — из 12 цифр.\n"
+            "Пожалуйста, введите корректный ИНН или нажмите /cancel:",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    ctx = PENDING_B2B_INN.get(chat_id, {})
+    user = message.from_user
+    if not user:
+        return
+
+    await message.answer("🔍 <i>Поиск реквизитов организации в базе ФНС...</i>", parse_mode=ParseMode.HTML)
+
+    db = SessionLocal()
+    try:
+        enriched = await enrich_company_by_inn(raw_inn)
+        company_name = enriched.get("company_name") or enriched.get("full_name") or ""
+        company_kpp = enriched.get("kpp") or ""
+        company_address = enriched.get("legal_address") or ""
+
+        if not company_name:
+            PENDING_B2B_INN.pop(chat_id, None)
+            PENDING_B2B_NAME[chat_id] = {
+                **ctx,
+                "buyer_inn": raw_inn,
+                "buyer_kpp": company_kpp,
+                "buyer_address": company_address,
+            }
+            await message.answer(
+                f"ℹ️ ИНН <code>{raw_inn}</code> принят, но не удалось автоматически определить наименование в базе.\n\n"
+                f"Пожалуйста, <b>введите наименование организации или ИП</b> (например: <code>ООО «Вектор»</code>):",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        PENDING_B2B_INN.pop(chat_id, None)
+        await _generate_and_send_b2b_invoice(
+            message=message,
+            db=db,
+            user=user,
+            ctx=ctx,
+            buyer_inn=raw_inn,
+            buyer_name=company_name,
+            buyer_kpp=company_kpp,
+            buyer_address=company_address,
+        )
+    finally:
+        db.close()
+
+
+@router.message(lambda message: message.chat.id in PENDING_B2B_NAME and bool(message.text) and not message.text.startswith("/"))
+async def process_b2b_name_input(message: Message) -> None:
+    chat_id = message.chat.id
+    name_str = message.text.strip()
+    if len(name_str) < 3:
+        await message.answer("⚠️ Пожалуйста, введите полное наименование организации или ИП:")
+        return
+
+    ctx = PENDING_B2B_NAME.pop(chat_id, {})
+    user = message.from_user
+    if not user:
+        return
+
+    db = SessionLocal()
+    try:
+        await _generate_and_send_b2b_invoice(
+            message=message,
+            db=db,
+            user=user,
+            ctx=ctx,
+            buyer_inn=ctx.get("buyer_inn", ""),
+            buyer_name=name_str,
+            buyer_kpp=ctx.get("buyer_kpp", ""),
+            buyer_address=ctx.get("buyer_address", ""),
+        )
+    finally:
+        db.close()
+
+
 @router.message(F.text == BUTTON_STATUS)
 async def status_button(message: Message) -> None:
     await show_status(message)
@@ -2763,16 +3371,24 @@ async def cancel_job_callback(callback: CallbackQuery) -> None:
         if not job:
             await callback.answer("Задача не найдена.", show_alert=True)
             return
-        if job.status not in {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION}:
+        if job.status not in {
+            "pending",
+            "running",
+            AWAITING_EXACT_SELECTION,
+            AWAITING_POSITION_SELECTION,
+            STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+        }:
             await callback.answer("Эту задачу уже нельзя отменить.", show_alert=True)
             await _edit_or_send_status(callback.message, _format_job_progress(_job_snapshot(job)), clear_reply_markup=True)
             return
-        _cancel_processing_job(
+        if not _cancel_processing_job(
             db,
             job,
             note="Резерв возвращён: задача отменена в Telegram",
             message="Задача отменена в Telegram",
-        )
+        ):
+            await callback.answer("Задача уже завершена; отменить её нельзя.", show_alert=True)
+            return
         snapshot = _job_snapshot(job)
     finally:
         db.close()
@@ -2862,6 +3478,7 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
             pending.mode,
             incoming_file_count=len(pending.files),
             supplier_search_count=supplier_search_count,
+            geo_radius_km=pending.geo_radius_km,
         )
         if error:
             if client:
@@ -2903,6 +3520,8 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
                     files=files,
                     sources=[],
                     supplier_search_policy=pending.supplier_search_policy,
+                    delivery_city=pending.delivery_city,
+                    geo_radius_km=pending.geo_radius_km,
                     initial_status="draft",
                 )
                 created_batch_entities.append(created)
@@ -2944,6 +3563,8 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
                 files=pending.files,
                 sources=pending.sources,
                 supplier_search_policy=pending.supplier_search_policy,
+                delivery_city=pending.delivery_city,
+                geo_radius_km=pending.geo_radius_km,
                 initial_status="draft",
             )
             reserve_error = _reserve_created_job(db, client, job)
@@ -3716,8 +4337,9 @@ async def tariffs_button(message: Message) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
+        web_url = f"{str(settings.public_base_url or 'https://tenderlex.ru').rstrip('/')}/cabinet"
         text = _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
-        await message.answer(text, reply_markup=tariffs_inline_keyboard(), **_contact_message_options())
+        await message.answer(text, reply_markup=tariffs_inline_keyboard(web_url), **_contact_message_options())
     finally:
         db.close()
 
@@ -3731,14 +4353,399 @@ async def open_tariffs_callback(callback: CallbackQuery) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
+        web_url = f"{str(settings.public_base_url or 'https://tenderlex.ru').rstrip('/')}/cabinet"
         text = _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
-        kb = tariffs_inline_keyboard()
+        kb = tariffs_inline_keyboard(web_url)
         try:
             await callback.message.edit_text(text, reply_markup=kb, **_contact_message_options())
         except Exception:
             await callback.message.answer(text, reply_markup=kb, **_contact_message_options())
     finally:
         db.close()
+
+
+async def _initiate_yookassa_checkout(
+    target: CallbackQuery | Message,
+    db: Session,
+    settings: SystemSettings,
+    client: Client,
+    user,
+    amount_rub: int,
+    bonus_rub: int,
+    credit_rub: int,
+    package_name: str,
+) -> None:
+    bot = target.bot
+    bot_info = await bot.get_me() if bot else None
+    bot_username = bot_info.username if bot_info and bot_info.username else "tenderlex_bot"
+    return_url = f"https://t.me/{bot_username}"
+
+    description = f"TenderLex: {package_name}"
+    customer_email = getattr(client, "contact_email", "") or ""
+    if not customer_email and getattr(client, "web_users", None) and client.web_users:
+        customer_email = getattr(client.web_users[0], "email", "") or ""
+    if not customer_email or "@" not in customer_email:
+        customer_email = f"tg_{user.id}@tenderlex.ru"
+    metadata = {
+        "client_id": client.id,
+        "telegram_id": str(user.id),
+        "source": "telegram_bot",
+        "package_name": package_name,
+        "amount_rub": amount_rub,
+        "bonus_rub": bonus_rub,
+        "total_credit_rub": credit_rub,
+    }
+
+    try:
+        payment_data = create_yookassa_payment(
+            shop_id=settings.yookassa_shop_id,
+            secret_key=settings.yookassa_secret_key,
+            amount_rub=amount_rub,
+            return_url=return_url,
+            description=description,
+            customer_email=customer_email if ("@" in customer_email) else None,
+            metadata=metadata,
+            send_receipt=bool(getattr(settings, "yookassa_send_receipt", False)),
+        )
+    except YooKassaError as exc:
+        err_msg = f"❌ Ошибка платёжного шлюза: {html_escape(str(exc))}"
+        if isinstance(target, CallbackQuery):
+            await target.answer(str(exc), show_alert=True)
+            if target.message:
+                await target.message.answer(err_msg, parse_mode=ParseMode.HTML)
+        else:
+            await target.answer(err_msg, parse_mode=ParseMode.HTML)
+        return
+
+    yoo_payment_id = payment_data.get("id")
+    confirmation = payment_data.get("confirmation", {}) or {}
+    confirmation_url = str(confirmation.get("confirmation_url") or "")
+
+    web_user_id = client.web_users[0].id if getattr(client, "web_users", None) else ""
+    yk_record = YooKassaPayment(
+        payment_id=yoo_payment_id,
+        client_id=client.id,
+        user_id=web_user_id,
+        status="pending",
+        amount_rub=amount_rub,
+        bonus_rub=bonus_rub,
+        total_credit_rub=credit_rub,
+        package_name=package_name,
+        confirmation_url=confirmation_url,
+    )
+    db.add(yk_record)
+    db.commit()
+    db.refresh(yk_record)
+
+    notify_admin_payment_attempt(
+        payment_id=yk_record.payment_id,
+        amount_rub=yk_record.amount_rub,
+        bonus_rub=yk_record.bonus_rub,
+        total_credit_rub=yk_record.total_credit_rub,
+        package_name=yk_record.package_name or "Пополнение баланса",
+        user_email=f"TG:{user.id} (@{user.username})" if user.username else f"TG:{user.id}",
+        client_name=user.full_name or user.username or f"TG:{user.id}",
+    )
+
+    amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+    credit_fmt = f"{credit_rub:,} ₽".replace(",", " ")
+    bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+
+    bonus_line = f"\n🎁 <b>Бонус к зачислению:</b> +{bonus_fmt}" if bonus_rub > 0 else ""
+    text = (
+        f"💳 <b>Счёт на оплату через ЮKassa готов!</b>\n\n"
+        f"📦 <b>Тариф:</b> {html_escape(package_name)}\n"
+        f"💵 <b>К оплате:</b> <b>{amount_fmt}</b>\n"
+        f"💰 <b>На баланс поступит:</b> <b>{credit_fmt}</b>{bonus_line}\n\n"
+        f"Способы оплаты: банковские карты (МИР, Visa, Mastercard), СБП, SberPay, Mir Pay без комиссии.\n\n"
+        f"👉 <b>Для оплаты нажмите на зеленую кнопку «Оплатить» ниже или перейдите по прямой ссылке:</b>\n"
+        f"🔗 <a href=\"{confirmation_url}\"><b>Открыть страницу оплаты ЮKassa в браузере</b></a>\n\n"
+        f"<i>После завершения оплаты нажмите «Проверить зачисление» — средства сразу поступят на ваш баланс.</i>"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💳 Оплатить {amount_fmt} ↗️", url=confirmation_url)],
+        [InlineKeyboardButton(text="🔄 Проверить зачисление", callback_data=f"check_yk_{yk_record.id}")],
+        [InlineKeyboardButton(text="🔙 К выбору пакетов", callback_data="topup_online_menu")],
+    ])
+
+    if isinstance(target, CallbackQuery):
+        await target.answer()
+        if target.message:
+            try:
+                await target.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await target.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:
+        await target.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data == "topup_online_menu")
+async def topup_online_menu_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    db = SessionLocal()
+    try:
+        packages = list_deposit_packages(db)
+        text = (
+            "💳 <b>Пополнение баланса онлайн через ЮKassa</b>\n\n"
+            "Моментальное зачисление средств на ваш единый баланс TenderLex.\n"
+            "Способы оплаты: <b>банковские карты (МИР, Visa, Mastercard), СБП, SberPay, Mir Pay</b> без комиссии.\n\n"
+            "🎁 <b>Выберите готовый пакет с бонусом или укажите свою сумму:</b>"
+        )
+        kb = topup_online_keyboard(packages)
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception:
+            await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data.startswith("topup_yk_pkg_"))
+async def topup_yk_pkg_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    pkg_id = callback.data.removeprefix("topup_yk_pkg_").strip()
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка пользователя.", show_alert=True)
+        return
+
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        if not _bot_yookassa_ready(settings):
+            await callback.answer("Оплата онлайн временно недоступна. Пожалуйста, воспользуйтесь счётом для юрлиц или напишите в поддержку.", show_alert=True)
+            return
+
+        client, _ = get_or_create_trial_client_by_telegram_id(db, str(user.id), username=user.username or "", name=user.full_name or "")
+        if not client:
+            await callback.answer("Клиент не найден.", show_alert=True)
+            return
+
+        pkg = db.query(TariffPackage).filter(TariffPackage.id == pkg_id).first()
+        if not pkg:
+            await callback.answer("Пакет не найден.", show_alert=True)
+            return
+
+        amount_rub = pkg.price_kopeks // 100
+        bonus_rub = (pkg.bonus_kopeks or 0) // 100
+        credit_rub = amount_rub + bonus_rub
+        package_name = pkg.name
+
+        await _initiate_yookassa_checkout(callback, db, settings, client, user, amount_rub, bonus_rub, credit_rub, package_name)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data == "topup_yk_custom")
+async def topup_yk_custom_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    chat_id = callback.message.chat.id
+    _clear_pending_state(chat_id)
+    PENDING_CUSTOM_TOPUP.add(chat_id)
+    text = (
+        "✏️ <b>Пополнение баланса на произвольную сумму</b>\n\n"
+        "Введите сумму пополнения в рублях (целое число, минимум <b>500 ₽</b>).\n\n"
+        "🎁 <b>Действуют автоматические бонусы к пополнению:</b>\n"
+        "• от 3 000 ₽ — бонус +17%\n"
+        "• от 5 000 ₽ — бонус +30%\n"
+        "• от 10 000 ₽ — бонус +40%\n"
+        "• от 25 000 ₽ — максимальный бонус +50%\n\n"
+        "<i>Отправьте сообщение с суммой (например: <code>5000</code>) или нажмите «Отмена»:</i>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data="topup_online_menu")]
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data.startswith("check_yk_"))
+async def check_yk_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    yk_id = callback.data.removeprefix("check_yk_").strip()
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        record = db.query(YooKassaPayment).filter(YooKassaPayment.id == yk_id).first()
+        if not record:
+            await callback.answer("Платёж не найден.", show_alert=True)
+            return
+
+        if record.status == "succeeded":
+            await callback.answer("✅ Оплата уже зачислена на ваш баланс!", show_alert=True)
+            return
+
+        try:
+            live_data = fetch_yookassa_payment(
+                shop_id=settings.yookassa_shop_id,
+                secret_key=settings.yookassa_secret_key,
+                payment_id=record.payment_id,
+            )
+        except YooKassaError as exc:
+            await callback.answer(f"Ошибка проверки статуса: {exc}", show_alert=True)
+            return
+
+        if not live_data:
+            await callback.answer("⏳ Данные о платеже пока не поступили в ЮKassa.", show_alert=True)
+            return
+
+        live_status = live_data.get("status")
+        if live_status == "succeeded":
+            from .main import _process_yookassa_payment_success
+            _process_yookassa_payment_success(db, live_data, record)
+            await callback.answer("🎉 Оплата успешно подтверждена!", show_alert=True)
+            text = (
+                f"🎉 <b>Оплата через ЮKassa успешно завершена!</b>\n\n"
+                f"📦 <b>Тариф:</b> {html_escape(record.package_name or 'Пополнение баланса')}\n"
+                f"💵 <b>Оплачено:</b> {record.amount_rub:,} ₽\n"
+                f"💰 <b>Зачислено на баланс:</b> <b>{record.total_credit_rub:,} ₽</b>\n\n"
+                f"✅ Баланс успешно пополнен. Все сервисы TenderLex активны!"
+            )
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💼 Мой кабинет", callback_data="open_cabinet")],
+                [InlineKeyboardButton(text="🚀 Создать задачу", callback_data="open_create_menu")],
+            ])
+            try:
+                await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        elif live_status == "canceled":
+            from .main import _process_yookassa_payment_canceled
+            _process_yookassa_payment_canceled(db, live_data, record)
+            await callback.answer("❌ Платёж был отменён.", show_alert=True)
+            try:
+                await callback.message.edit_text(
+                    "❌ <b>Платёж отменён или истёк срок ожидания.</b>\n\nВы можете создать новый платёж в любое время.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="💳 Попробовать снова", callback_data="topup_online_menu")],
+                        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+                    ]),
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+        else:
+            await callback.answer("⏳ Платёж ещё обрабатывается ЮKassa. Завершите оплату на странице шлюза и повторите проверку через несколько секунд.", show_alert=True)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data == "topup_b2b_menu")
+async def topup_b2b_menu_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    db = SessionLocal()
+    try:
+        packages = list_deposit_packages(db)
+        text = (
+            "🏢 <b>Счёт на оплату для юридических лиц и ИП (безналичный расчёт)</b>\n\n"
+            "• Оплата по счёту через любой банк на расчётный счёт в АО «Альфа-Банк».\n"
+            "• Автоматическое формирование счёта с синей печатью и подписью в PDF и Excel.\n"
+            "• Закрывающие документы (УПД) передаются по ЭДО (Диадок / СБИС) или скан-копиями.\n\n"
+            "🎁 <b>Выберите сумму счёта (бонус действует и для юрлиц):</b>"
+        )
+        kb = topup_b2b_keyboard(packages)
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception:
+            await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data.startswith("topup_b2b_pkg_"))
+async def topup_b2b_pkg_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    pkg_id = callback.data.removeprefix("topup_b2b_pkg_").strip()
+    user = callback.from_user
+    chat_id = callback.message.chat.id
+    if not user:
+        await callback.answer("Ошибка пользователя.", show_alert=True)
+        return
+
+    db = SessionLocal()
+    try:
+        pkg = db.query(TariffPackage).filter(TariffPackage.id == pkg_id).first()
+        if not pkg:
+            await callback.answer("Пакет не найден.", show_alert=True)
+            return
+
+        amount_rub = pkg.price_kopeks // 100
+        bonus_rub = (pkg.bonus_kopeks or 0) // 100
+        credit_rub = amount_rub + bonus_rub
+        package_name = pkg.name
+
+        _clear_pending_state(chat_id)
+        PENDING_B2B_INN[chat_id] = {
+            "amount_rub": amount_rub,
+            "bonus_rub": bonus_rub,
+            "credit_rub": credit_rub,
+            "package_name": package_name,
+        }
+        await callback.answer()
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        credit_fmt = f"{credit_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_line = f" (на баланс <b>{credit_fmt}</b>, бонус +{bonus_fmt})" if bonus_rub > 0 else ""
+        text = (
+            f"🏢 <b>Счёт на сумму {amount_fmt}</b>{bonus_line}\n\n"
+            f"Введите <b>ИНН вашей организации или ИП</b> (10 или 12 цифр):\n"
+            f"<i>Реквизиты компании (наименование, КПП, адрес) будут определены автоматически через базу ФНС.</i>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Отмена", callback_data="topup_b2b_menu")]
+        ])
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception:
+            await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data == "topup_b2b_custom")
+async def topup_b2b_custom_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    chat_id = callback.message.chat.id
+    _clear_pending_state(chat_id)
+    PENDING_B2B_CUSTOM_AMOUNT.add(chat_id)
+    text = (
+        "✏️ <b>Счёт для юрлиц на произвольную сумму</b>\n\n"
+        "Введите желаемую сумму счёта в рублях (целое число, минимум <b>500 ₽</b>).\n\n"
+        "🎁 <b>Бонусы начисляются автоматически:</b>\n"
+        "• от 3 000 ₽ — бонус +17%\n"
+        "• от 5 000 ₽ — бонус +30%\n"
+        "• от 10 000 ₽ — бонус +40%\n"
+        "• от 25 000 ₽ — максимальный бонус +50%\n\n"
+        "<i>Отправьте сообщение с суммой (например: <code>15000</code>) или нажмите «Отмена»:</i>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data="topup_b2b_menu")]
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 @router.message(Command("contacts"))
@@ -3794,6 +4801,7 @@ async def help_button(message: Message) -> None:
         "📋 Что нужно для запуска:\n"
         "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n"
         "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n\n"
+        "📍 Приоритет доставки: после добавления ТЗ нажмите кнопку географии или /delivery Москва; 300. Ближайшие поставщики идут первыми, дальние и неизвестные адреса отмечаются отдельно; действует надбавка по вашему тарифу.\n\n"
         "💳 Списание средств происходит только после успешной выдачи готового результата.\n"
         "📊 Баланс и история доступны в разделе «Кабинет» на сайте https://tenderlex.ru/cabinet\n\n"
         f"⚖️ Правовая информация: {LEGAL_INDEX_URL}"
@@ -3820,6 +4828,7 @@ async def open_help_callback(callback: CallbackQuery) -> None:
         "📋 Что нужно для запуска:\n"
         "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n"
         "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n\n"
+        "📍 Приоритет доставки: после добавления ТЗ нажмите кнопку географии или /delivery Москва; 300. Ближайшие поставщики идут первыми, дальние и неизвестные адреса отмечаются отдельно; действует надбавка по вашему тарифу.\n\n"
         "💳 Списание средств происходит только после успешной выдачи готового результата.\n"
         "📊 Баланс и история доступны в разделе «Кабинет» на сайте https://tenderlex.ru/cabinet\n\n"
         f"⚖️ Правовая информация: {LEGAL_INDEX_URL}"
@@ -3933,14 +4942,14 @@ async def find_more_suppliers_accept(callback: CallbackQuery) -> None:
             pitch = ""
             if callback.message:
                 pitch = await _send_client_low_balance_notification(
-                    callback.message, client, settings, error=detail, mode=MODE_SUPPLIER_SEARCH_EXTRA, job_title=job_title
+                    callback.message, client, settings, error=detail, mode=KIND_SUPPLIER_SEARCH_EXTRA, job_title=job_title
                 )
             await _alert_owner_about_low_balance(
                 _message_bot(callback.message) if callback.message else None,
                 client,
                 reason="Попытка запуска дополнительного поиска без средств",
                 job_title=job_title,
-                mode=MODE_SUPPLIER_SEARCH_EXTRA,
+                mode=KIND_SUPPLIER_SEARCH_EXTRA,
                 ai_pitch=pitch,
             )
         else:
@@ -4320,6 +5329,8 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
                 mode=mode,
                 files=[],
                 supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+                delivery_city=PENDING_GEO.get(message.chat.id, ("", None))[0],
+                geo_radius_km=PENDING_GEO.get(message.chat.id, ("", None))[1],
             )
             PENDING_UPLOADS[message.chat.id] = pending
         if client_uses_trial_access(db, client) and mode == MODE_SUPPLIER_SEARCH:
@@ -4414,6 +5425,8 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
                 mode=mode,
                 files=[],
                 supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+                delivery_city=PENDING_GEO.get(message.chat.id, ("", None))[0],
+                geo_radius_km=PENDING_GEO.get(message.chat.id, ("", None))[1],
             )
             PENDING_UPLOADS[message.chat.id] = pending
         if client_uses_trial_access(db, client) and mode == MODE_SUPPLIER_SEARCH and pending.files:
@@ -4503,6 +5516,8 @@ async def _handle_source_text(message: Message) -> bool:
                 mode=mode,
                 files=[],
                 supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+                delivery_city=PENDING_GEO.get(message.chat.id, ("", None))[0],
+                geo_radius_km=PENDING_GEO.get(message.chat.id, ("", None))[1],
             )
             PENDING_UPLOADS[message.chat.id] = pending
         _add_pending_sources(pending, sources)
@@ -4620,7 +5635,7 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
             kind = KIND_EXACT_PRODUCT
         elif mode_val in (MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS):
             kind = KIND_PROCUREMENT_REPORT
-        elif mode_val == MODE_SUPPLIER_SEARCH_EXTRA:
+        elif mode_val == KIND_SUPPLIER_SEARCH_EXTRA:
             kind = KIND_SUPPLIER_SEARCH_EXTRA
 
         price_kopeks = effective_price_kopeks(db, client, kind) or 9900

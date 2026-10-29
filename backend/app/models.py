@@ -87,6 +87,7 @@ class SystemSettings(Base):
     yookassa_shop_id: Mapped[str] = mapped_column(String(255), default="")
     yookassa_secret_key: Mapped[str] = mapped_column(Text, default="")
     yookassa_return_url: Mapped[str] = mapped_column(String(255), default="")
+    yookassa_send_receipt: Mapped[bool] = mapped_column(Boolean, default=False)
     price_monitoring_default_price_kopeks: Mapped[int] = mapped_column(Integer, default=5000)
     price_monitoring_max_suppliers: Mapped[int] = mapped_column(Integer, default=3)
     price_monitoring_max_positions: Mapped[int] = mapped_column(Integer, default=1000)
@@ -112,7 +113,7 @@ class SystemSettings(Base):
             "allow_partial_supplier_reports": self.allow_partial_supplier_reports,
             "logistics_enabled": self.logistics_enabled,
             "geo_radius_search_enabled_global": getattr(self, "geo_radius_search_enabled_global", False),
-            "geo_radius_surcharge_pct": getattr(self, "geo_radius_surcharge_pct", 30.0) or 30.0,
+            "geo_radius_surcharge_pct": configured_geo_surcharge_pct(self),
             "trial_enabled": self.trial_enabled,
             "trial_supplier_search_limit": self.trial_supplier_search_limit,
             "trial_procurement_report_limit": self.trial_procurement_report_limit,
@@ -155,6 +156,7 @@ class SystemSettings(Base):
             "yookassa_shop_id": self.yookassa_shop_id,
             "yookassa_secret_key_set": bool(self.yookassa_secret_key),
             "yookassa_return_url": self.yookassa_return_url,
+            "yookassa_send_receipt": bool(self.yookassa_send_receipt),
             "price_monitoring_default_price_kopeks": self.price_monitoring_default_price_kopeks,
             "price_monitoring_max_suppliers": self.price_monitoring_max_suppliers,
             "price_monitoring_max_positions": self.price_monitoring_max_positions,
@@ -178,6 +180,11 @@ class SystemSettings(Base):
             if str(item.get("apiKey") or "").strip() and str(item.get("baseUrl") or "").strip():
                 return True
         return False
+
+
+def configured_geo_surcharge_pct(settings: SystemSettings | None) -> float:
+    value = getattr(settings, "geo_radius_surcharge_pct", None)
+    return 30.0 if value is None else float(value)
 
 
 class Client(Base):
@@ -271,6 +278,10 @@ class WebUser(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    password_reset_tokens: Mapped[list["WebPasswordResetToken"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     email_verification_tokens: Mapped[list["WebEmailVerificationToken"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
@@ -310,6 +321,22 @@ class WebPasswordResetRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     user: Mapped[WebUser] = relationship(back_populates="password_reset_requests")
+
+
+class WebPasswordResetToken(Base):
+    __tablename__ = "web_password_reset_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("web_users.id"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    requested_ip: Mapped[str] = mapped_column(String(80), default="")
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+    user: Mapped[WebUser] = relationship(back_populates="password_reset_tokens")
 
 
 class WebEmailVerificationToken(Base):
@@ -420,8 +447,10 @@ class Job(Base):
     supplier_search_policy: Mapped[str] = mapped_column(String(40), default="normal")
     supplier_search_run_type: Mapped[str] = mapped_column(String(40), default="initial")
     multi_item_mode: Mapped[str] = mapped_column(String(40), default="balanced")
+    position_selection_json: Mapped[str] = mapped_column(Text, default="")
     delivery_city: Mapped[str] = mapped_column(String(255), default="")
     geo_radius_km: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    geo_scope: Mapped[str] = mapped_column(String(32), default="ru")
     filter_marketplaces: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     filter_foreign: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     max_suppliers: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
@@ -616,14 +645,25 @@ class ApiKey(Base):
     allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_exact_product: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_price_monitoring: Mapped[bool] = mapped_column(Boolean, default=False)
 
     quota_supplier_search: Mapped[int] = mapped_column(Integer, default=10)
     quota_exact_product: Mapped[int] = mapped_column(Integer, default=10)
     quota_procurement_report: Mapped[int] = mapped_column(Integer, default=10)
+    quota_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
 
     spent_supplier_search: Mapped[int] = mapped_column(Integer, default=0)
     spent_exact_product: Mapped[int] = mapped_column(Integer, default=0)
     spent_procurement_report: Mapped[int] = mapped_column(Integer, default=0)
+    spent_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Standalone keys reserve a slot before a synchronous request starts.  Keeping
+    # this separately from spent counters prevents concurrent requests from both
+    # passing the same quota check.
+    reserved_supplier_search: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_exact_product: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_procurement_report: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
 
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=30)
     notes: Mapped[str] = mapped_column(Text, default="")
@@ -633,6 +673,33 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     client: Mapped[Client | None] = relationship(back_populates="api_keys", foreign_keys=[client_id])
+
+
+class ApiOperation(Base):
+    """Persistent retry identity; deliberately stores no market result payload."""
+    __tablename__ = "api_operations"
+    __table_args__ = (UniqueConstraint("api_key_id", "idempotency_key", name="uq_api_operation_key"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    service: Mapped[str] = mapped_column(String(64))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="processing")
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
+    # Batch API requests retain only their own job identities, never market data.
+    job_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class ApiRateLimitEvent(Base):
+    """Durable sliding-window event used across all API worker processes."""
+    __tablename__ = "api_rate_limit_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
 
 
 class PartnerPayoutRequest(Base):
@@ -703,4 +770,94 @@ def parse_json_list(value: str) -> list[dict]:
 def parse_json_dict(value: str) -> dict:
     res = parse_json_safely(value)
     return res if isinstance(res, dict) else {}
+
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    invoice_number: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    client_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc, onupdate=now_utc)
+
+    # Financials
+    amount_rub: Mapped[int] = mapped_column(Integer, nullable=False)
+    bonus_rub: Mapped[int] = mapped_column(Integer, default=0)
+    total_credit_rub: Mapped[int] = mapped_column(Integer, default=0)
+    tariff_name: Mapped[str] = mapped_column(String(255), default="Пополнение баланса")
+    service_name: Mapped[str] = mapped_column(Text, default="Предоставление права использования сервиса TenderLex")
+
+    # Buyer Requisites
+    buyer_inn: Mapped[str] = mapped_column(String(20), default="")
+    buyer_kpp: Mapped[str] = mapped_column(String(20), default="")
+    buyer_name: Mapped[str] = mapped_column(String(255), default="")
+    buyer_address: Mapped[str] = mapped_column(Text, default="")
+    buyer_email: Mapped[str] = mapped_column(String(255), default="")
+
+    # Status: issued, paid, cancelled
+    status: Mapped[str] = mapped_column(String(32), default="issued")
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "invoice_number": self.invoice_number,
+            "client_id": self.client_id,
+            "amount_rub": self.amount_rub,
+            "bonus_rub": self.bonus_rub,
+            "total_credit_rub": self.total_credit_rub,
+            "tariff_name": self.tariff_name,
+            "service_name": self.service_name,
+            "buyer_inn": self.buyer_inn,
+            "buyer_kpp": self.buyer_kpp,
+            "buyer_name": self.buyer_name,
+            "buyer_address": self.buyer_address,
+            "buyer_email": self.buyer_email,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "paid_at": self.paid_at.isoformat() if self.paid_at else None,
+        }
+
+
+class YooKassaPayment(Base):
+    __tablename__ = "yookassa_payments"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    payment_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("web_users.id"), nullable=True, default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    amount_rub: Mapped[int] = mapped_column(Integer, nullable=False)
+    bonus_rub: Mapped[int] = mapped_column(Integer, default=0)
+    total_credit_rub: Mapped[int] = mapped_column(Integer, default=0)
+    package_name: Mapped[str] = mapped_column(String(120), default="")
+    confirmation_url: Mapped[str] = mapped_column(Text, default="")
+    payment_method_type: Mapped[str] = mapped_column(String(40), default="")
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+    client: Mapped[Client] = relationship("Client")
+    user: Mapped[WebUser | None] = relationship("WebUser", foreign_keys=[user_id])
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "payment_id": self.payment_id,
+            "client_id": self.client_id,
+            "user_id": self.user_id,
+            "status": self.status,
+            "amount_rub": self.amount_rub,
+            "bonus_rub": self.bonus_rub,
+            "total_credit_rub": self.total_credit_rub,
+            "package_name": self.package_name,
+            "confirmation_url": self.confirmation_url,
+            "payment_method_type": self.payment_method_type,
+            "paid_at": self.paid_at.isoformat() if self.paid_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
 

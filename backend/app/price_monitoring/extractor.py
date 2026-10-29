@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
-from typing import Optional, Tuple
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -12,9 +14,15 @@ from bs4 import BeautifulSoup
 from ..ai import call_llm, parse_json_object
 from ..dadata_client import enrich_company_by_inn_or_query
 from ..models import SystemSettings
-from .cleaner import extract_package_hints, normalize_unit
+from .cleaner import (
+    check_engineering_spec_conflict,
+    is_closed_factory_drawing,
+    is_drawing_or_part_code,
+    normalize_unit,
+)
 from .cookie_manager import cookie_manager
 from .models import SupplierQuote
+from ..supplier_search import is_domain_allowed_for_geo, CIS_CCTLDS
 
 logger = logging.getLogger(__name__)
 
@@ -24,36 +32,50 @@ BLOCKED_DOMAINS = {
     "zakupki.gov.ru", "consultant.ru", "garant.ru", "nalog.gov.ru", "tass.ru", "ria.ru",
     "zen.yandex.ru", "vc.ru", "drive2.ru", "pikabu.ru", "otzovik.com", "irecommend.ru",
     "habr.com", "tbank.ru", "sberbank.ru", "hh.ru", "superjob.ru", "rabota.ru", "audit-it.ru",
-    "klerk.ru", "cbr.ru", "rbc.ru", "kommersant.ru", "lenta.ru", "gazeta.ru"
+    "klerk.ru", "cbr.ru", "rbc.ru", "kommersant.ru", "lenta.ru", "gazeta.ru",
+    # Государственные и коммерческие электронные торговые площадки (тендерные агрегаторы и ЭТП)
+    "roseltorg.ru", "star-pro.ru", "torgkey.ru", "otc.ru", "sberbank-ast.ru",
+    "rts-tender.ru", "etp-ets.ru", "gz.lot-online.ru", "tektorg.ru", "b2b-center.ru",
+    "fabrikant.ru", "synapsenet.ru", "bicotender.ru", "tenderplan.ru", "clearspending.ru",
+    "goszakupki.ru", "tenderguru.ru", "rostender.info", "trade.su", "zakupki.kontur.ru",
+    "seldon-pro.ru", "seldon.ru", "zakazrf.ru", "lot-online.ru", "etp-gpb.ru"
 }
 
-# Автомобильные ритейлеры (ложные срабатывания по артикулам для промышленного оборудования)
-AUTOMOTIVE_DOMAINS = {
-    "rossko.ru", "exist.ru", "autodoc.ru", "emex.ru", "avtoall.ru", "euroauto.ru",
-    "baza.drom.ru", "zapchasti.rf", "kolesa-darom.ru", "autopiter.ru", "ixora-auto.ru",
-    "carro.ru", "amaster.pro", "partauto.ru", "shinservice.ru", "avtoto.ru", "exist.ua",
-    "japancar.ru", "autorus.ru", "kolesa.ru", "drom.ru"
-}
 
 # Маркетплейсы потребительских товаров и доски объявлений
 MARKETPLACE_DOMAINS = {
     "ozon.ru", "wildberries.ru", "market.yandex.ru", "megamarket.ru",
     "aliexpress.ru", "aliexpress.com", "avito.ru", "taobao.com", "1688.com",
     "temu.com", "ebay.com", "amazon.com", "lamoda.ru", "sbermegamarket.ru",
-    "youla.ru", "farpost.ru", "drom.ru", "irr.ru"
+    "youla.ru", "farpost.ru", "drom.ru", "irr.ru", "doski.ru", "flagma.ru"
 }
 
 # Сайты-посредники зарубежного выкупа / мейлфорвардеры
 CROSSBORDER_FORWARDERS = {
-    "shopozz.ru", "cdek.shopping", "usmall.ru", "banderolka.com", "pochtaglobal.ru"
+    "shopozz.ru", "cdek.shopping", "usmall.ru", "banderolka.com", "pochtaglobal.ru", "china.org.ru"
 }
 
 # Разрешенные региональные зоны для поиска поставщиков РФ
 ALLOWED_DOMESTIC_TLDS = {".ru", ".рф", ".su", ".by", ".kz"}
 
+# Общеупотребительные бизнес-зоны gTLD, часто используемые российскими дистрибьюторами и производителями
+GENERIC_BUSINESS_TLDS = {
+    ".com", ".net", ".org", ".biz", ".info", ".pro", ".tools", ".one",
+    ".online", ".shop", ".store", ".tech", ".group", ".market", ".center",
+    ".moscow", ".city", ".club", ".space", ".site", ".co", ".me", ".top"
+}
+
+# Исключительно зарубежные национальные домены верхнего уровня (ccTLD)
+FOREIGN_NATIONAL_CCTLDS = {
+    ".ua", ".de", ".cn", ".us", ".uk", ".pl", ".fr", ".it", ".es", ".jp",
+    ".kr", ".in", ".tr", ".cz", ".nl", ".se", ".fi", ".ro", ".bg", ".hu",
+    ".gr", ".at", ".ch", ".ca", ".au", ".br", ".mx", ".ar", ".vn", ".th"
+}
+
 LISTING_PATH_PATTERNS = [
     re.compile(r'/tag[-_]page/', re.I),
     re.compile(r'/tags?/', re.I),
+    re.compile(r'/tag[-_][a-z0-9_-]+(?:/|$)', re.I),
     re.compile(r'/popular/', re.I),
     re.compile(r'/search(?:/|\?|$)', re.I),
     re.compile(r'/collections?/', re.I),
@@ -63,6 +85,34 @@ LISTING_PATH_PATTERNS = [
     re.compile(r'^/catalog/all/?$', re.I),
     re.compile(r'/category/(?:[a-z0-9_-]+/)*$', re.I),
 ]
+
+# Procurement, tender and archive pages can be useful references, but do not
+# prove a current commercial offer from the page operator.
+REFERENCE_PRICE_PATH_PATTERNS = [
+    re.compile(r'/(?:tenders?|procurement|purchases?|auctions?|protocols?|archive)(?:/|$)', re.I),
+    re.compile(r'/(?:tender|procurement|purchase|auction|protocol)[-_]?\d+(?:/|$)', re.I),
+    re.compile(r'/(?:procedure|procedures|lot|lots|notice|notices)/\d+(?:/|$)', re.I),
+    re.compile(r'/marketplace-b2b/offer/ktru-', re.I),
+    re.compile(r'/ktru-okpd2/', re.I),
+]
+
+
+PUBLIC_INSTITUTION_MARKERS = (
+    "гбу", "гбуз", "муп", "гуп", "мку", "фгбу", "фку", "гомвд", "омвд",
+    "администрация", "больница", "црб", "поликлиника", "школа", "детский сад",
+    "управление", "департамент", "министерство", "комитет", "прокуратура", "суд"
+)
+
+
+def is_public_institution_buyer(name: str) -> bool:
+    """Проверяет, является ли юрлицо государственным/муниципальным учреждением (заказчиком торгов, а не продавцом)."""
+    if not name:
+        return False
+    lower = name.lower()
+    for m in PUBLIC_INSTITUTION_MARKERS:
+        if re.search(r'(?:^|[\s"«„(])' + re.escape(m) + r'(?:$|[\s"»“)])', lower, re.I):
+            return True
+    return False
 
 
 def is_listing_url(url: str) -> bool:
@@ -76,14 +126,55 @@ def is_listing_url(url: str) -> bool:
         query = parsed.query.lower()
         if any(param in query for param in ("sort=", "filter=", "page=", "search=")):
             return True
+        if re.search(r'/(?:catalog|katalog\d*|category)/[a-z0-9_-]+/?$', path):
+            if not any(m in path for m in ("/product/", "/item/", "/goods/", "/tovar/", "/card/", "/p/", "/sku/")):
+                if re.search(r'/(?:catalog|katalog\d*)/[a-z_-]*gost[-_]?\d+/?$', path):
+                    return True
+                if not re.search(r'(?:^|/|-|_)(?:item|tovar|product|goods|card|sku)[-_/\d]|\d+|\.html?$', path):
+                    return True
         return False
     except Exception:
         return False
 
 
-def is_foreign_source(url: str, text: str = "") -> bool:
-    """Определяет иностранные сайты, зарубежные TLD и сервисы трансграничного выкупа."""
+def is_deep_product_url(u: str) -> bool:
+    """Проверяет, является ли ссылка прямой карточкой конкретного товара."""
+    if not u or not u.startswith("http"):
+        return False
     try:
+        if is_listing_url(u) or is_reference_price_url(u):
+            return False
+        p = urlparse(u).path.strip().lower()
+        if not p or p in ("/", "/index.html", "/index.php", "/ru", "/ru/", "/en", "/en/"):
+            return False
+        if any(p.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".ico", ".css", ".js")):
+            return False
+        if any(b in p for b in ("/biznes-idei/", "/blog/", "/news/", "/stati/", "/articles/", "/about/", "/contact", "/vacancy", "/delivery", "/politika")):
+            return False
+        segments = [s for s in p.split("/") if s and s not in ("ru", "en", "catalog", "products", "item", "tovar", "upload", "goods", "shop")]
+        if not segments:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def is_reference_price_url(url: str) -> bool:
+    """Return True for tender/procurement/archive references, not product offers."""
+    try:
+        path = urlparse(url).path.lower()
+        return any(pattern.search(path) for pattern in REFERENCE_PRICE_PATH_PATTERNS)
+    except Exception:
+        return False
+
+
+def is_foreign_source(url: str, text: str = "", geo_scope: str = "ru") -> bool:
+    """Определяет иностранные сайты, зарубежные TLD и сервисы трансграничного выкупа с учетом geo_scope."""
+    try:
+        scope = str(geo_scope or "ru").strip().lower()
+        if scope == "world":
+            return False
+
         domain = urlparse(url).netloc.lower()
         if domain.startswith("www."):
             domain = domain[4:]
@@ -97,8 +188,30 @@ def is_foreign_source(url: str, text: str = "") -> bool:
         parts = domain.split(".")
         if len(parts) >= 2:
             tld = "." + parts[-1]
-            if tld not in ALLOWED_DOMESTIC_TLDS and not domain.endswith(".xn--p1ai"):
-                return True
+            if scope == "ru":
+                if tld in FOREIGN_NATIONAL_CCTLDS or tld in CIS_CCTLDS:
+                    return True
+            elif scope == "cis":
+                if tld in FOREIGN_NATIONAL_CCTLDS and tld not in CIS_CCTLDS:
+                    return True
+
+            # Специальные gTLD, активно используемые российскими дистрибьюторами и интернет-магазинами
+            if tld in {".tools", ".pro", ".one", ".online", ".shop", ".store", ".market", ".moscow", ".tech", ".group"}:
+                # Разрешаем предварительный парсинг для проверки языка контента
+                if text and len(text) > 80:
+                    cyrillic = len(re.findall(r'[а-яА-ЯёЁ]', text))
+                    latin = len(re.findall(r'[a-zA-Z]', text))
+                    total = cyrillic + latin
+                    if total > 40 and (cyrillic / total) < 0.20:
+                        return True
+                return False
+
+            # Обычные зарубежные зоны (.com, .net, .org, .cc и прочие) без подтвержденного русскоязычного текста
+            if tld not in {".ru", ".рф", ".su"} and not domain.endswith(".xn--p1ai"):
+                if scope == "cis" and tld in CIS_CCTLDS:
+                    pass
+                else:
+                    return True
 
         # Проверка языка контента, если передан текст
         if text and len(text) > 80:
@@ -118,6 +231,7 @@ def is_valid_domain(
     target_item_name: str = "",
     filter_marketplaces: bool = True,
     filter_foreign: bool = True,
+    geo_scope: str = "ru",
 ) -> bool:
     try:
         domain = urlparse(url).netloc.lower()
@@ -135,21 +249,21 @@ def is_valid_domain(
                 if domain == md or domain.endswith("." + md):
                     return False
 
+        # Проверка допустимости домена по географии
+        if not is_domain_allowed_for_geo(domain, geo_scope=geo_scope):
+            return False
+
         # Фильтрация зарубежных источников
-        if filter_foreign and is_foreign_source(url):
+        if filter_foreign and is_foreign_source(url, geo_scope=geo_scope):
             return False
 
         # Отсекаем явные страницы списков и тегов
         if is_listing_url(url):
             return False
 
-        # Защита от автомагазинов: если ищется промышленное оборудование, отсекаем автозапчасти
-        target_lower = target_item_name.lower()
-        is_auto_item = any(w in target_lower for w in ("автомобил", "ваз", "камаз", "газель", "колодки торм", "двс", "моторное масл", "свечи зажиг"))
-        if not is_auto_item:
-            for ad in AUTOMOTIVE_DOMAINS:
-                if domain == ad or domain.endswith("." + ad):
-                    return False
+        # Не считаем тендерную позицию, протокол или архив текущей ценой продавца.
+        if is_reference_price_url(url):
+            return False
 
         return True
     except Exception:
@@ -157,38 +271,152 @@ def is_valid_domain(
 
 
 def _extract_inn_kpp_contacts(html: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Извлекает ИНН, КПП и базовые контакты из HTML регулярными выражениями."""
+    """Извлекает ИНН, КПП и базовые контакты из HTML регулярными выражениями и очищенного текста."""
     inn: Optional[str] = None
     kpp: Optional[str] = None
     contacts_list: list[str] = []
 
-    # ИНН (10 цифр для юрлиц, 12 для ИП)
+    # 1. Быстрый поиск по raw HTML
     m_inn = re.findall(r'(?:ИНН|инн|taxid|inn)[\s:№#«"\'\xa0]{0,10}(\d{10}|\d{12})\b', html)
     if m_inn:
         inn = m_inn[0]
 
-    # КПП (9 цифр)
     m_kpp = re.findall(r'(?:КПП|кпп)[\s:№#«"\'\xa0]{0,10}(\d{9})\b', html)
     if m_kpp:
         kpp = m_kpp[0]
 
-    # Телефоны РФ
     phones = re.findall(r'(?:(?:\+7|8)[\s\-\(]{0,2}\d{3,4}[\s\-\)]{0,2}\d{2,3}[\s\-]?\d{2}[\s\-]?\d{2})', html)
     if phones:
-        # фильтруем слишком короткие/длинные или явно мусорные
         valid_phones = [p.strip() for p in phones if len(re.sub(r'\D', '', p)) in (11, 10)]
         if valid_phones:
             contacts_list.append(valid_phones[0])
 
-    # Email
     emails = re.findall(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b', html)
     if emails:
-        clean_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css'))]
+        clean_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css', '.svg'))]
         if clean_emails:
             contacts_list.append(clean_emails[0])
 
+    # 2. Если что-то не найдено, очищаем HTML от тегов (BeautifulSoup), так как реквизиты часто оформлены как <dt>ИНН</dt><dd>1234567890</dd>
+    if not inn or not kpp or len(contacts_list) < 2:
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            text = " ".join(soup.stripped_strings)
+            if not inn:
+                m_inn_txt = re.findall(r'(?:ИНН|инн|taxid|inn)[\s:№#«"\'\xa0]{0,10}(\d{10}|\d{12})\b', text)
+                if m_inn_txt:
+                    inn = m_inn_txt[0]
+            if not kpp:
+                m_kpp_txt = re.findall(r'(?:КПП|кпп)[\s:№#«"\'\xa0]{0,10}(\d{9})\b', text)
+                if m_kpp_txt:
+                    kpp = m_kpp_txt[0]
+            if not phones:
+                t_phones = re.findall(r'(?:(?:\+7|8)[\s\-\(]{0,2}\d{3,4}[\s\-\)]{0,2}\d{2,3}[\s\-]?\d{2}[\s\-]?\d{2})', text)
+                valid_t_phones = [p.strip() for p in t_phones if len(re.sub(r'\D', '', p)) in (11, 10)]
+                if valid_t_phones and not any(p in contacts_list for p in valid_t_phones):
+                    contacts_list.insert(0, valid_t_phones[0])
+            if not emails:
+                t_emails = re.findall(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b', text)
+                clean_t_emails = [e for e in t_emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css', '.svg'))]
+                if clean_t_emails and not any(e in contacts_list for e in clean_t_emails):
+                    contacts_list.append(clean_t_emails[0])
+        except Exception:
+            pass
+
     contacts_str = ", ".join(contacts_list) if contacts_list else None
     return inn, kpp, contacts_str
+
+
+DISCONTINUED_PATTERN = re.compile(
+    r'\b(?:товар\s+снят\s+с\s+производства|снят(?:о|а)?\s+с\s+производства|'
+    r'архивный\s+товар|товар\s+в\s+архиве|снят\s+с\s+продажи|'
+    r'не\s+поставляется|снято\s+с\s+продажи|товар\s+недоступен\s+для\s+заказа|'
+    r'(?:временно\s+)?не\s+(?:изготавлива|производит|поставляет|выпускает)\w*)\b',
+    re.IGNORECASE,
+)
+
+
+def extract_schema_org_product_data(soup: BeautifulSoup) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """
+    Извлекает структурированные данные Schema.org (Product, Offer) и проверяет статус наличия/архива (Правило 14).
+    Возвращает (product_info_dict, is_discontinued_or_out_of_stock).
+    """
+    is_discontinued = False
+    best_product: Optional[Dict[str, Any]] = None
+
+    def _inspect_offer(offer_dict: dict) -> Tuple[Optional[float], Optional[str], Optional[str], bool]:
+        price_val = None
+        raw_price = offer_dict.get("price") or offer_dict.get("lowPrice")
+        if raw_price is not None:
+            try:
+                c_pr = str(raw_price).replace(" ", "").replace(",", ".")
+                price_val = float(c_pr)
+            except Exception:
+                price_val = None
+        curr = offer_dict.get("priceCurrency")
+        avail = str(offer_dict.get("availability") or "").lower()
+        is_oos = any(bad in avail for bad in ("outofstock", "discontinued", "soldout"))
+        return price_val, curr, avail, is_oos
+
+    for script in soup.find_all("script", type="application/ld+json"):
+        if not script.string:
+            continue
+        try:
+            data = json.loads(script.string)
+        except Exception:
+            continue
+
+        items_to_check: List[Any] = []
+        if isinstance(data, dict):
+            if "@graph" in data and isinstance(data["@graph"], list):
+                items_to_check.extend(data["@graph"])
+            else:
+                items_to_check.append(data)
+        elif isinstance(data, list):
+            items_to_check.extend(data)
+
+        for item in items_to_check:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("@type") or "")
+            if "Product" in item_type or item.get("offers"):
+                name = item.get("name")
+                sku = item.get("sku") or item.get("mpn") or item.get("productID")
+                brand_raw = item.get("brand") or item.get("manufacturer")
+                brand = brand_raw.get("name") if isinstance(brand_raw, dict) else (str(brand_raw) if brand_raw else None)
+                offers = item.get("offers")
+                p_val, p_curr, p_avail, p_oos = None, None, None, False
+                if isinstance(offers, dict):
+                    p_val, p_curr, p_avail, p_oos = _inspect_offer(offers)
+                elif isinstance(offers, list) and offers:
+                    for off in offers:
+                        if isinstance(off, dict):
+                            pv, pc, pa, po = _inspect_offer(off)
+                            if pv and pv > 0:
+                                p_val, p_curr, p_avail, p_oos = pv, pc, pa, po
+                                break
+                if p_oos:
+                    is_discontinued = True
+
+                if (name or p_val) and not best_product:
+                    best_product = {
+                        "name": name,
+                        "sku": sku,
+                        "brand": brand,
+                        "price": p_val,
+                        "currency": p_curr or "RUB",
+                        "availability": p_avail,
+                        "is_out_of_stock": p_oos,
+                    }
+
+    # Также проверяем мета-теги наличия
+    for meta in soup.find_all("meta"):
+        prop = (meta.get("property") or meta.get("name") or "").lower()
+        content = (meta.get("content") or "").lower()
+        if "availability" in prop and any(bad in content for bad in ("discontinued", "снят")):
+            is_discontinued = True
+
+    return best_product, is_discontinued
 
 
 async def fetch_page_content_and_meta(
@@ -208,7 +436,7 @@ async def fetch_page_content_and_meta(
     if custom_cookie:
         headers["Cookie"] = custom_cookie
     try:
-        resp = await client.get(url, headers=headers, timeout=8.0)
+        resp = await client.get(url, headers=headers, timeout=httpx.Timeout(7.0, connect=2.5))
         if resp.status_code != 200 or not resp.text:
             return None, None, None, None
 
@@ -217,12 +445,42 @@ async def fetch_page_content_and_meta(
 
         soup = BeautifulSoup(raw_html, "html.parser")
 
+        # 0. Извлекаем структурированные данные Schema.org и проверяем наличие до удаления скриптов
+        product_info, is_oos = extract_schema_org_product_data(soup)
+        schema_block = ""
+        if product_info:
+            schema_block = "[СТРУКТУРИРОВАННЫЕ ДАННЫЕ ТОВАРА (SCHEMA.ORG JSON-LD)]:\n"
+            if product_info.get("name"):
+                schema_block += f"- Товар: {product_info['name']}\n"
+            if product_info.get("sku"):
+                schema_block += f"- Артикул/Чертеж (SKU): {product_info['sku']}\n"
+            if product_info.get("brand"):
+                schema_block += f"- Бренд/Производитель: {product_info['brand']}\n"
+            if product_info.get("price"):
+                schema_block += f"- Цена: {product_info['price']} {product_info.get('currency', 'RUB')}\n"
+            avail_str = str(product_info.get("availability") or "").lower()
+            if "discontinued" in avail_str or "архив" in avail_str:
+                schema_block += "- Статус наличия: СНЯТ С ПРОИЗВОДСТВА (АРХИВ)\n"
+            elif is_oos:
+                schema_block += "- Статус наличия: НЕТ В НАЛИЧИИ НА СКЛАДЕ (ПОД ЗАКАЗ)\n"
+            elif product_info.get("availability"):
+                schema_block += f"- Наличие: {product_info['availability']}\n"
+            schema_block += "\n"
+        elif is_oos:
+            schema_block = "[ВНИМАНИЕ]: СТАТУС НАЛИЧИЯ: НЕТ В НАЛИЧИИ НА СКЛАДЕ (ПОД ЗАКАЗ)\n\n"
+
         # Находим ссылку на страницу контактов/реквизитов, если ИНН не найден в теле страницы
+        # Находим ссылку на страницу контактов/реквизитов, если ИНН или контакты не найдены в теле страницы
         contacts_suburl: Optional[str] = None
-        if not inn:
+        if not inn or not contacts:
             for a_tag in soup.find_all("a", href=True):
                 href = a_tag["href"].strip()
-                if re.search(r'(?:contacts|kontakty|rekvizit|requisites|about|o-kompanii)', href, re.I):
+                txt = a_tag.get_text().strip().lower()
+                href_low = href.lower()
+                if (
+                    re.search(r'(?:contacts|kontakty|rekvizit|requisites|about|o-kompanii)', href_low)
+                    or any(w in txt for w in ("контакт", "реквизит", "о компании", "о магазине", "о нас", "связь"))
+                ):
                     full_c_url = urljoin(url, href)
                     if urlparse(full_c_url).netloc == urlparse(url).netloc:
                         contacts_suburl = full_c_url
@@ -240,18 +498,18 @@ async def fetch_page_content_and_meta(
 
         main_text = " ".join(soup.stripped_strings)
 
-        # Объединяем основной текст и реквизиты подвала
-        combined_text = main_text[:3500]
+        # Объединяем структурированные данные Schema.org, основной текст и реквизиты подвала
+        combined_text = (schema_block + main_text)[:3500] if schema_block else main_text[:3500]
         if footer_text:
             combined_text += "\n\n[РЕКВИЗИТЫ И ПОДВАЛ САЙТА]:\n" + footer_text[:1000]
 
-        # Если ИНН всё ещё нет, но есть ссылка на контакты, пробуем быстро подтянуть реквизиты
-        if not inn and contacts_suburl:
+        # Если ИНН или контактов всё ещё нет, но есть ссылка на контакты, пробуем быстро подтянуть реквизиты
+        if (not inn or not contacts) and contacts_suburl:
             try:
-                c_resp = await client.get(contacts_suburl, headers=headers, timeout=4.0)
+                c_resp = await client.get(contacts_suburl, headers=headers, timeout=httpx.Timeout(3.5, connect=2.0))
                 if c_resp.status_code == 200:
                     c_inn, c_kpp, c_contacts = _extract_inn_kpp_contacts(c_resp.text)
-                    if c_inn:
+                    if c_inn and not inn:
                         inn = c_inn
                     if c_kpp and not kpp:
                         kpp = c_kpp
@@ -271,117 +529,131 @@ async def fetch_page_content(client: httpx.AsyncClient, url: str) -> Optional[st
     return text
 
 
+def compute_deterministic_normalized_price(
+    raw_price: float,
+    site_unit: str,
+    target_unit: str,
+    pack_quantity: Optional[float] = None,
+    pack_base_unit: Optional[str] = None,
+    is_price_for_whole_pack: bool = False,
+    existing_comment: str = "",
+) -> Tuple[float, str, Optional[str]]:
+    """
+    Детерминированный математический движок пересчета цен по правилам размерного анализа (Правило 14).
+    Возвращает (normalized_price, target_unit, conversion_comment).
+    100% универсален для любых ТМЦ без жестко зашитых товарных категорий.
+    """
+    if raw_price <= 0:
+        return 0.0, target_unit, None
+
+    norm_target = normalize_unit(target_unit)
+    norm_site = normalize_unit(site_unit)
+
+    # 1. Единицы полностью совпадают
+    if norm_target == norm_site or (norm_target in ("шт", "штука") and norm_site in ("шт", "штука")):
+        return round(raw_price + 1e-9, 2), norm_target, None
+
+    # 2. Метрические размерные преобразования (Вес, Объем, Длина, Площадь)
+    # ВЕС:
+    if norm_site in ("кг", "килограмм") and norm_target in ("т", "тонна"):
+        p = round((raw_price * 1000.0) + 1e-9, 2)
+        return p, norm_target, f"На сайте: {raw_price:,.2f} ₽/кг. Пересчитано в тонны (x1000): {p:,.0f} ₽/т"
+    if norm_site in ("т", "тонна") and norm_target in ("кг", "килограмм"):
+        p = round((raw_price / 1000.0) + 1e-9, 2)
+        return p, norm_target, f"На сайте: {raw_price:,.0f} ₽/т. Пересчитано в кг (/1000): {p:,.2f} ₽/кг"
+    if norm_site in ("г", "грамм") and norm_target in ("кг", "килограмм"):
+        p = round((raw_price * 1000.0) + 1e-9, 2)
+        return p, norm_target, f"На сайте: {raw_price:,.2f} ₽/г. Пересчитано в кг (x1000): {p:,.2f} ₽/кг"
+    if norm_site in ("кг", "килограмм") and norm_target in ("г", "грамм"):
+        p = round((raw_price / 1000.0) + 1e-9, 4)
+        return p, norm_target, f"На сайте: {raw_price:,.2f} ₽/кг. Пересчитано в г (/1000): {p:,.4f} ₽/г"
+
+    # ОБЪЕМ:
+    if norm_site in ("л", "литр") and norm_target in ("м3", "куб", "кубометр"):
+        p = round((raw_price * 1000.0) + 1e-9, 2)
+        return p, norm_target, f"На сайте: {raw_price:,.2f} ₽/л. Пересчитано в м³ (x1000): {p:,.0f} ₽/м³"
+    if norm_site in ("м3", "куб", "кубометр") and norm_target in ("л", "литр"):
+        p = round((raw_price / 1000.0) + 1e-9, 2)
+        return p, norm_target, f"На сайте: {raw_price:,.0f} ₽/м³. Пересчитано в л (/1000): {p:,.2f} ₽/л"
+
+    # ДЛИНА:
+    if norm_site in ("м", "метр") and norm_target in ("км", "километр"):
+        p = round((raw_price * 1000.0) + 1e-9, 2)
+        return p, norm_target, f"На сайте: {raw_price:,.2f} ₽/м. Пересчитано в км (x1000): {p:,.0f} ₽/км"
+    if norm_site in ("км", "километр") and norm_target in ("м", "метр"):
+        p = round((raw_price / 1000.0) + 1e-9, 2)
+        return p, norm_target, f"На сайте: {raw_price:,.0f} ₽/км. Пересчитано в м (/1000): {p:,.2f} ₽/м"
+
+    # 3. Фасовка, упаковки, тара (бочки, канистры, мешки, коробки, пачки, рулоны, бухты).
+    # A unit label alone cannot prove the contents of a purchasable container;
+    # conversion needs the extractor's explicit source-backed fields.
+    qty = pack_quantity
+    # ``normalize_unit("")`` falls back to "шт" for regular nomenclature
+    # parsing.  Here an omitted base unit is missing source evidence, not an
+    # implicit piece count.
+    raw_base_unit = str(pack_base_unit or "").strip()
+    base_u = normalize_unit(raw_base_unit) if raw_base_unit else ""
+
+    pack_keywords = ("уп", "пач", "кор", "мешок", "бочк", "канистр", "рулон", "бухт", "ведр", "банк", "компл")
+    is_pack_unit = any(k in site_unit.lower() for k in pack_keywords)
+    if qty and qty > 0 and base_u and is_price_for_whole_pack:
+        # Случай А: На сайте цена за тару/упаковку Q базовых единиц, а требуется базовая единица (или кратная ей)
+        if norm_target == base_u:
+            p = round((raw_price / qty) + 1e-9, 2)
+            lbl = site_unit if site_unit else "упаковку/тару"
+            return p, norm_target, f"На сайте: {raw_price:,.2f} ₽ за {lbl} ({qty} {norm_target}). Пересчитано за 1 {norm_target}: {p:,.2f} ₽/{norm_target}"
+
+        # Случай Б: Тара в кг (например, мешок 50 кг), а заказчику нужны тонны (т)
+        if base_u in ("кг", "килограмм") and norm_target in ("т", "тонна"):
+            p = round(((raw_price / qty) * 1000.0) + 1e-9, 2)
+            return p, norm_target, f"На сайте: {raw_price:,.2f} ₽ за тару ({qty} кг). Пересчитано в тонны (x1000/{qty}): {p:,.0f} ₽/т"
+
+        # Случай В: Тара в литрах (например, бочка 200 л), а заказчику нужны кубометры (м³)
+        if base_u in ("л", "литр") and norm_target in ("м3", "куб", "кубометр"):
+            p = round(((raw_price / qty) * 1000.0) + 1e-9, 2)
+            return p, norm_target, f"На сайте: {raw_price:,.2f} ₽ за тару ({qty} л). Пересчитано в м³ (x1000/{qty}): {p:,.0f} ₽/м³"
+
+    # Случай Г: Заказчик просит упаковку из Q штук/кг, а на сайте цена за 1 штуку/кг
+    if qty and qty > 1 and base_u and is_pack_unit and not is_price_for_whole_pack:
+        if norm_target == "уп" and norm_site == base_u:
+            p = round((raw_price * qty) + 1e-9, 2)
+            return p, norm_target, f"На сайте: {raw_price:,.2f} ₽/{norm_site}. Пересчитано за упаковку ({qty} {norm_site}): {p:,.2f} ₽/{norm_target}"
+
+    # Если детерминированный пересчет не потребовался, возвращаем исходную цену
+    return round(raw_price + 1e-9, 2), norm_target, (existing_comment or None)
+
+
 def reconcile_quote_unit(
     quote: SupplierQuote,
     target_item_name: str,
     target_unit: str,
 ) -> SupplierQuote:
     """
-    Приводит цену к единице измерения заказчика (Правило 14: приоритет семантического анализа ИИ).
+    Приводит цену к единице измерения заказчика (Правило 14: приоритет универсального размерного анализа).
     """
     norm_target = normalize_unit(target_unit)
-
-    # Если ИИ уже успешно выполнил семантический пересчет в требуемую единицу (Правило 14):
-    if quote.unit == norm_target and quote.conversion_comment and quote.price_rub > 0:
-        # Проверяем только грубейшие физические несоответствия (например, тонна металла < 3000 руб или куб пиломатериалов < 1500 руб):
-        is_suspicious_ton = norm_target in ("т", "тонна") and quote.price_rub < 3000
-        is_suspicious_m3 = norm_target in ("м3", "куб") and quote.price_rub < 1500
-        if not is_suspicious_ton and not is_suspicious_m3:
-            return quote
-
-    hints = extract_package_hints(target_item_name, target_unit)
     price = quote.raw_price_rub if quote.raw_price_rub > 0 else quote.price_rub
-    site_u = normalize_unit(quote.site_unit or quote.unit or "")
+    site_u = quote.site_unit or quote.unit or ""
 
-    # 1. Газ в баллонах (Пропан, Кислород, Азот, Аргон, Углекислота)
-    gas_type = hints.get("gas_type")
-    cyl_vol = hints.get("cylinder_volume_l")
+    # extract_supplier_quote may already have applied a deterministic conversion
+    # from explicit package fields before constructing this DTO. Re-running with
+    # only a display unit would discard those source-backed facts.
+    if quote.unit == norm_target and quote.conversion_comment and quote.price_rub > 0:
+        return quote
 
-    # ПРОПАН: при запросе в КГ (баллон 50л содержит ~21 кг газа)
-    if gas_type == "propane" or "пропан" in target_item_name.lower():
-        if norm_target in ("кг", "к-г"):
-            # Если цена указана за баллон 50л целиком (обычно 1800 - 3500 руб), а нужна за кг (~80-130 руб)
-            if price > 400 or "баллон" in (quote.site_unit or "").lower() or (cyl_vol == 50):
-                converted_p = round(price / 21.0, 2)
-                quote.price_rub = converted_p
-                quote.unit = norm_target
-                quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за баллон 50л (21 кг газа). Пересчитано в кг: {converted_p:,.2f} ₽/кг"
-                return quote
-
-    # КИСЛОРОД, АЗОТ, АРГОН: при запросе в М3 (баллон 40л содержит ~6.3 м³ газа при 150 атм)
-    if gas_type in ("oxygen", "nitrogen", "argon") or any(g in target_item_name.lower() for g in ("кислород", "азот", "аргон")):
-        if norm_target in ("м3", "куб"):
-            # Если цена указана за баллон целиком (обычно 700 - 3500 руб), а нужна за м³
-            if price > 250 or "баллон" in (quote.site_unit or "").lower() or (cyl_vol == 40):
-                converted_p = round(price / 6.3, 2)
-                quote.price_rub = converted_p
-                quote.unit = norm_target
-                gas_label = "кислорода" if "кислород" in target_item_name.lower() else ("азота" if "азот" in target_item_name.lower() else "аргона")
-                quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за баллон 40л (6.3 м³ {gas_label}). Пересчитано в м³: {converted_p:,.2f} ₽/м³"
-                return quote
-
-    # УГЛЕКИСЛОТА: при запросе в КГ (баллон 40л содержит ~24 кг углекислоты)
-    if gas_type == "co2" or "углекислот" in target_item_name.lower():
-        if norm_target in ("кг", "к-г"):
-            if price > 300 or "баллон" in (quote.site_unit or "").lower() or (cyl_vol == 40):
-                converted_p = round(price / 24.0, 2)
-                quote.price_rub = converted_p
-                quote.unit = norm_target
-                quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за баллон 40л (24 кг углекислоты). Пересчитано в кг: {converted_p:,.2f} ₽/кг"
-                return quote
-
-    # 2. МЕТАЛЛОПРОКАТ / ВЕС: Тонна <-> Килограмм
-    if norm_target in ("т", "тонна"):
-        if site_u in ("кг", "килограмм") and price < 5000:
-            converted_p = round(price * 1000.0, 2)
-            quote.price_rub = converted_p
-            quote.unit = norm_target
-            quote.conversion_comment = f"На сайте: {price:,.2f} ₽/кг. Пересчитано в тонны: {converted_p:,.0f} ₽/т"
-            return quote
-    elif norm_target in ("кг", "килограмм"):
-        if (site_u in ("т", "тонна") or price > 20000) and any(kw in target_item_name.lower() for kw in ("лист", "полоса", "круг", "труба", "арматура", "сталь", "уголок")):
-            converted_p = round(price / 1000.0, 2)
-            quote.price_rub = converted_p
-            quote.unit = norm_target
-            quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за тонну. Пересчитано в кг: {converted_p:,.2f} ₽/кг"
-            return quote
-
-    # 3. ЭЛЕКТРОДЫ СВАРОЧНЫЕ (часто фасовка 5 кг или 5.5 кг)
-    if "электрод" in target_item_name.lower() and norm_target == "кг":
-        pack_kg = hints.get("pack_weight_kg")
-        if not pack_kg:
-            m_wt = re.search(r'(\d+(?:[.,]\d+)?)\s*кг', (quote.site_unit or "").lower())
-            if m_wt:
-                pack_kg = float(m_wt.group(1).replace(",", "."))
-            else:
-                pack_kg = 5.0
-        if price > 500 and ("пач" in (quote.site_unit or "").lower() or "уп" in (quote.site_unit or "").lower() or price > 600):
-            converted_p = round(price / pack_kg, 2)
-            quote.price_rub = converted_p
-            quote.unit = norm_target
-            quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за пачку ({pack_kg} кг). Пересчитано в кг: {converted_p:,.2f} ₽/кг"
-            return quote
-
-    # 4. ШТУКИ И УПАКОВКИ: УП <-> ШТ
-    pack_pcs = hints.get("pack_pieces")
-    if not pack_pcs:
-        m_pcs = re.search(r'(\d+)\s*(?:шт|штук)\b', (quote.site_unit or "").lower())
-        if m_pcs:
-            pack_pcs = int(m_pcs.group(1))
-
-    if pack_pcs and pack_pcs > 1:
-        if norm_target == "шт" and ("уп" in site_u or "пач" in site_u or price > 100):
-            converted_p = round(price / pack_pcs, 2)
-            quote.price_rub = converted_p
-            quote.unit = norm_target
-            quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за уп ({pack_pcs} шт). Пересчитано в шт: {converted_p:,.2f} ₽/шт"
-            return quote
-        elif norm_target in ("уп", "пач") and ("шт" in site_u or price < 50):
-            converted_p = round(price * pack_pcs, 2)
-            quote.price_rub = converted_p
-            quote.unit = norm_target
-            quote.conversion_comment = f"На сайте: {price:,.2f} ₽/шт. Пересчитано в уп ({pack_pcs} шт): {converted_p:,.2f} ₽/уп"
-            return quote
+    # Deterministic, dimension-based calculation for every product.  Never
+    # infer a package mass/volume from a product name or a price threshold.
+    calc_price, calc_unit, calc_comment = compute_deterministic_normalized_price(
+        raw_price=price,
+        site_unit=site_u,
+        target_unit=norm_target,
+        existing_comment=quote.conversion_comment,
+    )
+    if calc_comment and calc_price > 0:
+        quote.price_rub = calc_price
+        quote.unit = norm_target
+        quote.conversion_comment = calc_comment
+        return quote
 
     # Единица совпала или стандартная
     quote.price_rub = price
@@ -400,7 +672,7 @@ PRICE_SIGNAL_PATTERN = re.compile(
     r'(?:'
     r'\d+[\s\xa0]*(?:[.,]\d{1,2})?[\s\xa0]*(?:₽|руб\.?|рублей|rur|rub)\b|'
     r'(?:цена|стоимость|прайс|от)[\s:№#«"\'\xa0]{1,10}\d+[\s\xa0]*(?:[.,]\d{1,2})?|'
-    r'\b(?:купить|в\s+корзину|заказать|в\s+наличии|прайс-лист|розница|опт)\b'
+    r'\b(?:купить|в\s+корзину|заказать|в\s+наличии|прайс-лист|розница|опт|по\s+запросу|запросить\s+(?:цену|кп|счет)|уточняйте\s+цену|под\s+заказ)\b'
     r')',
     re.IGNORECASE,
 )
@@ -413,32 +685,137 @@ def has_price_signals(text: str) -> bool:
     return bool(PRICE_SIGNAL_PATTERN.search(text))
 
 
+def find_price_grounding_match(raw_price: float, text: str) -> Optional[re.Match[str]]:
+    """Find the exact numeric representation of a price without partial-number matches."""
+    source = str(text or "")
+    try:
+        price = Decimal(str(raw_price)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not price.is_finite() or price <= 0:
+        return None
+
+    integer_value = int(price)
+    integer_text = str(integer_value)
+    integer_forms = [re.escape(integer_text)]
+    if len(integer_text) > 3:
+        groups: list[str] = []
+        remaining = integer_text
+        while remaining:
+            groups.insert(0, remaining[-3:])
+            remaining = remaining[:-3]
+        grouped = r"[\s\xa0.,]".join(re.escape(group) for group in groups)
+        integer_forms.insert(0, grouped)
+    integer_pattern = "(?:" + "|".join(integer_forms) + ")"
+
+    cents = int((price - Decimal(integer_value)) * 100)
+    if cents:
+        decimal_forms = [f"{cents:02d}"]
+        if cents % 10 == 0:
+            decimal_forms.append(str(cents // 10))
+        number_pattern = integer_pattern + r"[.,](?:" + "|".join(decimal_forms) + ")"
+    else:
+        number_pattern = integer_pattern + r"(?:[.,]0{1,2})?"
+
+    # Do not accept a suffix inside a larger number, decimal, SKU, or word.
+    bounded_pattern = (
+        r"(?<!\w)(?<!\d[ \xa0\u202f.,])"
+        + number_pattern
+        + r"(?!\w)(?![ \xa0\u202f.,]\d)"
+    )
+    return re.search(bounded_pattern, source, flags=re.UNICODE)
+
+
 def is_price_grounded_in_text(raw_price: float, text: str) -> bool:
     """Проверяет, что извлеченная цена физически присутствует в тексте страницы (защита от галлюцинаций LLM)."""
-    if raw_price <= 0:
+    return find_price_grounding_match(raw_price, text) is not None
+
+
+HOMOGLYPHS = str.maketrans({
+    "a": "а", "c": "с", "e": "е", "k": "к", "m": "м", "o": "о", "p": "р", "t": "т", "x": "х", "y": "у"
+})
+
+
+def _is_complex_identifier(token: str) -> bool:
+    """Use the same model/specification distinction during search and page matching."""
+    token = token.strip("()[]{}<>\"'*#№!, =")
+    if " " in token:
         return False
-    int_p = int(round(raw_price))
-    if int_p <= 0:
+    # Preserve the extractor's support for long numeric catalog identifiers.
+    return is_drawing_or_part_code(token) or bool(re.fullmatch(r"\d{9,}", token))
+
+
+def _has_deterministic_identifier_conflict(
+    target_item_name: str,
+    target_ids: list[Any],
+    page_text: str,
+    url: str,
+) -> bool:
+    """
+    Детерминированная проверка соответствия чертежей и артикулов (Правило 14: Compare-then-Match).
+    Если в запросе указан конкретный сложный чертеж или артикул, он ОБЯЗАН присутствовать в реальном тексте страницы или URL.
+    Проверка выполняется по физическому контенту (ground truth), а не по галлюцинациям модели.
+    """
+    raw_corpus = f"{url} {page_text}".lower()
+    # Нормализуем десятичные нули (2.0 -> 2, 2_0 -> 2), чтобы 'СТП 2.0/3000' совпадало с 'СТП 2/3000'
+    cleaned_corpus = re.sub(r'(?<=\d)[.,_]0(?!\d)', '', raw_corpus)
+    site_corpus = cleaned_corpus.translate(HOMOGLYPHS)
+    norm_corpus = re.sub(r"[^a-zа-яё0-9]", "", site_corpus)
+
+    candidates: list[str] = []
+    all_raw_tokens: list[str] = []
+    for tid in target_ids:
+        tid_str = str(tid).strip()
+        if " " in tid_str:
+            all_raw_tokens.extend(tid_str.split())
+        else:
+            all_raw_tokens.append(tid_str)
+    for tok in re.split(r"[\s,;]+", target_item_name):
+        all_raw_tokens.append(tok)
+
+    for tok in all_raw_tokens:
+        c_tok = tok.strip("()[]{}<>\"'*#№!, =")
+        if _is_complex_identifier(c_tok) and c_tok not in candidates:
+            candidates.append(c_tok)
+        # Если сложный артикул содержит разделители модификаций/опций (/ или -):
+        if "/" in c_tok:
+            base_part = c_tok.split("/")[0].strip("()[]{}<>\"'*#№!, =")
+            if _is_complex_identifier(base_part) and base_part not in candidates:
+                candidates.append(base_part)
+            if "-" in base_part:
+                sub_base = base_part.rsplit("-", 1)[0].strip("()[]{}<>\"'*#№!, =")
+                if _is_complex_identifier(sub_base) and sub_base not in candidates:
+                    candidates.append(sub_base)
+        elif "-" in c_tok and c_tok.count("-") >= 2:
+            base_prefix = c_tok.split("-")[0].strip("()[]{}<>\"'*#№!, =")
+            if _is_complex_identifier(base_prefix) and base_prefix not in candidates:
+                candidates.append(base_prefix)
+
+    if not candidates:
         return False
-    str_int = str(int_p)
-    if str_int in text:
-        return True
-    if len(str_int) > 3:
-        # Проверка с разделителями тысяч (пробел, неразрывный пробел, точка)
-        parts = []
-        rem = len(str_int) % 3
-        if rem:
-            parts.append(str_int[:rem])
-        for i in range(rem, len(str_int), 3):
-            parts.append(str_int[i : i + 3])
-        spaced = r'[\s\xa0.,]'.join(parts)
-        if re.search(spaced, text):
-            return True
-    # Проверка исходного числа с плавающей точкой
-    str_float = f"{raw_price:.2f}".replace(".", ",")
-    if str_float in text or f"{raw_price:.2f}" in text:
-        return True
-    return False
+
+    # Если в номенклатуре есть заводской чертеж (децимальный номер), он является ключевым идентификатором детали:
+    drawings = [c for c in candidates if is_closed_factory_drawing(c, target_item_name)]
+    check_candidates = drawings if drawings else candidates
+
+    for c in check_candidates:
+        # Проверяем точное вхождение в исходный текст или URL
+        if re.search(r'\b' + re.escape(c) + r'\b', raw_corpus, re.IGNORECASE):
+            return False
+        # Нормализованное сравнение (минимальная длина 3 для кодов типа ЦЧ-4 -> цч4)
+        c_clean = re.sub(r'(?<=\d)[.,_]0(?!\d)', '', c.lower())
+        norm_c = re.sub(r"[^a-zа-яё0-9]", "", c_clean.translate(HOMOGLYPHS))
+        if len(norm_c) >= 3 and norm_c in norm_corpus:
+            return False  # Найдено точное совпадение чертежа/артикула в реальном тексте
+        norm_c_no_zero = re.sub(r"(?<=[a-zа-яё])0+(\d+)", r"\1", norm_c)
+        if len(norm_c_no_zero) >= 3 and norm_c_no_zero in norm_corpus:
+            return False
+        # Также проверяем вариант без единичного префикса ветви/слоя (например СТП1-2 -> СТП 2)
+        norm_c_no_single = re.sub(r"(?<=[а-яa-z])1(?=\d)", "", norm_c)
+        if len(norm_c_no_single) >= 3 and norm_c_no_single in norm_corpus:
+            return False
+
+    return True  # В запросе есть конкретный чертеж/артикул, но в реальном тексте страницы его нет
 
 
 async def extract_supplier_quote(
@@ -454,6 +831,17 @@ async def extract_supplier_quote(
     """Анализирует текст страницы и извлекает цену, название поставщика, ИНН, КПП и контакты."""
     if not has_price_signals(page_text):
         logger.debug("Skip LLM extraction for %s: no price signals found on page", url)
+        return None
+
+    # Детерминированная проверка чертежей и артикулов перед вызовом LLM (Правило 14: Compare-then-Match)
+    if _has_deterministic_identifier_conflict(target_item_name, [], page_text, url):
+        logger.debug("Skip LLM extraction for %s: deterministic identifier conflict for %s", url, target_item_name)
+        return None
+
+    # Детерминированная проверка размерностей и характеристик оборудования (Compare-then-Match: Ду, Ру, В, кВт, сечение)
+    spec_conflict, spec_reason = check_engineering_spec_conflict(target_item_name, f"{url} {page_text}")
+    if spec_conflict:
+        logger.debug("Skip LLM extraction for %s: %s", url, spec_reason)
         return None
 
     domain = urlparse(url).netloc
@@ -475,22 +863,37 @@ URL страницы: {url}
 
 КРИТИЧЕСКИЕ ПРАВИЛА (АРХИТЕКТУРА COMPARE-THEN-MATCH, ПРАВИЛО 14):
 1. ДЕКОМПОЗИЦИЯ ИДЕНТИФИКАТОРОВ И ПРОВЕРКА КОНФЛИКТОВ:
-   - Исходный товар: выдели ключевые артикулы, чертежи, индексы, марки, материалы (например: 'Р1763', 'Л-04.524', 'К4-15-01', 'К4-79', 'ВАТИ-202', 'ОЗС-12', 'К4-52', 'GT13E2', '0065C...').
-   - Товар на странице: определи точную марку, артикул, чертеж и материал на странице.
-   - КОНФЛИКТ ИДЕНТИФИКАТОРОВ (identifier_conflict):
-     * Если в запросе есть конкретный код, чертеж или марка ('Р1763', 'Л-04.524', 'GT13E2', 'ВАТИ-202', 'К4-52', 'Rosemount 0065C...'), а на странице продается ДРУГАЯ марка или общий товар без этого кода (например, просто диаграммная лента без Р1763, датчик ВАЗ вместо турбинного GT13E2, набивка АП-31 вместо безасбестовой ВАТИ-202, броня Sicoma вместо К4-52) — СТРОГО УСТАНОВИ identifier_conflict: true, is_relevant: false, is_price_found: false!
+   - Исходный товар: выдели ключевые артикулы, чертежи, индексы, марки, материалы.
+   - Товар на странице: определи точную марку, артикул, чертеж и функционал на странице.
+   - КОНФЛИКТ ФУНКЦИОНАЛЬНОГО КЛАССА И КАТЕГОРИИ (category_conflict):
+     * Товар на найденной странице обязан относиться к ТОМУ ЖЕ функциональному классу и назначению, что и запрос!
+     * КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО сопоставлять товары принципиально разных классов при совпадении отдельных слов или бренда:
+       - Измерительные приборы, датчики, преобразователи, КИПиА НЕЛЬЗЯ заменять на спецодежду/СИЗ (перчатки, обувь, очки), даже если бренд или корень слова совпадает!
+       - Узлы промышленного оборудования, ветрогенераторов, турбин НЕЛЬЗЯ заменять на запчасти садовой техники (газонокосилки, триммеры) или бытовых приборов!
+       - Заказные промышленные детали по чертежам НЕЛЬЗЯ заменять на уплотнения/детали кухонной бытовой техники (пароконвектоматы, духовки)!
+     * Если функциональный класс принципиально не совпадает -> СТРОГО установи category_conflict: true, is_relevant: false, is_price_found: false!
+   - КОНФЛИКТ ИДЕНТИФИКАТОРОВ И ЧЕРТЕЖЕЙ (identifier_conflict):
+     * Если в запросе есть конкретный код, чертеж, децимальный номер или марка, а на странице продается ДРУГАЯ марка или общий товар без этого кода — СТРОГО установи identifier_conflict: true, is_relevant: false, is_price_found: false!
+     * ЗАПРЕТ ЧАСТИЧНЫХ СОВПАДЕНИЙ ЦИФР В ЧЕРТЕЖАХ И АРТИКУЛАХ: случайное совпадение группы цифр (например '59-00-002' в номере чертежа бытовой плиты при поиске чертежа генератора) НЕ является совпадением! Идентификатор должен совпадать полностью.
      * Запрещены смысловые подмены и омонимы:
-       - Промышленная броня/футеровка смесителя vs бронежилеты/плиты защиты человека -> conflict!
+       - Промышленная футеровка/броня vs бронежилеты/плиты защиты человека -> conflict!
        - Била/молотки промышленных дробилок vs автомобильные колодки/диски/фильтры -> conflict!
        - Муфтовые/крановые пальцы vs поршневые пальцы двигателей автомобилей -> conflict!
-       - Запрет частичных совпадений цифр артикула: совпадение только суффикса (например '524' в 'P 00 524') при поиске 'Л-04.524' -> conflict!
+   - КОНФЛИКТ КЛЮЧЕВЫХ ПАРАМЕТРОВ И МАСШТАБА (specification_conflict):
+     * Если в запросе указана грузоподъемность, класс напряжения/мощности или критический типоразмер (например, 15 тонн, 10 кВ, 250 кВт), а на сайте найден товар принципиально другого масштаба (1 тонна, 220 В, 1.5 кВт) -> СТРОГО установи specification_conflict: true, is_relevant: false!
    - КОНФЛИКТ МАТЕРИАЛА (material_conflict):
-     * Безасбестовые уплотнения (ВАТИ) нельзя заменять на асбестовые (АП-31/АПР-31)!
-     * Сталь ВСт3сп нельзя заменять на разнородные стали без указания марки.
-   - Если identifier_conflict: true или material_conflict: true -> is_relevant: false, is_price_found: false.
+     * Безасбестовые уплотнения нельзя заменять на асбестовые!
+     * Конструкционные легированные стали нельзя заменять на углеродистый рядовой прокат без указания марки.
+   - Если identifier_conflict, category_conflict, specification_conflict или material_conflict: true -> is_relevant: false, is_price_found: false.
 2. ЦЕНА НА САЙТЕ (raw_price_rub) И ЕДИНИЦА (site_unit):
-   - Найди реальную цену в рублях, которая ЯВНО указана на странице.
-   - Если на странице каталог без цен ('уточняйте цену', 'по запросу', 'нет в наличии', 0) — is_price_found: false.
+   - Если на странице указана реальная коммерческая цена в рублях, укажи raw_price_rub и is_price_found: true.
+   - Если товар есть в каталоге/предложении поставщика, но цена указана как 'по запросу', 'уточняйте цену', 'запросить счет', 'под заказ' или не указана в открытом доступе:
+     * Установи is_relevant: true, is_price_found: false, raw_price_rub: 0.0, price_rub: 0.0!
+     * ОБЯЗАТЕЛЬНО извлеки официальное название компании (company_name), контакты (телефон, email, город) и ИНН/КПП!
+     * В conversion_comment укажи 'Цена по запросу'.
+   - СНЯТИЕ С ПРОИЗВОДСТВА И АРХИВНЫЕ ТОВАРЫ:
+     * Если товар явно помечен 'снят с производства' / 'архивный товар' без предложения поставки — установи is_relevant: false, is_price_found: false!
+   - ВНИМАНИЕ: Если указана реальная цена в рублях (например 890 ₽, 1 500 ₽), но на складе статус 'под заказ', 'уточняйте наличие' или 'нет на складе' — ЭТО ДЕЙСТВУЮЩАЯ ЦЕНА КАТАЛОГА ДЛЯ ЗАКУПКИ! Установи is_price_found: true, is_relevant: true!
 3. СЕМАНТИЧЕСКИЙ ФИЗИЧЕСКИЙ ПЕРЕСЧЕТ В ЕДИНИЦУ ЗАКАЗЧИКА "{norm_unit}" (ПРАВИЛО 14):
    - Если единица на сайте уже совпадает с "{norm_unit}", price_rub = raw_price_rub.
    - Если отличается, выполни математический пересчет исходя из физических характеристик товара:
@@ -502,14 +905,13 @@ URL страницы: {url}
      в) Металлопрокат и весовые товары:
         - Если заказчик просит в тоннах (т), а на сайте цена за 1 метр погонный: пересчитай в тонну по весу метра. Если вес метра неизвестен, отклони (is_price_found: false), так как цена за метр (~50-500 руб) не может быть ценой за тонну.
         - Если на сайте за кг, а заказчик просит в тоннах: умножь на 1000.
-     г) Технические газы (сжатые и сжиженные):
-        - Пропан в баллоне 50л содержит ~21.2 кг сжиженного газа (при запросе в кг: цена_баллона / 21.2).
-        - Кислород, азот, аргон в сжатом виде под рабочим давлением 150 атм:
-          * Баллон 40 л содержит 6.3 м³ нормального газа (при запросе в м³: цена / 6.3).
-          * Баллон 10 л содержит 1.5 м³ нормального газа (при запросе в м³: цена / 1.5).
-          * Баллон 5 л содержит 0.75 м³ нормального газа (при запросе в м³: цена / 0.75).
-          * ВНИМАНИЕ: 1 м³ = 1 000 литров свободного газа! Не путай геометрический объем баллона в литрах с кубометрами газа!
-        - Углекислота в баллоне 40л содержит ~24 кг жидкой CO2 (при запросе в кг: делить на 24).
+     г) Цена за тару/упаковку:
+        - Заполняй pack_quantity и pack_base_unit ТОЛЬКО если страница явно сообщает,
+          сколько базовых единиц содержит оплачиваемая упаковка. Не выводи массу,
+          объём или количество из названия товара, типа тары, обычной практики или цены.
+        - Для неоднозначной тары оставляй эти поля null и сохраняй исходную цену с
+          site_unit. Не путай геометрический объём тары с количеством товара без
+          явного факта на странице.
    - В поле price_rub запиши ИТОГОВУЮ цену СТРОГО за 1 единицу "{norm_unit}".
    - В conversion_comment запиши подробную математическую формулу расчета.
 4. РЕКВИЗИТЫ ПОСТАВЩИКА:
@@ -523,6 +925,8 @@ URL страницы: {url}
   "target_identifiers": ["код/чертеж/марка из запроса"],
   "site_identifiers": ["код/чертеж/марка со страницы"],
   "identifier_conflict": false,
+  "category_conflict": false,
+  "specification_conflict": false,
   "material_conflict": false,
   "nomenclature_class": "Класс и назначение искомого товара",
   "site_product_name": "Точное наименование товара на найденной странице",
@@ -534,10 +938,13 @@ URL страницы: {url}
   "kpp": "{pre_kpp or ''}",
   "contacts": "{pre_contacts or ''}",
   "raw_price_rub": 2400.0,
-  "site_unit": "баллон 50л",
-  "price_rub": 114.29,
+  "site_unit": "канистра 20 кг",
+  "pack_quantity": 20.0,
+  "pack_base_unit": "кг",
+  "is_price_for_whole_pack": true,
+  "price_rub": 120.0,
   "unit": "{norm_unit}",
-  "conversion_comment": "На сайте: 2400 ₽ за баллон 50л (21 кг газа). Пересчитано в кг: 114.29 ₽/кг"
+  "conversion_comment": "На сайте: 2400 ₽ за канистру 20 кг. Пересчитано в кг: 120.00 ₽/кг"
 }}
 '''
     try:
@@ -546,33 +953,179 @@ URL страницы: {url}
         if not parsed or not isinstance(parsed, dict):
             return None
 
-        # Проверка конфликтов Compare-then-Match
-        if parsed.get("identifier_conflict") or parsed.get("material_conflict"):
+        # Проверка конфликтов Compare-then-Match (Правило 14)
+        if (
+            parsed.get("identifier_conflict")
+            or parsed.get("category_conflict")
+            or parsed.get("specification_conflict")
+            or parsed.get("material_conflict")
+        ):
             logger.debug("Rejected quote for %s: conflict detected: %s", url, parsed.get("semantic_match_reason"))
             return None
 
-        if not parsed.get("is_relevant") or not parsed.get("is_price_found"):
+        # Детерминированная проверка соответствия чертежей и артикулов (Правило 14: Compare-then-Match)
+        target_ids = parsed.get("target_identifiers") or []
+        if _has_deterministic_identifier_conflict(target_item_name, target_ids, page_text, url):
+            logger.debug("Rejected quote for %s: deterministic identifier conflict for %s", url, target_item_name)
             return None
 
-        # Исходная цена
+        # Детерминированная проверка размерностей и характеристик оборудования (Compare-then-Match: Ду, Ру, В, кВт, сечение)
+        spec_conflict, spec_reason = check_engineering_spec_conflict(target_item_name, f"{url} {page_text}")
+        if spec_conflict:
+            logger.debug("Rejected quote for %s: %s", url, spec_reason)
+            return None
+
+        # Проверка снятия с производства / отсутствия на складе (защита от устаревших цен-призраков)
+        if DISCONTINUED_PATTERN.search(page_text) or "СТАТУС НАЛИЧИЯ: СНЯТ С ПРОИЗВОДСТВА" in page_text:
+            logger.debug("Rejected quote for %s: item is discontinued or out of stock", url)
+            return None
+
+        if not parsed.get("is_relevant"):
+            return None
+
+        is_price_found = bool(parsed.get("is_price_found"))
         raw_p = parsed.get("raw_price_rub") or parsed.get("price_rub")
-        if raw_p is None:
-            return None
-        raw_price_val = float(raw_p)
-        if raw_price_val <= 0 or raw_price_val > 500_000_000:
+        raw_price_val = 0.0
+        if raw_p is not None:
+            try:
+                raw_price_val = float(raw_p)
+            except (ValueError, TypeError):
+                raw_price_val = 0.0
+
+        # Фильтрация фиктивных цен-заглушек (0 < price <= 1.00 ₽) и нереалистичных цен
+        if (0.0 < raw_price_val <= 1.0) or raw_price_val > 500_000_000:
+            logger.debug("Rejected quote for %s: dummy or out of range price %s", url, raw_price_val)
             return None
 
-        # Проверка заземления цены (grounding check): цена должна присутствовать в тексте страницы/сниппета
-        if not is_price_grounded_in_text(raw_price_val, page_text):
-            logger.debug("Rejected quote for %s: price %s not grounded in page text", url, raw_price_val)
+        # Проверка заземления числовой цены
+        if is_price_found and raw_price_val > 1.0:
+            if not is_price_grounded_in_text(raw_price_val, page_text):
+                logger.debug("Rejected quote for %s: price %s not grounded in page text, falling back to on-request", url, raw_price_val)
+                is_price_found = False
+                raw_price_val = 0.0
+        else:
+            is_price_found = False
+            raw_price_val = 0.0
+
+        # Если цена не найдена (цена "по запросу"), но поставщик и товар релевантны
+        if not is_price_found or raw_price_val <= 0.0:
+            comp_name = str(parsed.get("company_name") or "").strip() or domain
+            if is_public_institution_buyer(comp_name):
+                logger.debug("Rejected quote for %s: company %r is a public institution buyer, not a seller", url, comp_name)
+                return None
+            inn = str(parsed.get("inn") or pre_inn or "").strip() or None
+            if inn:
+                inn = re.sub(r'\D', '', inn)
+                if len(inn) not in (10, 12):
+                    inn = None
+
+            kpp = str(parsed.get("kpp") or pre_kpp or "").strip() or None
+            if kpp:
+                kpp = re.sub(r'\D', '', kpp)
+                if len(kpp) != 9:
+                    kpp = None
+
+            contacts = str(parsed.get("contacts") or pre_contacts or "").strip() or None
+            match_reason = str(parsed.get("semantic_match_reason") or "").strip()
+
+            quote = SupplierQuote(
+                company_name=comp_name,
+                inn=inn,
+                kpp=kpp,
+                contacts=contacts,
+                price_rub=0.0,
+                raw_price_rub=0.0,
+                unit=norm_unit,
+                site_unit="",
+                url=url,
+                is_price_found=False,
+                conversion_comment="Товар в каталоге поставщика, цена по запросу",
+                comment=match_reason or "Цена по запросу",
+            )
+            try:
+                detected_city = None
+                if contacts:
+                    city_match = re.search(r'(?:г\.|город)\s*([А-Яа-я\-]{3,25})', contacts)
+                    if city_match:
+                        detected_city = city_match.group(1)
+
+                dadata_info = await enrich_company_by_inn_or_query(
+                    inn=quote.inn,
+                    query=quote.company_name,
+                    domain=domain,
+                    city=detected_city,
+                )
+                if dadata_info:
+                    if not quote.inn and dadata_info.get("inn"):
+                        quote.inn = dadata_info["inn"]
+                    if not quote.kpp and dadata_info.get("kpp"):
+                        quote.kpp = dadata_info["kpp"]
+                    official_name = dadata_info.get("company_name")
+                    if official_name:
+                        if is_public_institution_buyer(official_name):
+                            logger.debug("Rejected quote for %s: DaData company %r is a public institution buyer", url, official_name)
+                            return None
+                        quote.company_name = official_name
+                    city_or_addr = dadata_info.get("city") or dadata_info.get("legal_address")
+                    extra_parts = []
+                    if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                        extra_parts.append(city_or_addr)
+                    d_phones = dadata_info.get("phones") or []
+                    if d_phones and (not quote.contacts or not re.search(r'\+?\d[\d\s\(\)\-]{7,}', quote.contacts)):
+                        extra_parts.append(f"Тел: {d_phones[0]}")
+                    d_emails = dadata_info.get("emails") or []
+                    if d_emails and (not quote.contacts or "@" not in quote.contacts):
+                        extra_parts.append(f"Email: {d_emails[0]}")
+                    if extra_parts:
+                        quote.contacts = f"{quote.contacts}, {', '.join(extra_parts)}".strip(", ") if quote.contacts else ", ".join(extra_parts)
+            except Exception as d_exc:
+                logger.debug("DaData enrichment skipped for %s: %s", quote.company_name, d_exc)
+
+            return quote
+
+        site_unit = str(parsed.get("site_unit") or "").strip()
+        pack_quantity = parsed.get("pack_quantity")
+        if pack_quantity is not None:
+            try:
+                pack_quantity = float(pack_quantity)
+            except Exception:
+                pack_quantity = None
+        pack_base_unit = str(parsed.get("pack_base_unit") or "").strip() or None
+        is_price_for_whole_pack = bool(parsed.get("is_price_for_whole_pack"))
+
+        # Детерминированный математический расчет цены в целевую единицу измерения заказчика (Правило 14)
+        calc_price, calc_unit, calc_comment = compute_deterministic_normalized_price(
+            raw_price=raw_price_val,
+            site_unit=site_unit,
+            target_unit=norm_unit,
+            pack_quantity=pack_quantity,
+            pack_base_unit=pack_base_unit,
+            is_price_for_whole_pack=is_price_for_whole_pack,
+            existing_comment=str(parsed.get("conversion_comment") or ""),
+        )
+
+        # A known source unit must either match the requested unit or have an
+        # explicit, dimensionally valid conversion.  This protects arbitrary
+        # product classes (including non-wearable paired goods) without a
+        # product-name allowlist or price-based guesswork.
+        if site_unit and normalize_unit(site_unit) != norm_unit and not calc_comment:
+            logger.debug(
+                "Rejected quote for %s: source unit %r has no evidenced conversion to %r",
+                url,
+                site_unit,
+                norm_unit,
+            )
             return None
 
-        # Итоговая цена (с учетом возможного пересчета LLM)
-        p_val = parsed.get("price_rub")
-        final_price_val = float(p_val) if p_val is not None else raw_price_val
+        final_price_val = calc_price if (calc_price > 0 and calc_comment) else (float(parsed.get("price_rub")) if parsed.get("price_rub") is not None else raw_price_val)
+        conv_comment = calc_comment or str(parsed.get("conversion_comment") or "").strip()
+        match_reason = str(parsed.get("semantic_match_reason") or "").strip()
 
         # Реквизиты
         comp_name = str(parsed.get("company_name") or "").strip() or domain
+        if is_public_institution_buyer(comp_name):
+            logger.debug("Rejected quote for %s: company %r is a public institution buyer, not a seller", url, comp_name)
+            return None
         inn = str(parsed.get("inn") or pre_inn or "").strip() or None
         if inn:
             inn = re.sub(r'\D', '', inn)
@@ -586,9 +1139,6 @@ URL страницы: {url}
                 kpp = None
 
         contacts = str(parsed.get("contacts") or pre_contacts or "").strip() or None
-        site_unit = str(parsed.get("site_unit") or "").strip()
-        conv_comment = str(parsed.get("conversion_comment") or "").strip()
-        match_reason = str(parsed.get("semantic_match_reason") or "").strip()
 
         quote = SupplierQuote(
             company_name=comp_name,
@@ -626,16 +1176,23 @@ URL страницы: {url}
                     quote.kpp = dadata_info["kpp"]
                 official_name = dadata_info.get("company_name")
                 if official_name:
+                    if is_public_institution_buyer(official_name):
+                        logger.debug("Rejected quote for %s: DaData company %r is a public institution buyer", url, official_name)
+                        return None
                     quote.company_name = official_name
                 city_or_addr = dadata_info.get("city") or dadata_info.get("legal_address")
+                extra_parts = []
                 if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
-                    quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                    extra_parts.append(city_or_addr)
+                d_phones = dadata_info.get("phones") or []
+                if d_phones and (not quote.contacts or not re.search(r'\+?\d[\d\s\(\)\-]{7,}', quote.contacts)):
+                    extra_parts.append(f"Тел: {d_phones[0]}")
+                d_emails = dadata_info.get("emails") or []
+                if d_emails and (not quote.contacts or "@" not in quote.contacts):
+                    extra_parts.append(f"Email: {d_emails[0]}")
+                if extra_parts:
+                    quote.contacts = f"{quote.contacts}, {', '.join(extra_parts)}".strip(", ") if quote.contacts else ", ".join(extra_parts)
 
-            # Гарантируем форму собственности (ООО/АО/ИП), если поставщик корпоративный
-            if not quote.company_name.startswith(("ООО", "АО", "ЗАО", "ПАО", "ИП", "Общество", "Акционерное")):
-                clean_c = quote.company_name.strip(" '\"")
-                if clean_c != domain and "." not in clean_c:
-                    quote.company_name = f'ООО "{clean_c}"'
         except Exception as d_exc:
             logger.debug("DaData enrichment skipped for %s: %s", quote.company_name, d_exc)
 

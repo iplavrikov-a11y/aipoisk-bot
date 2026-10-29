@@ -305,6 +305,10 @@ class MinpromRegistryContext:
     error: str = ""
 
 
+class EmptyProcurementProfileError(RuntimeError):
+    pass
+
+
 SUPPLIER_POLICY_NORMAL = "normal"
 SUPPLIER_POLICY_MINPROM_ONLY = "minprom_registry_only"
 SUPPLIER_POLICY_MINPROM_PRIORITY = "minprom_registry_priority"
@@ -371,6 +375,48 @@ def is_blocked(url_or_domain: str) -> bool:
         or domain in BLOCKED_DOMAINS
         or any(host.endswith(suffix) for suffix in BLOCKED_HOST_SUFFIXES)
     )
+
+
+FOREIGN_NATIONAL_CCTLDS = {
+    ".cn", ".by", ".kz", ".am", ".kg", ".ua", ".de", ".us", ".uk", ".pl", ".fr",
+    ".it", ".es", ".jp", ".kr", ".in", ".tr", ".cz", ".nl", ".se", ".fi",
+    ".ro", ".bg", ".hu", ".gr", ".at", ".ch", ".ca", ".au", ".br", ".mx", ".ar"
+}
+CIS_CCTLDS = {".by", ".kz", ".am", ".kg"}
+FOREIGN_B2B_PORTALS = {
+    "made-in-china.com", "alibaba.com", "globalsources.com", "1688.com",
+    "taiwantrade.com", "indiamart.com", "ec21.com", "tradekey.com", "dhgate.com",
+    "sino-fire.com", "pandapipe.com", "flowex-pipe.com", "aliexpress.com", "aliexpress.ru"
+}
+
+
+def is_domain_allowed_for_geo(domain_or_url: str, geo_scope: str = "ru") -> bool:
+    if not domain_or_url:
+        return True
+    dom = base_domain(domain_or_url).lower().strip()
+    scope = str(geo_scope or "ru").strip().lower()
+    for portal in FOREIGN_B2B_PORTALS:
+        if dom == portal or dom.endswith("." + portal):
+            return False
+
+    if scope == "world":
+        return True
+
+    parts = dom.split(".")
+    tld = f".{parts[-1]}" if len(parts) > 1 else ""
+
+    if scope == "ru":
+        if tld in FOREIGN_NATIONAL_CCTLDS:
+            return False
+        return True
+
+    if scope == "cis":
+        if tld in FOREIGN_NATIONAL_CCTLDS and tld not in CIS_CCTLDS:
+            return False
+        return True
+
+    return True
+
 
 
 def hostname(url_or_domain: str) -> str:
@@ -1592,7 +1638,14 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
             )
             profile = _normalize_procurement_profile(parse_json_object(raw))
             return profile
+        except EmptyProcurementProfileError:
+            raise
         except Exception as exc:
+            if isinstance(exc, EmptyProcurementProfileError) or "0 items" in str(exc) or "не найдены" in str(exc):
+                raise EmptyProcurementProfileError(
+                    "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+                    "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров текстом."
+                ) from exc
             last_error = exc
             continue
     raise RuntimeError(f"AI procurement profile extraction failed: {last_error}") from last_error
@@ -1712,19 +1765,26 @@ async def build_supplier_queries(
                     queries = revised
             if delivery_city:
                 nearby = get_cities_within_radius(delivery_city, geo_radius_km or 300)
-                target_items = [it.name for it in profile.items[:3]] if (profile and profile.items) else [_clean_query_item(context[:100])]
+                if profile and profile.items:
+                    items_limit = len(profile.items) if multi_item_mode == 'per_item' else min(6, len(profile.items))
+                    target_items = [it.name for it in profile.items[:items_limit]]
+                else:
+                    target_items = [_clean_query_item(context[:100])]
                 geo_injections = []
                 for item_name in target_items:
-                    clean_it = " ".join(item_name.split()[:4])
-                    geo_injections.append(f"{clean_it} {delivery_city} официальный дилер")
-                    geo_injections.append(f"{clean_it} {delivery_city} купить оптом склад")
+                    clean_it = ' '.join(item_name.split()[:4])
+                    geo_injections.append(f'{clean_it} {delivery_city} официальный дилер')
+                    geo_injections.append(f'{clean_it} {delivery_city} купить оптом склад')
                     for n_city in nearby[:2]:
                         if n_city != delivery_city.lower():
-                            geo_injections.append(f"{clean_it} {n_city} поставщик опт")
+                            geo_injections.append(f'{clean_it} {n_city} поставщик опт')
                 queries = _clean_supplier_queries(geo_injections + queries)
-            max_queries = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == "per_item") else 28
+            base_cap = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == 'per_item') else 28
             if delivery_city:
-                max_queries += 6
+                geo_extra = min(24, 4 * len(target_items)) if (profile and profile.items) else 6
+                max_queries = base_cap + geo_extra
+            else:
+                max_queries = base_cap
             return queries[:max_queries]
         except Exception as exc:
             last_error = exc
@@ -1753,6 +1813,7 @@ async def discover_suppliers(
     multi_item_mode: str = "balanced",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[dict], dict]:
     async with _browser_pool_session():
         return await _discover_suppliers_impl(
@@ -1771,6 +1832,7 @@ async def discover_suppliers(
             multi_item_mode=multi_item_mode,
             delivery_city=delivery_city,
             geo_radius_km=geo_radius_km,
+            geo_scope=geo_scope,
         )
 
 
@@ -1791,6 +1853,7 @@ async def _discover_suppliers_impl(
     multi_item_mode: str = "balanced",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[dict], dict]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search")
@@ -2175,7 +2238,7 @@ async def _discover_suppliers_impl(
         annotate_contacts_radius_status(accepted, delivery_city, geo_radius_km)
         def _final_geo_sort(item: dict):
             within = item.get("supplier_distance_within_radius")
-            rad_rank = 0 if within is True else (1 if within is False else 2)
+            rad_rank = 0 if within is True else (1 if within is None else 2)
             dist = item.get("supplier_distance_km")
             effective_dist = dist if (dist is not None and dist > 0) else 999999
             base_key = _supplier_result_sort_key(item)
@@ -2696,10 +2759,18 @@ def _supplier_exclusion_sets(excluded_suppliers: list[dict] | None) -> tuple[set
     return domains, company_keys
 
 
-def _exclude_candidates(candidates: list[Candidate], excluded_domains: set[str]) -> list[Candidate]:
-    if not excluded_domains:
-        return candidates
-    return [candidate for candidate in candidates if candidate.domain and candidate.domain not in excluded_domains]
+def _exclude_candidates(candidates: list[Candidate], excluded_domains: set[str], geo_scope: str = "ru") -> list[Candidate]:
+    filtered: list[Candidate] = []
+    for candidate in candidates:
+        if not candidate.domain:
+            continue
+        if excluded_domains and candidate.domain in excluded_domains:
+            continue
+        if not is_domain_allowed_for_geo(candidate.domain, geo_scope):
+            continue
+        filtered.append(candidate)
+    return filtered
+
 
 
 def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
@@ -2961,7 +3032,10 @@ normalize_procurement_profile = _normalize_procurement_profile
 def _validate_procurement_profile_response(raw: str) -> None:
     profile = _normalize_procurement_profile(parse_json_object(raw))
     if not profile.items:
-        raise RuntimeError(f"AI returned profile with 0 items (raw keys: {list(parse_json_object(raw).keys())})")
+        raise EmptyProcurementProfileError(
+            "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+            "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров текстом."
+        )
 
 
 def _validate_minprom_requirement_response(raw: str) -> None:
@@ -3849,6 +3923,27 @@ async def _review_candidates_until_target(
         )
         if result:
             result["_source_rank"] = index
+            cand_url = str(candidate.url or result.get("site") or "").lower()
+            dom = base_domain(cand_url)
+            if dom.endswith(".by"):
+                result["supplier_country"] = "Беларусь 🇧🇾"
+            elif dom.endswith(".kz"):
+                result["supplier_country"] = "Казахстан 🇰🇿"
+            elif dom.endswith(".am"):
+                result["supplier_country"] = "Армения 🇦🇲"
+            elif dom.endswith(".kg"):
+                result["supplier_country"] = "Кыргызстан 🇰🇬"
+            elif dom.endswith(".cn") or any(p in dom for p in ("made-in-china", "alibaba", "globalsources", "1688", "sino-")):
+                result["supplier_country"] = "Китай 🇨🇳"
+            elif dom.endswith(".tr"):
+                result["supplier_country"] = "Турция 🇹🇷"
+            elif dom.endswith(".de"):
+                result["supplier_country"] = "Германия 🇩🇪"
+            elif result.get("inn") or dom.endswith((".ru", ".рф", ".su", ".xn--p1ai")):
+                result["supplier_country"] = "Россия 🇷🇺"
+            else:
+                result["supplier_country"] = "Россия 🇷🇺"
+
             raw_city = str(result.get("region") or result.get("supplier_city") or result.get("city") or "").strip()
             detected = extract_city_from_text(f"{raw_city} {result.get('company_name', '')} {result.get('comments', '')} {candidate.snippet} {result.get('contact_evidence_snippet', '')}")
             supplier_city = detected or raw_city
@@ -4115,6 +4210,7 @@ async def discover_candidates(
     primary_candidate_floor: int | None = None,
     fallback_candidate_limit: int | None = None,
     reserve_only: bool = False,
+    geo_scope: str = "ru",
 ) -> tuple[list[Candidate], dict]:
     candidates: list[Candidate] = []
     reports: list[dict] = []
@@ -4187,19 +4283,25 @@ async def discover_candidates(
         try:
             existing_domains = base_excluded_domains | {candidate.domain for candidate in candidates}
             if provider == "yandex":
-                y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
+                try:
+                    y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
+                except TypeError as t_err:
+                    if "geo_scope" in str(t_err):
+                        y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
+                    else:
+                        raise
                 if isinstance(y_res, tuple) and len(y_res) == 2:
                     provider_candidates, y_reqs = y_res
                 else:
                     provider_candidates, y_reqs = y_res, len(queries)
                 yandex_total_requests += y_reqs
             elif provider == "google":
-                provider_candidates = await _search_with_google(settings, queries, request_limit, existing_domains=existing_domains)
+                provider_candidates = await _search_with_google(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
             elif provider == "tavily":
-                provider_candidates = await _search_with_tavily(settings, queries, request_limit, existing_domains=existing_domains)
+                provider_candidates = await _search_with_tavily(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
             elif provider == "ddgs":
-                provider_candidates = await _search_with_ddgs(queries, request_limit, existing_domains=existing_domains)
-            provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains)[:request_limit]
+                provider_candidates = await _search_with_ddgs(queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
+            provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains, geo_scope=geo_scope)[:request_limit]
             status = "ok" if provider_candidates else "empty"
         except Exception as exc:
             status = "error"
@@ -4350,12 +4452,13 @@ async def _search_with_yandex(
     existing_domains: set[str] | None = None,
     expand_queries: bool = True,
     max_pages_per_query: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[Candidate], int]:
     folder_id, api_key = _yandex_credentials(settings)
     if not folder_id or not api_key:
         return [], 0
     if expand_queries:
-        search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "yandex"))
+        search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "yandex"), geo_scope=geo_scope)
     else:
         search_queries = [q.strip() for q in queries if str(q).strip()]
     max_pages = max_pages_per_query if max_pages_per_query is not None else _yandex_max_pages_per_query(settings)
@@ -4456,12 +4559,13 @@ async def _search_with_yandex(
                 new_added = 0
                 for c in page_candidates:
                     cand_domain = c.domain or base_domain(c.url)
-                    if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS:
+                    if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(cand_domain, geo_scope):
                         for entity in extract_supplier_entities_from_aggregator_snippet(c.title, c.snippet):
                             ent_key = entity.lower().strip()
                             if ent_key not in seen_mined_entities:
                                 seen_mined_entities.add(ent_key)
                                 mined_company_names.append(entity)
+                        continue
                     if c.domain not in seen_domains:
                         seen_domains.add(c.domain)
                         all_candidates.append(c)
@@ -4508,7 +4612,7 @@ async def _search_with_yandex(
                 mined_page_candidates = await search_one_page(client, target_q, 0)
                 for mc in mined_page_candidates:
                     m_dom = mc.domain or base_domain(mc.url)
-                    if not m_dom or m_dom in seen or is_blocked(m_dom) or m_dom in BLOCKED_DOMAINS or m_dom in EXTRA_AGGREGATOR_DOMAINS:
+                    if not m_dom or m_dom in seen or is_blocked(m_dom) or m_dom in BLOCKED_DOMAINS or m_dom in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(m_dom, geo_scope):
                         continue
                     seen.add(m_dom)
                     candidates.append(
@@ -4569,27 +4673,31 @@ async def _search_with_google(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     api_key, cse_id = _google_credentials(settings)
     if not api_key or not cse_id:
         return []
-    search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "google"))
+    search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "google"), geo_scope=geo_scope)
     semaphore = asyncio.Semaphore(4)
+    scope = str(geo_scope or "ru").strip().lower()
 
     async def search_one(client: httpx.AsyncClient, query: str) -> list[Candidate]:
         async with semaphore:
+            params = {
+                "key": api_key,
+                "cx": cse_id,
+                "q": query,
+                "num": 10,
+                "safe": "off",
+            }
+            if scope == "ru":
+                params.update({"gl": "ru", "cr": "countryRU", "lr": "lang_ru"})
+            elif scope == "cis":
+                params.update({"lr": "lang_ru"})
             response = await client.get(
                 "https://www.googleapis.com/customsearch/v1",
-                params={
-                    "key": api_key,
-                    "cx": cse_id,
-                    "q": query,
-                    "num": 10,
-                    "gl": "ru",
-                    "cr": "countryRU",
-                    "lr": "lang_ru",
-                    "safe": "off",
-                },
+                params=params,
             )
             if response.status_code != 200:
                 return []
@@ -4642,13 +4750,14 @@ async def _search_with_tavily(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     key_candidates = _tavily_key_candidates(settings)
     if not key_candidates:
         return []
 
     base_url = _tavily_base_url(settings)
-    search_queries = _expand_search_queries(queries, max_queries=max(32, min(48, len(queries) * 3)))
+    search_queries = _expand_search_queries(queries, max_queries=max(32, min(48, len(queries) * 3)), geo_scope=geo_scope)
 
     async with httpx.AsyncClient(timeout=28, follow_redirects=True) as client:
         candidates, followups = await _run_tavily_queries(
@@ -4742,6 +4851,7 @@ async def _search_with_ddgs(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     try:
         from ddgs import DDGS  # type: ignore
@@ -4749,6 +4859,7 @@ async def _search_with_ddgs(
         return []
 
     search_queries = _ddgs_search_queries(queries)
+    region = "wt-wt" if str(geo_scope or "ru").strip().lower() == "world" else "ru-ru"
 
     def search_all_sync() -> list[Candidate]:
         candidates: list[Candidate] = []
@@ -4758,7 +4869,7 @@ async def _search_with_ddgs(
                 if len(candidates) >= max_results:
                     break
                 try:
-                    items = list(client.text(query, region="ru-ru", backend="auto", max_results=10))
+                    items = list(client.text(query, region=region, backend="auto", max_results=10))
                 except Exception:
                     continue
                 for item in items:
@@ -4823,9 +4934,10 @@ def _tavily_key_candidates(settings: SystemSettings) -> list[str]:
     return [key for key in dict.fromkeys(keys) if key]
 
 
-def _expand_search_queries(queries: list[str], *, max_queries: int) -> list[str]:
+def _expand_search_queries(queries: list[str], *, max_queries: int, geo_scope: str = "ru") -> list[str]:
     base_queries: list[str] = []
     secondary_variants: list[str] = []
+    scope = str(geo_scope or "ru").strip().lower()
     for query in queries:
         clean = re.sub(r"\s+", " ", str(query or "")).strip(" .,:;")
         if not clean:
@@ -4836,6 +4948,17 @@ def _expand_search_queries(queries: list[str], *, max_queries: int) -> list[str]
             f"{clean} производитель завод",
             f"{clean} каталог продукция",
         ]
+        if scope == "cis":
+            variants.extend([
+                f"{clean} завод Беларусь Казахстан",
+                f"{clean} производитель СНГ",
+            ])
+        elif scope == "world":
+            variants.extend([
+                f"{clean} manufacturer factory",
+                f"{clean} global supplier",
+                f"{clean} производитель фабрика импорт",
+            ])
         for item in variants:
             secondary_variants.append(item)
 
@@ -6018,15 +6141,6 @@ def _deterministic_queries(context: str) -> list[str]:
     phrase_text = " ".join(product_phrases).lower()
     product_has_mine_context = not product_phrases or any(word in phrase_text for word in ("шахт", "горно", "горн", "вгсч"))
     product_has_fire_context = not product_phrases or any(word in phrase_text for word in ("пожар", "рукав", "гм 70", "гм-70"))
-    if "сверло шахтное" in lowered or "сшу" in lowered:
-        queries.extend(
-            [
-                '"Сверло шахтное универсальное" поставщик',
-                '"СШУ-22" "сверло шахтное"',
-                '"СШУ-22" купить',
-                '"сверло шахтное" "пожарных рукавов"',
-            ]
-        )
     if product_has_mine_context and any(word in lowered for word in ("шахт", "горно", "горн")):
         queries.extend(
             [
@@ -6262,56 +6376,16 @@ def _is_strong_product_phrase(phrase: str) -> bool:
         )
     ):
         return False
-    if lowered.startswith("работы") or "швеллер" in lowered:
+    if lowered.startswith("работы"):
         return False
     if len(lowered) > 100 and re.search(r"\bшт\b|кол-во|количество", lowered):
+        return False
+    if re.search(r"\b(?:ооо|пао|зао|ао|ип)\b", lowered):
         return False
     meaningful = [word for word in re.findall(r"[а-яёa-z0-9\-]{5,}", lowered) if word not in _supplier_anchor_stopwords()]
     if len(meaningful) < 2:
         return False
-    return any(
-        marker in lowered
-        for marker in (
-            "система",
-            "контрол",
-            "кабель",
-            "жгут",
-            "измер",
-            "испыт",
-            "приспособ",
-            "рукав",
-            "шахт",
-            "пожар",
-            "трубопровод",
-            "арматур",
-            "датчик",
-            "станок",
-            "установка",
-            "комплекс",
-            "поликарбон",
-            "вермикулит",
-            "оргстекл",
-            "панел",
-            "профил",
-            "свар",
-            "полуавтомат",
-            "скрайб",
-            "скалыв",
-            "холодильн",
-            "камера",
-            "камер",
-            "кладов",
-            "пенообраз",
-            "преобраз",
-            "электролиз",
-            "толкател",
-            "вагонет",
-            "газорегулятор",
-            "гидро",
-            "кальматрон",
-            "ультрабанд",
-        )
-    )
+    return True
 
 
 def _is_generic_supplier_anchor(value: str) -> bool:
@@ -6515,16 +6589,6 @@ def _exact_match_terms(context: str) -> list[str]:
         for code in _exact_codes(context)
         if not re.fullmatch(r"ГМ-\d+", code)
     )
-    lowered_context = context.lower()
-    if "сверло шахтное универсальное" in lowered_context:
-        result.extend(["сверло шахтное универсальное", "сверло шахтное", "сшу-22", "сшу 22"])
-    if "промежуточного подсоединения пожарных рукавов" in lowered_context:
-        result.extend(
-            [
-                "приспособление для промежуточного подсоединения",
-                "промежуточного подсоединения пожарных рукавов",
-            ]
-        )
     return [item for item in dict.fromkeys(re.sub(r"\s+", " ", term).strip(" .,:;") for term in result) if len(item) >= 5]
 
 

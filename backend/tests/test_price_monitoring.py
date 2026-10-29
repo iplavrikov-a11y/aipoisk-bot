@@ -141,12 +141,10 @@ def test_cleaner_unit_and_hints():
     assert normalize_unit("Т") == "т"
     assert normalize_unit("УП") == "уп"
 
+    # The helper exposes only explicit generic package facts. It must not infer
+    # gas type or product contents from a nomenclature name.
     hints = extract_package_hints("Пропан сжиженный бал.50л ТУ 51-882", "КГ")
-    assert hints["gas_type"] == "propane"
-    assert hints["cylinder_volume_l"] == 50
-
-    hints_ox = extract_package_hints("Кислород газ.ГОСТ 5583(м3)", "М3")
-    assert hints_ox["gas_type"] == "oxygen"
+    assert hints == {"pack_pieces": None, "pack_weight_kg": None}
 
     hints_pack = extract_package_hints("Пружина пластик.19мм 100шт/НЕ ИСП", "УП")
     assert hints_pack["pack_pieces"] == 100
@@ -158,7 +156,7 @@ def test_cleaner_unit_and_hints():
 def test_unit_reconciliation_math():
     from app.price_monitoring.extractor import reconcile_quote_unit
 
-    # 1. Propane 50L cylinder -> converted to kg (~21 kg gas)
+    # 1. A container name alone is not source evidence for its contents.
     q_propane = SupplierQuote(
         company_name="Алан Газ",
         price_rub=2400.0,
@@ -168,10 +166,10 @@ def test_unit_reconciliation_math():
         url="https://alangas-msk.ru/catalog/propan/50l/",
     )
     rec_propane = reconcile_quote_unit(q_propane, "Пропан сжиженный бал.50л ТУ 51-882", "КГ")
-    assert rec_propane.price_rub == 114.29
-    assert "21 кг" in rec_propane.conversion_comment
+    assert rec_propane.price_rub == 2400.0
+    assert rec_propane.unit == "кг"
 
-    # 2. Oxygen 40L cylinder -> converted to m3 (~6.3 m3 gas)
+    # 2. The same rule applies to every product class.
     q_ox = SupplierQuote(
         company_name="Завод Уралтехгаз",
         price_rub=900.0,
@@ -181,8 +179,8 @@ def test_unit_reconciliation_math():
         url="https://svar-ka.ru/shop/goods/kislorod",
     )
     rec_ox = reconcile_quote_unit(q_ox, "Кислород газ.ГОСТ 5583(м3)", "М3")
-    assert rec_ox.price_rub == 142.86
-    assert "6.3 м³" in rec_ox.conversion_comment
+    assert rec_ox.price_rub == 900.0
+    assert rec_ox.unit == "м3"
 
     # 3. Steel ton -> converted to kg
     q_steel = SupplierQuote(
@@ -300,11 +298,10 @@ def test_excel_report_structure_and_links(tmp_path):
     assert "ForOffice" in cell_d5.comment.text
     assert "7724521481" in cell_d5.comment.text
 
-    # Check cell C5 (price cell): MUST be numeric, hyperlinked and have comment
+    # Check cell C5 (price cell): MUST be numeric, hyperlinked (comments kept on D5 to prevent visual clutter)
     cell_c5 = ws1["C5"]
     assert cell_c5.value == 723.0
     assert cell_c5.hyperlink.target == "https://www.foroffice.ru/products/description/1129.html"
-    assert cell_c5.comment is not None
 
     # Check summary formula columns (M: Мин. цена, N: Средняя цена)
     assert ws1["M1"].value == "Мин. цена, руб."
@@ -335,7 +332,8 @@ async def test_dadata_quote_enrichment():
 def test_dynamic_pack_weight_from_site_unit():
     from app.price_monitoring.extractor import reconcile_quote_unit
 
-    # Item doesn't have weight in name, but site_unit specifies 5.5 kg pack
+    # A site-unit label alone does not prove package contents; the extractor
+    # must provide source-backed structured package fields before conversion.
     q = SupplierQuote(
         company_name="Сварка",
         price_rub=825.0,
@@ -346,8 +344,8 @@ def test_dynamic_pack_weight_from_site_unit():
         is_price_found=True,
     )
     rec = reconcile_quote_unit(q, "Электрод сварочный ОЗС-12", "КГ")
-    assert rec.price_rub == 150.0  # 825 / 5.5 = 150.0
-    assert "5.5 кг" in rec.conversion_comment
+    assert rec.price_rub == 825.0
+    assert rec.unit == "кг"
 
 
 def test_outlier_excluded_from_excel_formulas(tmp_path):
@@ -418,9 +416,80 @@ def test_divergent_prices_suppressed_when_no_consensus_cluster(tmp_path):
     ws = wb["Пример отчета"]
 
     # When no homogeneous consensus exists, report displays honest missing status
-    assert ws["C5"].value == "-"
-    assert "В открытых источниках цена отсутствует" in str(ws["D5"].value)
-    assert ws["C5"].value != "разброс цен"
+    assert ws["C5"].value == "По запросу"
+    assert "Цены не образуют сопоставимую группу" in str(ws["D5"].value)
+
+
+def test_unpriced_suppliers_on_request_rendering(tmp_path):
+    import openpyxl
+    from app.price_monitoring.excel_report import generate_price_monitoring_excel
+
+    item = ItemPriceResult(
+        row_number=1,
+        raw_name="Набивка ВАТИ-202 22х22мм",
+        clean_name="Набивка ВАТИ-202 22х22мм",
+        unit="КГ",
+        quotes=[
+            SupplierQuote(
+                company_name='ООО "Промма"',
+                inn="4205123456",
+                contacts="Тел: +7 (800) 093-44-55, Email: all-rti@mail.ru",
+                url="https://promma.ru/catalog/nabivki-vati/202",
+                price_rub=0.0,
+                raw_price_rub=0.0,
+                is_price_found=False,
+                comment="Цена по запросу",
+            ),
+            SupplierQuote(
+                company_name='ООО "НПФ Атлас"',
+                inn="7701987654",
+                contacts="+7 (495) 849-29-70, info@npfatlas.ru",
+                url="https://npfatlas.ru/catalog/5158854",
+                price_rub=0.0,
+                raw_price_rub=0.0,
+                is_price_found=False,
+                comment="Цена по запросу",
+            ),
+        ],
+    )
+
+    out_file = tmp_path / "test_unpriced.xlsx"
+    generate_price_monitoring_excel([item], str(out_file), max_suppliers=3)
+
+    wb = openpyxl.load_workbook(str(out_file))
+    ws1 = wb["Пример отчета"]
+
+    # Лист 1: Поставщик 1 и 2 заполнены ценой "По запросу" и реальными контактами
+    assert ws1["C5"].value == "По запросу"
+    assert "Промма" in str(ws1["D5"].value)
+    assert "all-rti@mail.ru" in str(ws1["D5"].value)
+    assert ws1["D5"].hyperlink is not None
+    assert "promma.ru" in ws1["D5"].hyperlink.target
+
+    assert ws1["E5"].value == "По запросу"
+    assert "НПФ Атлас" in str(ws1["F5"].value)
+    assert "info@npfatlas.ru" in str(ws1["F5"].value)
+    assert ws1["F5"].hyperlink is not None
+    assert "npfatlas.ru" in ws1["F5"].hyperlink.target
+
+    # Поставщик 3 пустой
+    assert not ws1["G5"].value
+    assert not ws1["H5"].value
+
+    # Сводные колонки (I=Мин, J=Средняя, K=Вариация)
+    assert ws1["I5"].value == "по запросу"
+    assert ws1["J5"].value == "по запросу"
+    assert ws1["K5"].value == "мало данных"
+
+    # Лист 2: Детализированный реестр
+    ws2 = wb["Детализированный реестр"]
+    assert "Товар найден у 2 пост. (цена по запросу)" in str(ws2.cell(2, 4).value)
+    assert ws2.cell(2, 5).value == "По запросу"
+    # Поставщик 1
+    assert "Промма" in str(ws2.cell(2, 6).value)
+    assert ws2.cell(2, 7).value == "4205123456"
+    assert ws2.cell(2, 11).value == "по запросу"
+    assert "promma.ru" in str(ws2.cell(2, 15).value)
 
 
 def test_circular_reference_prevention_and_row_height_and_no_address(tmp_path):
@@ -709,7 +778,7 @@ def test_price_monitoring_multiformat_input_extraction():
 
         # Test multiple files extraction
         multi_items = extract_items_from_files_or_text([p1, p2])
-        assert len(multi_items) == 3
+        assert len(multi_items) == 4  # Different source rows retain identity, even with matching names.
         assert ("Кислород газообразный", "м3") in multi_items
         assert ("Сталь листовая 10мм", "т") in multi_items
         assert ("Подшипник 13630", "шт") in multi_items
