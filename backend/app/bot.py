@@ -22,6 +22,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, ForceReply, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, MenuButtonDefault, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .account_linking import (
@@ -479,10 +480,12 @@ def topup_online_keyboard(packages: list[TariffPackage]) -> InlineKeyboardMarkup
         amount_rub = pkg.price_kopeks // 100
         bonus_rub = (pkg.bonus_kopeks or 0) // 100
         badge = "🔥 " if pkg.badge or bonus_rub == 1500 else "💳 "
-        bonus_part = f" (+{bonus_rub:,} ₽)" if bonus_rub > 0 else ""
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_part = f" (+{bonus_fmt})" if bonus_rub > 0 else ""
         if amount_rub == 25000:
             bonus_part = " (+50%)"
-        label = f"{badge}{pkg.name} — {amount_rub:,} ₽{bonus_part}"
+        label = f"{badge}{pkg.name} — {amount_fmt}{bonus_part}"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"topup_yk_pkg_{pkg.id}")])
     rows.append([InlineKeyboardButton(text="✏️ Произвольная сумма", callback_data="topup_yk_custom")])
     rows.append([
@@ -498,10 +501,12 @@ def topup_b2b_keyboard(packages: list[TariffPackage]) -> InlineKeyboardMarkup:
         amount_rub = pkg.price_kopeks // 100
         bonus_rub = (pkg.bonus_kopeks or 0) // 100
         badge = "🔥 " if pkg.badge or bonus_rub == 1500 else "📄 "
-        bonus_part = f" (+{bonus_rub:,} ₽)" if bonus_rub > 0 else ""
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_part = f" (+{bonus_fmt})" if bonus_rub > 0 else ""
         if amount_rub == 25000:
             bonus_part = " (+50%)"
-        label = f"{badge}{pkg.name} — {amount_rub:,} ₽{bonus_part}"
+        label = f"{badge}{pkg.name} — {amount_fmt}{bonus_part}"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"topup_b2b_pkg_{pkg.id}")])
     rows.append([InlineKeyboardButton(text="✏️ Произвольная сумма", callback_data="topup_b2b_custom")])
     rows.append([
@@ -2188,6 +2193,13 @@ def _bot_payment_instructions(settings) -> str:
     return instructions or BOT_PAYMENT_INSTRUCTIONS
 
 
+def _bot_yookassa_ready(settings: SystemSettings) -> bool:
+    return bool(
+        str(getattr(settings, "yookassa_shop_id", "") or "").strip()
+        and str(getattr(settings, "yookassa_secret_key", "") or "").strip()
+    )
+
+
 def _partial_confirmation_text(snapshot: JobProgressSnapshot) -> str:
     if snapshot.confirmation_kind == "multi_item_strategy":
         return (
@@ -3164,7 +3176,7 @@ async def process_custom_topup_amount(message: Message) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
-        if not settings.yookassa_enabled or not settings.yookassa_shop_id or not settings.yookassa_secret_key:
+        if not _bot_yookassa_ready(settings):
             await message.answer("Оплата онлайн временно недоступна. Пожалуйста, воспользуйтесь счётом для юрлиц или обратитесь в поддержку.")
             return
 
@@ -3211,9 +3223,12 @@ async def process_custom_b2b_amount(message: Message) -> None:
             "credit_rub": credit_rub,
             "package_name": package_name,
         }
-        bonus_line = f" (на баланс <b>{credit_rub:,} ₽</b>, бонус +{bonus_rub:,} ₽)" if bonus_rub > 0 else ""
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        credit_fmt = f"{credit_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_line = f" (на баланс <b>{credit_fmt}</b>, бонус +{bonus_fmt})" if bonus_rub > 0 else ""
         text = (
-            f"🏢 <b>Счёт на сумму {amount_rub:,} ₽</b>{bonus_line}\n\n"
+            f"🏢 <b>Счёт на сумму {amount_fmt}</b>{bonus_line}\n\n"
             f"Введите <b>ИНН вашей организации или ИП</b> (10 или 12 цифр):\n"
             f"<i>Реквизиты компании (наименование, КПП, адрес) будут определены автоматически через базу ФНС.</i>"
         )
@@ -4488,7 +4503,7 @@ async def topup_yk_pkg_callback(callback: CallbackQuery) -> None:
     if not callback.message:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
-    pkg_id_str = callback.data.split("_")[-1]
+    pkg_id = callback.data.removeprefix("topup_yk_pkg_").strip()
     user = callback.from_user
     if not user:
         await callback.answer("Ошибка пользователя.", show_alert=True)
@@ -4497,7 +4512,7 @@ async def topup_yk_pkg_callback(callback: CallbackQuery) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
-        if not settings.yookassa_enabled or not settings.yookassa_shop_id or not settings.yookassa_secret_key:
+        if not _bot_yookassa_ready(settings):
             await callback.answer("Оплата онлайн временно недоступна. Пожалуйста, воспользуйтесь счётом для юрлиц или напишите в поддержку.", show_alert=True)
             return
 
@@ -4506,7 +4521,7 @@ async def topup_yk_pkg_callback(callback: CallbackQuery) -> None:
             await callback.answer("Клиент не найден.", show_alert=True)
             return
 
-        pkg = db.execute(select(TariffPackage).where(TariffPackage.id == int(pkg_id_str))).scalar_one_or_none()
+        pkg = db.query(TariffPackage).filter(TariffPackage.id == pkg_id).first()
         if not pkg:
             await callback.answer("Пакет не найден.", show_alert=True)
             return
@@ -4554,11 +4569,11 @@ async def check_yk_callback(callback: CallbackQuery) -> None:
     if not callback.message:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
-    yk_id_str = callback.data.split("_")[-1]
+    yk_id = callback.data.removeprefix("check_yk_").strip()
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
-        record = db.execute(select(YooKassaPayment).where(YooKassaPayment.id == int(yk_id_str))).scalar_one_or_none()
+        record = db.query(YooKassaPayment).filter(YooKassaPayment.id == yk_id).first()
         if not record:
             await callback.answer("Платёж не найден.", show_alert=True)
             return
@@ -4652,7 +4667,7 @@ async def topup_b2b_pkg_callback(callback: CallbackQuery) -> None:
     if not callback.message:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
-    pkg_id_str = callback.data.split("_")[-1]
+    pkg_id = callback.data.removeprefix("topup_b2b_pkg_").strip()
     user = callback.from_user
     chat_id = callback.message.chat.id
     if not user:
@@ -4661,7 +4676,7 @@ async def topup_b2b_pkg_callback(callback: CallbackQuery) -> None:
 
     db = SessionLocal()
     try:
-        pkg = db.execute(select(TariffPackage).where(TariffPackage.id == int(pkg_id_str))).scalar_one_or_none()
+        pkg = db.query(TariffPackage).filter(TariffPackage.id == pkg_id).first()
         if not pkg:
             await callback.answer("Пакет не найден.", show_alert=True)
             return
@@ -4679,9 +4694,12 @@ async def topup_b2b_pkg_callback(callback: CallbackQuery) -> None:
             "package_name": package_name,
         }
         await callback.answer()
-        bonus_line = f" (на баланс <b>{credit_rub:,} ₽</b>, бонус +{bonus_rub:,} ₽)" if bonus_rub > 0 else ""
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        credit_fmt = f"{credit_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_line = f" (на баланс <b>{credit_fmt}</b>, бонус +{bonus_fmt})" if bonus_rub > 0 else ""
         text = (
-            f"🏢 <b>Счёт на сумму {amount_rub:,} ₽</b>{bonus_line}\n\n"
+            f"🏢 <b>Счёт на сумму {amount_fmt}</b>{bonus_line}\n\n"
             f"Введите <b>ИНН вашей организации или ИП</b> (10 или 12 цифр):\n"
             f"<i>Реквизиты компании (наименование, КПП, адрес) будут определены автоматически через базу ФНС.</i>"
         )
