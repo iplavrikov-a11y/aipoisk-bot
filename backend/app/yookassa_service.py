@@ -196,3 +196,4 @@ def verify_yookassa_credentials(
             return False, f"ЮKassa вернула статус {resp.status_code}"
         except httpx.RequestError as exc:
             return False, f"Ошибка сети при проверке ЮKassa: {exc}"
+

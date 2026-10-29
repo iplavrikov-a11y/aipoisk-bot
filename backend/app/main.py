@@ -181,6 +181,7 @@ from .schemas import (
     ClientTariffOverridePatch,
     BillingGrantCreate,
     CreateYooKassaPaymentRequest,
+    YooKassaTestRequest,
     LoginRequest,
     ManualJobCreate,
     SettingsPatch,
@@ -2139,11 +2140,16 @@ async def yookassa_webhook_api(
 
 
 @app.post("/api/admin/yookassa/test", dependencies=[Depends(require_admin)])
-def admin_test_yookassa_api(db: Session = Depends(db_session)) -> dict:
+def admin_test_yookassa_api(
+    data: YooKassaTestRequest | None = None,
+    db: Session = Depends(db_session),
+) -> dict:
     settings = get_or_create_settings(db)
+    shop_id = (str(data.shop_id or "").strip() if data and data.shop_id else "") or settings.yookassa_shop_id
+    secret_key = (str(data.secret_key or "").strip() if data and data.secret_key else "") or settings.yookassa_secret_key
     ok, msg = verify_yookassa_credentials(
-        shop_id=settings.yookassa_shop_id,
-        secret_key=settings.yookassa_secret_key,
+        shop_id=shop_id,
+        secret_key=secret_key,
     )
     return {"success": ok, "message": msg}
 

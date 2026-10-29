@@ -5895,7 +5895,13 @@ function SettingsView({
               setTestingYookassa(true)
               setYookassaTestResult('')
               try {
-                const res = await api<{ success: boolean; message: string }>('/api/admin/yookassa/test', { method: 'POST' })
+                const res = await api<{ success: boolean; message: string }>('/api/admin/yookassa/test', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    shop_id: draft.yookassa_shop_id,
+                    secret_key: yookassaSecretKey || undefined,
+                  }),
+                })
                 setYookassaTestResult(res.message)
               } catch (err: any) {
                 setYookassaTestResult(err.message || 'Ошибка проверки')

@@ -66,6 +66,11 @@ class CreateYooKassaPaymentRequest(BaseModel):
     package_id: str | None = None
 
 
+class YooKassaTestRequest(BaseModel):
+    shop_id: str | None = None
+    secret_key: str | None = None
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
