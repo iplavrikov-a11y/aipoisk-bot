@@ -798,7 +798,13 @@ class Invoice(Base):
     # Status: issued, paid, cancelled
     status: Mapped[str] = mapped_column(String(32), default="issued")
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    settlement_mode: Mapped[str] = mapped_column(String(32), default="")
     notes: Mapped[str] = mapped_column(Text, default="")
+    proof_path: Mapped[str] = mapped_column(Text, default="")
+    proof_original_name: Mapped[str] = mapped_column(String(255), default="")
+    proof_content_type: Mapped[str] = mapped_column(String(80), default="")
+    proof_size: Mapped[int] = mapped_column(Integer, default=0)
+    proof_submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     def to_dict(self) -> dict:
         return {
@@ -818,6 +824,12 @@ class Invoice(Base):
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "paid_at": self.paid_at.isoformat() if self.paid_at else None,
+            "settlement_mode": self.settlement_mode or "",
+            "proof_submitted_at": self.proof_submitted_at.isoformat() if self.proof_submitted_at else None,
+            "proof_original_name": self.proof_original_name,
+            "proof_content_type": self.proof_content_type,
+            "proof_size": self.proof_size,
+            "proof_status": "submitted" if self.proof_path else "none",
         }
 
 

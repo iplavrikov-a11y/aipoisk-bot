@@ -344,7 +344,69 @@ async def test_generate_and_send_b2b_invoice_in_bot(setup_database: Session):
         assert "10 000 ₽" in sent_text
         assert "14 000 ₽" in sent_text
         assert "АЛЬФА-БАНК" in sent_text
+        buttons = [button.callback_data for row in message.answer.call_args.kwargs['reply_markup'].inline_keyboard for button in row]
+        assert f"invoice_proof:{inv.id}" in buttons
         mock_alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_invoice_proof_callback_rejects_another_clients_invoice(setup_database: Session):
+    from app.bot import invoice_proof_callback, PENDING_INVOICE_PROOF
+
+    db = setup_database
+    owner = Client(id=new_id(), telegram_id="810001", name="Owner", money_balance_kopeks=0)
+    db.add(owner)
+    db.flush()
+    invoice = Invoice(client_id=owner.id, invoice_number="TEST-BOT-1", amount_rub=5000, bonus_rub=0, total_credit_rub=5000)
+    db.add(invoice)
+    db.commit()
+    callback = AsyncMock()
+    callback.data = f"invoice_proof:{invoice.id}"
+    callback.from_user.id = 810002
+    callback.message.chat.id = 810002
+
+    await invoice_proof_callback(callback)
+
+    assert 810002 not in PENDING_INVOICE_PROOF
+    assert callback.answer.call_args.kwargs.get("show_alert") is True
+
+
+@pytest.mark.asyncio
+async def test_invoice_proof_document_does_not_credit_balance(setup_database: Session, tmp_path, monkeypatch):
+    from app import bot as bot_module
+    from app.config import config
+
+    monkeypatch.setattr(config, "storage_dir", str(tmp_path))
+    db = setup_database
+    owner = Client(id=new_id(), telegram_id="810003", name="Owner", money_balance_kopeks=0)
+    db.add(owner)
+    db.flush()
+    invoice = Invoice(client_id=owner.id, invoice_number="TEST-BOT-2", amount_rub=5000, bonus_rub=500, total_credit_rub=5500, status="issued")
+    db.add(invoice)
+    db.commit()
+    message = AsyncMock()
+    message.chat.id = 810003
+    message.from_user.id = 810003
+    message.document.file_name = "order.pdf"
+    message.document.file_id = "telegram-file"
+    message.document.file_size = 30
+    message.document.mime_type = "application/pdf"
+    message.photo = None
+    telegram = AsyncMock()
+    telegram.get_file.return_value.file_path = "remote-file"
+    async def download(_path, destination, **_kwargs):
+        destination.write(b"%PDF-1.4\n% payment proof\n%%EOF")
+    telegram.download_file.side_effect = download
+    bot_module.PENDING_INVOICE_PROOF[810003] = invoice.id
+
+    with patch("app.invoice_service.notify_invoice_payment_proof", new_callable=AsyncMock):
+        await bot_module.receive_invoice_proof(message, telegram)
+
+    db.refresh(invoice)
+    db.refresh(owner)
+    assert invoice.status == "proof_submitted"
+    assert owner.money_balance_kopeks == 0
+    assert 810003 not in bot_module.PENDING_INVOICE_PROOF
 
 
 @pytest.mark.asyncio

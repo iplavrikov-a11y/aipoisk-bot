@@ -67,6 +67,7 @@ def init_db() -> None:
 
 def _ensure_schema() -> None:
     with engine.begin() as connection:
+        inspector = inspect(connection)
         if "job_sources" in Base.metadata.tables:
             Base.metadata.tables["job_sources"].create(bind=connection, checkfirst=True)
         if "web_password_reset_tokens" in Base.metadata.tables:
@@ -75,7 +76,17 @@ def _ensure_schema() -> None:
             Base.metadata.tables["invoices"].create(bind=connection, checkfirst=True)
         if "yookassa_payments" in Base.metadata.tables:
             Base.metadata.tables["yookassa_payments"].create(bind=connection, checkfirst=True)
-        inspector = inspect(connection)
+        invoice_existing = _existing_columns(inspector, "invoices")
+        for column, definition in {
+            "settlement_mode": "VARCHAR(32) DEFAULT ''",
+            "proof_path": "TEXT DEFAULT ''",
+            "proof_original_name": "VARCHAR(255) DEFAULT ''",
+            "proof_content_type": "VARCHAR(80) DEFAULT ''",
+            "proof_size": "INTEGER DEFAULT 0",
+            "proof_submitted_at": "DATETIME",
+        }.items():
+            if column not in invoice_existing:
+                connection.execute(text(f"ALTER TABLE invoices ADD COLUMN {column} {definition}"))
         system_settings_existing = _existing_columns(inspector, "system_settings")
         system_settings_additions = {
             "document_settings_json": "TEXT DEFAULT '{}'",

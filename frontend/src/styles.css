@@ -291,6 +291,22 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 
 .stack { display: grid; gap: 14px; }
+.invoice-admin-view .invoice-toolbar { grid-template-columns: minmax(260px, 1fr) auto auto; }
+.invoice-toolbar small { display: block; margin-top: 4px; color: #64748b; }
+.invoice-toolbar-status { color: #0369a1; background: #e0f2fe; border-radius: 999px; padding: 5px 9px; font-size: 12px; font-weight: 700; }
+.invoice-table { min-width: 1080px; }
+.invoice-status { display: inline-flex; font-size: 12px; font-weight: 700; }
+.invoice-confirmed { display: inline-flex; align-items: center; gap: 5px; color: #047857; font-size: 12px; font-weight: 700; }
+.invoice-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.invoice-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #64748b; font-size: 12px; }
+.invoice-pagination > div { display: flex; align-items: center; gap: 8px; }
+.invoice-empty { display: flex; min-height: 160px; align-items: center; justify-content: center; gap: 8px; color: #64748b; }
+.spin { animation: invoice-spin .8s linear infinite; }
+@keyframes invoice-spin { to { transform: rotate(360deg); } }
+@media (max-width: 760px) {
+  .invoice-admin-view .invoice-toolbar { grid-template-columns: 1fr auto; }
+  .invoice-toolbar-status { display: none; }
+}
 .toolbar-panel { padding: 14px; display: grid; grid-template-columns: 230px 1fr 1fr auto; gap: 10px; align-items: center; }
 .client-create-panel {
   display: grid;

@@ -4,6 +4,10 @@ import base64
 import os
 import subprocess
 import tempfile
+import re
+import uuid
+import logging
+from html import escape
 from datetime import datetime, timezone
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -15,11 +19,13 @@ import httpx
 import openpyxl
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, Side
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select, text
+from sqlalchemy.orm import Session, object_session
 
 from .config import config
 from .models import Invoice, now_utc
+
+logger = logging.getLogger(__name__)
 
 SELLER_NAME = "Индивидуальный предприниматель Груздев Игорь Вячеславович"
 SELLER_SHORT_NAME = "ИП Груздев И.В."
@@ -1078,16 +1084,16 @@ async def notify_admin_telegram(invoice: Invoice) -> None:
 
     text = (
         f"🧾 <b>Выставлен счёт на оплату юридическому лицу!</b>\n\n"
-        f"<b>Номер:</b> <code>{invoice.invoice_number}</code> от {date_str}\n"
+        f"<b>Номер:</b> <code>{escape(invoice.invoice_number or '')}</code> от {date_str}\n"
         f"<b>Сумма к оплате:</b> <b>{amount_str} ₽</b>\n"
         f"<b>Поступит на баланс:</b> {total_str} ₽ (бонус: +{bonus_str} ₽)\n"
-        f"<b>Тариф:</b> {invoice.tariff_name}\n\n"
-        f"<b>Покупатель:</b> {invoice.buyer_name}\n"
-        f"<b>ИНН:</b> <code>{invoice.buyer_inn}</code>"
-        f"{f' | КПП: {invoice.buyer_kpp}' if invoice.buyer_kpp else ''}\n"
-        f"<b>Адрес:</b> {invoice.buyer_address}\n"
-        f"<b>Email клиента:</b> {invoice.buyer_email}\n\n"
-        f"<i>После поступления средств на р/с в Альфа-Банке подтвердите зачисление в админке или пополните баланс клиента.</i>"
+        f"<b>Тариф:</b> {escape(invoice.tariff_name or '')}\n\n"
+        f"<b>Покупатель:</b> {escape(invoice.buyer_name or '')}\n"
+        f"<b>ИНН:</b> <code>{escape(invoice.buyer_inn or '')}</code>"
+        f"{f' | КПП: {escape(invoice.buyer_kpp)}' if invoice.buyer_kpp else ''}\n"
+        f"<b>Адрес:</b> {escape(invoice.buyer_address or '')}\n"
+        f"<b>Email клиента:</b> {escape(invoice.buyer_email or '')}\n\n"
+        f"<i>После сверки поступления подтвердите зачисление в разделе «Счета и оплаты» админки.</i>"
     )
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -1100,6 +1106,65 @@ async def notify_admin_telegram(invoice: Invoice) -> None:
 
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
-            await client.post(url, json=payload)
-    except Exception:
-        pass
+            response = await client.post(url, json=payload)
+            if not response.is_success or not response.json().get("ok"):
+                logger.warning("invoice_telegram_notification_failed status=%s", response.status_code)
+    except Exception as exc:
+        logger.warning("invoice_telegram_notification_failed error_type=%s", type(exc).__name__)
+
+
+def lock_invoice_for_update(db: Session, invoice_id: str) -> Invoice | None:
+    """Serialize invoice transitions across API and bot processes."""
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+        return db.query(Invoice).filter(Invoice.id == invoice_id).populate_existing().first()
+    return db.query(Invoice).filter(Invoice.id == invoice_id).with_for_update().populate_existing().first()
+
+
+async def save_invoice_payment_proof(invoice: Invoice, content: bytes, *, original_name: str, content_type: str) -> str:
+    """Validate and persist a payment order proof; caller commits the invoice."""
+    allowed = {"application/pdf", "image/jpeg", "image/png"}
+    if not content or len(content) > 10 * 1024 * 1024 or content_type.lower() not in allowed:
+        raise ValueError("Недопустимый файл платёжки")
+    signatures = {"application/pdf": b"%PDF-", "image/jpeg": b"\xff\xd8\xff", "image/png": b"\x89PNG\r\n\x1a\n"}
+    if not content.startswith(signatures[content_type.lower()]):
+        raise ValueError("Содержимое файла не соответствует формату PDF, JPG или PNG")
+    db = object_session(invoice)
+    if db is None or not lock_invoice_for_update(db, invoice.id):
+        raise ValueError("Счёт не найден")
+    if invoice.status in {"paid", "cancelled"}:
+        raise ValueError("Нельзя прикрепить платёжку к закрытому счёту")
+    suffix = {"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png"}[content_type.lower()]
+    safe_name = f"{uuid.uuid4().hex}{suffix}"
+    root = Path(config.storage_path) / "invoices" / "payment_proofs" / invoice.id
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target = root / safe_name
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as output:
+        output.write(content)
+    invoice.proof_path = str(target)
+    invoice.proof_original_name = safe_name
+    invoice.proof_content_type = content_type
+    invoice.proof_size = len(content)
+    invoice.proof_submitted_at = now_utc()
+    invoice.status = "proof_submitted"
+    return str(target)
+
+
+async def notify_invoice_payment_proof(invoice: Invoice, path: str) -> None:
+    bot_token = config.bot_token
+    owner_id = config.owner_telegram_id
+    if bot_token and owner_id:
+        caption = (f"📎 <b>Платёжка отправлена</b>\n\nСчёт: <code>{escape(invoice.invoice_number or '')}</code>\n"
+                   f"Плательщик: {escape(invoice.buyer_name or '')}\nСумма: {format_rubles_num(invoice.amount_rub)} ₽\n"
+                   "Проверьте поступление и подтвердите счёт в админке.")
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                with Path(path).open("rb") as fh:
+                    response = await client.post(f"https://api.telegram.org/bot{bot_token}/sendDocument",
+                                      data={"chat_id": owner_id, "caption": caption, "parse_mode": "HTML"},
+                                      files={"document": (invoice.proof_original_name or Path(path).name, fh, invoice.proof_content_type or "application/octet-stream")})
+                    if not response.is_success or not response.json().get("ok"):
+                        logger.warning("invoice_proof_telegram_notification_failed status=%s", response.status_code)
+        except Exception as exc:
+            logger.warning("invoice_proof_telegram_notification_failed error_type=%s", type(exc).__name__)

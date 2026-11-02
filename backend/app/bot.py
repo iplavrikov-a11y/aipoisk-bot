@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import json
+import io
 import re
 import asyncio
 import urllib.parse
@@ -155,6 +156,7 @@ PENDING_CUSTOM_TOPUP: set[int] = set()
 PENDING_B2B_CUSTOM_AMOUNT: set[int] = set()
 PENDING_B2B_INN: dict[int, dict] = {}
 PENDING_B2B_NAME: dict[int, dict] = {}
+PENDING_INVOICE_PROOF: dict[int, str] = {}
 SCENARIO_SUPPLIERS = "supplier_search"
 SCENARIO_REPORT = "report"
 SCENARIO_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
@@ -311,7 +313,7 @@ def _scenario_job_mode(scenario: str) -> str:
 
 def _clear_pending_state(chat_id: int) -> bool:
     had_state = (
-        any(chat_id in state for state in (PENDING_UPLOADS, PENDING_MODES, PENDING_SUPPLIER_POLICIES, PENDING_GEO, PENDING_B2B_INN, PENDING_B2B_NAME))
+        any(chat_id in state for state in (PENDING_UPLOADS, PENDING_MODES, PENDING_SUPPLIER_POLICIES, PENDING_GEO, PENDING_B2B_INN, PENDING_B2B_NAME, PENDING_INVOICE_PROOF))
         or chat_id in PENDING_GEO_INPUT
         or chat_id in PENDING_CUSTOM_TOPUP
         or chat_id in PENDING_B2B_CUSTOM_AMOUNT
@@ -325,6 +327,7 @@ def _clear_pending_state(chat_id: int) -> bool:
     PENDING_B2B_CUSTOM_AMOUNT.discard(chat_id)
     PENDING_B2B_INN.pop(chat_id, None)
     PENDING_B2B_NAME.pop(chat_id, None)
+    PENDING_INVOICE_PROOF.pop(chat_id, None)
     return had_state
 
 
@@ -3049,6 +3052,80 @@ async def delivery_text_input(message: Message) -> None:
     await _apply_delivery_choice(message, str(message.text or ""))
 
 
+@router.callback_query(F.data.startswith("invoice_proof:"))
+async def invoice_proof_callback(callback: CallbackQuery) -> None:
+    if not callback.message or not callback.from_user:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    invoice_id = str(callback.data or "").partition(":")[2]
+    db = SessionLocal()
+    try:
+        invoice = db.query(Invoice).join(Client, Client.id == Invoice.client_id).filter(
+            Invoice.id == invoice_id, Client.telegram_id == str(callback.from_user.id)
+        ).first()
+        if not invoice or invoice.status in {"paid", "cancelled"}:
+            await callback.answer("Счёт не найден или уже закрыт.", show_alert=True)
+            return
+        PENDING_INVOICE_PROOF[callback.message.chat.id] = invoice.id
+        await callback.answer()
+        await callback.message.answer(
+            "Пришлите платёжное поручение с отметкой банка файлом PDF, JPG или PNG либо фотографией. "
+            "Мы проверим документ; баланс пополнится после подтверждения оплаты. Для отмены нажмите /cancel."
+        )
+    finally:
+        db.close()
+
+
+@router.message(lambda message: message.chat.id in PENDING_INVOICE_PROOF and bool(message.document or message.photo))
+async def receive_invoice_proof(message: Message, bot: Bot) -> None:
+    invoice_id = PENDING_INVOICE_PROOF.get(message.chat.id)
+    if not invoice_id or not message.from_user:
+        return
+    db = SessionLocal()
+    try:
+        invoice = db.query(Invoice).join(Client, Client.id == Invoice.client_id).filter(
+            Invoice.id == invoice_id, Client.telegram_id == str(message.from_user.id)
+        ).first()
+        if not invoice or invoice.status in {"paid", "cancelled"}:
+            PENDING_INVOICE_PROOF.pop(message.chat.id, None)
+            await message.answer("Счёт не найден или уже закрыт.")
+            return
+        if message.document:
+            attachment = message.document
+            content_type = str(attachment.mime_type or "").lower()
+            filename = attachment.file_name or "payment-proof"
+        else:
+            attachment = message.photo[-1]
+            content_type = "image/jpeg"
+            filename = "payment-proof.jpg"
+        if content_type not in {"application/pdf", "image/jpeg", "image/png"}:
+            await message.answer("Пришлите платёжку в формате PDF, JPG или PNG.")
+            return
+        if attachment.file_size and attachment.file_size > 10 * 1024 * 1024:
+            await message.answer("Размер платёжки не должен превышать 10 МБ.")
+            return
+        remote = await bot.get_file(attachment.file_id, request_timeout=60)
+        buffer = io.BytesIO()
+        await bot.download_file(remote.file_path, destination=buffer, timeout=120)
+        from .invoice_service import save_invoice_payment_proof, notify_invoice_payment_proof
+        try:
+            path = await save_invoice_payment_proof(invoice, buffer.getvalue(), original_name=filename, content_type=content_type)
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return
+        db.commit()
+        db.refresh(invoice)
+        PENDING_INVOICE_PROOF.pop(message.chat.id, None)
+        await message.answer("Платёжка отправлена на проверку. Баланс пополнится после подтверждения оплаты.")
+        await notify_invoice_payment_proof(invoice, path)
+    except Exception:
+        db.rollback()
+        logger.exception("invoice_proof_telegram_upload_failed")
+        await message.answer("Не удалось отправить платёжку. Попробуйте ещё раз или обратитесь в поддержку.")
+    finally:
+        db.close()
+
+
 async def _generate_and_send_b2b_invoice(
     message: Message,
     db: Session,
@@ -3132,12 +3209,13 @@ async def _generate_and_send_b2b_invoice(
             f"• <b>Р/с:</b> <code>{SELLER_ACCOUNT}</code>\n"
             f"• <b>Корр. счёт:</b> <code>{SELLER_BANK_CORR}</code>\n"
             f"• <b>Назначение платежа:</b> <code>Оплата по счету № {invoice.invoice_number} от {date_str} за информационные услуги TenderLex. Без НДС.</code>\n\n"
-            f"📎 <i>Официальный счёт с синей печатью и подписью прикреплён файлами ниже. Закрывающие документы (УПД) передаются по ЭДО (Диадок / СБИС). Средства поступят на баланс сразу после межбанковского зачисления.</i>"
+            f"📎 <i>Счёт прикреплён файлами ниже. Закрывающие документы (УПД) передаются по ЭДО (Диадок / СБИС). После оплаты можно отправить платёжку; баланс пополнится после проверки поступления.</i>"
         )
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📎 Отправить платёжку", callback_data=f"invoice_proof:{invoice.id}")],
             [InlineKeyboardButton(text="💼 Мой кабинет", callback_data="open_cabinet")],
-            [InlineKeyboardButton(text="📞 Поддержка / Отправить платёжку", callback_data="open_contacts")],
+            [InlineKeyboardButton(text="📞 Поддержка", callback_data="open_contacts")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
         ])
 

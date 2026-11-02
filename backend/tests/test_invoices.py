@@ -20,7 +20,9 @@ from app.invoice_service import (
     generate_invoice_xlsx,
     generate_invoice_pdf,
     render_invoice_html,
+    save_invoice_payment_proof,
 )
+from app.config import config
 
 
 @pytest.fixture(autouse=True)
@@ -205,3 +207,125 @@ def test_custom_manual_amount_and_ip_buyer(setup_database: Session):
     assert res_html.status_code == 200
     assert "Пятьдесят тысяч рублей 00 копеек. Без НДС." in res_html.text
     assert "ИП Сидоров Алексей Михайлович" in res_html.text
+
+
+@pytest.mark.asyncio
+async def test_payment_proof_helper_isolated_storage_and_zero_balance(setup_database: Session, tmp_path, monkeypatch):
+    db = setup_database
+    client, _, _ = _create_test_customer(db, "proof@test.ru")
+    invoice = Invoice(id=new_id(), invoice_number="TL-TEST-PROOF", client_id=client.id, amount_rub=5000, total_credit_rub=5000, buyer_name="Proof")
+    db.add(invoice); db.commit(); db.refresh(invoice)
+    monkeypatch.setattr(config, "storage_dir", str(tmp_path))
+    path = await save_invoice_payment_proof(invoice, b"%PDF-proof", original_name="../../evil.pdf", content_type="application/pdf")
+    assert str(tmp_path) in path
+    assert invoice.status == "proof_submitted"
+    assert invoice.proof_size == 10
+    assert client.money_balance_kopeks == 0
+
+
+@pytest.mark.asyncio
+async def test_payment_proof_helper_rejects_invalid_and_closed(setup_database: Session):
+    db = setup_database
+    client, _, _ = _create_test_customer(db, "proof2@test.ru")
+    for status in ("issued", "paid", "cancelled"):
+        invoice = Invoice(id=new_id(), invoice_number=f"TL-{status}", client_id=client.id, amount_rub=500, total_credit_rub=500, status=status)
+        db.add(invoice); db.commit()
+        if status == "issued":
+            with pytest.raises(ValueError):
+                await save_invoice_payment_proof(invoice, b"", original_name="x.pdf", content_type="application/pdf")
+            with pytest.raises(ValueError):
+                await save_invoice_payment_proof(invoice, b"x", original_name="x.exe", content_type="application/octet-stream")
+        else:
+            with pytest.raises(ValueError):
+                await save_invoice_payment_proof(invoice, b"%PDF", original_name="x.pdf", content_type="application/pdf")
+
+
+def test_payment_proof_api_auth_validation_and_no_credit(setup_database: Session, tmp_path, monkeypatch):
+    db = setup_database
+    owner, owner_user, token = _create_test_customer(db, "api-proof@test.ru")
+    other, other_user, other_token = _create_test_customer(db, "other-proof@test.ru")
+    invoice = Invoice(id=new_id(), invoice_number="TL-API-PROOF", client_id=owner.id, amount_rub=5000, total_credit_rub=5000, buyer_name="API")
+    db.add(invoice); db.commit(); db.refresh(invoice)
+    monkeypatch.setattr(config, "storage_dir", str(tmp_path))
+    client = TestClient(app)
+    client.cookies.set("tenderlex_customer_session", other_token)
+    other_csrf = db.query(WebSession).filter(WebSession.user_id == other_user.id).first().csrf_token
+    denied = client.post(f"/api/customer/invoices/{invoice.id}/proof", headers={"X-CSRF-Token": other_csrf}, files={"file": ("p.pdf", b"%PDF-1.4", "application/pdf")})
+    assert denied.status_code == 404
+    client.cookies.set("tenderlex_customer_session", token)
+    csrf = db.query(WebSession).filter(WebSession.user_id == owner_user.id).first().csrf_token
+    no_csrf = client.post(f"/api/customer/invoices/{invoice.id}/proof", files={"file": ("p.pdf", b"%PDF-1.4", "application/pdf")})
+    assert no_csrf.status_code == 403
+    proof_headers = {"X-CSRF-Token": csrf}
+    bad_type = client.post(f"/api/customer/invoices/{invoice.id}/proof", headers=proof_headers, files={"file": ("p.exe", b"MZ", "application/octet-stream")})
+    assert bad_type.status_code == 400
+    bad_sig = client.post(f"/api/customer/invoices/{invoice.id}/proof", headers=proof_headers, files={"file": ("p.pdf", b"not-pdf", "application/pdf")})
+    assert bad_sig.status_code == 400
+    too_big = client.post(f"/api/customer/invoices/{invoice.id}/proof", headers=proof_headers, files={"file": ("p.pdf", b"%PDF" + b"x" * (10 * 1024 * 1024), "application/pdf")})
+    assert too_big.status_code in {400, 413}
+    ok = client.post(f"/api/customer/invoices/{invoice.id}/proof", headers=proof_headers, files={"file": ("p.pdf", b"%PDF-1.4 proof", "application/pdf")})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["invoice"]["status"] == "proof_submitted"
+    db.refresh(owner)
+    assert owner.money_balance_kopeks == 0
+    # Invoice documents are private to the owning customer.
+    client.cookies.set("tenderlex_customer_session", other_token)
+    other_html = client.get(f"/api/customer/invoices/{invoice.id}/html")
+    other_download = client.get(f"/api/customer/invoices/{invoice.id}/download?format=pdf")
+    assert other_html.status_code == 404
+    assert other_download.status_code == 404
+    client.cookies.delete("tenderlex_customer_session")
+    assert client.get(f"/api/customer/invoices/{invoice.id}/html").status_code in {401, 403, 404}
+
+
+def test_paid_cancelled_proof_download_and_manual_close(setup_database: Session, tmp_path, monkeypatch):
+    db = setup_database
+    owner, owner_user, token = _create_test_customer(db, "closed-proof@test.ru")
+    invoice = Invoice(id=new_id(), invoice_number="TL-CLOSED", client_id=owner.id, amount_rub=500, total_credit_rub=500, buyer_name="Closed")
+    db.add(invoice); db.commit(); db.refresh(invoice)
+    monkeypatch.setattr(config, "storage_dir", str(tmp_path))
+    client = TestClient(app); client.cookies.set("tenderlex_customer_session", token)
+    csrf = db.query(WebSession).filter(WebSession.user_id == owner_user.id).first().csrf_token
+    assert client.post(f"/api/customer/invoices/{invoice.id}/proof", headers={"X-CSRF-Token": csrf}, files={"file": ("p.pdf", b"%PDF-1.4", "application/pdf")}).status_code == 200
+    admin = {"X-Admin-Token": config.admin_token or "change-me"}
+    proof = client.get(f"/api/admin/invoices/{invoice.id}/proof", headers=admin)
+    assert proof.status_code == 200
+    assert client.post(f"/api/admin/invoices/{invoice.id}/close-manually", headers=admin, json={}).status_code == 400
+    assert client.post(f"/api/admin/invoices/{invoice.id}/close-manually", headers=admin, json={"confirm": True}).status_code == 200
+    db.refresh(owner)
+    assert owner.money_balance_kopeks == 0
+    again = client.post(f"/api/admin/invoices/{invoice.id}/mark-paid", headers=admin)
+    assert again.status_code == 200
+    db.refresh(owner)
+    assert owner.money_balance_kopeks == 0
+    paid_proof = client.post(f"/api/customer/invoices/{invoice.id}/proof", headers={"X-CSRF-Token": csrf}, files={"file": ("p.pdf", b"%PDF-1.4", "application/pdf")})
+    assert paid_proof.status_code == 400
+    db.refresh(invoice)
+    assert invoice.status == "paid"
+    invoice.status = "cancelled"
+    db.commit()
+    cancelled_proof = client.post(f"/api/customer/invoices/{invoice.id}/proof", headers={"X-CSRF-Token": csrf}, files={"file": ("p.pdf", b"%PDF-1.4", "application/pdf")})
+    assert cancelled_proof.status_code == 400
+    assert client.post(f"/api/admin/invoices/{invoice.id}/mark-paid", headers=admin).status_code == 409
+    db.refresh(owner)
+    assert owner.money_balance_kopeks == 0
+
+
+def test_admin_invoice_list_pagination_and_proof_requires_admin(setup_database: Session):
+    db = setup_database
+    owner, _, token = _create_test_customer(db, "paging@test.ru")
+    for idx in range(2):
+        db.add(Invoice(id=new_id(), invoice_number=f"TL-PAGE-{idx}", client_id=owner.id, amount_rub=500 + idx, total_credit_rub=500 + idx, buyer_name="Paging"))
+    db.commit()
+    client = TestClient(app)
+    admin = {"X-Admin-Token": config.admin_token or "change-me"}
+    first = client.get("/api/admin/invoices?limit=1&offset=0", headers=admin)
+    second = client.get("/api/admin/invoices?limit=1&offset=1", headers=admin)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(first.json()["invoices"]) == 1
+    assert len(second.json()["invoices"]) == 1
+    assert first.json()["invoices"][0]["id"] != second.json()["invoices"][0]["id"]
+    assert first.json()["total"] >= 2
+    unauth = client.get(f"/api/admin/invoices/{first.json()['invoices'][0]['id']}/proof")
+    assert unauth.status_code in {401, 403}

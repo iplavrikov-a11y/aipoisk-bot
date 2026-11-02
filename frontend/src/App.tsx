@@ -56,8 +56,9 @@ import { OutreachView } from './OutreachView'
 import { McpApiView } from './McpApiView'
 import { PriceMonitoringView } from './PriceMonitoringView'
 import { CookiesView } from './CookiesView'
+import { InvoicesView } from './InvoicesView'
 
-type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring' | 'cookies'
+type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'invoices' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring' | 'cookies'
 
 type Dashboard = {
   clients: number
@@ -719,6 +720,10 @@ const viewCopy: Record<View, { title: string; description: string }> = {
     title: 'Тарифы',
     description: 'Глобальные цены услуг и тарифные пакеты для клиентского кабинета.',
   },
+  invoices: {
+    title: 'Счета и оплаты',
+    description: 'Выставленные счета, платёжные поручения клиентов и ручное подтверждение зачисления.',
+  },
   settings: {
     title: 'Настройки',
     description: 'Контакты, пополнение через менеджера, триал, хранение файлов и источники поиска.',
@@ -1193,7 +1198,7 @@ function ToastContainer({
   )
 }
 
-const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'settings', 'ai', 'mcp', 'price_monitoring', 'cookies'] as const
+const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'invoices', 'settings', 'ai', 'mcp', 'price_monitoring', 'cookies'] as const
 
 function getInitialView(): View {
   if (typeof window === 'undefined') return 'dashboard'
@@ -1715,6 +1720,7 @@ export function App() {
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
     { id: 'outreach' as const, label: 'Лиды и Рассылка', icon: Mail },
     { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
+    { id: 'invoices' as const, label: 'Счета и оплаты', icon: FileCheck },
     { id: 'settings' as const, label: 'Настройки', icon: SlidersHorizontal },
     { id: 'price_monitoring' as const, label: 'Мониторинг цен', icon: Coins },
     { id: 'cookies' as const, label: 'Куки площадок', icon: ShieldCheck },
@@ -1863,6 +1869,7 @@ export function App() {
         )}
         {isReady && view === 'outreach' && <OutreachView />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
+        {isReady && view === 'invoices' && <InvoicesView />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} onSettingsUpdated={setSettings} />}
         {isReady && view === 'mcp' && <McpApiView clients={clients} />}
