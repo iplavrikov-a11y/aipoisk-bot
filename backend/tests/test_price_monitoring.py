@@ -790,4 +790,58 @@ def test_price_monitoring_multiformat_input_extraction():
         assert ("Кабель ВВГнг-LS 3х2.5", "м") in text_items
 
 
+def test_price_monitoring_access_modes_global_and_granular(db_session, admin_client):
+    from app.repository import client_access_error
+    from app.jobs import MODE_PRICE_MONITORING
+
+    # Create test client without explicit permission
+    test_client = Client(
+        telegram_id="test_pm_access_mode_client",
+        name="Access Mode Client",
+        money_balance_kopeks=500_000,
+        allowed_price_monitoring=False,
+    )
+    db_session.add(test_client)
+    db_session.commit()
+    db_session.refresh(test_client)
+
+    try:
+        # 1. Mode 'all' (default): client without flag should be permitted
+        resp = admin_client.post("/api/price-monitoring/settings", json={"access_mode": "all"})
+        assert resp.status_code == 200
+        assert resp.json()["access_mode"] == "all"
+
+        err = client_access_error(db_session, test_client, MODE_PRICE_MONITORING)
+        assert err == ""
+
+        # 2. Mode 'granular': client without flag is denied
+        resp = admin_client.post("/api/price-monitoring/settings", json={"access_mode": "granular"})
+        assert resp.status_code == 200
+        assert resp.json()["access_mode"] == "granular"
+
+        err = client_access_error(db_session, test_client, MODE_PRICE_MONITORING)
+        assert "Модуль мониторинга цен" in err
+
+        # Give client explicit permission in granular mode
+        test_client.allowed_price_monitoring = True
+        db_session.commit()
+        err = client_access_error(db_session, test_client, MODE_PRICE_MONITORING)
+        assert err == ""
+
+        # 3. Mode 'disabled': client is denied even with flag
+        resp = admin_client.post("/api/price-monitoring/settings", json={"access_mode": "disabled"})
+        assert resp.status_code == 200
+        assert resp.json()["access_mode"] == "disabled"
+
+        err = client_access_error(db_session, test_client, MODE_PRICE_MONITORING)
+        assert "Модуль мониторинга цен" in err
+
+    finally:
+        # Reset mode back to 'all' and clean up
+        admin_client.post("/api/price-monitoring/settings", json={"access_mode": "all"})
+        db_session.delete(test_client)
+        db_session.commit()
+
+
+
 

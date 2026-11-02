@@ -36,6 +36,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.95,
     },
     {
+      url: `${siteUrl}/monitoring-cen-postavshchikov-po-tz`,
+      lastModified: contentUpdated,
+      changeFrequency: "weekly",
+      priority: 0.95,
+    },
+    {
       url: `${siteUrl}/poisk-postavshchikov-dlya-tendera`,
       lastModified: contentUpdated,
       changeFrequency: "weekly",

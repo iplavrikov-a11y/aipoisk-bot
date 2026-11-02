@@ -2976,7 +2976,7 @@ export function CabinetClient() {
                   className={`py-2 px-3 rounded-lg transition-all cursor-pointer flex items-center justify-center text-center ${authMode === "register" ? "bg-white text-teal-800 shadow-2xs font-extrabold" : "text-slate-600 hover:text-slate-900"}`}
                   onClick={() => { setError(""); setMessage(""); setAuthMode("register"); }}
                 >
-                  Регистрация (+495 ₽)
+                  Регистрация
                 </button>
                 <button
                   type="button"

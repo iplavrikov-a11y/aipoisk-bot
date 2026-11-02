@@ -2648,6 +2648,7 @@ def admin_get_price_monitoring_settings(db: Session = Depends(db_session)) -> di
         "filter_marketplaces": bool(getattr(settings, "price_monitoring_filter_marketplaces", True)),
         "filter_foreign_sources": bool(getattr(settings, "price_monitoring_filter_foreign", True)),
         "max_variation_pct": float(getattr(settings, "price_monitoring_max_variation_pct", 33.0) or 33.0),
+        "access_mode": getattr(settings, "price_monitoring_access_mode", "all") or "all",
     }
 
 
@@ -2673,6 +2674,10 @@ def admin_update_price_monitoring_settings(data: dict, db: Session = Depends(db_
         settings.price_monitoring_filter_foreign = bool(data["filter_foreign_sources"])
     if "max_variation_pct" in data:
         settings.price_monitoring_max_variation_pct = max(5.0, min(100.0, float(data["max_variation_pct"])))
+    if "access_mode" in data:
+        raw_mode = str(data["access_mode"]).strip().lower()
+        if raw_mode in ("all", "granular", "disabled"):
+            settings.price_monitoring_access_mode = raw_mode
 
     db.commit()
     return admin_get_price_monitoring_settings(db)
@@ -5133,6 +5138,13 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         (user.client and user.client.telegram_id and not str(user.client.telegram_id).startswith("web:"))
         or (user.client and db.query(ClientTelegramAccount.id).filter(ClientTelegramAccount.client_id == user.client.id).first())
     )
+    pm_mode = getattr(settings, "price_monitoring_access_mode", "all") or "all"
+    if pm_mode == "all":
+        is_pm_allowed = True
+    elif pm_mode == "disabled":
+        is_pm_allowed = False
+    else:
+        is_pm_allowed = bool(user.client and getattr(user.client, "allowed_price_monitoring", False))
     return {
         "id": user.id,
         "email": user.email,
@@ -5141,7 +5153,7 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "is_email_verified": bool(user.is_email_verified),
         "has_telegram": has_telegram,
         "client_id": user.client_id,
-        "allowed_price_monitoring": getattr(user.client, "allowed_price_monitoring", False) if user.client else False,
+        "allowed_price_monitoring": is_pm_allowed,
         "allowed_geo_radius": is_geo_allowed,
         "geo_radius_surcharge_pct": configured_geo_surcharge_pct(settings),
         "is_trial": client_uses_trial_access(db, user.client) if user.client else False,

@@ -492,8 +492,16 @@ def client_access_error(
         if not (settings.geo_radius_search_enabled_global or client.allowed_geo_radius):
             return "Приоритет доставки пока не подключён для вашего аккаунта."
     if mode == MODE_PRICE_MONITORING:
-        if not getattr(client, "allowed_price_monitoring", False):
-            return "Модуль мониторинга цен не подключён для вашего аккаунта. Обратитесь к администратору."
+        settings = get_or_create_settings(db)
+        pm_mode = getattr(settings, "price_monitoring_access_mode", "all") or "all"
+        if pm_mode == "all":
+            pm_allowed = True
+        elif pm_mode == "disabled":
+            pm_allowed = False
+        else:
+            pm_allowed = bool(getattr(client, "allowed_price_monitoring", False))
+        if not pm_allowed:
+            return "Модуль мониторинга цен временно отключён администратором."
         price = effective_job_unit_price_kopeks(
             db,
             client,

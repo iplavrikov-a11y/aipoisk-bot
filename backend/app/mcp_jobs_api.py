@@ -91,7 +91,18 @@ def _mode_is_permitted(api_key: ApiKey, client: Client, mode: str) -> bool:
     elif mode == MODE_EXACT_PRODUCT:
         permitted = bool(getattr(api_key, "allowed_exact_product", False))
     elif mode == MODE_PRICE_MONITORING:
-        permitted = bool(getattr(api_key, "allowed_price_monitoring", False) and getattr(client, "allowed_price_monitoring", False))
+        from sqlalchemy.orm import object_session
+        from .repository import get_or_create_settings
+        client_allowed = bool(getattr(client, "allowed_price_monitoring", False))
+        sess = object_session(client)
+        if sess is not None:
+            settings = get_or_create_settings(sess)
+            pm_mode = getattr(settings, "price_monitoring_access_mode", "all") or "all"
+            if pm_mode == "all":
+                client_allowed = True
+            elif pm_mode == "disabled":
+                client_allowed = False
+        permitted = bool(getattr(api_key, "allowed_price_monitoring", False) and client_allowed)
     else:  # guarded by _canonical_mode; retained for safe future mode additions
         permitted = False
     return permitted

@@ -12,6 +12,7 @@ const moduleLinks = [
 ] as const;
 
 const resourceLinks = [
+  ["/monitoring-cen-postavshchikov-po-tz", "Мониторинг цен"],
   ["/baza-znaniy", "База знаний"],
   ["/api-integracii", "API и интеграции"],
   ["/otrasli", "Отрасли"],

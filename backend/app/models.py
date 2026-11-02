@@ -96,6 +96,7 @@ class SystemSettings(Base):
     price_monitoring_filter_marketplaces: Mapped[bool] = mapped_column(Boolean, default=True)
     price_monitoring_filter_foreign: Mapped[bool] = mapped_column(Boolean, default=True)
     price_monitoring_max_variation_pct: Mapped[float] = mapped_column(Float, default=33.0)
+    price_monitoring_access_mode: Mapped[str] = mapped_column(String(32), default="all")
     geo_radius_search_enabled_global: Mapped[bool] = mapped_column(Boolean, default=False)
     geo_radius_surcharge_pct: Mapped[float] = mapped_column(Float, default=30.0)
 
@@ -165,6 +166,7 @@ class SystemSettings(Base):
             "price_monitoring_filter_marketplaces": self.price_monitoring_filter_marketplaces,
             "price_monitoring_filter_foreign": getattr(self, "price_monitoring_filter_foreign", True),
             "price_monitoring_max_variation_pct": getattr(self, "price_monitoring_max_variation_pct", 33.0),
+            "price_monitoring_access_mode": getattr(self, "price_monitoring_access_mode", "all") or "all",
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:
