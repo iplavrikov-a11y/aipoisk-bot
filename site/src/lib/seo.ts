@@ -47,7 +47,9 @@ export function absoluteUrl(path: string) {
 }
 
 export function formatSeoTitle(title: string, customSeoTitle?: string): string {
-  if (customSeoTitle) return customSeoTitle;
+  if (customSeoTitle) {
+    return customSeoTitle.replace(/\s*\|\s*TenderLex\s*$/i, "").trim();
+  }
   let clean = title;
   if (clean.includes(":")) {
     clean = clean.split(":")[0].trim();

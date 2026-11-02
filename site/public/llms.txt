@@ -6,6 +6,7 @@ TenderLex: https://tenderlex.ru. Онлайн-сервис для отделов
 - Поиск поставщиков по ТЗ: кандидаты, доступные контакты и черновик запроса КП. Контакты, полномочия, наличие и цены подтверждают у поставщика. https://tenderlex.ru/poisk-postavshchikov-po-tz
 - Подбор товара и аналогов: сопоставление характеристик, варианты для проверки и отчёт Word (DOCX). Соответствие закупке проверяют по документации производителя и применимым правилам. https://tenderlex.ru/podbor-tovara-i-analogov-po-tz
 - Анализ документации: отчёт об условиях, сроках, штрафах и рисках для последующей проверки. Это помощь в анализе, а не юридическое заключение или гарантия допуска. https://tenderlex.ru/analiz-zakupochnoi-dokumentacii
+- Мониторинг цен по спецификациям: пакетный поиск рыночных цен поставщиков по строкам ТЗ, консенсусная кластеризация предложений, отсечение выбросов и выгрузка сводки в Excel для обоснования НМЦК. https://tenderlex.ru/monitoring-cen-postavshchikov-po-tz
 
 Национальный режим: проверяйте применимость ПП РФ №1875 в действующей редакции, код товара, извещение, ограничения и исключения. Наличие записи в реестре само по себе не подтверждает соответствие всем требованиям.
 
@@ -81,8 +82,10 @@ TenderLex: https://tenderlex.ru. Онлайн-сервис для отделов
 - Проверка производственных мощностей и складов поставщика: выездной технический аудит: https://tenderlex.ru/baza-znaniy/proverka-proizvodstvennyh-moshchnostei-i-skladov-postavshchika
 - Как заполнить таблицу показателей товара («Форму 2») по 44-ФЗ: https://tenderlex.ru/baza-znaniy/kak-zapolnit-formu-2-dlya-zayavki-44-fz-konkretnye-pokazateli
 - Как определить скрытого производителя по ТЗ в госзакупках: методы раскрытия 'заточек': https://tenderlex.ru/baza-znaniy/kak-opredelit-skrytogo-proizvoditelya-po-tz-44-fz
+- Мониторинг цен поставщиков по спецификациям: методика сбора, кластеризация и обоснование НМЦК: https://tenderlex.ru/baza-znaniy/monitoring-cen-postavshchikov-po-specifikaciyam
 
 ## Дополнительные страницы
+- Мониторинг цен по спецификации ТЗ: https://tenderlex.ru/monitoring-cen-postavshchikov-po-tz
 - Поиск поставщиков под тендер: https://tenderlex.ru/poisk-postavshchikov-dlya-tendera
 - Поиск заводов-производителей по ТЗ: https://tenderlex.ru/poisk-proizvoditeley-po-tz
 - Поставщики для запроса КП: https://tenderlex.ru/postavshchiki-dlya-zaprosa-kp
