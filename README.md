@@ -1,12 +1,21 @@
 # TenderLex Bot
 
-Актуальный выпуск 27 октября 2026: [комплексная SEO-оптимизация, расширение IndexNow до 91 URL и кликабельные коммерческие сниппеты](docs/SEO_AUDIT_INDEXNOW_AND_CTR_RELEASE_2026-10-27.md), [исправление B2B-счетов: формат А4, Chromium PDF, Pillow XLSX и Email-релей с вложениями](docs/INVOICE_A4_XLSX_EMAIL_RELEASE_2026-10-27.md), [устранение кодов классификаторов ОКПД2/КТРУ из запросов, блокировка тендерных агрегаторов, исключение больниц/школ как поставщиков и валидация 32 новых ТЗ](docs/CLASSIFIER_ISOLATION_AND_32TZ_BENCHMARK_RELEASE_2026-10-27.md), а также [матричное тестирование 7 режимов на 105 реальных задачах, сквозная география мониторинга цен и адаптация под Windows](docs/BENCHMARK_MATRIX_AND_GEO_SCOPE_RELEASE_2026-10-26.md).
+Актуальный выпуск 2 ноября 2026: [глобальный доступ к модулю «Мониторинг цен» для всех клиентов, SEO-продвижение, расширение базы знаний и полировка интерфейса](docs/PROJECT_STATUS.md), [исправление сбора данных в Яндекс Метрике, CTR-оптимизация топа Google (#1.23, #2.93, #12-14, #9.88), синхронизация каталогов ИИ и IndexNow](docs/PROJECT_STATUS.md), а также [оптимизация воронки продаж, онбординга, типографики и изоляция тестовых Telegram-уведомлений](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 27 октября: 1 353 бэкенд-теста; 108 страниц сайта собраны успешно; 91 страница sitemap проверена и отправлена в IndexNow (HTTP 200); деплой проверен на проде.
+Серверный прогон выпуска 2 ноября: 1 378 бэкенд-тестов (100% pass); 110 страниц сайта собраны успешно; 93 страницы sitemap проверены и отправлены в IndexNow (HTTP 200); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-site`, `tenderlex-bot`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Price Monitoring Global Rollout, Yandex Metrika Activity Tracking & Google Top Articles CTR Optimization (2026-11-02):
+  - Global Price Monitoring Access Mode (`backend/app/models.py`, `backend/app/db.py`, `backend/app/main.py`, `backend/app/repository.py`, `frontend/src/PriceMonitoringView.tsx`): introduced `price_monitoring_access_mode` system setting with default `"all"`. Enabled 3-state access control in admin panel (🟢 All clients, 🟡 Granular/Individual, 🔴 Disabled globally). Dynamic client access check unlocks tab "5. Мониторинг цен" in web cabinet for all registered clients without manual per-user toggling.
+  - SEO Landing & Schema Markup (`site/src/app/monitoring-cen-postavshchikov-po-tz/page.tsx`, `site/src/app/sitemap.ts`): launched commercial landing page for price monitoring and 44-FZ/223-FZ market analysis with Service, BreadcrumbList, FAQPage, and HowTo JSON-LD schemas. Added to XML sitemap (93 URLs).
+  - Knowledge Base & Normative Regulations (`site/src/data/knowledge-base.ts`): published comprehensive article `/baza-znaniy/monitoring-cen-postavshchikov-po-specifikaciyam` covering Art. 22 44-FZ, Order No. 567, coefficient of variation formula ($V \le 33\%$), consensus clustering, and retail marketplace filtering (Ozon, WB, Avito).
+  - Yandex Metrika Activity Tracking (`site/src/app/yandex-metrika.tsx`, `site/src/lib/analytics.ts`): resolved 0 visits issue by introducing implied engagement consent on active user actions (scroll, click, or 3s active reading) while strictly preserving zero-leakage SSR deploy gate contracts and one-click "Только необходимые" denial. Added `price_monitoring` goal module.
+  - Google Top Articles CTR Optimization & Answer Boxes (`site/src/data/knowledge-base.ts`, `site/src/lib/seo.ts`): optimized titles, descriptions, keywords, and high-CTR Featured Snippet/Answer Box blocks for top Google ranking articles (#1.23 freight transport, #2.93 cable inspection, #12-14 NMCK variation, #9.88 CAD Arbitr). Sanitized `formatSeoTitle` to eliminate duplicate brand suffix.
+  - LLM Discovery Catalog Synchronization (`site/public/llms.txt`, `site/public/llms-full.txt`): added 4th module to core modules index and full structured article text for AI crawlers and agents.
+  - Live Validation & Recrawl: 1,378 backend tests passed (100%), 110 Next.js pages compiled, IndexNow ping verified (HTTP 200, 93 URLs submitted), live deployment verified on server `202.71.13.57`.
 
 - Comprehensive SEO Optimization, IndexNow 91-URL Dynamic Pipeline & Commercial Snippets CTR (2026-10-27):
   - Expert Council & Multi-Repo Synthesis: conducted a 10-point independent expert audit combining best practices from 7 specialized SEO repositories (`claude-seo`, `open-seo`, `seomachine`, `geo-seo-claude`, `next-seo`, `ethercreative/seo`, `marketingskills`). Composite evaluation: Yandex 8.4/10, Google 7.4/10.
