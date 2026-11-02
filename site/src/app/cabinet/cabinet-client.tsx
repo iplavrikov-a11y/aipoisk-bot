@@ -91,6 +91,15 @@ function declensionTasks(n: number): string {
   return "задач";
 }
 
+function declensionFiles(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 19) return "файлов";
+  if (mod10 === 1) return "файл";
+  if (mod10 >= 2 && mod10 <= 4) return "файла";
+  return "файлов";
+}
+
 type BalanceCounter = {
   label: string;
   available: number | null;
@@ -166,6 +175,7 @@ type SessionPayload = {
     name: string;
     is_trial: boolean;
     is_email_verified: boolean;
+    has_telegram?: boolean;
     allowed_price_monitoring?: boolean;
     allowed_geo_radius?: boolean;
     geo_radius_surcharge_pct?: number;
@@ -249,6 +259,18 @@ type PositionSelection = {
   }>;
   selected_ids?: string[];
   confirmed?: boolean;
+};
+
+type CustomerInvoice = {
+  id: string;
+  invoice_number: string;
+  amount_rub: number;
+  bonus_rub: number;
+  total_credit_rub: number;
+  status: string;
+  created_at?: string;
+  paid_at?: string | null;
+  proof_submitted_at?: string | null;
 };
 
 type CustomerJob = {
@@ -1205,7 +1227,7 @@ export function CabinetClient() {
   const [debouncedJobSearch, setDebouncedJobSearch] = useState("");
   const [jobModeFilter, setJobModeFilter] = useState("");
   const [jobPolicyFilter, setJobPolicyFilter] = useState("");
-  const [authMode, setAuthMode] = useState<"login" | "register" | "reset" | "new_password">("login");
+  const [authMode, setAuthMode] = useState<"login" | "register" | "reset" | "new_password">("register");
   const [resetToken, setResetToken] = useState("");
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [name, setName] = useState("");
@@ -1532,10 +1554,19 @@ export function CabinetClient() {
     buyer_email: string;
     tariff_name: string;
     created_at?: string;
+    status?: string;
+    proof_submitted_at?: string | null;
   } | null>(null);
   const [invoiceEmailSending, setInvoiceEmailSending] = useState(false);
   const [invoiceEmailSent, setInvoiceEmailSent] = useState(false);
   const [invoiceDetailsCopied, setInvoiceDetailsCopied] = useState(false);
+  const [customerInvoices, setCustomerInvoices] = useState<CustomerInvoice[]>([]);
+  const invoiceRequestVersion = useRef(0);
+  const [customerInvoicesTotal, setCustomerInvoicesTotal] = useState(0);
+  const [customerInvoicesPage, setCustomerInvoicesPage] = useState(1);
+  const CUSTOMER_INVOICES_PER_PAGE = 5;
+  const [invoiceProofUploading, setInvoiceProofUploading] = useState<string | null>(null);
+  const [invoiceProofMessage, setInvoiceProofMessage] = useState<string | null>(null);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showReferralModal, setShowReferralModal] = useState(false);
@@ -1683,10 +1714,19 @@ export function CabinetClient() {
     const response = await fetch("/api/customer/auth/session", { credentials: "same-origin", cache: "no-store" });
     if (response.status === 401 || response.status === 404) {
       setSession(null);
+      invoiceRequestVersion.current++;
+      setCustomerInvoices([]);
+      setCustomerInvoicesTotal(0);
       return;
     }
     const payload = await readJson<SessionPayload>(response);
     setSession(payload.authenticated ? payload : null);
+    if (payload.authenticated) loadCustomerInvoices();
+    else {
+      invoiceRequestVersion.current++;
+      setCustomerInvoices([]);
+      setCustomerInvoicesTotal(0);
+    }
     return payload;
   }
 
@@ -1712,6 +1752,45 @@ export function CabinetClient() {
       setHistoryError(err instanceof Error ? err.message : "Ошибка загрузки истории операций");
     } finally {
       setHistoryLoading(false);
+    }
+  }
+
+  async function loadCustomerInvoices() {
+    const version = ++invoiceRequestVersion.current;
+    try {
+      const response = await fetch(`/api/customer/invoices?limit=100&offset=0`, { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<{ invoices?: CustomerInvoice[]; total?: number }>(response);
+      if (version !== invoiceRequestVersion.current) return;
+      const next = Array.isArray(data.invoices) ? data.invoices : [];
+      setCustomerInvoices(next);
+      setCustomerInvoicesTotal(typeof data.total === "number" ? data.total : next.length);
+    } catch {
+      // Invoice history is supplementary; keep the cabinet usable if unavailable.
+    }
+  }
+
+  async function uploadInvoiceProof(invoiceId: string, file: File) {
+    setInvoiceProofUploading(invoiceId);
+    setInvoiceProofMessage(null);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const csrf = session?.csrf_token || "";
+      const response = await fetch(`/api/customer/invoices/${invoiceId}/proof`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: csrf ? { "x-csrf-token": csrf } : {},
+        body,
+      });
+      const data = await readJson<{ detail?: string; invoice?: CustomerInvoice }>(response);
+      if (!response.ok) throw new Error(data.detail || "Не удалось отправить платёжку");
+      setInvoiceProofMessage("Платёжка отправлена. Начисление будет выполнено после проверки оплаты.");
+      await loadCustomerInvoices();
+    } catch (err) {
+      setInvoiceProofMessage(err instanceof Error ? err.message : "Не удалось отправить платёжку");
+    } finally {
+      setInvoiceProofUploading(null);
     }
   }
 
@@ -1973,6 +2052,10 @@ export function CabinetClient() {
     const verifyToken = params.get("email_verify_token");
     const resetTokenParam = params.get("reset_token");
     const authError = params.get("auth_error");
+    const modeParam = params.get("mode") || (window.location.hash === "#login" ? "login" : window.location.hash === "#register" ? "register" : null);
+    if (modeParam === "login" || modeParam === "register" || modeParam === "reset") {
+      setAuthMode(modeParam);
+    }
     if (verified === "1") setMessage("Email подтверждён. Теперь можно запускать задачи.");
     if (verified === "0") setError("Ссылка подтверждения недействительна или устарела.");
     if (authError === "yandex_declined") {
@@ -2301,6 +2384,9 @@ export function CabinetClient() {
       });
       await readJson(response);
       setSession(null);
+      invoiceRequestVersion.current++;
+      setCustomerInvoices([]);
+      setCustomerInvoicesTotal(0);
       setJobs([]);
       setJobsPage(1);
       setJobsTotal(0);
@@ -2824,9 +2910,13 @@ export function CabinetClient() {
         <section className="tl-cabinet-auth-card w-full max-w-5xl grid lg:grid-cols-12 gap-8 items-stretch bg-white p-6 sm:p-10 rounded-3xl border border-slate-200/90 shadow-xl">
           <div className="lg:col-span-7 flex flex-col justify-between space-y-6 pr-0 lg:pr-4">
             <div className="space-y-4">
-              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 leading-tight">Работайте с закупками прямо на сайте</h1>
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 leading-tight">
+                {authMode === "register" ? "Проверьте первое ТЗ бесплатно" : "Работайте с закупками прямо на сайте"}
+              </h1>
               <p className="text-sm text-slate-600 leading-relaxed">
-                Войдите или создайте кабинет, чтобы запускать анализ закупок, искать поставщиков и скачивать готовые результаты.
+                {authMode === "register"
+                  ? "Создайте кабинет за 15 секунд — дарим 495 ₽ на баланс для бесплатного тестирования на ваших спецификациях. Без привязки карты."
+                  : "Войдите в кабинет, чтобы запускать анализ закупок, искать поставщиков и скачивать готовые результаты."}
               </p>
             </div>
 
@@ -2860,6 +2950,11 @@ export function CabinetClient() {
                   <span className="text-xs text-slate-500 leading-normal block">история задач и скачивание готовых файлов</span>
                 </div>
               </article>
+
+              <div className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-teal-50 border border-teal-200/80 text-xs font-semibold text-teal-800">
+                <CheckCircle2 size={15} className="text-teal-600 shrink-0" />
+                <span>Оплата для юрлиц по счёту с УПД через Диадок / СБИС</span>
+              </div>
             </div>
           </div>
 
@@ -2878,23 +2973,34 @@ export function CabinetClient() {
               <div className="grid grid-cols-2 p-1 bg-slate-200/60 rounded-xl mb-3 text-xs font-bold" role="tablist" aria-label="Режим входа">
                 <button
                   type="button"
+                  className={`py-2 rounded-lg transition-all cursor-pointer ${authMode === "register" ? "bg-white text-teal-800 shadow-2xs font-extrabold" : "text-slate-600 hover:text-slate-900"}`}
+                  onClick={() => { setError(""); setMessage(""); setAuthMode("register"); }}
+                >
+                  Регистрация (+495 ₽)
+                </button>
+                <button
+                  type="button"
                   className={`py-2 rounded-lg transition-all cursor-pointer ${authMode === "login" ? "bg-white text-slate-900 shadow-2xs font-extrabold" : "text-slate-600 hover:text-slate-900"}`}
                   onClick={() => { setError(""); setMessage(""); setAuthMode("login"); }}
                 >
                   Вход
-                </button>
-                <button
-                  type="button"
-                  className={`py-2 rounded-lg transition-all cursor-pointer ${authMode === "register" ? "bg-white text-slate-900 shadow-2xs font-extrabold" : "text-slate-600 hover:text-slate-900"}`}
-                  onClick={() => { setError(""); setMessage(""); setAuthMode("register"); }}
-                >
-                  Регистрация
                 </button>
               </div>
             )}
 
             {authMode !== "reset" && authMode !== "new_password" ? (
               <div className="space-y-2.5 pt-1">
+                <a
+                  href="/api/customer/auth/telegram/login"
+                  className="w-full py-2.5 px-4 bg-[#24A1DE] hover:bg-[#1f93cc] active:bg-[#1a83b7] text-white rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center gap-3 cursor-pointer select-none group"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0" aria-hidden="true">
+                    <circle cx="12" cy="12" r="12" fill="#FFFFFF" />
+                    <path fill="#24A1DE" d="M17.5 7.5L6.5 11.75C5.75 12.05 5.75 12.47 6.36 12.65L9.18 13.53L15.71 9.41C16.02 9.22 16.3 9.33 16.07 9.53L10.78 14.3L10.59 17.15C10.87 17.15 11 17.02 11.16 16.86L12.53 15.53L15.38 17.63C15.91 17.92 16.29 17.77 16.42 17.14L18.29 8.33C18.48 7.57 18 7.22 17.5 7.5Z" />
+                  </svg>
+                  <span>{authMode === "login" ? "Войти через Telegram" : "Создать кабинет через Telegram в 1 клик"}</span>
+                </a>
+
                 <a
                   href="/api/customer/auth/yandex/login"
                   className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-800 hover:text-slate-950 border border-slate-300 rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center gap-3 cursor-pointer select-none group"
@@ -2906,16 +3012,11 @@ export function CabinetClient() {
                   <span>{authMode === "login" ? "Войти с Яндекс ID" : "Создать кабинет через Яндекс ID"}</span>
                 </a>
 
-                <a
-                  href="/api/customer/auth/telegram/login"
-                  className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-800 hover:text-slate-950 border border-slate-300 rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center gap-3 cursor-pointer select-none group"
-                >
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0" aria-hidden="true">
-                    <circle cx="12" cy="12" r="12" fill="#24A1DE" />
-                    <path fill="#FFFFFF" d="M17.5 7.5L6.5 11.75C5.75 12.05 5.75 12.47 6.36 12.65L9.18 13.53L15.71 9.41C16.02 9.22 16.3 9.33 16.07 9.53L10.78 14.3L10.59 17.15C10.87 17.15 11 17.02 11.16 16.86L12.53 15.53L15.38 17.63C15.91 17.92 16.29 17.77 16.42 17.14L18.29 8.33C18.48 7.57 18 7.22 17.5 7.5Z" />
-                  </svg>
-                  <span>{authMode === "login" ? "Войти через Telegram" : "Создать кабинет через Telegram"}</span>
-                </a>
+                {authMode === "register" ? (
+                  <p className="text-[11px] text-center text-teal-800 font-medium bg-teal-50/80 border border-teal-200/60 rounded-lg py-1 px-2">
+                    🎁 Приветственный баланс 495 ₽ зачисляется сразу
+                  </p>
+                ) : null}
 
                 <div className="relative flex py-1 items-center">
                   <div className="flex-grow border-t border-slate-200" />
@@ -3068,7 +3169,7 @@ export function CabinetClient() {
                   ? "Сохранить новый пароль и войти"
                   : authMode === "login"
                   ? "Войти"
-                  : "Создать кабинет"}
+                  : "Создать кабинет и получить 495 ₽"}
               </span>
             </button>
 
@@ -3750,7 +3851,7 @@ export function CabinetClient() {
             </div>
 
             {selectedFiles.length ? (
-              <div className="p-2 bg-slate-50 border border-slate-200/80 rounded-lg space-y-1">
+              <div className="p-2.5 bg-slate-50 border border-slate-200/80 rounded-xl space-y-2">
                 <div className="flex items-center justify-between text-xs font-bold text-slate-700">
                   <span>Выбранные файлы ({selectedFiles.length}):</span>
                   <button
@@ -3763,12 +3864,24 @@ export function CabinetClient() {
                 </div>
                 <ul className="space-y-1">
                   {selectedFiles.map((file, idx) => (
-                    <li key={`${file.name}-${idx}`} className="flex items-center justify-between text-xs bg-white p-1 rounded-md border border-slate-200/70 text-slate-800">
+                    <li key={`${file.name}-${idx}`} className="flex items-center justify-between text-xs bg-white p-1.5 rounded-lg border border-slate-200/70 text-slate-800">
                       <span className="truncate max-w-xs font-medium text-xs">{file.name}</span>
                       <span className="text-[10px] text-slate-400 font-mono shrink-0 ml-2">{(file.size / 1024).toFixed(1)} KB</span>
                     </li>
                   ))}
                 </ul>
+                <div className="pt-1 flex flex-wrap items-center justify-between gap-2.5">
+                  <button
+                    className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs sm:text-sm font-extrabold rounded-xl shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed border border-teal-500/40"
+                    type="submit"
+                    disabled={busy}
+                  >
+                    {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Sparkles size={15} className="text-emerald-200" aria-hidden="true" />}
+                    <span>{selectedCopy.submit} ({selectedFiles.length} {declensionFiles(selectedFiles.length)})</span>
+                    <ArrowRight size={15} className="ml-0.5" aria-hidden="true" />
+                  </button>
+                  <span className="text-[11px] text-slate-500 font-medium">Готово к анализу и проверке</span>
+                </div>
               </div>
             ) : null}
 
@@ -3784,17 +3897,25 @@ export function CabinetClient() {
                 <div className="flex items-center gap-2">
                   <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
                   <span>
-                    <strong>Требуется подтверждение email для запуска задач.</strong> Проверьте почту или запросите повторную отправку.
+                    <strong>Подтвердите email для работы с задачами.</strong> Проверьте папку «Входящие» и «Спам» или перейдите через Telegram в 1 клик.
                   </span>
                 </div>
-                <button
-                  type="button"
-                  className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
-                  onClick={resendVerification}
-                  disabled={busy}
-                >
-                  Отправить письмо повторно
-                </button>
+                <div className="flex items-center gap-2">
+                  <a
+                    href="/api/customer/auth/telegram/login"
+                    className="px-2.5 py-1 bg-[#24A1DE] hover:bg-[#1f93cc] text-white rounded-lg text-xs font-bold transition-all shadow-2xs"
+                  >
+                    Вход через Telegram
+                  </a>
+                  <button
+                    type="button"
+                    className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                    onClick={resendVerification}
+                    disabled={busy}
+                  >
+                    Отправить повторно
+                  </button>
+                </div>
               </div>
             ) : null}
 
@@ -3852,6 +3973,31 @@ export function CabinetClient() {
           </div>
         </form>
       </section>
+
+      {activeJobs > 0 && !session?.user?.has_telegram ? (
+        <aside className="p-3 bg-gradient-to-r from-teal-50 via-emerald-50 to-sky-50 border border-teal-200/90 rounded-xl flex flex-wrap items-center justify-between gap-3 shadow-2xs">
+          <div className="flex items-center gap-2.5 text-xs text-slate-800">
+            <div className="w-8 h-8 rounded-lg bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
+              <BellRing size={16} className="animate-pulse" />
+            </div>
+            <div>
+              <strong className="block text-slate-900 font-extrabold text-xs">
+                {activeJobs} {declensionTasks(activeJobs)} в обработке (~2–3 мин)
+              </strong>
+              <span className="text-slate-600 text-[11px] leading-tight block">
+                Привяжите Telegram-бота в 1 клик — пришлём готовый отчёт прямо в мессенджер, можно не ждать на сайте
+              </span>
+            </div>
+          </div>
+          <a
+            href="/api/customer/auth/telegram/login"
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-[#24A1DE] hover:bg-[#1f93cc] active:bg-[#1a83b7] text-white text-xs font-bold rounded-lg shadow-2xs transition-all shrink-0 cursor-pointer"
+          >
+            <Send size={13} aria-hidden="true" />
+            <span>Привязать Telegram</span>
+          </a>
+        </aside>
+      ) : null}
 
       {/* Jobs History Table */}
       <section id="jobs" className="tl-cabinet-jobs bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs space-y-3">
@@ -7467,6 +7613,14 @@ ${webLink}`;
               </button>
             </div>
 
+            {/* Balance Guarantee Badge */}
+            <div className="flex items-start gap-2.5 p-2.5 bg-emerald-50/80 border border-emerald-200/80 rounded-xl text-xs text-emerald-950 font-medium shrink-0">
+              <CheckCircle2 size={16} className="text-emerald-700 shrink-0 mt-0.5" />
+              <span>
+                <strong>Гарантия списания:</strong> средства с баланса расходуются только после успешной выдачи готового результата. Если по ТЗ ничего не найдено — баланс сохраняется.
+              </span>
+            </div>
+
             {/* TAB 1: Transfer to Card / Telegram */}
             {topUpTab === "card" ? (
               <>
@@ -7983,6 +8137,7 @@ ${webLink}`;
                                 throw new Error(data.detail || "Не удалось выставить счёт");
                               }
                               setInvoiceCreated(data.invoice);
+                              loadCustomerInvoices();
                             } catch (err: any) {
                               setInvoiceSubmitError(err.message || "Ошибка при создании счёта");
                             } finally {
@@ -8056,16 +8211,37 @@ ${webLink}`;
                         Действия со счётом:
                       </div>
 
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {/* Download PDF */}
-                        <a
-                          href={`/api/customer/invoices/${invoiceCreated.id}/download?format=pdf`}
-                          download
-                          className="flex items-center justify-center gap-2 p-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer text-center"
-                        >
-                          <Download size={15} className="shrink-0" />
-                          <span>Скачать PDF (.pdf)</span>
-                        </a>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {/* Download PDF */}
+                          <a
+                            href={`/api/customer/invoices/${invoiceCreated.id}/download?format=pdf`}
+                            download
+                            className="flex items-center justify-center gap-2 p-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer text-center"
+                          >
+                            <Download size={15} className="shrink-0" />
+                            <span>Скачать PDF (.pdf)</span>
+                          </a>
+
+                          {/* Upload Proof */}
+                          <label className="flex items-center justify-center gap-2 p-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer text-center">
+                            <Upload size={15} className="shrink-0" />
+                            <span>{invoiceProofUploading === invoiceCreated.id ? "Отправка…" : "📎 Отправить платёжку"}</span>
+                            <input
+                              type="file"
+                              className="hidden"
+                              accept="application/pdf,image/jpeg,image/png"
+                              disabled={invoiceProofUploading === invoiceCreated.id}
+                              onChange={(event) => {
+                                const file = event.currentTarget.files?.[0];
+                                if (file && file.size <= 10 * 1024 * 1024) {
+                                  uploadInvoiceProof(invoiceCreated.id, file);
+                                } else if (file) {
+                                  setInvoiceProofMessage("Файл должен быть не больше 10 МБ");
+                                }
+                                event.currentTarget.value = "";
+                              }}
+                            />
+                          </label>
 
                         {/* Download Excel */}
                         <a
@@ -8175,6 +8351,69 @@ ${webLink}`;
                     ← Вернуться к оплате онлайн (Карта, СБП)
                   </button>
                 </div>
+
+                {customerInvoices.length > 0 ? (() => {
+                  const totalPages = Math.ceil(customerInvoices.length / CUSTOMER_INVOICES_PER_PAGE);
+                  const startIndex = (customerInvoicesPage - 1) * CUSTOMER_INVOICES_PER_PAGE;
+                  const currentInvoices = customerInvoices.slice(startIndex, startIndex + CUSTOMER_INVOICES_PER_PAGE);
+                  return (
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3 space-y-2 mt-4">
+                      <div className="flex items-center justify-between">
+                        <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700">Мои счета ({customerInvoices.length})</div>
+                        {totalPages > 1 ? (
+                          <div className="text-[11px] text-slate-500">Страница {customerInvoicesPage} из {totalPages}</div>
+                        ) : null}
+                      </div>
+                      {currentInvoices.map((invoice) => {
+                        const statusLabel = invoice.status === "paid" ? "Оплачен" : invoice.status === "proof_submitted" ? "Платёжка на проверке" : invoice.status === "rejected" ? "Нужна новая платёжка" : invoice.status === "cancelled" ? "Отменён" : "Ожидает оплаты";
+                        const canUpload = invoice.status === "issued" || invoice.status === "rejected" || invoice.status === "proof_submitted";
+                        return (
+                          <div key={invoice.id} className="rounded-xl border border-slate-200 bg-white p-3 flex flex-col gap-2">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="text-xs font-bold text-slate-900">№ {invoice.invoice_number}</div>
+                                <div className="text-[11px] text-slate-500">{invoice.created_at ? new Date(invoice.created_at).toLocaleDateString("ru-RU") : ""}</div>
+                              </div>
+                              <span className="text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-1">{statusLabel}</span>
+                            </div>
+                            <div className="text-xs text-slate-700">{invoice.amount_rub.toLocaleString("ru-RU")} ₽ · бонус {invoice.bonus_rub.toLocaleString("ru-RU")} ₽</div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <a className="text-[11px] font-bold text-teal-700 underline" href={`/api/customer/invoices/${invoice.id}/download?format=pdf`} download>Скачать PDF</a>
+                              {canUpload ? (
+                                <label className="text-[11px] font-bold text-slate-700 underline cursor-pointer">
+                                  {invoiceProofUploading === invoice.id ? "Отправка…" : invoice.status === "proof_submitted" ? "Загрузить исправленную платёжка" : "Прикрепить платёжку"}
+                                  <input type="file" className="hidden" accept="application/pdf,image/jpeg,image/png" disabled={invoiceProofUploading === invoice.id} onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file && file.size <= 10 * 1024 * 1024) uploadInvoiceProof(invoice.id, file); else if (file) setInvoiceProofMessage("Файл должен быть не больше 10 МБ"); event.currentTarget.value = ""; }} />
+                                </label>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {totalPages > 1 ? (
+                        <div className="flex items-center justify-between pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setCustomerInvoicesPage((p) => Math.max(1, p - 1))}
+                            disabled={customerInvoicesPage <= 1}
+                            className="px-3 py-1.5 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 disabled:opacity-40"
+                          >
+                            ← Назад
+                          </button>
+                          <div className="text-xs font-bold text-slate-600">{customerInvoicesPage} / {totalPages}</div>
+                          <button
+                            type="button"
+                            onClick={() => setCustomerInvoicesPage((p) => Math.min(totalPages, p + 1))}
+                            disabled={customerInvoicesPage >= totalPages}
+                            className="px-3 py-1.5 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 disabled:opacity-40"
+                          >
+                            Вперед →
+                          </button>
+                        </div>
+                      ) : null}
+                      {invoiceProofMessage ? <p className={`text-[11px] ${invoiceProofMessage.includes("отправлена") ? "text-emerald-700" : "text-rose-700"}`}>{invoiceProofMessage}</p> : null}
+                    </div>
+                  );
+                })() : null}
               </div>
             ) : null}
           </section>

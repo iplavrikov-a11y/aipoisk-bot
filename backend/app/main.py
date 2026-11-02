@@ -1677,17 +1677,15 @@ async def customer_create_invoice_api(
 
 @app.get("/api/customer/invoices")
 def customer_list_invoices_api(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
-    invoices = (
-        db.query(Invoice)
-        .filter(Invoice.client_id == context.user.client.id)
-        .order_by(Invoice.created_at.desc())
-        .limit(50)
-        .all()
-    )
-    return {"invoices": [inv.to_dict() for inv in invoices]}
+    query = db.query(Invoice).filter(Invoice.client_id == context.user.client.id)
+    total = query.count()
+    invoices = query.order_by(Invoice.created_at.desc(), Invoice.id.desc()).offset(offset).limit(limit).all()
+    return {"invoices": [inv.to_dict() for inv in invoices], "total": total}
 
 
 @app.get("/api/customer/invoices/{invoice_id}")
@@ -1707,12 +1705,44 @@ def customer_get_invoice_api(
     }
 
 
+@app.post("/api/customer/invoices/{invoice_id}/proof")
+async def customer_invoice_proof_api(
+    invoice_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.client_id == context.user.client.id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+    allowed = {"application/pdf", "image/jpeg", "image/png"}
+    content_type = str(file.content_type or "").lower()
+    if content_type not in allowed:
+        raise HTTPException(status_code=400, detail="Платёжка должна быть в PDF, JPG или PNG")
+    max_bytes = 10 * 1024 * 1024
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=413, detail="Размер платёжки не должен превышать 10 МБ")
+    from .invoice_service import save_invoice_payment_proof, notify_invoice_payment_proof
+    try:
+        proof_path = await save_invoice_payment_proof(invoice, content, original_name=file.filename or "payment-proof", content_type=content_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.commit()
+    db.refresh(invoice)
+    await notify_invoice_payment_proof(invoice, proof_path)
+    return {"success": True, "invoice": invoice.to_dict()}
+
+
 @app.get("/api/customer/invoices/{invoice_id}/html")
 def customer_invoice_html_api(
     invoice_id: str,
+    context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> HTMLResponse:
-    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.client_id == context.user.client.id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Счёт не найден")
     from .invoice_service import render_invoice_html
@@ -1725,9 +1755,10 @@ def customer_invoice_html_api(
 def customer_invoice_download_api(
     invoice_id: str,
     format: str = Query("xlsx"),
+    context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> FileResponse:
-    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.client_id == context.user.client.id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Счёт не найден")
 
@@ -1791,14 +1822,28 @@ async def customer_invoice_send_email_api(
 @app.get("/api/admin/invoices", dependencies=[Depends(require_admin)])
 def admin_list_invoices_api(
     status: str | None = None,
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(db_session),
 ) -> dict:
     query = db.query(Invoice)
     if status:
         query = query.filter(Invoice.status == status)
-    invoices = query.order_by(Invoice.created_at.desc()).limit(limit).all()
-    return {"invoices": [inv.to_dict() for inv in invoices]}
+    total = query.count()
+    invoices = query.order_by(Invoice.created_at.desc(), Invoice.id.desc()).offset(offset).limit(limit).all()
+    return {"invoices": [inv.to_dict() for inv in invoices], "total": total}
+
+
+@app.get("/api/admin/invoices/{invoice_id}/proof", dependencies=[Depends(require_admin)])
+def admin_invoice_proof_api(invoice_id: str, db: Session = Depends(db_session)) -> FileResponse:
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice or not invoice.proof_path:
+        raise HTTPException(status_code=404, detail="Платёжка не найдена")
+    root = (Path(config.storage_path) / "invoices" / "payment_proofs").resolve()
+    path = Path(invoice.proof_path).resolve()
+    if root not in path.parents or not path.is_file():
+        raise HTTPException(status_code=404, detail="Файл платёжки недоступен")
+    return FileResponse(str(path), media_type=invoice.proof_content_type or "application/octet-stream", filename=invoice.proof_original_name or path.name)
 
 
 @app.post("/api/admin/invoices/{invoice_id}/mark-paid", dependencies=[Depends(require_admin)])
@@ -1806,43 +1851,69 @@ def admin_mark_invoice_paid_api(
     invoice_id: str,
     db: Session = Depends(db_session),
 ) -> dict:
+    from .invoice_service import lock_invoice_for_update
+    from .billing import _billing_client_lock, _idempotent_transaction, _grant_money_balance_locked
+
     invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Счёт не найден")
-    if invoice.status == "paid":
-        return {
-            "success": True,
-            "message": "Счёт уже был отмечен как оплаченный",
-            "invoice": invoice.to_dict(),
-        }
-
-    client = db.query(Client).filter(Client.id == invoice.client_id).first()
-    if not client:
-        raise HTTPException(status_code=404, detail="Клиент не найден")
-
-    from .billing import grant_money_balance
-
-    # Credit total amount (rubles + bonus) to client balance
-    amount_kopeks = invoice.total_credit_rub * 100
-    grant_money_balance(
-        db,
-        client,
-        amount_kopeks=amount_kopeks,
-        note=f"Оплата по счету № {invoice.invoice_number} ({invoice.buyer_name})",
-        created_by="admin_invoice",
-        idempotency_key=f"invoice_paid_{invoice.id}",
-    )
-
-    invoice.status = "paid"
-    invoice.paid_at = now_utc()
-    db.commit()
-    db.refresh(invoice)
+    client_id = invoice.client_id
+    # All balance mutations acquire the client lock before the SQLite write lock.
+    with _billing_client_lock(client_id):
+        invoice = lock_invoice_for_update(db, invoice_id)
+        if not invoice:
+            raise HTTPException(status_code=404, detail="Счёт не найден")
+        if invoice.status == "paid":
+            return {"success": True, "message": "Счёт уже закрыт", "invoice": invoice.to_dict()}
+        if invoice.status == "cancelled":
+            raise HTTPException(status_code=409, detail="Отменённый счёт нельзя подтвердить")
+        client = db.query(Client).filter(Client.id == client_id).first()
+        if not client:
+            raise HTTPException(status_code=404, detail="Клиент не найден")
+        db.refresh(client)
+        amount_kopeks = invoice.total_credit_rub * 100
+        if amount_kopeks <= 0:
+            raise HTTPException(status_code=400, detail="Некорректная сумма начисления")
+        key = f"invoice_paid_{invoice.id}"
+        existing = _idempotent_transaction(db, key, client_id=client.id, kind=KIND_MONEY, operation=OP_GRANT, amount_kopeks=amount_kopeks, units=0)
+        invoice.status = "paid"
+        invoice.paid_at = now_utc()
+        invoice.settlement_mode = "credited"
+        if not existing:
+            _grant_money_balance_locked(db, client, amount=amount_kopeks, note=f"Оплата по счету № {invoice.invoice_number} ({invoice.buyer_name})", created_by="admin_invoice", idempotency_key=key)
+        else:
+            db.commit()
+        db.refresh(invoice)
 
     return {
         "success": True,
         "message": f"Счёт {invoice.invoice_number} оплачен, на баланс зачислено {invoice.total_credit_rub:,} ₽",
         "invoice": invoice.to_dict(),
     }
+
+
+@app.post("/api/admin/invoices/{invoice_id}/close-manually", dependencies=[Depends(require_admin)])
+async def admin_close_invoice_manually_api(invoice_id: str, request: Request, db: Session = Depends(db_session)) -> dict:
+    """Close an invoice whose balance was credited outside this action; never credits funds."""
+    body = await request.json()
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="Требуется явное подтверждение закрытия без начисления")
+    from .invoice_service import lock_invoice_for_update
+    invoice = lock_invoice_for_update(db, invoice_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+    if invoice.status == "paid":
+        return {"success": True, "credited": False, "invoice": invoice.to_dict()}
+    if invoice.status == "cancelled":
+        raise HTTPException(status_code=409, detail="Отменённый счёт нельзя закрыть как оплаченный")
+    note = str(body.get("note") or "Оплата подтверждена вручную вне этого действия").strip()
+    invoice.status = "paid"
+    invoice.paid_at = invoice.paid_at or now_utc()
+    invoice.settlement_mode = "manual_closed"
+    invoice.notes = (invoice.notes + "\n" if invoice.notes else "") + note
+    db.commit()
+    db.refresh(invoice)
+    return {"success": True, "credited": False, "invoice": invoice.to_dict()}
 
 
 def _settings_yookassa_ready(settings: SystemSettings) -> bool:
@@ -1965,9 +2036,25 @@ def _process_yookassa_payment_canceled(
         db.commit()
 
     metadata = payment_data.get("metadata") or {}
+    if metadata.get("test") == "true" or metadata.get("client_id") == "test_verification":
+        return
+
     user_email = metadata.get("user_email") or ""
+    if not record and not user_email:
+        # Ignore orphan/untracked cancellation webhooks without client metadata
+        return
+
     reason = payment_data.get("cancellation_details", {}).get("reason") or ""
+    if reason == "expired_on_confirmation":
+        # Suppress admin alerts for ordinary expired checkout windows
+        return
     amount_rub = getattr(record, "amount_rub", 0) or 0
+    if not amount_rub:
+        try:
+            amount_val = float(payment_data.get("amount", {}).get("value", 0))
+            amount_rub = int(amount_val)
+        except Exception:
+            amount_rub = 0
     package_name = getattr(record, "package_name", "") or "Пополнение баланса"
 
     notify_admin_payment_canceled(
@@ -5042,12 +5129,17 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         getattr(settings, "geo_radius_search_enabled_global", False)
         or (user.client and getattr(user.client, "allowed_geo_radius", False))
     )
+    has_telegram = bool(
+        (user.client and user.client.telegram_id and not str(user.client.telegram_id).startswith("web:"))
+        or (user.client and db.query(ClientTelegramAccount.id).filter(ClientTelegramAccount.client_id == user.client.id).first())
+    )
     return {
         "id": user.id,
         "email": user.email,
         "name": user.name,
         "is_active": bool(user.is_active),
         "is_email_verified": bool(user.is_email_verified),
+        "has_telegram": has_telegram,
         "client_id": user.client_id,
         "allowed_price_monitoring": getattr(user.client, "allowed_price_monitoring", False) if user.client else False,
         "allowed_geo_radius": is_geo_allowed,
