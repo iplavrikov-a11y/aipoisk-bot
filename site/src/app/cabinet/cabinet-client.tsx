@@ -2923,31 +2923,31 @@ export function CabinetClient() {
             <div className="space-y-3 pt-2">
               <article className="flex items-start gap-4 p-4 bg-slate-50/80 border border-slate-200/80 rounded-2xl text-left">
                 <div className="w-10 h-10 rounded-xl bg-teal-100/80 text-teal-700 flex items-center justify-center shrink-0 border border-teal-200/60 mt-0.5">
-                  <FileText size={20} aria-hidden="true" />
-                </div>
-                <div className="space-y-0.5">
-                  <strong className="text-sm font-bold text-slate-900 block">Анализ закупки</strong>
-                  <span className="text-xs text-slate-500 leading-normal block">условия, риски, сроки, вопросы заказчику</span>
-                </div>
-              </article>
-
-              <article className="flex items-start gap-4 p-4 bg-slate-50/80 border border-slate-200/80 rounded-2xl text-left">
-                <div className="w-10 h-10 rounded-xl bg-teal-100/80 text-teal-700 flex items-center justify-center shrink-0 border border-teal-200/60 mt-0.5">
                   <Search size={20} aria-hidden="true" />
                 </div>
                 <div className="space-y-0.5">
                   <strong className="text-sm font-bold text-slate-900 block">Поиск поставщиков</strong>
-                  <span className="text-xs text-slate-500 leading-normal block">контакты компаний для запроса коммерческого предложения</span>
+                  <span className="text-xs text-slate-500 leading-normal block">контакты прямых производителей и поставщиков для запроса КП</span>
                 </div>
               </article>
 
               <article className="flex items-start gap-4 p-4 bg-slate-50/80 border border-slate-200/80 rounded-2xl text-left">
                 <div className="w-10 h-10 rounded-xl bg-teal-100/80 text-teal-700 flex items-center justify-center shrink-0 border border-teal-200/60 mt-0.5">
-                  <CheckCircle2 size={20} aria-hidden="true" />
+                  <Layers size={20} aria-hidden="true" />
                 </div>
                 <div className="space-y-0.5">
-                  <strong className="text-sm font-bold text-slate-900 block">Вернуться к результатам</strong>
-                  <span className="text-xs text-slate-500 leading-normal block">история задач и скачивание готовых файлов</span>
+                  <strong className="text-sm font-bold text-slate-900 block">Подбор товара и аналогов</strong>
+                  <span className="text-xs text-slate-500 leading-normal block">российские аналоги по ТЗ и сверка с реестром Минпромторга / ЕАЭС</span>
+                </div>
+              </article>
+
+              <article className="flex items-start gap-4 p-4 bg-slate-50/80 border border-slate-200/80 rounded-2xl text-left">
+                <div className="w-10 h-10 rounded-xl bg-teal-100/80 text-teal-700 flex items-center justify-center shrink-0 border border-teal-200/60 mt-0.5">
+                  <FileText size={20} aria-hidden="true" />
+                </div>
+                <div className="space-y-0.5">
+                  <strong className="text-sm font-bold text-slate-900 block">Анализ документации</strong>
+                  <span className="text-xs text-slate-500 leading-normal block">разбор условий закупки, выявление скрытых рисков, сроков и штрафов</span>
                 </div>
               </article>
 
@@ -2970,17 +2970,17 @@ export function CabinetClient() {
                 <p className="text-xs text-slate-500">Задайте новый пароль для входа в кабинет TenderLex.</p>
               </div>
             ) : (
-              <div className="grid grid-cols-2 p-1 bg-slate-200/60 rounded-xl mb-3 text-xs font-bold" role="tablist" aria-label="Режим входа">
+              <div className="grid grid-cols-2 p-1.5 bg-slate-200/70 rounded-xl mb-3 text-xs font-bold" role="tablist" aria-label="Режим входа">
                 <button
                   type="button"
-                  className={`py-2 rounded-lg transition-all cursor-pointer ${authMode === "register" ? "bg-white text-teal-800 shadow-2xs font-extrabold" : "text-slate-600 hover:text-slate-900"}`}
+                  className={`py-2 px-3 rounded-lg transition-all cursor-pointer flex items-center justify-center text-center ${authMode === "register" ? "bg-white text-teal-800 shadow-2xs font-extrabold" : "text-slate-600 hover:text-slate-900"}`}
                   onClick={() => { setError(""); setMessage(""); setAuthMode("register"); }}
                 >
                   Регистрация (+495 ₽)
                 </button>
                 <button
                   type="button"
-                  className={`py-2 rounded-lg transition-all cursor-pointer ${authMode === "login" ? "bg-white text-slate-900 shadow-2xs font-extrabold" : "text-slate-600 hover:text-slate-900"}`}
+                  className={`py-2 px-3 rounded-lg transition-all cursor-pointer flex items-center justify-center text-center ${authMode === "login" ? "bg-white text-slate-900 shadow-2xs font-extrabold" : "text-slate-600 hover:text-slate-900"}`}
                   onClick={() => { setError(""); setMessage(""); setAuthMode("login"); }}
                 >
                   Вход
@@ -2992,7 +2992,7 @@ export function CabinetClient() {
               <div className="space-y-2.5 pt-1">
                 <a
                   href="/api/customer/auth/telegram/login"
-                  className="w-full py-2.5 px-4 bg-[#24A1DE] hover:bg-[#1f93cc] active:bg-[#1a83b7] text-white rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center gap-3 cursor-pointer select-none group"
+                  className="w-full min-h-[46px] py-2.5 px-4 bg-[#24A1DE] hover:bg-[#1f93cc] active:bg-[#1a83b7] text-white rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center text-center gap-3 cursor-pointer select-none group"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0" aria-hidden="true">
                     <circle cx="12" cy="12" r="12" fill="#FFFFFF" />
@@ -3003,7 +3003,7 @@ export function CabinetClient() {
 
                 <a
                   href="/api/customer/auth/yandex/login"
-                  className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-800 hover:text-slate-950 border border-slate-300 rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center gap-3 cursor-pointer select-none group"
+                  className="w-full min-h-[46px] py-2.5 px-4 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-800 hover:text-slate-950 border border-slate-300 rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center text-center gap-3 cursor-pointer select-none group"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0" aria-hidden="true">
                     <circle cx="12" cy="12" r="12" fill="#FC3F1D" />
@@ -3013,9 +3013,10 @@ export function CabinetClient() {
                 </a>
 
                 {authMode === "register" ? (
-                  <p className="text-[11px] text-center text-teal-800 font-medium bg-teal-50/80 border border-teal-200/60 rounded-lg py-1 px-2">
-                    🎁 Приветственный баланс 495 ₽ зачисляется сразу
-                  </p>
+                  <div className="flex items-center justify-center gap-2 text-xs text-teal-900 font-semibold bg-teal-50 border border-teal-200/80 rounded-xl py-2 px-3 text-center">
+                    <span className="text-sm">🎁</span>
+                    <span>Стартовый баланс 495 ₽ зачисляется сразу при создании кабинета</span>
+                  </div>
                 ) : null}
 
                 <div className="relative flex py-1 items-center">
@@ -3258,29 +3259,24 @@ export function CabinetClient() {
                 setCustomTopUpRub(defPkg?.price_rub || 5000);
                 setShowTopUpModal(true);
               }}
-              className="inline-flex items-center gap-1.5 h-[30px] bg-gradient-to-r from-teal-700 to-teal-800 hover:from-teal-600 hover:to-teal-700 text-white px-2.5 rounded-lg shadow-2xs shrink-0 text-xs transition-all cursor-pointer border border-teal-600/50 group"
+              className="inline-flex items-center justify-center gap-2 h-[34px] bg-gradient-to-r from-teal-700 to-teal-800 hover:from-teal-600 hover:to-teal-700 text-white px-3 rounded-lg shadow-2xs shrink-0 text-xs transition-all cursor-pointer border border-teal-600/50 group"
               title="Баланс аккаунта. Нажмите, чтобы пополнить"
             >
               <Receipt size={14} className="text-teal-200 group-hover:scale-105 transition-transform shrink-0" aria-hidden="true" />
               <div className="flex items-center gap-1.5 leading-none">
-                <span className="text-[9px] font-semibold text-teal-100 uppercase tracking-wider">Баланс</span>
-                <strong className="text-xs sm:text-sm font-extrabold whitespace-nowrap leading-none">
+                <span className="text-[10px] font-semibold text-teal-100 uppercase tracking-wider">Баланс</span>
+                <strong className="text-xs sm:text-sm font-extrabold whitespace-nowrap leading-none text-white">
                   {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
                 </strong>
               </div>
-              <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-teal-600 group-hover:bg-emerald-500 text-white text-[10px] font-black shrink-0 transition-colors ml-0.5" title="Пополнить">
+              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-teal-600 group-hover:bg-emerald-500 text-white text-[11px] font-black shrink-0 transition-colors ml-0.5" title="Пополнить">
                 +
               </span>
-              {session?.user?.is_trial ? (
-                <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded border border-amber-300 shrink-0 ml-1 leading-none">
-                  пробный доступ
-                </span>
-              ) : null}
             </button>
 
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => setShowTariffs((v) => !v)}
               aria-expanded={showTariffs}
               aria-controls="cabinet-tariffs"
@@ -3291,7 +3287,7 @@ export function CabinetClient() {
 
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
                 setShowHistoryModal(true);
                 loadHistoryTransactions(1);
@@ -3304,7 +3300,7 @@ export function CabinetClient() {
 
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
                 setShowReferralModal(true);
               }}
@@ -3319,7 +3315,7 @@ export function CabinetClient() {
 
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
                 setShowApiModal(true);
                 loadCustomerApiKeys();
@@ -3332,7 +3328,7 @@ export function CabinetClient() {
 
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
                 if (typeof window !== "undefined") {
                   window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
@@ -3347,7 +3343,7 @@ export function CabinetClient() {
 
             {session?.contacts?.telegram_url ? (
               <a
-                className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+                className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
                 href={session.contacts.telegram_url}
                 target="_blank"
                 rel="noreferrer"
@@ -3359,7 +3355,7 @@ export function CabinetClient() {
             ) : null}
 
             <a
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}`}
               title="Написать на электронную почту"
             >
@@ -3372,7 +3368,7 @@ export function CabinetClient() {
           <div className="flex items-center gap-1.5 shrink-0 ml-auto">
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] rounded-lg text-xs font-bold leading-none transition-all border cursor-pointer shrink-0 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-200 shadow-2xs"
+              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] rounded-lg text-xs font-bold leading-none transition-all border cursor-pointer shrink-0 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-200 shadow-2xs"
               onClick={() => {
                 setHelpModalTab("workflow");
                 setShowHelpModal(true);
@@ -3385,7 +3381,7 @@ export function CabinetClient() {
 
             <button
               type="button"
-              className={`inline-flex items-center justify-center w-[30px] h-[30px] rounded-lg transition-all border cursor-pointer shrink-0 ${
+              className={`inline-flex items-center justify-center w-[34px] h-[34px] rounded-lg transition-all border cursor-pointer shrink-0 ${
                 notificationsEnabled
                   ? "bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-200/80 shadow-2xs"
                   : "bg-slate-100 hover:bg-slate-200 text-slate-400 border-slate-200"
@@ -3395,9 +3391,9 @@ export function CabinetClient() {
               aria-label={notificationsEnabled ? "Выключить звуковые уведомления" : "Включить звуковые уведомления"}
             >
               {notificationsEnabled ? (
-                <Bell size={13} className="text-teal-600" aria-hidden="true" />
+                <Bell size={14} className="text-teal-600" aria-hidden="true" />
               ) : (
-                <BellOff size={13} className="text-slate-400" aria-hidden="true" />
+                <BellOff size={14} className="text-slate-400" aria-hidden="true" />
               )}
             </button>
           </div>

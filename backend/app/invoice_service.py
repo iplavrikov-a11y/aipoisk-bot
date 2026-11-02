@@ -1070,8 +1070,10 @@ def send_invoice_email(invoice: Invoice, recipient_email: str) -> tuple[bool, st
         return False, f"Ошибка отправки email: {e}"
 
 
-async def notify_admin_telegram(invoice: Invoice) -> None:
+async def notify_admin_telegram(invoice: Invoice, *, _allow_in_test: bool = False) -> None:
     """Send instant Telegram alert to admin when a new B2B invoice is generated."""
+    if os.getenv("PYTEST_CURRENT_TEST") and not _allow_in_test:
+        return
     bot_token = config.bot_token
     owner_id = config.owner_telegram_id
     if not bot_token or not owner_id:
@@ -1151,7 +1153,9 @@ async def save_invoice_payment_proof(invoice: Invoice, content: bytes, *, origin
     return str(target)
 
 
-async def notify_invoice_payment_proof(invoice: Invoice, path: str) -> None:
+async def notify_invoice_payment_proof(invoice: Invoice, path: str, *, _allow_in_test: bool = False) -> None:
+    if os.getenv("PYTEST_CURRENT_TEST") and not _allow_in_test:
+        return
     bot_token = config.bot_token
     owner_id = config.owner_telegram_id
     if bot_token and owner_id:

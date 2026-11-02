@@ -21,7 +21,7 @@ async def test_payment_proof_telegram_sends_file_and_escapes_payer(tmp_path, mon
     factory = MagicMock()
     factory.return_value.__aenter__.return_value = telegram
     with patch("app.invoice_service.httpx.AsyncClient", factory):
-        await notify_invoice_payment_proof(invoice, str(file))
+        await notify_invoice_payment_proof(invoice, str(file), _allow_in_test=True)
     request = telegram.post.call_args
     assert request.args[0].endswith("/sendDocument")
     assert request.kwargs["data"]["chat_id"] == "12345"
@@ -41,7 +41,7 @@ async def test_invoice_issued_notification_escapes_customer_data(monkeypatch):
     factory = MagicMock()
     factory.return_value.__aenter__.return_value = telegram
     with patch("app.invoice_service.httpx.AsyncClient", factory):
-        await notify_admin_telegram(invoice)
+        await notify_admin_telegram(invoice, _allow_in_test=True)
     sent_text = telegram.post.call_args.kwargs["json"]["text"]
     assert "А &amp; Б" in sent_text
     assert "&lt;офис&gt;" in sent_text
