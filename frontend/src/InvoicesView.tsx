@@ -12,6 +12,8 @@ type Invoice = {
   buyer_kpp?: string
   buyer_name: string
   buyer_email?: string
+  buyer_phone?: string
+  buyer_telegram?: string
   status: 'issued' | 'proof_submitted' | 'paid' | 'cancelled' | string
   created_at?: string | null
   paid_at?: string | null
@@ -202,7 +204,15 @@ export function InvoicesView() {
                     <td>
                       <strong>{invoice.buyer_name || '—'}</strong>
                       <small>ИНН {invoice.buyer_inn || '—'}{invoice.buyer_kpp ? ` · КПП ${invoice.buyer_kpp}` : ''}</small>
-                      {invoice.buyer_email && <small>{invoice.buyer_email}</small>}
+                      {invoice.buyer_email && <small>✉️ {invoice.buyer_email}</small>}
+                      {invoice.buyer_phone && <small>📞 {invoice.buyer_phone}</small>}
+                      {invoice.buyer_telegram && (
+                        <small>
+                          💬 <a href={`https://t.me/${invoice.buyer_telegram.replace('@', '')}`} target="_blank" rel="noreferrer" style={{ color: '#0284c7' }}>
+                            @{invoice.buyer_telegram.replace('@', '')}
+                          </a>
+                        </small>
+                      )}
                     </td>
                     <td>
                       <strong>{money(invoice.amount_rub)}</strong>

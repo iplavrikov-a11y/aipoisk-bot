@@ -124,6 +124,55 @@ def test_customer_create_payment_api(setup_database: Session):
     assert record.total_credit_rub == 6500
 
 
+def test_yookassa_payment_saves_phone_and_telegram(setup_database: Session):
+    db = setup_database
+    client_obj, user, token = _create_test_customer(db, "contact_user@example.com")
+
+    settings = db.query(SystemSettings).filter(SystemSettings.id == 1).first()
+    settings.payment_provider = "yookassa"
+    settings.yookassa_shop_id = "1509607"
+    settings.yookassa_secret_key = "live_secret_test_123"
+    db.commit()
+
+    http_client = TestClient(app)
+    http_client.cookies.set("tenderlex_customer_session", token)
+
+    mock_resp = {
+        "id": "yoo_test_payment_contacts",
+        "status": "pending",
+        "amount": {"value": "5000.00", "currency": "RUB"},
+        "confirmation": {
+            "type": "redirect",
+            "confirmation_url": "https://yoomoney.ru/checkout/payments/v2/contract?orderId=yoo_test_payment_contacts",
+        },
+    }
+
+    with patch("app.main.create_yookassa_payment", return_value=mock_resp) as mock_create, \
+         patch("app.main.notify_admin_payment_attempt") as mock_notify:
+        resp = http_client.post(
+            "/api/customer/payments/yookassa/create",
+            json={
+                "amount_rub": 5000,
+                "phone": "+7 (999) 777-88-99",
+                "telegram_username": "@alex_test",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert mock_notify.called
+        kwargs = mock_notify.call_args.kwargs
+        assert kwargs["phone"] == "+7 (999) 777-88-99"
+        assert kwargs["telegram_username"] == "alex_test"
+
+    record = db.query(YooKassaPayment).filter(YooKassaPayment.payment_id == "yoo_test_payment_contacts").first()
+    assert record is not None
+    assert record.phone == "+7 (999) 777-88-99"
+    assert record.telegram_username == "alex_test"
+
+    db.refresh(user)
+    assert user.phone == "+7 (999) 777-88-99"
+    assert user.telegram_username == "alex_test"
+
+
 def test_yookassa_webhook_and_idempotent_crediting(setup_database: Session):
     db = setup_database
     client_obj, user, token = _create_test_customer(db, "webhook_user@example.com")

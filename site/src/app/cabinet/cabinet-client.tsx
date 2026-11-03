@@ -38,6 +38,7 @@ import {
   MessageCircle,
   Paperclip,
   Pencil,
+  Phone,
   PlusCircle,
   Printer,
   QrCode,
@@ -98,6 +99,21 @@ function declensionFiles(n: number): string {
   if (mod10 === 1) return "файл";
   if (mod10 >= 2 && mod10 <= 4) return "файла";
   return "файлов";
+}
+
+function formatPhoneRu(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  let norm = digits;
+  if (digits[0] === "8" || digits[0] === "7") {
+    norm = digits.slice(1);
+  }
+  let res = "+7";
+  if (norm.length > 0) res += ` (${norm.slice(0, 3)}`;
+  if (norm.length >= 3) res += `) ${norm.slice(3, 6)}`;
+  if (norm.length >= 6) res += `-${norm.slice(6, 8)}`;
+  if (norm.length >= 8) res += `-${norm.slice(8, 10)}`;
+  return res;
 }
 
 type BalanceCounter = {
@@ -173,6 +189,8 @@ type SessionPayload = {
   user?: {
     email: string;
     name: string;
+    phone?: string;
+    telegram_username?: string;
     is_trial: boolean;
     is_email_verified: boolean;
     has_telegram?: boolean;
@@ -1523,6 +1541,8 @@ export function CabinetClient() {
   const [topUpCopied, setTopUpCopied] = useState(false);
   const [isPayingOnline, setIsPayingOnline] = useState(false);
   const [onlinePayError, setOnlinePayError] = useState("");
+  const [payerPhone, setPayerPhone] = useState("");
+  const [payerTelegram, setPayerTelegram] = useState("");
   const [paymentSuccessNotice, setPaymentSuccessNotice] = useState<{
     amountRub: number;
     bonusRub: number;
@@ -1721,8 +1741,15 @@ export function CabinetClient() {
     }
     const payload = await readJson<SessionPayload>(response);
     setSession(payload.authenticated ? payload : null);
-    if (payload.authenticated) loadCustomerInvoices();
-    else {
+    if (payload.authenticated) {
+      loadCustomerInvoices();
+      if (payload.user?.phone) {
+        setPayerPhone((cur) => cur || formatPhoneRu(payload.user?.phone || ""));
+      }
+      if (payload.user?.telegram_username) {
+        setPayerTelegram((cur) => cur || (payload.user?.telegram_username ? (payload.user.telegram_username.startsWith("@") ? payload.user.telegram_username : `@${payload.user.telegram_username}`) : ""));
+      }
+    } else {
       invoiceRequestVersion.current++;
       setCustomerInvoices([]);
       setCustomerInvoicesTotal(0);
@@ -1795,6 +1822,11 @@ export function CabinetClient() {
   }
 
   async function handleStartOnlinePayment() {
+    const rawDigits = payerPhone.replace(/\D/g, "");
+    if (!rawDigits || rawDigits.length < 10) {
+      setOnlinePayError("Укажите контактный номер телефона для связи");
+      return;
+    }
     setIsPayingOnline(true);
     setOnlinePayError("");
     try {
@@ -1808,6 +1840,8 @@ export function CabinetClient() {
         body: JSON.stringify({
           amount_rub: customTopUpRub,
           package_id: selectedTopUpPackage?.id || null,
+          phone: payerPhone.trim(),
+          telegram_username: payerTelegram.trim().replace(/^@/, ""),
         }),
       });
 
@@ -7761,6 +7795,61 @@ ${webLink}`;
                   </div>
                 </div>
 
+                {/* Contact details for online payment */}
+                <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2.5">
+                  <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center justify-between">
+                    <span>Контакты для связи и чека:</span>
+                    <span className="text-[10px] text-slate-500 font-normal">
+                      Для подтверждения и поддержки
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {/* Phone (mandatory) */}
+                    <div className="space-y-1">
+                      <label htmlFor="topup-phone-input" className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                        <span>Телефон <span className="text-rose-500">*</span></span>
+                      </label>
+                      <div className="relative">
+                        <input
+                          id="topup-phone-input"
+                          type="tel"
+                          value={payerPhone}
+                          onChange={(e) => setPayerPhone(formatPhoneRu(e.target.value))}
+                          placeholder="+7 (999) 000-00-00"
+                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pl-8"
+                        />
+                        <Phone size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      </div>
+                    </div>
+
+                    {/* Telegram (optional) */}
+                    <div className="space-y-1">
+                      <label htmlFor="topup-tg-input" className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+                        <span>Ник в Telegram</span>
+                        <span className="text-[10px] font-normal text-slate-400">опционально</span>
+                      </label>
+                      <div className="relative">
+                        <input
+                          id="topup-tg-input"
+                          type="text"
+                          value={payerTelegram}
+                          onChange={(e) => {
+                            let val = e.target.value.trim();
+                            if (val.startsWith("https://t.me/")) val = val.replace("https://t.me/", "");
+                            if (val.startsWith("t.me/")) val = val.replace("t.me/", "");
+                            if (val && !val.startsWith("@")) val = "@" + val;
+                            setPayerTelegram(val);
+                          }}
+                          placeholder="@username"
+                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pl-8"
+                        />
+                        <MessageCircle size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 {onlinePayError ? (
                   <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 space-y-1">
                     <div className="font-bold flex items-center gap-1.5">
@@ -7795,7 +7884,7 @@ ${webLink}`;
                     <div className="space-y-2 pt-1">
                       <button
                         type="button"
-                        disabled={isPayingOnline || customTopUpRub < 100}
+                        disabled={isPayingOnline || customTopUpRub < 100 || !payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10}
                         onClick={handleStartOnlinePayment}
                         className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs sm:text-sm font-bold transition-all shadow-sm hover:shadow cursor-pointer disabled:opacity-50 active:scale-[0.99]"
                       >
@@ -8090,6 +8179,50 @@ ${webLink}`;
                         />
                       </div>
 
+                      {/* Contact phone and Telegram for invoice */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label htmlFor="b2b-phone-input" className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                            <span>Контактный телефон <span className="text-rose-500">*</span></span>
+                          </label>
+                          <div className="relative">
+                            <input
+                              id="b2b-phone-input"
+                              type="tel"
+                              value={payerPhone}
+                              onChange={(e) => setPayerPhone(formatPhoneRu(e.target.value))}
+                              placeholder="+7 (999) 000-00-00"
+                              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pl-8"
+                            />
+                            <Phone size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label htmlFor="b2b-tg-input" className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+                            <span>Ник в Telegram</span>
+                            <span className="text-[10px] font-normal text-slate-400">опционально</span>
+                          </label>
+                          <div className="relative">
+                            <input
+                              id="b2b-tg-input"
+                              type="text"
+                              value={payerTelegram}
+                              onChange={(e) => {
+                                let val = e.target.value.trim();
+                                if (val.startsWith("https://t.me/")) val = val.replace("https://t.me/", "");
+                                if (val.startsWith("t.me/")) val = val.replace("t.me/", "");
+                                if (val && !val.startsWith("@")) val = "@" + val;
+                                setPayerTelegram(val);
+                              }}
+                              placeholder="@username"
+                              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pl-8"
+                            />
+                            <MessageCircle size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                          </div>
+                        </div>
+                      </div>
+
                       {invoiceSubmitError ? (
                         <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700">
                           {invoiceSubmitError}
@@ -8100,7 +8233,7 @@ ${webLink}`;
                       <div className="pt-2">
                         <button
                           type="button"
-                          disabled={invoiceSubmitting || !invoiceInn.trim() || !invoiceName.trim()}
+                          disabled={invoiceSubmitting || !invoiceInn.trim() || !invoiceName.trim() || !payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10}
                           onClick={async () => {
                             if (!invoiceInn.trim()) {
                               setInvoiceSubmitError("Укажите ИНН организации или ИП");
@@ -8108,6 +8241,10 @@ ${webLink}`;
                             }
                             if (!invoiceName.trim()) {
                               setInvoiceSubmitError("Укажите наименование компании или ИП");
+                              return;
+                            }
+                            if (!payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10) {
+                              setInvoiceSubmitError("Укажите контактный номер телефона для связи");
                               return;
                             }
                             setInvoiceSubmitting(true);
@@ -8126,6 +8263,8 @@ ${webLink}`;
                                   buyer_name: invoiceName.trim(),
                                   buyer_address: invoiceAddress.trim(),
                                   buyer_email: emailToSend,
+                                  buyer_phone: payerPhone.trim(),
+                                  buyer_telegram: payerTelegram.trim().replace(/^@/, ""),
                                 }),
                               });
                               const data = await res.json();

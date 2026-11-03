@@ -1084,6 +1084,16 @@ async def notify_admin_telegram(invoice: Invoice, *, _allow_in_test: bool = Fals
     bonus_str = format_rubles_num(invoice.bonus_rub)
     total_str = format_rubles_num(invoice.total_credit_rub)
 
+    phone_val = getattr(invoice, "buyer_phone", "") or ""
+    tg_val = getattr(invoice, "buyer_telegram", "") or ""
+    contacts_lines = []
+    if phone_val:
+        contacts_lines.append(f"<b>Телефон:</b> <code>{escape(phone_val)}</code>")
+    if tg_val:
+        clean_tg = tg_val.lstrip("@").strip()
+        contacts_lines.append(f"<b>Telegram:</b> <a href=\"https://t.me/{clean_tg}\">@{escape(clean_tg)}</a>")
+    contacts_block = ("\n" + "\n".join(contacts_lines)) if contacts_lines else ""
+
     text = (
         f"🧾 <b>Выставлен счёт на оплату юридическому лицу!</b>\n\n"
         f"<b>Номер:</b> <code>{escape(invoice.invoice_number or '')}</code> от {date_str}\n"
@@ -1094,7 +1104,7 @@ async def notify_admin_telegram(invoice: Invoice, *, _allow_in_test: bool = Fals
         f"<b>ИНН:</b> <code>{escape(invoice.buyer_inn or '')}</code>"
         f"{f' | КПП: {escape(invoice.buyer_kpp)}' if invoice.buyer_kpp else ''}\n"
         f"<b>Адрес:</b> {escape(invoice.buyer_address or '')}\n"
-        f"<b>Email клиента:</b> {escape(invoice.buyer_email or '')}\n\n"
+        f"<b>Email клиента:</b> {escape(invoice.buyer_email or '')}{contacts_block}\n\n"
         f"<i>После сверки поступления подтвердите зачисление в разделе «Счета и оплаты» админки.</i>"
     )
 

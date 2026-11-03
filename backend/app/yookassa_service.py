@@ -252,6 +252,19 @@ def dispatch_yookassa_telegram_alert(coro) -> None:
         pass
 
 
+def _format_contacts_line(phone: str = "", telegram_username: str = "") -> str:
+    parts = []
+    clean_phone = (phone or "").strip()
+    clean_tg = (telegram_username or "").strip().lstrip("@")
+    if clean_phone:
+        parts.append(f"📞 <code>{html_escape(clean_phone)}</code>")
+    if clean_tg:
+        parts.append(f"💬 <a href=\"https://t.me/{clean_tg}\">@{html_escape(clean_tg)}</a>")
+    if parts:
+        return f"\n<b>Контакты:</b> {' | '.join(parts)}"
+    return ""
+
+
 def notify_admin_payment_attempt(
     *,
     payment_id: str,
@@ -261,12 +274,15 @@ def notify_admin_payment_attempt(
     package_name: str,
     user_email: str,
     client_name: str = "",
+    phone: str = "",
+    telegram_username: str = "",
 ) -> None:
     bonus_str = f" (+{bonus_rub:,} ₽ бонус)" if bonus_rub else ""
     client_info = f" ({html_escape(client_name)})" if client_name and client_name != user_email else ""
+    contacts_line = _format_contacts_line(phone, telegram_username)
     text = (
         f"💳 <b>Новая попытка онлайн-оплаты (ЮKassa)</b>\n\n"
-        f"<b>Пользователь:</b> {html_escape(user_email)}{client_info}\n"
+        f"<b>Пользователь:</b> {html_escape(user_email)}{client_info}{contacts_line}\n"
         f"<b>Сумма к оплате:</b> <b>{amount_rub:,} ₽</b>\n"
         f"<b>Поступит на баланс:</b> {total_credit_rub:,} ₽{bonus_str}\n"
         f"<b>Тариф:</b> {html_escape(package_name)}\n"
@@ -286,13 +302,16 @@ def notify_admin_payment_success(
     user_email: str,
     client_name: str = "",
     payment_method_type: str = "",
+    phone: str = "",
+    telegram_username: str = "",
 ) -> None:
     bonus_str = f" (+{bonus_rub:,} ₽ бонус)" if bonus_rub else ""
     client_info = f" ({html_escape(client_name)})" if client_name and client_name != user_email else ""
+    contacts_line = _format_contacts_line(phone, telegram_username)
     pm_name = format_payment_method_type(payment_method_type)
     text = (
         f"🎉 <b>Успешная оплата через ЮKassa!</b>\n\n"
-        f"<b>Пользователь:</b> {html_escape(user_email)}{client_info}\n"
+        f"<b>Пользователь:</b> {html_escape(user_email)}{client_info}{contacts_line}\n"
         f"<b>Сумма оплаты:</b> <b>{amount_rub:,} ₽</b>\n"
         f"<b>Зачислено на баланс:</b> <b>{total_credit_rub:,} ₽</b>{bonus_str}\n"
         f"<b>Способ:</b> {pm_name}\n"
@@ -311,12 +330,15 @@ def notify_admin_payment_canceled(
     user_email: str,
     client_name: str = "",
     reason: str = "",
+    phone: str = "",
+    telegram_username: str = "",
 ) -> None:
     client_info = f" ({html_escape(client_name)})" if client_name and client_name != user_email else ""
+    contacts_line = _format_contacts_line(phone, telegram_username)
     reason_line = f"<b>Причина:</b> {html_escape(reason)}\n" if reason else ""
     text = (
         f"⚠️ <b>Оплата ЮKassa не завершена / отменена</b>\n\n"
-        f"<b>Пользователь:</b> {html_escape(user_email)}{client_info}\n"
+        f"<b>Пользователь:</b> {html_escape(user_email)}{client_info}{contacts_line}\n"
         f"<b>Сумма:</b> {amount_rub:,} ₽\n"
         f"<b>Тариф:</b> {html_escape(package_name)}\n"
         f"{reason_line}"

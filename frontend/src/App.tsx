@@ -78,6 +78,7 @@ type Client = {
   source: 'telegram' | 'web' | string
   name: string
   username: string
+  phone?: string
   is_active: boolean
   is_trial: boolean
   allowed_supplier_search: boolean
@@ -212,6 +213,8 @@ type WebUser = {
   client_id: string
   email: string
   name: string
+  phone?: string
+  telegram_username?: string
   is_active: boolean
   is_email_verified: boolean
   created_at: string | null
@@ -3715,7 +3718,13 @@ function isSyntheticWebTelegramAccount(account: TelegramAccount) {
 
 function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
   if (client.web_users?.[0]?.email) {
-    return client.web_users[0].email
+    const email = client.web_users[0].email
+    const phone = client.phone || client.web_users[0].phone
+    const tg = client.web_users[0].telegram_username || (client.username ? `@${client.username}` : '')
+    const extra: string[] = []
+    if (phone) extra.push(`📞 ${phone}`)
+    if (tg) extra.push(`💬 ${tg.startsWith('@') ? tg : `@${tg}`}`)
+    return extra.length ? `${email} · ${extra.join(' · ')}` : email
   }
   const realAccounts = accounts.filter(account => !isSyntheticWebTelegramAccount(account))
   const connected = realAccounts.filter(account => !account.is_pending)

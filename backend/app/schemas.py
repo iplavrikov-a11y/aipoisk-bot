@@ -64,6 +64,8 @@ class SettingsPatch(BaseModel):
 class CreateYooKassaPaymentRequest(BaseModel):
     amount_rub: int = Field(..., ge=100, le=500_000)
     package_id: str | None = None
+    phone: str | None = None
+    telegram_username: str | None = None
 
 
 class YooKassaTestRequest(BaseModel):

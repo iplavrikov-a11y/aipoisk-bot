@@ -84,9 +84,18 @@ def _ensure_schema() -> None:
             "proof_content_type": "VARCHAR(80) DEFAULT ''",
             "proof_size": "INTEGER DEFAULT 0",
             "proof_submitted_at": "DATETIME",
+            "buyer_phone": "VARCHAR(32) DEFAULT ''",
+            "buyer_telegram": "VARCHAR(64) DEFAULT ''",
         }.items():
             if column not in invoice_existing:
                 connection.execute(text(f"ALTER TABLE invoices ADD COLUMN {column} {definition}"))
+        yookassa_existing = _existing_columns(inspector, "yookassa_payments")
+        for column, definition in {
+            "phone": "VARCHAR(32) DEFAULT ''",
+            "telegram_username": "VARCHAR(64) DEFAULT ''",
+        }.items():
+            if column not in yookassa_existing:
+                connection.execute(text(f"ALTER TABLE yookassa_payments ADD COLUMN {column} {definition}"))
         system_settings_existing = _existing_columns(inspector, "system_settings")
         system_settings_additions = {
             "document_settings_json": "TEXT DEFAULT '{}'",
@@ -156,6 +165,7 @@ def _ensure_schema() -> None:
             "referral_reward_granted": "BOOLEAN DEFAULT 0",
             "referral_code": "VARCHAR(32) DEFAULT ''",
             "registration_ip": "VARCHAR(64) DEFAULT ''",
+            "phone": "VARCHAR(32) DEFAULT ''",
             "client_number": "INTEGER NULL",
         }
         jobs_existing = _existing_columns(inspector, "jobs")
@@ -211,6 +221,8 @@ def _ensure_schema() -> None:
             "is_email_verified": "BOOLEAN DEFAULT 1",
             "marketing_unsubscribed": "BOOLEAN DEFAULT 0",
             "yandex_id": "VARCHAR(64) NULL",
+            "phone": "VARCHAR(32) DEFAULT ''",
+            "telegram_username": "VARCHAR(64) DEFAULT ''",
         }
         onboarding_reminders_existing = _existing_columns(inspector, "onboarding_reminders")
         onboarding_reminder_additions = {

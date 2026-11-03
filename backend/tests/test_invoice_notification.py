@@ -46,3 +46,34 @@ async def test_invoice_issued_notification_escapes_customer_data(monkeypatch):
     assert "А &amp; Б" in sent_text
     assert "&lt;офис&gt;" in sent_text
 
+
+@pytest.mark.asyncio
+async def test_invoice_issued_notification_includes_contacts(monkeypatch):
+    monkeypatch.setattr(config, "bot_token", "fixture-token")
+    monkeypatch.setattr(config, "owner_telegram_id", "12345")
+    invoice = Invoice(
+        invoice_number="TEST-44",
+        buyer_name="ООО Контакт",
+        buyer_inn="7701010101",
+        buyer_address="г. Москва",
+        buyer_phone="+7 (999) 111-22-33",
+        buyer_telegram="@ivan_tender",
+        amount_rub=5000,
+        bonus_rub=0,
+        total_credit_rub=5000,
+        tariff_name="Пакет",
+        buyer_email="ivan@example.invalid",
+    )
+    response = MagicMock(is_success=True, status_code=200)
+    response.json.return_value = {"ok": True}
+    telegram = AsyncMock()
+    telegram.post.return_value = response
+    factory = MagicMock()
+    factory.return_value.__aenter__.return_value = telegram
+    with patch("app.invoice_service.httpx.AsyncClient", factory):
+        await notify_admin_telegram(invoice, _allow_in_test=True)
+    sent_text = telegram.post.call_args.kwargs["json"]["text"]
+    assert "+7 (999) 111-22-33" in sent_text
+    assert "t.me/ivan_tender" in sent_text
+    assert "@ivan_tender" in sent_text
+

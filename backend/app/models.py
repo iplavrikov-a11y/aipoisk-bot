@@ -221,6 +221,7 @@ class Client(Base):
     referral_reward_granted: Mapped[bool] = mapped_column(Boolean, default=False)
     referral_code: Mapped[str] = mapped_column(String(32), default="", index=True)
     registration_ip: Mapped[str] = mapped_column(String(64), default="")
+    phone: Mapped[str] = mapped_column(String(32), default="")
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
@@ -267,6 +268,8 @@ class WebUser(Base):
     yandex_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(Text, default="")
     name: Mapped[str] = mapped_column(String(255), default="")
+    phone: Mapped[str] = mapped_column(String(32), default="")
+    telegram_username: Mapped[str] = mapped_column(String(64), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     marketing_unsubscribed: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -796,6 +799,8 @@ class Invoice(Base):
     buyer_name: Mapped[str] = mapped_column(String(255), default="")
     buyer_address: Mapped[str] = mapped_column(Text, default="")
     buyer_email: Mapped[str] = mapped_column(String(255), default="")
+    buyer_phone: Mapped[str] = mapped_column(String(32), default="")
+    buyer_telegram: Mapped[str] = mapped_column(String(64), default="")
 
     # Status: issued, paid, cancelled
     status: Mapped[str] = mapped_column(String(32), default="issued")
@@ -823,6 +828,8 @@ class Invoice(Base):
             "buyer_name": self.buyer_name,
             "buyer_address": self.buyer_address,
             "buyer_email": self.buyer_email,
+            "buyer_phone": getattr(self, "buyer_phone", "") or "",
+            "buyer_telegram": getattr(self, "buyer_telegram", "") or "",
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "paid_at": self.paid_at.isoformat() if self.paid_at else None,
@@ -849,6 +856,8 @@ class YooKassaPayment(Base):
     package_name: Mapped[str] = mapped_column(String(120), default="")
     confirmation_url: Mapped[str] = mapped_column(Text, default="")
     payment_method_type: Mapped[str] = mapped_column(String(40), default="")
+    phone: Mapped[str] = mapped_column(String(32), default="")
+    telegram_username: Mapped[str] = mapped_column(String(64), default="")
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
@@ -870,6 +879,8 @@ class YooKassaPayment(Base):
             "package_name": self.package_name,
             "confirmation_url": self.confirmation_url,
             "payment_method_type": self.payment_method_type,
+            "phone": getattr(self, "phone", "") or "",
+            "telegram_username": getattr(self, "telegram_username", "") or "",
             "paid_at": self.paid_at.isoformat() if self.paid_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

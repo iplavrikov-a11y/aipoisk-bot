@@ -1630,7 +1630,18 @@ async def customer_create_invoice_api(
     buyer_kpp = str(body.get("buyer_kpp") or "").strip()
     buyer_address = str(body.get("buyer_address") or "").strip()
     buyer_email = str(body.get("buyer_email") or context.user.email or "").strip()
+    buyer_phone = str(body.get("buyer_phone") or body.get("phone") or getattr(context.user, "phone", "") or "").strip()
+    buyer_telegram = str(body.get("buyer_telegram") or body.get("telegram_username") or getattr(context.user, "telegram_username", "") or "").strip().lstrip("@")
     tariff_name = str(body.get("tariff_name") or "Пополнение баланса").strip()
+
+    if buyer_phone:
+        context.user.phone = buyer_phone
+        if not getattr(context.user.client, "phone", None):
+            context.user.client.phone = buyer_phone
+    if buyer_telegram:
+        context.user.telegram_username = buyer_telegram
+        if not context.user.client.username:
+            context.user.client.username = buyer_telegram
 
     from .billing import calculate_deposit_bonus_kopeks
     from .invoice_service import next_invoice_number, notify_admin_telegram
@@ -1654,6 +1665,8 @@ async def customer_create_invoice_api(
         buyer_name=buyer_name,
         buyer_address=buyer_address,
         buyer_email=buyer_email,
+        buyer_phone=buyer_phone,
+        buyer_telegram=buyer_telegram,
         status="issued",
     )
     db.add(invoice)
@@ -2000,6 +2013,9 @@ def _process_yookassa_payment_success(
         first_user = client.users[0] if getattr(client, "users", None) else None
         user_email = getattr(first_user, "email", "") or ""
 
+    payer_phone = metadata.get("phone") or (payment_record.phone if payment_record else "") or (client.web_users[0].phone if client.web_users else "") or getattr(client, "phone", "")
+    payer_tg = metadata.get("telegram_username") or (payment_record.telegram_username if payment_record else "") or (client.web_users[0].telegram_username if client.web_users else "") or getattr(client, "username", "")
+
     notify_admin_payment_success(
         payment_id=payment_id,
         amount_rub=amount_rub,
@@ -2009,6 +2025,8 @@ def _process_yookassa_payment_success(
         user_email=user_email,
         client_name=getattr(client, "name", "") or "",
         payment_method_type=pm_type,
+        phone=str(payer_phone or ""),
+        telegram_username=str(payer_tg or ""),
     )
 
     tg_id = metadata.get("telegram_id") or getattr(client, "telegram_id", "")
@@ -2098,6 +2116,20 @@ def customer_create_yookassa_payment_api(
     base_url = (settings.public_base_url or "https://tenderlex.ru").rstrip("/")
     desc = f"TenderLex: {package_name} ({context.user.email})"
 
+    phone = (data.phone or "").strip()
+    tg_user = (data.telegram_username or "").strip().lstrip("@")
+    if phone:
+        context.user.phone = phone
+        if not getattr(client, "phone", None):
+            client.phone = phone
+    if tg_user:
+        context.user.telegram_username = tg_user
+        if not client.username:
+            client.username = tg_user
+
+    final_phone = phone or getattr(context.user, "phone", "") or getattr(client, "phone", "") or ""
+    final_tg = tg_user or getattr(context.user, "telegram_username", "") or getattr(client, "username", "") or ""
+
     # Generate local record first
     payment_record = YooKassaPayment(
         payment_id=f"temp_{uuid.uuid4().hex[:16]}",
@@ -2108,6 +2140,8 @@ def customer_create_yookassa_payment_api(
         bonus_rub=bonus_rub,
         total_credit_rub=total_credit_rub,
         package_name=package_name,
+        phone=final_phone,
+        telegram_username=final_tg,
     )
     db.add(payment_record)
     db.flush()
@@ -2117,6 +2151,8 @@ def customer_create_yookassa_payment_api(
         "client_id": client.id,
         "user_id": context.user.id,
         "user_email": context.user.email,
+        "phone": final_phone,
+        "telegram_username": final_tg,
         "amount_rub": str(amount_rub),
         "bonus_rub": str(bonus_rub),
         "total_credit_rub": str(total_credit_rub),
@@ -2161,6 +2197,8 @@ def customer_create_yookassa_payment_api(
         package_name=payment_record.package_name or "Пополнение баланса",
         user_email=context.user.email or "",
         client_name=client.name or "",
+        phone=payment_record.phone or "",
+        telegram_username=payment_record.telegram_username or "",
     )
 
     return {
@@ -5149,6 +5187,8 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "id": user.id,
         "email": user.email,
         "name": user.name,
+        "phone": getattr(user, "phone", "") or (user.client and getattr(user.client, "phone", "")) or "",
+        "telegram_username": getattr(user, "telegram_username", "") or (user.client and getattr(user.client, "username", "")) or "",
         "is_active": bool(user.is_active),
         "is_email_verified": bool(user.is_email_verified),
         "has_telegram": has_telegram,
@@ -6928,6 +6968,7 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "is_pending": is_pending_telegram_id(client.telegram_id),
         "name": client.name,
         "username": client.username,
+        "phone": getattr(client, "phone", "") or (client.web_users[0].phone if client.web_users and getattr(client.web_users[0], "phone", "") else ""),
         "is_active": client.is_active,
         "is_trial": client.is_trial,
         "access_until": client.access_until,
@@ -6978,6 +7019,8 @@ def web_user_to_admin_dict(user: WebUser) -> dict:
         "client_id": user.client_id,
         "email": user.email,
         "name": user.name,
+        "phone": getattr(user, "phone", "") or "",
+        "telegram_username": getattr(user, "telegram_username", "") or "",
         "is_active": bool(user.is_active),
         "is_email_verified": bool(user.is_email_verified),
         "created_at": user.created_at.isoformat() if user.created_at else None,
