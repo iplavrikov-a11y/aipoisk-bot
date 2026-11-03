@@ -825,10 +825,14 @@ def customer_password_reset_request_api(
             .first()
         )
         if not recent:
+            now = now_utc()
             db.add(
                 WebPasswordResetRequest(
                     user_id=user.id,
                     email=email,
+                    status="completed" if email_sent else "open",
+                    resolved_by="system" if email_sent else None,
+                    resolved_at=now if email_sent else None,
                     requested_ip=str(getattr(request.client, "host", "") or "")[:80],
                     user_agent=str(request.headers.get("user-agent", ""))[:1000],
                     admin_note="Ссылка отправлена на email" if email_sent else "Заявка на сброс пароля",
