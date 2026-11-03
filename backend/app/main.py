@@ -190,6 +190,7 @@ from .schemas import (
     WebEmailChangeRequest,
     WebLoginRequest,
     WebEmailVerificationConfirm,
+    WebPasswordChangeRequest,
     WebPasswordResetComplete,
     WebPasswordResetConfirm,
     WebPasswordResetRequestCreate,
@@ -244,6 +245,7 @@ from .web_auth import (
     validate_email,
     verify_and_consume_password_reset_token,
     verify_email_token,
+    verify_password,
     verify_telegram_auth_payload,
     yandex_oauth_redirect_uri,
 )
@@ -865,6 +867,31 @@ def customer_password_reset_confirm_api(
     payload["success"] = True
     payload["message"] = "Пароль успешно обновлён. Вы вошли в личный кабинет."
     return payload
+
+
+@app.post("/api/customer/auth/change-password")
+def customer_change_password_api(
+    data: WebPasswordChangeRequest,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    user = context.user
+    if not verify_password(data.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=400,
+            detail="Текущий пароль указан неверно.",
+        )
+    new_pwd = str(data.new_password or "")
+    if len(new_pwd) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Новый пароль должен быть не короче 10 символов.",
+        )
+    user.password_hash = hash_password(new_pwd)
+    db.commit()
+    return {"ok": True, "message": "Пароль успешно изменён."}
 
 
 @app.post("/api/customer/auth/verify-email/request")
@@ -1588,7 +1615,10 @@ async def customer_start_supplier_search_route(
 
 @app.get("/api/customer/dadata/company-by-inn")
 @app.get("/api/dadata/company-by-inn")
-async def dadata_company_by_inn_api(inn: str = Query(...)) -> dict:
+async def dadata_company_by_inn_api(
+    inn: str = Query(...),
+    context: WebAuthContext = Depends(require_web_context),
+) -> dict:
     from .dadata_client import enrich_company_by_inn
 
     cleaned = re.sub(r"\D+", "", str(inn or "")).strip()
@@ -1615,6 +1645,11 @@ async def customer_create_invoice_api(
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    if not context.user.is_email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Подтвердите email перед выставлением счёта.",
+        )
     body = await request.json()
     amount_rub = int(body.get("amount_rub") or 0)
     if amount_rub < 500:
@@ -2099,6 +2134,11 @@ def customer_create_yookassa_payment_api(
     client = context.user.client
     if not client:
         raise HTTPException(status_code=400, detail="Аккаунт клиента не найден")
+    if not context.user.is_email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Подтвердите email перед пополнением баланса. Проверьте почту или запросите письмо повторно.",
+        )
 
     from .billing import calculate_deposit_bonus_kopeks
 
@@ -2119,6 +2159,12 @@ def customer_create_yookassa_payment_api(
     phone = (data.phone or "").strip()
     tg_user = (data.telegram_username or "").strip().lstrip("@")
     if phone:
+        digits = re.sub(r"\D+", "", phone)
+        if len(digits) < 10 or len(digits) > 15:
+            raise HTTPException(
+                status_code=400,
+                detail="Укажите корректный номер телефона (например, +7 999 123-45-67).",
+            )
         context.user.phone = phone
         if not getattr(client, "phone", None):
             client.phone = phone

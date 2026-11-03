@@ -65,7 +65,10 @@ def test_num_to_words_and_formatting():
 
 
 def test_dadata_company_by_inn_api(setup_database: Session):
+    db = setup_database
+    test_client, test_user, token = _create_test_customer(db, "dadata_buyer@romashka.ru")
     client = TestClient(app)
+    client.cookies.set("tenderlex_customer_session", token)
 
     # Invalid INN
     res = client.get("/api/customer/dadata/company-by-inn?inn=123")

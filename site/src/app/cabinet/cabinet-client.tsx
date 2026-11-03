@@ -1248,6 +1248,16 @@ export function CabinetClient() {
   const [authMode, setAuthMode] = useState<"login" | "register" | "reset" | "new_password">("register");
   const [resetToken, setResetToken] = useState("");
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
+  const [registerPasswordConfirm, setRegisterPasswordConfirm] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [changeNewPassword, setChangeNewPassword] = useState("");
+  const [changeNewPasswordConfirm, setChangeNewPasswordConfirm] = useState("");
+  const [changePasswordBusy, setChangePasswordBusy] = useState(false);
+  const [changePasswordError, setChangePasswordError] = useState("");
+  const [changePasswordSuccess, setChangePasswordSuccess] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -2343,8 +2353,8 @@ export function CabinetClient() {
           setError("Ссылка сброса пароля недействительна. Запросите новую ссылку.");
           return;
         }
-        if (password.length < 8) {
-          setError("Пароль должен содержать не менее 8 символов.");
+        if (password.length < 10) {
+          setError("Пароль должен содержать не менее 10 символов.");
           return;
         }
         if (password !== newPasswordConfirm) {
@@ -2366,6 +2376,16 @@ export function CabinetClient() {
         setAuthMode("login");
         setMessage(payload.message || "Пароль успешно обновлён. Вы вошли в личный кабинет.");
         return;
+      }
+      if (authMode === "register") {
+        if (password.length < 10) {
+          setError("Пароль должен содержать не менее 10 символов.");
+          return;
+        }
+        if (password !== registerPasswordConfirm) {
+          setError("Пароли не совпадают.");
+          return;
+        }
       }
       if (authMode === "reset") {
         const response = await fetch("/api/customer/auth/password-reset/request", {
@@ -2397,12 +2417,72 @@ export function CabinetClient() {
       setSession(payload);
       if (payload.authenticated) trackGoal(authMode === "register" ? "registration_success" : "login_success");
       setPassword("");
+      setRegisterPasswordConfirm("");
       setWebsite("");
       setMessage(authMode === "register" ? (payload.message || "Кабинет создан. Подтвердите email, чтобы запускать задачи.") : "");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  function handleSwitchAuthMode(mode: "login" | "register" | "reset") {
+    setError("");
+    setMessage("");
+    setPassword("");
+    setRegisterPasswordConfirm("");
+    setNewPasswordConfirm("");
+    setShowPassword(false);
+    setShowConfirmPassword(false);
+    setEmail("");
+    setName("");
+    setAuthMode(mode);
+  }
+
+  async function handleChangePassword(e: FormEvent) {
+    e.preventDefault();
+    setChangePasswordError("");
+    setChangePasswordSuccess("");
+    if (!currentPassword) {
+      setChangePasswordError("Введите текущий пароль.");
+      return;
+    }
+    if (changeNewPassword.length < 10) {
+      setChangePasswordError("Новый пароль должен содержать не менее 10 символов.");
+      return;
+    }
+    if (changeNewPassword !== changeNewPasswordConfirm) {
+      setChangePasswordError("Новые пароли не совпадают.");
+      return;
+    }
+    setChangePasswordBusy(true);
+    try {
+      const res = await fetch("/api/customer/auth/change-password", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "x-csrf-token": csrf,
+        },
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: changeNewPassword,
+        }),
+      });
+      const data = await readJson<{ ok?: boolean; message?: string }>(res);
+      setChangePasswordSuccess(data.message || "Пароль успешно изменён.");
+      setCurrentPassword("");
+      setChangeNewPassword("");
+      setChangeNewPasswordConfirm("");
+      setTimeout(() => {
+        setChangePasswordOpen(false);
+        setChangePasswordSuccess("");
+      }, 1500);
+    } catch (err) {
+      setChangePasswordError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChangePasswordBusy(false);
     }
   }
 
@@ -2425,6 +2505,22 @@ export function CabinetClient() {
       setJobsPage(1);
       setJobsTotal(0);
       setFindMoreConfirmJob(null);
+      // Clean all user data from memory/form inputs
+      setName("");
+      setEmail("");
+      setPassword("");
+      setRegisterPasswordConfirm("");
+      setNewPasswordConfirm("");
+      setResetToken("");
+      setText("");
+      setSourceUrls("");
+      setSelectedFiles([]);
+      setDeliveryCity("");
+      setTermsAccepted(false);
+      setPersonalDataConsent(false);
+      setShowPassword(false);
+      setShowConfirmPassword(false);
+      setAuthMode("login");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -3008,14 +3104,14 @@ export function CabinetClient() {
                 <button
                   type="button"
                   className={`py-2 px-3 rounded-lg transition-all cursor-pointer flex items-center justify-center text-center ${authMode === "register" ? "bg-white text-teal-800 shadow-2xs font-extrabold" : "text-slate-600 hover:text-slate-900"}`}
-                  onClick={() => { setError(""); setMessage(""); setAuthMode("register"); }}
+                  onClick={() => handleSwitchAuthMode("register")}
                 >
                   Регистрация
                 </button>
                 <button
                   type="button"
                   className={`py-2 px-3 rounded-lg transition-all cursor-pointer flex items-center justify-center text-center ${authMode === "login" ? "bg-white text-slate-900 shadow-2xs font-extrabold" : "text-slate-600 hover:text-slate-900"}`}
-                  onClick={() => { setError(""); setMessage(""); setAuthMode("login"); }}
+                  onClick={() => handleSwitchAuthMode("login")}
                 >
                   Вход
                 </button>
@@ -3100,44 +3196,127 @@ export function CabinetClient() {
               <>
                 <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
                   <span>Новый пароль</span>
-                  <input
-                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    type="password"
-                    autoComplete="new-password"
-                    minLength={8}
-                    placeholder="Не менее 8 символов"
-                    required
-                  />
+                  <div className="relative w-full">
+                    <input
+                      className="w-full pl-3.5 pr-10 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      type={showPassword ? "text" : "password"}
+                      autoComplete="new-password"
+                      minLength={10}
+                      placeholder="Не менее 10 символов"
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      tabIndex={-1}
+                      aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
+                    >
+                      {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
                 </label>
                 <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
                   <span>Повторите новый пароль</span>
-                  <input
-                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
-                    value={newPasswordConfirm}
-                    onChange={(event) => setNewPasswordConfirm(event.target.value)}
-                    type="password"
-                    autoComplete="new-password"
-                    minLength={8}
-                    placeholder="Повторите новый пароль"
-                    required
-                  />
+                  <div className="relative w-full">
+                    <input
+                      className="w-full pl-3.5 pr-10 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                      value={newPasswordConfirm}
+                      onChange={(event) => setNewPasswordConfirm(event.target.value)}
+                      type={showConfirmPassword ? "text" : "password"}
+                      autoComplete="new-password"
+                      minLength={10}
+                      placeholder="Повторите новый пароль"
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      onClick={() => setShowConfirmPassword((prev) => !prev)}
+                      tabIndex={-1}
+                      aria-label={showConfirmPassword ? "Скрыть пароль" : "Показать пароль"}
+                    >
+                      {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
                 </label>
               </>
-            ) : authMode !== "reset" ? (
+            ) : authMode === "register" ? (
+              <>
+                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
+                  <span>Пароль (не менее 10 символов)</span>
+                  <div className="relative w-full">
+                    <input
+                      className="w-full pl-3.5 pr-10 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      type={showPassword ? "text" : "password"}
+                      autoComplete="new-password"
+                      minLength={10}
+                      placeholder="Не менее 10 символов"
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      tabIndex={-1}
+                      aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
+                    >
+                      {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </label>
+                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
+                  <span>Повторите пароль</span>
+                  <div className="relative w-full">
+                    <input
+                      className="w-full pl-3.5 pr-10 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                      value={registerPasswordConfirm}
+                      onChange={(event) => setRegisterPasswordConfirm(event.target.value)}
+                      type={showConfirmPassword ? "text" : "password"}
+                      autoComplete="new-password"
+                      minLength={10}
+                      placeholder="Повторите пароль"
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      onClick={() => setShowConfirmPassword((prev) => !prev)}
+                      tabIndex={-1}
+                      aria-label={showConfirmPassword ? "Скрыть пароль" : "Показать пароль"}
+                    >
+                      {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </label>
+              </>
+            ) : authMode === "login" ? (
               <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
                 <span>Пароль</span>
-                <input
-                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  type="password"
-                  autoComplete={authMode === "login" ? "current-password" : "new-password"}
-                  minLength={8}
-                  placeholder="••••••••"
-                  required
-                />
+                <div className="relative w-full">
+                  <input
+                    className="w-full pl-3.5 pr-10 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    type={showPassword ? "text" : "password"}
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    tabIndex={-1}
+                    aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
               </label>
             ) : null}
 
@@ -3213,12 +3392,8 @@ export function CabinetClient() {
                 className="w-full text-center text-xs font-bold text-teal-700 hover:text-teal-900 transition-colors py-2 border-t border-slate-200/60 mt-2 block cursor-pointer"
                 type="button"
                 onClick={() => {
-                  setError("");
-                  setMessage("");
-                  setPassword("");
-                  setNewPasswordConfirm("");
                   setResetToken("");
-                  setAuthMode("login");
+                  handleSwitchAuthMode("login");
                 }}
               >
                 Отмена / Ко входу
@@ -3227,11 +3402,7 @@ export function CabinetClient() {
               <button
                 className="w-full text-center text-xs font-bold text-teal-700 hover:text-teal-900 transition-colors py-2 border-t border-slate-200/60 mt-2 block cursor-pointer"
                 type="button"
-                onClick={() => {
-                  setError("");
-                  setMessage("");
-                  setAuthMode("reset");
-                }}
+                onClick={() => handleSwitchAuthMode("reset")}
               >
                 Не помню пароль
               </button>
@@ -3239,11 +3410,7 @@ export function CabinetClient() {
               <button
                 className="w-full text-center text-xs font-bold text-teal-700 hover:text-teal-900 transition-colors py-2 border-t border-slate-200/60 mt-2 block cursor-pointer"
                 type="button"
-                onClick={() => {
-                  setError("");
-                  setMessage("");
-                  setAuthMode("login");
-                }}
+                onClick={() => handleSwitchAuthMode("login")}
               >
                 Вернуться ко входу
               </button>
@@ -3251,11 +3418,7 @@ export function CabinetClient() {
               <button
                 className="w-full text-center text-xs font-bold text-slate-600 hover:text-teal-800 transition-colors py-2 border-t border-slate-200/60 mt-2 block cursor-pointer"
                 type="button"
-                onClick={() => {
-                  setError("");
-                  setMessage("");
-                  setAuthMode("login");
-                }}
+                onClick={() => handleSwitchAuthMode("login")}
               >
                 Уже есть кабинет? <span className="text-teal-700 underline font-semibold">Войти</span>
               </button>
@@ -3443,6 +3606,22 @@ export function CabinetClient() {
             <span>TenderLex</span>
           </a>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="flex items-center gap-1.5 bg-white hover:bg-slate-50 text-slate-700 hover:text-teal-800 px-3 py-1.5 rounded-xl border border-slate-200/80 text-xs font-bold shadow-2xs transition-colors cursor-pointer"
+              onClick={() => {
+                setChangePasswordOpen(true);
+                setChangePasswordError("");
+                setChangePasswordSuccess("");
+                setCurrentPassword("");
+                setChangeNewPassword("");
+                setChangeNewPasswordConfirm("");
+              }}
+              title="Сменить пароль"
+            >
+              <Key size={13} className="text-teal-600" aria-hidden="true" />
+              <span className="hidden sm:inline">Пароль</span>
+            </button>
             <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-slate-200/80 text-xs font-bold text-slate-800 shadow-2xs">
               <User size={14} className="text-teal-600" aria-hidden="true" />
               <span>{session?.user?.email}</span>
@@ -3458,6 +3637,94 @@ export function CabinetClient() {
             </div>
           </div>
         </header>
+
+        {changePasswordOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4" onClick={() => !changePasswordBusy && setChangePasswordOpen(false)}>
+            <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2 text-slate-900 font-extrabold text-base">
+                  <Key size={18} className="text-teal-600" />
+                  <span>Смена пароля</span>
+                </div>
+                <button
+                  type="button"
+                  className="p-1 text-slate-400 hover:text-slate-600 rounded-lg cursor-pointer"
+                  onClick={() => !changePasswordBusy && setChangePasswordOpen(false)}
+                >
+                  <XCircle size={18} />
+                </button>
+              </div>
+
+              <form onSubmit={handleChangePassword} className="space-y-3.5">
+                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
+                  <span>Текущий пароль</span>
+                  <input
+                    type="password"
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    placeholder="••••••••"
+                    required
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
+                  <span>Новый пароль (не менее 10 символов)</span>
+                  <input
+                    type="password"
+                    minLength={10}
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                    value={changeNewPassword}
+                    onChange={(e) => setChangeNewPassword(e.target.value)}
+                    placeholder="Не менее 10 символов"
+                    required
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
+                  <span>Повторите новый пароль</span>
+                  <input
+                    type="password"
+                    minLength={10}
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                    value={changeNewPasswordConfirm}
+                    onChange={(e) => setChangeNewPasswordConfirm(e.target.value)}
+                    placeholder="Повторите новый пароль"
+                    required
+                  />
+                </label>
+
+                {changePasswordError && (
+                  <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs font-bold text-rose-700">
+                    {changePasswordError}
+                  </div>
+                )}
+                {changePasswordSuccess && (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-bold text-emerald-800">
+                    {changePasswordSuccess}
+                  </div>
+                )}
+
+                <div className="flex gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    className="w-1/2 py-2.5 px-4 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs hover:bg-slate-50 cursor-pointer"
+                    onClick={() => setChangePasswordOpen(false)}
+                    disabled={changePasswordBusy}
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    type="submit"
+                    className="w-1/2 py-2.5 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs shadow-2xs cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
+                    disabled={changePasswordBusy}
+                  >
+                    {changePasswordBusy && <Loader2 size={14} className="animate-spin" />}
+                    <span>Сохранить</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
 
         {/* Collapsible tariff content belongs to the work column, not the sidebar. */}
         {showTariffs ? (() => {

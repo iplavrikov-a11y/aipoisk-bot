@@ -49,6 +49,7 @@ from app.main import (
 )
 from app.main import (
     complete_web_password_reset,
+    customer_change_password_api,
     customer_password_reset_confirm_api,
     customer_password_reset_request_api,
 )
@@ -71,6 +72,7 @@ from app.models import (
 )
 from app.schemas import (
     WebEmailChangeRequest,
+    WebPasswordChangeRequest,
     WebPasswordResetComplete,
     WebPasswordResetConfirm,
     WebPasswordResetRequestCreate,
@@ -2019,6 +2021,73 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                 await _customer_upload_payload(bad_file, settings)
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertIn("Неподдерживаемый формат", ctx.exception.detail)
+
+    def test_customer_change_password_api(self) -> None:
+        db = self.Session()
+        try:
+            user = create_web_user(db, email="pwd-change@example.com", password="OldPassword123", name="Change Pass")
+            token, csrf_token, session = create_web_session(db, user)
+            req = fake_request(csrf_token=csrf_token)
+            ctx = WebAuthContext(user=user, session=session)
+
+            # 1. Wrong current password
+            with self.assertRaises(HTTPException) as err:
+                customer_change_password_api(
+                    WebPasswordChangeRequest(current_password="WrongPassword123", new_password="NewPassword123"),
+                    request=req,
+                    context=ctx,
+                    db=db,
+                )
+            self.assertEqual(err.exception.status_code, 400)
+            self.assertIn("неверно", err.exception.detail)
+
+            # 2. Too short new password (< 10)
+            with self.assertRaises(Exception):
+                customer_change_password_api(
+                    WebPasswordChangeRequest(current_password="OldPassword123", new_password="short"),
+                    request=req,
+                    context=ctx,
+                    db=db,
+                )
+
+            # 3. Successful password change
+            res = customer_change_password_api(
+                WebPasswordChangeRequest(current_password="OldPassword123", new_password="NewStrongPassword123"),
+                request=req,
+                context=ctx,
+                db=db,
+            )
+            self.assertTrue(res["ok"])
+
+            # Verify login with new password works
+            db.refresh(user)
+            self.assertIsNotNone(authenticate_web_user(db, "pwd-change@example.com", "NewStrongPassword123"))
+            self.assertIsNone(authenticate_web_user(db, "pwd-change@example.com", "OldPassword123"))
+        finally:
+            db.close()
+
+    def test_name_sanitization_on_registration(self) -> None:
+        db = self.Session()
+        try:
+            req = fake_request()
+            res = customer_register_api(
+                WebRegisterRequest(
+                    email="xss-test@example.com",
+                    password="StrongPassword123",
+                    name="<script>alert(1)</script>  Иван \x00Петров  ",
+                    terms_accepted=True,
+                    personal_data_consent=True,
+                ),
+                request=req,
+                response=Response(),
+                db=db,
+            )
+            user = db.query(WebUser).filter(WebUser.email == "xss-test@example.com").one()
+            self.assertNotIn("<script>", user.name)
+            self.assertNotIn("\x00", user.name)
+            self.assertEqual(user.name, "alert(1) Иван Петров")
+        finally:
+            db.close()
 
 
 if __name__ == "__main__":

@@ -63,10 +63,18 @@ def validate_email(value: str) -> str:
     return email
 
 
+def sanitize_display_name(value: str) -> str:
+    raw = str(value or "").strip()
+    clean = re.sub(r"<[^>]+>", "", raw)
+    clean = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", clean)
+    clean = " ".join(clean.split())
+    return clean[:100]
+
+
 def hash_password(password: str) -> str:
     raw = str(password or "")
-    if len(raw) < 8:
-        raise ValueError("Пароль должен быть не короче 8 символов.")
+    if len(raw) < 10:
+        raise ValueError("Пароль должен быть не короче 10 символов.")
     salt = secrets.token_urlsafe(18)
     digest = hashlib.pbkdf2_hmac("sha256", raw.encode("utf-8"), salt.encode("utf-8"), PASSWORD_ITERATIONS)
     return f"{PASSWORD_ALGORITHM}${PASSWORD_ITERATIONS}${salt}${base64.urlsafe_b64encode(digest).decode()}"
@@ -108,7 +116,7 @@ def create_web_user(
     normalized_email = validate_email(email)
     if db.query(WebUser.id).filter(WebUser.email == normalized_email).first():
         raise ValueError("Пользователь с таким email уже зарегистрирован.")
-    display_name = str(name or normalized_email).strip()[:255]
+    display_name = sanitize_display_name(name) if str(name or "").strip() else normalized_email
     if client is None:
         settings = get_or_create_settings(db)
         trial_enabled = bool(settings.trial_enabled)

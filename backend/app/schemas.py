@@ -80,7 +80,7 @@ class LoginRequest(BaseModel):
 
 class WebRegisterRequest(BaseModel):
     email: str
-    password: str = Field(min_length=8, max_length=256)
+    password: str = Field(min_length=10, max_length=256)
     name: str = ""
     website: str = ""
     link_token: str = Field(default="", max_length=128)
@@ -115,7 +115,12 @@ class WebPasswordResetComplete(BaseModel):
 
 class WebPasswordResetConfirm(BaseModel):
     token: str = Field(min_length=20, max_length=512)
-    new_password: str = Field(min_length=8, max_length=256)
+    new_password: str = Field(min_length=10, max_length=256)
+
+
+class WebPasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=10, max_length=256)
 
 
 class ClientCreate(BaseModel):
