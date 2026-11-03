@@ -2991,3 +2991,14 @@ risks are narrower:
 - Full architectural analysis and upgrade tariffs documented in [INFRASTRUCTURE_152FZ_MIGRATION_MEMO.md](file:///root/projects/tenderlex/docs/INFRASTRUCTURE_152FZ_MIGRATION_MEMO.md).
 - Migration plan preserves existing Hostkey NL node for heavy scraping/LLM worker workloads while isolating user PII in Moscow.
 
+## Security & Customer Authentication Hardening (November 2026)
+
+- **Test Route & Dead Code Cleanup**: Removed legacy test/demo routes (`/test-buttons`, `/demo-buttons`, `/demo-design`, `/demo-world`, `/v2`) and dead components. Cleaned up `/design-preview-2026/` nginx configuration and purged `/var/www/tenderlex-design-preview/`.
+- **Form State Hygiene & Session Isolation**: Fixed form field state retention on logout across all cabinet/auth forms. Added automatic field wiping on auth mode switches (login/registration/password reset).
+- **Password UX & Validation**: Added password visibility eye toggles (`Eye`/`EyeOff`), password confirmation field on registration, and increased minimum password length from 8 to 10 characters.
+- **In-Cabinet Password Management**: Added dedicated password change endpoint (`POST /api/customer/auth/change-password`) and modal in cabinet interface.
+- **Payment Verification Gate**: Enforced email verification (`is_email_verified`) prior to YooKassa payment creation and invoice generation. Added E.164 phone number formatting checks.
+- **DaData API Protection**: Restricted DaData company search endpoints (`/api/customer/dadata/company-by-inn`, `/api/dadata/company-by-inn`) to authenticated customer sessions.
+- **Automated Password Reset Self-Service**: Resolved legacy admin panel ticket creation during automated email password resets. Requests with successfully dispatched emails are auto-resolved (`completed`) for security audit without cluttering the admin panel with manual intervention banners.
+
+
