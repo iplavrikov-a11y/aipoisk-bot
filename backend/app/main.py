@@ -2125,6 +2125,11 @@ def customer_create_yookassa_payment_api(
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    if not context.user.is_email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Подтвердите email перед пополнением баланса. Проверьте почту или запросите письмо повторно.",
+        )
     settings = get_or_create_settings(db)
     if not _settings_yookassa_ready(settings):
         raise HTTPException(
@@ -2134,11 +2139,6 @@ def customer_create_yookassa_payment_api(
     client = context.user.client
     if not client:
         raise HTTPException(status_code=400, detail="Аккаунт клиента не найден")
-    if not context.user.is_email_verified:
-        raise HTTPException(
-            status_code=403,
-            detail="Подтвердите email перед пополнением баланса. Проверьте почту или запросите письмо повторно.",
-        )
 
     from .billing import calculate_deposit_bonus_kopeks
 
