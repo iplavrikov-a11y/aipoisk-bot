@@ -2984,3 +2984,10 @@ risks are narrower:
 - **Fast Asynchronous DNS Pre-Check**: Integrated `candidate_domain_resolves_fast()` with LRU caching (5,000 entries) to bypass dead domains in <32 ms before launching Playwright or HTTP crawls.
 - **DNS MX Mailbox Verification**: Integrated `email_has_valid_mx()` via `dnspython` to filter out non-existent mail exchange servers (~3.5 ms per lookup).
 - **Minpromtorg Registry FTS5 Parity**: High-speed full-text search indexing across 470,000+ entries with verified multi-round benchmarks across 45+ real industrial procurement items.
+
+## Infrastructure & 152-FZ Compliance Roadmap (November 2026)
+
+- Complete evaluation of Russian VPS (`russian-server` / AdminVPS Moscow `79.133.182.215`) vs Netherlands Production (`202.71.13.57`).
+- Full architectural analysis and upgrade tariffs documented in [INFRASTRUCTURE_152FZ_MIGRATION_MEMO.md](file:///root/projects/tenderlex/docs/INFRASTRUCTURE_152FZ_MIGRATION_MEMO.md).
+- Migration plan preserves existing Hostkey NL node for heavy scraping/LLM worker workloads while isolating user PII in Moscow.
+
