@@ -1,12 +1,19 @@
 # TenderLex Bot
 
-Актуальный выпуск 2 ноября 2026: [глобальный доступ к модулю «Мониторинг цен» для всех клиентов, SEO-продвижение, расширение базы знаний и полировка интерфейса](docs/PROJECT_STATUS.md), [исправление сбора данных в Яндекс Метрике, CTR-оптимизация топа Google (#1.23, #2.93, #12-14, #9.88), синхронизация каталогов ИИ и IndexNow](docs/PROJECT_STATUS.md), а также [оптимизация воронки продаж, онбординга, типографики и изоляция тестовых Telegram-уведомлений](docs/PROJECT_STATUS.md).
+Актуальный выпуск 3 ноября 2026: [сбор контактов (телефон, Telegram) при онлайн-оплате и выставлении счетов, автосохранение в профиль и кликабельная связь в Telegram-оповещениях владельцу](docs/PROJECT_STATUS.md), [глобальный доступ к модулю «Мониторинг цен» для всех клиентов, SEO-продвижение и исправление трекинга Метрики](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 2 ноября: 1 378 бэкенд-тестов (100% pass); 110 страниц сайта собраны успешно; 93 страницы sitemap проверены и отправлены в IndexNow (HTTP 200); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-site`, `tenderlex-bot`).
+Серверный прогон выпуска 3 ноября: 1 380 бэкенд-тестов (100% pass); 110 страниц сайта собраны успешно; деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-site`, `tenderlex-bot`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Payer Contacts Collection (Phone & Telegram) in Cabinet Top-Up & Invoice Generator (2026-11-03):
+  - Mandatory Phone & Optional Telegram in Cabinet Modal (`site/src/app/cabinet/cabinet-client.tsx`): added contact details block to both "Оплата онлайн (Карта, СБП)" and "Счёт для юрлиц" tabs. Payer phone is mandatory with auto-mask `+7 (9XX) XXX-XX-XX` and length validation ($\ge 10$ digits) guarding payment/invoice submit buttons. Telegram username is optional with automatic `@` formatting.
+  - Profile Persistence & Pre-Fill (`backend/app/models.py`, `backend/app/db.py`, `backend/app/main.py`): added `phone` and `telegram_username` to `web_users`, `clients`, `invoices` (`buyer_phone`, `buyer_telegram`), and `yookassa_payments` (`phone`, `telegram_username`). Stored on payment/invoice creation and automatically pre-filled in cabinet modal via session payload.
+  - Direct 1-Click Telegram Alerts to Admin (`backend/app/invoice_service.py`, `backend/app/yookassa_service.py`): enriched admin alerts for YooKassa payment attempts, succeeded payments, and issued B2B invoices with clickable phone numbers and Telegram chat links (`t.me/<username>`), enabling immediate customer outreach even for users authenticated via Yandex ID.
+  - Admin Panel Visibility (`frontend/src/InvoicesView.tsx`, `frontend/src/App.tsx`): displayed buyer phone and Telegram in "Счета и оплаты" table and in client card summary.
+  - Verified with 1,380 backend tests (100% pass), Next.js and Vite builds, and live deployment on `202.71.13.57`.
 
 - Price Monitoring Global Rollout, Yandex Metrika Activity Tracking & Google Top Articles CTR Optimization (2026-11-02):
   - Global Price Monitoring Access Mode (`backend/app/models.py`, `backend/app/db.py`, `backend/app/main.py`, `backend/app/repository.py`, `frontend/src/PriceMonitoringView.tsx`): introduced `price_monitoring_access_mode` system setting with default `"all"`. Enabled 3-state access control in admin panel (🟢 All clients, 🟡 Granular/Individual, 🔴 Disabled globally). Dynamic client access check unlocks tab "5. Мониторинг цен" in web cabinet for all registered clients without manual per-user toggling.
