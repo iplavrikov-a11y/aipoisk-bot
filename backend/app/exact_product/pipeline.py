@@ -129,7 +129,10 @@ async def prepare_exact_product_positions(
                 rows.append({
                     "position_no": len(rows) + 1,
                     "name": line,
+                    "unit": "шт",
+                    "quantity": "1",
                     "requirements": [{"param_name": "Наименование из спецификации", "tz_requirement": line}],
+                    "is_short_prompt": True,
                     "source_file": source_file,
                     "source_excerpt": line,
                 })

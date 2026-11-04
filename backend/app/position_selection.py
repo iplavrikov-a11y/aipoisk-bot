@@ -40,13 +40,24 @@ def read_selection(job: Job) -> dict[str, Any]:
 
 def build_selection_snapshot(items: list[dict], *, price_kopeks: int, mode: str = "exact_product") -> str:
     rows = []
+    has_short_prompt = False
     for index, original in enumerate(items, 1):
         if not isinstance(original, dict):
             continue
         row = dict(original)
         row_id = uuid.uuid4().hex[:16]
+        pos_name = str(original.get("name") or original.get("name_in_tz") or f"Позиция {index}").strip()
         row.update(id=row_id, position_id=row_id, position_no=original.get("position_no") or index,
-                   name=str(original.get("name") or original.get("name_in_tz") or f"Позиция {index}"))
+                   name=pos_name)
+        # Отмечаем позиции без характеристик или с кратким запросом для подтверждения клиентом
+        reqs = row.get("requirements") or []
+        is_short = bool(
+            original.get("is_short_prompt")
+            or len(pos_name) < 30 and (not reqs or all(r.get("tz_requirement") == pos_name for r in reqs if isinstance(r, dict)))
+        )
+        if is_short:
+            row["is_short_prompt"] = True
+            has_short_prompt = True
         rows.append(row)
     groups = {}
     for row in rows:
@@ -59,6 +70,7 @@ def build_selection_snapshot(items: list[dict], *, price_kopeks: int, mode: str 
         groups.setdefault(category, []).append(row["id"])
     maximum = len(rows) if mode in {"price_monitoring", "exact_product"} else MAX_SELECTED_POSITIONS
     return json.dumps({"revision": uuid.uuid4().hex, "mode": mode, "max_positions": maximum,
+                       "has_short_prompt": has_short_prompt,
                        "pricing_mode": "per_found_position" if mode == "price_monitoring" else ("per_position" if mode == "exact_product" else "fixed_task"),
                        "price_kopeks": max(0, int(price_kopeks)), "items": rows,
                        "groups": [{"id": f"group-{index}", "name": name, "item_ids": ids} for index, (name, ids) in enumerate(groups.items(), 1)],

@@ -258,6 +258,7 @@ type PositionSelection = {
   max_positions: number;
   price_kopeks: number;
   pricing_mode?: "fixed_task" | "per_found_position" | string;
+  has_short_prompt?: boolean;
   groups?: Array<{
     id?: string;
     name?: string;
@@ -274,6 +275,7 @@ type PositionSelection = {
     quantity?: string;
     source_excerpt?: string;
     category?: string;
+    is_short_prompt?: boolean;
   }>;
   selected_ids?: string[];
   confirmed?: boolean;
@@ -5882,6 +5884,7 @@ export function CabinetClient() {
         const maxPositions = isUncapped ? selection.items.length : (selection.max_positions || selection.items.length);
         const canSelectAll = selection.items.length <= maxPositions;
         const submitting = exactSelectionSubmittingJobId === exactSelectionJob.id;
+        const hasShortPrompt = Boolean(selection.has_short_prompt || selection.items.some((i) => i.is_short_prompt));
 
         const searchNorm = selectionSearchQuery.trim().toLowerCase();
         const matchesSearch = (item: PositionSelection["items"][number]) => {
@@ -5961,6 +5964,25 @@ export function CabinetClient() {
                     {" "}Перед запуском проверьте требования каждой позиции.
                   </p>
                 </div>
+
+                {hasShortPrompt ? (
+                  <div className="rounded-2xl border border-amber-300 bg-amber-50/90 p-3.5 text-xs text-amber-950 shadow-xs space-y-1.5">
+                    <div className="flex items-start gap-2.5">
+                      <AlertTriangle className="text-amber-600 shrink-0 mt-0.5" size={16} aria-hidden="true" />
+                      <div className="space-y-1 flex-1">
+                        <h4 className="font-extrabold text-amber-950 text-xs">
+                          Обнаружен краткий запрос без подробных характеристик
+                        </h4>
+                        <p className="text-amber-900 leading-relaxed text-[11px]">
+                          В исходном задании указано только краткое наименование позиции без подробных технических характеристик (размеров, материалов, ГОСТ, маркировки).
+                        </p>
+                        <p className="text-amber-900 leading-relaxed font-semibold text-[11px]">
+                          Подтвердите поиск по этому наименованию или отмените задачу (списания не произойдёт), если файл был прикреплён ошибочно.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
 
                 {/* Поиск по позициям */}
                 {selection.items.length > 8 ? (
@@ -6120,10 +6142,26 @@ export function CabinetClient() {
               {exactSelectionError ? <div role="alert" className="mx-6 mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 flex items-center gap-2"><AlertTriangle size={15} aria-hidden="true" /><span>{exactSelectionError}</span></div> : null}
 
               <footer className="px-6 py-3.5 bg-slate-50 border-t border-slate-200/80 flex items-center justify-between gap-3 shrink-0">
-                <button type="button" className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-all cursor-pointer" onClick={dismissExactSelectionModal} disabled={submitting}>Позже</button>
+                <div className="flex items-center gap-2">
+                  <button type="button" className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-all cursor-pointer" onClick={dismissExactSelectionModal} disabled={submitting}>Позже</button>
+                  {exactSelectionJob.can_cancel ? (
+                    <button
+                      type="button"
+                      className="px-3 py-2 rounded-xl text-xs font-bold text-rose-600 hover:text-rose-700 hover:bg-rose-50 border border-rose-200 transition-all cursor-pointer"
+                      onClick={() => {
+                        dismissExactSelectionModal();
+                        void cancelJob(exactSelectionJob);
+                      }}
+                      disabled={submitting}
+                      title="Отменить задачу без списания средств"
+                    >
+                      Отменить задачу (без списания)
+                    </button>
+                  ) : null}
+                </div>
                 <button type="button" className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50" onClick={() => void confirmExactSelection(exactSelectionJob)} disabled={selectedExactItemIds.length === 0 || submitting}>
                   {submitting ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={15} aria-hidden="true" />}
-                  <span>Подтвердить выбор</span>
+                  <span>{hasShortPrompt ? "Подтвердить поиск по наименованию" : "Подтвердить выбор"}</span>
                 </button>
               </footer>
             </section>

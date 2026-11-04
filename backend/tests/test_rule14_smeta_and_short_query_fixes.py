@@ -137,3 +137,28 @@ async def test_prepare_exact_product_positions_short_text():
     positions = await prepare_exact_product_positions(settings, context=short_query, input_files=None)
     assert len(positions) >= 1
     assert "Окна пластиковые ПВХ" in positions[0]["name"]
+    assert positions[0].get("is_short_prompt") is True
+
+
+def test_build_selection_snapshot_short_prompt_flag():
+    import json
+    from app.position_selection import build_selection_snapshot
+
+    # Короткий запрос без характеристик (кейс клиента 80 / задача 1037)
+    items = [{"position_no": 1, "name": "Окна пластиковые ПВХ", "requirements": []}]
+    raw_snapshot = build_selection_snapshot(items, price_kopeks=4900, mode="exact_product")
+    snapshot = json.loads(raw_snapshot)
+    assert snapshot.get("has_short_prompt") is True
+    assert snapshot["items"][0].get("is_short_prompt") is True
+
+    # Полноценная позиция со спецификацией
+    full_items = [{
+        "position_no": 1,
+        "name": "Окно ПВХ двухстворчатое 1300х1400",
+        "requirements": [{"param_name": "Ширина", "tz_requirement": "1300 мм"}]
+    }]
+    full_raw = build_selection_snapshot(full_items, price_kopeks=4900, mode="exact_product")
+    full_snap = json.loads(full_raw)
+    assert full_snap.get("has_short_prompt") is False
+
+

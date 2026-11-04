@@ -435,7 +435,7 @@ async def generate_monitoring_queries_ai(
     nom_codes = extract_generic_nomenclature_codes(clean_name)
     exact_codes = [
         c for c in nom_codes
-        if is_drawing_or_part_code(c, clean_name) and not _is_measurement_like_identifier(c)
+        if is_drawing_or_part_code(c, clean_name) and not _is_measurement_like_identifier(c) and not is_classifier_code(c, clean_name)
     ]
     drawing_instruction = ""
     if exact_codes:
@@ -461,6 +461,8 @@ async def generate_monitoring_queries_ai(
    - Запрос по производителю, каталогу или оптовому прайс-листу
 3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО включать стоп-слова ('не менее', 'в соответствии с', 'требуется'), мусор 1С и лишние служебные знаки.
 4. Запросы должны приводить на коммерческие страницы реальных компаний, складов и производителей в РФ.
+5. СМЕТНЫЕ И КЛАССИФИКАЦИОННЫЕ КОДЫ (ПРАВИЛО 14):
+   Если в наименовании или контексте присутствуют сметные расценки, сметные шифры или коды классификаторов (например '11.3.02.01', шифры смет, нормативные базы) — СТРОГО ИГНОРИРУЙ их. Поисковые запросы должны содержать исключительно физическое наименование товара, марку, ключевые размеры и коммерческие характеристики. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО включать в запросы сметные и классификационные шифры.
 
 Ответь СТРОГО JSON-массивом строк:
 ["запрос 1", "запрос 2", "запрос 3"]
@@ -613,7 +615,7 @@ async def process_single_item(
         queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=1, city=city)
     if not queries:
         queries = build_commercial_search_queries(clean, unit, city=city)
-    queries = _preserve_exact_codes(queries)
+        queries = _preserve_exact_codes(queries)
     diagnostics["waves_run"].append(1)
 
     async with search_semaphore:
@@ -840,7 +842,7 @@ async def process_single_item(
             fallback_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=2, city=city)
         if not fallback_queries:
             fallback_queries = build_fallback_broad_queries(clean, unit, city=city)
-        fallback_queries = _preserve_exact_codes(fallback_queries)
+            fallback_queries = _preserve_exact_codes(fallback_queries)
         diagnostics["waves_run"].append(2)
         async with search_semaphore:
             for bq in fallback_queries[:4]:
@@ -884,7 +886,7 @@ async def process_single_item(
             if len(tokens) >= 2:
                 short_clean = " ".join(dict.fromkeys(tokens[:3]))
                 wave3_queries.append(f"{short_clean} купить цена")
-        wave3_queries = _preserve_exact_codes(wave3_queries)
+            wave3_queries = _preserve_exact_codes(wave3_queries)
         diagnostics["waves_run"].append(3)
 
         async with search_semaphore:
