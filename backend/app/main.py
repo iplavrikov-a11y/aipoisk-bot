@@ -2385,7 +2385,7 @@ def admin_test_yookassa_api(
 
 @app.post("/api/auth/login")
 def login(data: LoginRequest, request: Request, response: Response) -> dict:
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = _client_ip(request)
     now = time.time()
     attempts = [item for item in LOGIN_ATTEMPTS.get(client_ip, []) if now - item < 600]
     if len(attempts) >= 8:
