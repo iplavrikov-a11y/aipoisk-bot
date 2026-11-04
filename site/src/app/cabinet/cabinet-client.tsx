@@ -1259,6 +1259,7 @@ export function CabinetClient() {
   const [changePasswordError, setChangePasswordError] = useState("");
   const [changePasswordSuccess, setChangePasswordSuccess] = useState("");
   const [name, setName] = useState("");
+  const [registerPhone, setRegisterPhone] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [website, setWebsite] = useState("");
@@ -2406,6 +2407,7 @@ export function CabinetClient() {
           email,
           password,
           name,
+          phone: authMode === "register" ? registerPhone : "",
           website: authMode === "register" ? website : "",
           ref: authMode === "register" ? (typeof window !== "undefined" ? localStorage.getItem("tenderlex_ref") || "" : "") : "",
           terms_accepted: termsAccepted,
@@ -3166,6 +3168,23 @@ export function CabinetClient() {
                   onChange={(event) => setName(event.target.value)}
                   autoComplete="name"
                   placeholder="Ваше имя"
+                />
+              </label>
+            ) : null}
+
+            {authMode === "register" ? (
+              <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
+                <span className="flex items-center justify-between">
+                  <span>Телефон / WhatsApp</span>
+                  <span className="text-[11px] font-normal text-slate-400">для связи по расчетам (необязательно)</span>
+                </span>
+                <input
+                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                  value={registerPhone}
+                  onChange={(event) => setRegisterPhone(event.target.value)}
+                  type="tel"
+                  autoComplete="tel"
+                  placeholder="+7 (___) ___-__-__"
                 />
               </label>
             ) : null}

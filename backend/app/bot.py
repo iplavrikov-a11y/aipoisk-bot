@@ -4941,6 +4941,141 @@ async def handle_nurturing_unsubscribe(callback: CallbackQuery) -> None:
             pass
 
 
+@router.callback_query(F.data.startswith("nurturing_fb:"))
+async def handle_nurturing_feedback(callback: CallbackQuery) -> None:
+    feedback_type = str(callback.data or "").split(":", 1)[1]
+    db = SessionLocal()
+    try:
+        user_id = str(callback.from_user.id if callback.from_user else "")
+        client = get_client_by_telegram_id(db, user_id)
+        record_journey_event(
+            db,
+            client.id if client else None,
+            channel="telegram",
+            event_name="nurturing_feedback",
+            outcome=feedback_type,
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    if feedback_type == "good":
+        await callback.answer("Спасибо за отзыв!")
+        if callback.message:
+            try:
+                await callback.message.edit_text(
+                    "🎉 <b>Рады, что результаты расчетов подошли!</b>\n\n"
+                    "Если прямо сейчас в работе новые спецификации по 44-ФЗ / 223-ФЗ — просто отправьте файл ТЗ или номер ЕИС в чат в любое время.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=main_inline_keyboard(),
+                )
+            except Exception:
+                pass
+    elif feedback_type == "bad":
+        await callback.answer("Спасибо за честный ответ!")
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="💬 Написать в поддержку", callback_data="open_contacts")],
+                [InlineKeyboardButton(text="📱 Оставить телефон для разбора", callback_data="prompt_share_contact")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+            ]
+        )
+        if callback.message:
+            try:
+                await callback.message.edit_text(
+                    "🤝 <b>Спасибо за честный ответ!</b>\n\n"
+                    "Мы хотим понять, почему подбор не устроил (мало заводов, не те аналоги или сложный ГОСТ). "
+                    "Основатель и специалист сервиса могут лично разобрать ваше ТЗ и начислить дополнительные расчеты.\n\n"
+                    "Нажмите кнопку ниже, чтобы связаться с нами или оставить телефон:",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                )
+            except Exception:
+                pass
+    else:  # need_credits
+        await callback.answer("Поможем с лимитами!")
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="💬 Написать в поддержку", callback_data="open_contacts")],
+                [InlineKeyboardButton(text="📱 Оставить телефон", callback_data="prompt_share_contact")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+            ]
+        )
+        if callback.message:
+            try:
+                await callback.message.edit_text(
+                    "🎁 <b>С удовольствием поможем вашему отделу закупок!</b>\n\n"
+                    "Если вам нужны дополнительные бесплатные лимиты для тестирования сложных позиций — "
+                    "напишите нам в поддержку или оставьте номер, активируем расширенный тестовый пакет.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                )
+            except Exception:
+                pass
+
+
+@router.callback_query(F.data == "prompt_share_contact")
+async def handle_prompt_share_contact(callback: CallbackQuery) -> None:
+    await callback.answer()
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📱 Отправить мой контакт", request_contact=True)],
+            [KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    if callback.message:
+        await callback.message.answer(
+            "📱 <b>Связь со специалистом TenderLex:</b>\n\n"
+            "Нажмите кнопку внизу экрана <b>«Отправить мой контакт»</b>, чтобы передать номер телефона для связи по вашим спецификациям и закупкам.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb,
+        )
+
+
+@router.message(F.contact)
+async def handle_contact_received(message: Message) -> None:
+    if not message.contact:
+        return
+    raw_phone = str(message.contact.phone_number or "").strip()
+    if not raw_phone:
+        return
+    if not raw_phone.startswith("+"):
+        raw_phone = "+" + raw_phone
+
+    telegram_id, username, name = _telegram_user_fields(message)
+    db = SessionLocal()
+    try:
+        client, _ = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        if client:
+            client.phone = raw_phone
+            for wu in getattr(client, "web_users", []):
+                wu.phone = raw_phone
+            record_journey_event(
+                db,
+                client.id,
+                channel="telegram",
+                event_name="phone_shared",
+                outcome=raw_phone,
+            )
+            db.commit()
+    finally:
+        db.close()
+
+    await message.answer(
+        f"✅ <b>Спасибо! Ваш номер телефона сохранён:</b> <code>{raw_phone}</code>\n\n"
+        "Специалист TenderLex свяжется с вами при необходимости разбора сложных закупок или настройки тарифа.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+@router.message(F.text.in_({"❌ Отмена", "Отмена"}))
+async def handle_cancel_reply_keyboard(message: Message) -> None:
+    await message.answer("Действие отменено.", reply_markup=ReplyKeyboardRemove())
+
+
 @router.callback_query(F.data.startswith("find_more_prompt:"))
 async def find_more_suppliers_prompt(callback: CallbackQuery) -> None:
     job_id = str(callback.data or "").split(":", 1)[1]

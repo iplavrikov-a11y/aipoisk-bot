@@ -511,6 +511,11 @@ def customer_register_api(
             ip_address=client_ip,
             user_agent=user_agent,
         )
+        if getattr(data, "phone", None) and str(data.phone).strip():
+            raw_phone = str(data.phone).strip()
+            user.phone = raw_phone
+            if user.client:
+                user.client.phone = raw_phone
         if getattr(data, "ref", None) and str(data.ref).strip() and user.client:
             try:
                 from .referral import resolve_referrer, link_referral_and_grant_welcome
