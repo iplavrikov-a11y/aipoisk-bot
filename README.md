@@ -1,12 +1,18 @@
 # TenderLex Bot
 
-Актуальный выпуск 3 ноября 2026: [сбор контактов (телефон, Telegram) при онлайн-оплате и выставлении счетов, автосохранение в профиль и кликабельная связь в Telegram-оповещениях владельцу](docs/PROJECT_STATUS.md), [глобальный доступ к модулю «Мониторинг цен» для всех клиентов, SEO-продвижение и исправление трекинга Метрики](docs/PROJECT_STATUS.md).
+Актуальный выпуск 4 ноября 2026: [Правило 14: семантический разбор произвольных документов без жестких схем, защита от сметных баз и модальное окно подтверждения кратких запросов](docs/PROJECT_STATUS.md), [сбор контактов (телефон, Telegram) при онлайн-оплате и выставлении счетов](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 3 ноября: 1 380 бэкенд-тестов (100% pass); 110 страниц сайта собраны успешно; деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-site`, `tenderlex-bot`).
+Серверный прогон выпуска 4 ноября: все бэкенд-тесты (100% pass); страницы сайта собраны успешно; деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-site`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Rule 14 Semantic Document & Table Extraction, Smeta Code Filtering & Short Query Modal Confirmation (2026-11-04):
+  - Short Query & Minimal Spec Confirmation Modal (`site/src/app/cabinet/cabinet-client.tsx`, `backend/app/position_selection.py`): when inputs lack technical parameters (e.g. "Окна пластиковые ПВХ"), task transitions to `awaiting_exact_selection` instead of raising an error. The cabinet selection modal displays an amber alert informing the client that no specifications were detected, offering an explicit "Отменить задачу (без списания)" button alongside "Подтвердить поиск по наименованию".
+  - Arbitrary Table & Document Parsing Zero-Shot (`backend/app/exact_product/matcher.py`, `backend/app/exact_product/pipeline.py`): updated `TZ_STRUCTURE_PROMPT` to parse arbitrary tables (Word/DOCX, Excel, PDF, text) without mandatory column names, automatically extracting items, physical units (`unit`), and quantities (`quantity`).
+  - Smeta & Classifier Code Semantic Isolation: AI prompts (`TZ_STRUCTURE_PROMPT` and `generate_monitoring_queries_ai`) semantically identify accounting/estimate codes (FSBC, GESN, FER, KSR, hierarchical numeric codes), eliminating them from product names and commercial queries so Yandex finds real suppliers and distributors rather than normative databases.
+  - Verified with 9 dedicated unit tests (`backend/tests/test_rule14_smeta_and_short_query_fixes.py`), Next.js build, and live deployment on `202.71.13.57`.
 
 - Payer Contacts Collection (Phone & Telegram) in Cabinet Top-Up & Invoice Generator (2026-11-03):
   - Mandatory Phone & Optional Telegram in Cabinet Modal (`site/src/app/cabinet/cabinet-client.tsx`): added contact details block to both "Оплата онлайн (Карта, СБП)" and "Счёт для юрлиц" tabs. Payer phone is mandatory with auto-mask `+7 (9XX) XXX-XX-XX` and length validation ($\ge 10$ digits) guarding payment/invoice submit buttons. Telegram username is optional with automatic `@` formatting.
