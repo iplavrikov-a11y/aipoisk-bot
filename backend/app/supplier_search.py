@@ -153,6 +153,11 @@ BLOCKED_DOMAINS = {
     "b2b-project.ru", "comreport.ru", "check-pro.ru", "vsem-podryad.ru", "licexpert.ru",
     "trudvsem.ru", "star-pro.ru", "rospravosudie.com", "kartoteka.ru",
     "reestr-doverennostey.ru", "fedresurs.ru", "mebeloptovik.ru", "100best.ru",
+    # Сметно-нормативные базы, классификаторы, реестры и файловые хранилища тендеров
+    "smetnoedelo.ru", "cs.smetnoedelo.ru", "classinform.ru", "fgisrf.ru", "fgiscs.minstroyrf.ru",
+    "fixedassets.ru", "tz-lab.ru", "normacs.ru", "meganorm.ru", "fsnb2022.ru", "fsnb.ru",
+    "all-smety.ru", "smetaplus.ru", "defsmeta.com", "szbi.ru", "smeta.szbi.ru", "smetamarket.ru",
+    "snip-info.ru", "gosthelp.ru", "files.stroyinf.ru", "selcdn.ru", "kapremontkbr.ru", "fkr-moscow.ru",
     "focus.kontur.ru", "vbankcenter.ru", "zakupki.kontur.ru", "audit-it.ru",
     # Banks & Financial Brokers
     "sberbank.ru", "sber.ru", "vtb.ru", "alfabank.ru", "tbank.ru", "tinkoff.ru", "gazprombank.ru",

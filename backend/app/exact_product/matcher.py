@@ -590,7 +590,7 @@ async def parse_tz_structure(
     формулировки можно, выдумывать числа нельзя.
     Возвращает {"item_name","city","positions":[{"name","requirements","brand_hint","model_hint","manufacturer_hint","analogs"}]} или None.
     """
-    if not spec_text or len(spec_text.strip()) < 30:
+    if not spec_text or len(spec_text.strip()) < 3:
         return None
     from .product_brand_detector import extract_clean_spec_text
     spec_clean = extract_clean_spec_text(spec_text) or spec_text
@@ -2505,7 +2505,7 @@ async def detect_exact_products_characteristic_first(
     Возвращает (positions, docs) или None, если найти кандидатов не удалось
     (тогда вызывающий код использует резервную схему).
     """
-    if not spec_text or len(spec_text.strip()) < 30:
+    if not spec_text or len(spec_text.strip()) < 3:
         return None
 
     if evidence_data is None and full_context and len(str(full_context).strip()) >= 50:
@@ -2517,7 +2517,7 @@ async def detect_exact_products_characteristic_first(
 
     from .product_brand_detector import extract_clean_spec_text
     spec_text = extract_clean_spec_text(spec_text)
-    if not spec_text or len(spec_text.strip()) < 30:
+    if not spec_text or len(spec_text.strip()) < 3:
         return None
 
     if progress_callback:

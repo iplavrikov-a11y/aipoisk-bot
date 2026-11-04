@@ -41,8 +41,12 @@ def _blocks(text: str) -> list[list[tuple[int, list[str]]]]:
     blocks, current = [], []
     for line_no, line in enumerate(text.splitlines(), 1):
         stripped = line.strip()
-        if stripped.startswith("|") and stripped.endswith("|"):
-            current.append((line_no, [cell.strip() for cell in stripped[1:-1].split("|")]))
+        if (stripped.startswith("|") and stripped.endswith("|")) or (" | " in stripped):
+            if stripped.startswith("|") and stripped.endswith("|"):
+                raw_cells = stripped[1:-1].split("|")
+            else:
+                raw_cells = stripped.split("|")
+            current.append((line_no, [cell.strip() for cell in raw_cells]))
         elif current:
             blocks.append(current)
             current = []
@@ -56,12 +60,27 @@ def _table_rows(text: str, source_file: str) -> list[dict] | None:
     inventory: list[dict] = []
     details: list[dict] = []
     for table in tables:
+        hdr_idx = None
+        for index, (_, cells) in enumerate(table):
+            cols = _header_columns(cells)
+            if cols[0] is not None and (cols[1] is not None or cols[2] is not None):
+                hdr_idx = index
+                break
+
         first = next((index for index, (_, cells) in enumerate(table) if cells and _number(cells[0]) is not None), len(table))
-        if first == len(table):
+
+        if hdr_idx is not None:
+            name_col, unit_col, quantity_col, number_col = _header_columns(table[hdr_idx][1])
+            headers = table[hdr_idx][1]
+            start_row = hdr_idx + 1
+        elif first < len(table):
+            width = max(len(cells) for _, cells in table[:first]) if first else 0
+            headers = [" ".join(cells[column] for _, cells in table[:first] if column < len(cells)) for column in range(width)]
+            name_col, unit_col, quantity_col, number_col = _header_columns(headers)
+            start_row = first
+        else:
             continue
-        width = max(len(cells) for _, cells in table[:first]) if first else 0
-        headers = [" ".join(cells[column] for _, cells in table[:first] if column < len(cells)) for column in range(width)]
-        name_col, unit_col, quantity_col, number_col = _header_columns(headers)
+
         if name_col is None:
             continue
         authoritative = unit_col is not None and quantity_col is not None
@@ -76,13 +95,18 @@ def _table_rows(text: str, source_file: str) -> list[dict] | None:
                 (inventory if authoritative else details).append(current)
             current = None
 
-        for line_no, cells in table[first:]:
+        for line_no, cells in table[start_row:]:
             if len(cells) < 2 or all(_number(cell) is not None for cell in cells):
                 continue  # Column-number legend, not a product.
             if _number(cells[0]) is None and (_header_columns(cells)[0] is not None or cells[0].lower() in {"п/п", "№", "№ п/п"}):
                 continue
-            number = _number(cells[number_col if number_col is not None else 0])
-            if number is not None:
+            num_val = cells[number_col] if number_col is not None and number_col < len(cells) else ""
+            number = _number(num_val) if number_col is not None else None
+            if number is None and number_col is None and len(cells) > name_col and cells[name_col].strip():
+                flush()
+                current = {"position_no": len(inventory) + 1, "name": "", "unit": "", "quantity": "", "requirements": [],
+                           "source_file": source_file, "source_row": line_no, "source_excerpt": ""}
+            elif number is not None:
                 flush()
                 current = {"position_no": number, "name": "", "unit": "", "quantity": "", "requirements": [],
                            "source_file": source_file, "source_row": line_no, "source_excerpt": ""}

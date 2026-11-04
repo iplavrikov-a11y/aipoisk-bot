@@ -38,7 +38,12 @@ BLOCKED_DOMAINS = {
     "rts-tender.ru", "etp-ets.ru", "gz.lot-online.ru", "tektorg.ru", "b2b-center.ru",
     "fabrikant.ru", "synapsenet.ru", "bicotender.ru", "tenderplan.ru", "clearspending.ru",
     "goszakupki.ru", "tenderguru.ru", "rostender.info", "trade.su", "zakupki.kontur.ru",
-    "seldon-pro.ru", "seldon.ru", "zakazrf.ru", "lot-online.ru", "etp-gpb.ru"
+    "seldon-pro.ru", "seldon.ru", "zakazrf.ru", "lot-online.ru", "etp-gpb.ru", "etp-region.ru", "etpsp.ru",
+    # Сметно-нормативные базы, классификаторы, реестры и файловые хранилища тендеров
+    "smetnoedelo.ru", "cs.smetnoedelo.ru", "classinform.ru", "fgisrf.ru", "fgiscs.minstroyrf.ru",
+    "fixedassets.ru", "tz-lab.ru", "normacs.ru", "meganorm.ru", "fsnb2022.ru", "fsnb.ru",
+    "all-smety.ru", "smetaplus.ru", "defsmeta.com", "szbi.ru", "smeta.szbi.ru", "smetamarket.ru",
+    "snip-info.ru", "gosthelp.ru", "files.stroyinf.ru", "selcdn.ru", "kapremontkbr.ru", "fkr-moscow.ru"
 }
 
 
@@ -94,13 +99,18 @@ REFERENCE_PRICE_PATH_PATTERNS = [
     re.compile(r'/(?:procedure|procedures|lot|lots|notice|notices)/\d+(?:/|$)', re.I),
     re.compile(r'/marketplace-b2b/offer/ktru-', re.I),
     re.compile(r'/ktru-okpd2/', re.I),
+    re.compile(r'/(?:fsscm|fsbcm|ksr|ksr2|classificators|reestr|smeta)/', re.I),
+    re.compile(r'/file_download\.jsp', re.I),
+    re.compile(r'/(?:wp-content/uploads|static-pro/order|fx/gpms)/', re.I),
 ]
 
 
 PUBLIC_INSTITUTION_MARKERS = (
     "гбу", "гбуз", "муп", "гуп", "мку", "фгбу", "фку", "гомвд", "омвд",
     "администрация", "больница", "црб", "поликлиника", "школа", "детский сад",
-    "управление", "департамент", "министерство", "комитет", "прокуратура", "суд"
+    "управление", "департамент", "министерство", "комитет", "прокуратура", "суд",
+    "буз", "буз во", "бузу", "бу", "гау", "гауз", "мау", "нф", "фонд", "фкр",
+    "колледж", "техникум", "университет", "институт"
 )
 
 
@@ -242,6 +252,10 @@ def is_valid_domain(
         for bd in BLOCKED_DOMAINS:
             if domain == bd or domain.endswith("." + bd):
                 return False
+
+        # Государственные ведомства, региональные министерства и муниципалитеты не являются коммерческими продавцами
+        if re.search(r'\bgov\d*\.ru$', domain) or domain.endswith(".mil.ru") or re.search(r'^(?:minfin|szvo|mchs|adm)\w*\.ru$', domain):
+            return False
 
         # Фильтрация маркетплейсов
         if filter_marketplaces:

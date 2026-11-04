@@ -113,6 +113,26 @@ async def prepare_exact_product_positions(
                 row.setdefault("position_no", len(rows) + 1)
                 row["source_file"] = source_file
                 rows.append(row)
+    if not rows and text_sources:
+        # Универсальный zero-shot фоллбек (Правило 14): для коротких запросов (напр. "Окна пластиковые ПВХ")
+        # или неструктурированного текста выделяем позиции напрямую из строк без жестких условий
+        for source_file, source_text in text_sources:
+            lines = [l.strip() for l in source_text.splitlines() if l.strip()]
+            valid_lines = [
+                l for l in lines
+                if len(l) >= 2 and not l.startswith(("===", "---", "###"))
+                and not any(l.lower().startswith(h) for h in ("техническое задание", "спецификация", "перечень", "список закупок"))
+            ]
+            if not valid_lines and lines:
+                valid_lines = [lines[0]]
+            for line in valid_lines:
+                rows.append({
+                    "position_no": len(rows) + 1,
+                    "name": line,
+                    "requirements": [{"param_name": "Наименование из спецификации", "tz_requirement": line}],
+                    "source_file": source_file,
+                    "source_excerpt": line,
+                })
     return rows
 
 
