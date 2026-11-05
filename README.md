@@ -1,12 +1,19 @@
 # TenderLex Bot
 
-Актуальный выпуск 5 ноября 2026: [защита биллинга при повторных запусках (Re-Reserve on Retry) и аудит списаний](docs/PROJECT_STATUS.md), [оптимизация Yandex Search API: переход на асинхронный тариф searchAsync (снижение затрат в 16 раз)](docs/PROJECT_STATUS.md).
+Актуальный выпуск 5 ноября 2026: [клиент-центричные диалоги в админке, единый виджет поддержки в кабинете и минималистичные карточки задач](docs/PROJECT_STATUS.md), [двусторонняя переписка клиент–эксперт и досписание баланса](docs/PROJECT_STATUS.md), [оптимизация Yandex Search API: переход на асинхронный тариф searchAsync (снижение затрат в 16 раз)](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 5 ноября: все бэкенд-тесты (1 404 теста, 100% pass); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`).
+Серверный прогон выпуска 5 ноября: все бэкенд-тесты (1 410 тестов, 100% pass); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Client-Centric Unified Dialogs, Cabinet Support Widget & Collapsed Task Cards (2026-11-05):
+  - Client-Centric Dialogues in Admin (`frontend/src/DialogsView.tsx`): transitioned conversation grouping from per-task fragmentation to "1 client = 1 conversation thread" with aggregated task badges (`[#1036] [#1037]`). Cross-task chronological timeline displays contextual task badges (`📌 Задача #1036`) with quick links, and admin reply bar includes context selector dropdown (`[Общий диалог]` or `[Задача #1036]`).
+  - Unified Floating Support Widget (`site/src/components/chat-widget.tsx`): eliminated duplicate chat silos. For authenticated users, the bottom-right support widget seamlessly syncs with `job_chat_messages` in database, displays unread counters, and supports task context events (`open_tenderlex_chat`) with active task banners and file attachments.
+  - Native Collapsed Task Card UI (`site/src/app/cabinet/cabinet-client.tsx`): replaced bulky expanded feedback box with minimal, collapsed-by-default status strip. Displays last message preview, pulsing "Новый ответ" badge, and 1-click action buttons (`💬 Открыть в чате` and `История (N) ▼`).
+  - Backend Endpoints (`backend/app/main.py`): added customer endpoints `GET /api/customer/chat/messages`, `POST /api/customer/chat`, and admin endpoints `GET /api/admin/clients/{client_id}/chat`, `POST /api/admin/clients/{client_id}/chat` with automatic phone extraction and Telegram notifications.
+  - Verified with new integration tests in `backend/tests/test_job_chat.py` (100% pass) and live zero-downtime deploy.
 
 - Billing Resilience, Re-Reserve on Retry & Deductions Audit (2026-11-05):
   - Two-Phase Re-Reservation Protocol (`backend/app/billing.py`): updated `_reserve_job_units_locked` to check if a job lacks an active reservation (`_job_reserved_remaining <= 0`) and has not yet been charged (`not _job_has_operation(OP_CHARGE)`). When retrying a failed task whose reservation was previously returned to customer balance (`OP_RELEASE`), the prior release row is purged and `OP_RESERVE` is reactivated with updated timestamp and note, strictly honoring database constraint `uq_billing_transaction_job_kind_operation` while re-locking client funds.
