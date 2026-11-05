@@ -261,3 +261,4 @@ def notify_job_infrastructure_failure(
     key = f"job_infra_fail_{job_number}"
     record_incident("job_failure", f"Задача #{job_number} ({client_name}) упала", error_text[:200], level="warning")
     dispatch_telegram_admin_alert(text, deduplicate_key=key, throttle_seconds=3600)
+

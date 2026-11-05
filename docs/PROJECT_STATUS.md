@@ -3053,6 +3053,11 @@ risks are narrower:
   - **Customer Job Failure Alerts**: Alerts dispatched when customer tasks fail due to unhandled exceptions or external service outages.
   - **Intelligent Deduplication & Throttling**: 15-minute throttle for identical API errors and 4-hour throttle for low balance alerts to prevent notification flooding.
   - **Graceful Search Fallbacks**: Automatic fast fallback from `searchAsync` to synchronous search when async quota/rate limits are hit, avoiding delays while preserving real-time supplier discovery.
+  - **Yandex Search API Tariff Realignment (0.488 ₽ / req)**:
+    - Fixed legacy default unit cost setting from `0.04 ₽` (40 ₽ / 1,000 requests) to actual Yandex Cloud Search API rate of `0.488 ₽` (488 ₽ / 1,000 requests with VAT).
+    - Synchronized across database `system_settings`, backend config, models, schemas, and all search pipelines (`supplier_search`, `price_monitoring`, `exact_product`, `outreach_search`).
+    - Recalculated cost display in admin panel for recent jobs, providing 100% accurate financial reconciliation between admin statistics and Yandex Cloud billing accounts.
+
 
 
 
