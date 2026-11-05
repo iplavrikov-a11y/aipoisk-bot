@@ -4515,7 +4515,22 @@ async def _search_with_yandex(
                 "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
             }
             requests_count += 1
-            # Primary: Fast synchronous endpoint (returns rawData XML immediately <1s)
+            # Primary: Cost-effective asynchronous search (16x cheaper: 30.50 ₽ vs 488 ₽ per 1,000 requests)
+            try:
+                response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
+                if response.status_code == 429:
+                    await asyncio.sleep(2.0)
+                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
+                if response.status_code == 200:
+                    operation_id = str(response.json().get("id") or "")
+                    if operation_id:
+                        raw_data = await _poll_yandex_operation(client, operation_id)
+                        if raw_data:
+                            return _parse_yandex_xml(raw_data, query=query)
+            except Exception as async_exc:
+                logger.debug("Yandex async search call failed, trying sync fallback: %s", async_exc)
+
+            # Fallback: Synchronous endpoint if async failed or returned empty
             try:
                 response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
                 if response.status_code == 429:
@@ -4527,25 +4542,9 @@ async def _search_with_yandex(
                     if raw_data:
                         return _parse_yandex_xml(raw_data, query=query)
             except Exception as sync_exc:
-                logger.debug("Yandex sync search call failed, trying async fallback: %s", sync_exc)
-
-            # Fallback: Async search operation
-            try:
-                response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-                if response.status_code == 429:
-                    await asyncio.sleep(2.0)
-                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-                if response.status_code != 200:
-                    logger.warning("Yandex search POST failed: status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
-                    return []
-                operation_id = str(response.json().get("id") or "")
-                if not operation_id:
-                    return []
-                raw_data = await _poll_yandex_operation(client, operation_id)
-                return _parse_yandex_xml(raw_data, query=query) if raw_data else []
-            except Exception as async_exc:
-                logger.warning("Yandex async search call failed for query=%s: %s", query[:80], async_exc)
+                logger.debug("Yandex sync search call failed: %s", sync_exc)
                 return []
+            return []
 
     headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
     candidates: list[Candidate] = []

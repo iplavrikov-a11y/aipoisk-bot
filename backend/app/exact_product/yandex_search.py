@@ -175,33 +175,37 @@ class YandexSearchEngine:
                 }
 
                 page_results: list[YandexSearchResult] = []
-                # Fast path: Synchronous endpoint (<1s)
+                # Primary path: Asynchronous search (16x cheaper: 30.50 ₽ vs 488 ₽ per 1,000 requests)
                 try:
                     record_search_request()
-                    response = await client.post(self.V2_API_URL, json=body, headers=headers)
-                    if response.status_code == 429:
+                    async_resp = await client.post(self.V2_ASYNC_API_URL, json=body, headers=headers)
+                    if async_resp.status_code == 429:
                         await asyncio.sleep(2.0)
                         record_search_request()
-                        response = await client.post(self.V2_API_URL, json=body, headers=headers)
-                    if response.status_code == 200:
-                        data = response.json()
-                        raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
-                        if raw_data:
-                            page_results = self._parse_v2_xml(raw_data)
-                except Exception as sync_exc:
-                    logger.debug("exact_product yandex sync search exception: %s", sync_exc)
+                        async_resp = await client.post(self.V2_ASYNC_API_URL, json=body, headers=headers)
+                    if async_resp.status_code == 200:
+                        op_id = async_resp.json().get("id")
+                        if op_id:
+                            page_results = await self._wait_for_v2_operation(op_id, headers)
+                except Exception as async_exc:
+                    logger.debug("exact_product yandex async search failed, fallback to sync: %s", async_exc)
 
-                # Slow path fallback: Async operation polling
+                # Fallback path: Synchronous endpoint if async failed or returned empty
                 if not page_results:
                     try:
                         record_search_request()
-                        async_resp = await client.post(self.V2_ASYNC_API_URL, json=body, headers=headers)
-                        if async_resp.status_code == 200:
-                            op_id = async_resp.json().get("id")
-                            if op_id:
-                                page_results = await self._wait_for_v2_operation(op_id, headers)
-                    except Exception as async_exc:
-                        logger.warning("exact_product yandex async fallback error: %s", async_exc)
+                        response = await client.post(self.V2_API_URL, json=body, headers=headers)
+                        if response.status_code == 429:
+                            await asyncio.sleep(2.0)
+                            record_search_request()
+                            response = await client.post(self.V2_API_URL, json=body, headers=headers)
+                        if response.status_code == 200:
+                            data = response.json()
+                            raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
+                            if raw_data:
+                                page_results = self._parse_v2_xml(raw_data)
+                    except Exception as sync_exc:
+                        logger.debug("exact_product yandex sync search exception: %s", sync_exc)
 
                 if not page_results:
                     break
@@ -226,9 +230,9 @@ class YandexSearchEngine:
         """Wait for v2 async operation with rate-limit protection and exponential backoff."""
         client = await self._get_client()
 
-        # Start at 0.7s to avoid burning rate limits on operations that take ~1-2s anyway
+        # Start at 0.4s to return promptly when operation completes fast
         poll_delays = [
-            0.7, 0.9, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0,
+            0.4, 0.7, 1.0, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0,
             2.0, 2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 2.5, 2.5, 3.0,
             3.0, 3.0, 3.0, 3.0
         ]

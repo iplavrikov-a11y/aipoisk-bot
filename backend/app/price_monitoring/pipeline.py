@@ -542,7 +542,10 @@ async def process_single_item(
     geo_radius_km: Optional[int] = None,
     source_position: Optional[dict[str, Any]] = None,
     geo_scope: str = "ru",
+    domain_inn_cache: Optional[dict[str, dict[str, Any]]] = None,
 ) -> ItemPriceResult:
+    if domain_inn_cache is None:
+        domain_inn_cache = {}
     row_idx, raw_name, unit = item_tuple
     clean = clean_nomenclature_name(raw_name)
     item_res = ItemPriceResult(
@@ -775,30 +778,78 @@ async def process_single_item(
                                 quote.contacts = kdata["contacts"]
                             break
 
-                    # Если ИНН поставщика всё ещё не найден, выполняем быстрый целевой добор по домену через поиск
-                    if not quote.inn and isinstance(engine, YandexSearchEngine):
-                        try:
-                            inn_query = f'"{domain}" ИНН'
-                            async with search_semaphore:
-                                inn_res = await engine.search(inn_query, max_results=3, enrich_query=False, filter_marketplaces=False)
-                            for ir in inn_res:
-                                text_c = f"{ir.title} {ir.snippet}"
-                                m_inns = re.findall(r'(?:ИНН|инн)[\s:№#«"\'\xa0]{0,10}(\d{10}|\d{12})\b', text_c)
-                                if m_inns:
-                                    quote.inn = m_inns[0]
-                                    from ..dadata_client import enrich_company_by_inn
-                                    d_info = await enrich_company_by_inn(quote.inn)
-                                    if d_info:
-                                        if d_info.get("company_name"):
-                                            quote.company_name = d_info["company_name"]
-                                        if not quote.kpp and d_info.get("kpp"):
-                                            quote.kpp = d_info["kpp"]
-                                        city_or_addr = d_info.get("city") or d_info.get("legal_address")
-                                        if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
-                                            quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
-                                    break
-                        except Exception as e_inn:
-                            logger.debug("Fallback domain INN search failed for %s: %s", domain, e_inn)
+                    # Если ИНН поставщика всё ещё не найден, проверяем кэш доменов или обогащаем через DaData/поиск
+                    if not quote.inn and domain:
+                        cached_entry = domain_inn_cache.get(domain)
+                        if cached_entry is not None:
+                            if cached_entry.get("inn"):
+                                quote.inn = cached_entry["inn"]
+                                if cached_entry.get("company_name"):
+                                    quote.company_name = cached_entry["company_name"]
+                                if cached_entry.get("kpp"):
+                                    quote.kpp = cached_entry["kpp"]
+                                if cached_entry.get("contacts") and not quote.contacts:
+                                    quote.contacts = cached_entry["contacts"]
+                        else:
+                            # 1. Сначала пробуем бесплатный DaData по сайту (0 платных запросов к Яндексу)
+                            resolved = False
+                            try:
+                                from ..dadata_client import enrich_company_by_inn_or_query
+                                d_site = await enrich_company_by_inn_or_query(domain=domain)
+                                if d_site and d_site.get("inn"):
+                                    quote.inn = d_site["inn"]
+                                    if d_site.get("company_name"):
+                                        quote.company_name = d_site["company_name"]
+                                    if d_site.get("kpp"):
+                                        quote.kpp = d_site["kpp"]
+                                    city_or_addr = d_site.get("city") or d_site.get("legal_address")
+                                    if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                                        quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                                    domain_inn_cache[domain] = {
+                                        "inn": quote.inn,
+                                        "company_name": quote.company_name,
+                                        "kpp": quote.kpp,
+                                        "contacts": quote.contacts,
+                                    }
+                                    resolved = True
+                            except Exception as d_exc:
+                                logger.debug("DaData domain lookup failed for %s: %s", domain, d_exc)
+
+                            # 2. Если DaData не нашел, выполняем поиск в Яндексе ровно ОДИН раз на уникальный домен
+                            if not resolved and isinstance(engine, YandexSearchEngine):
+                                try:
+                                    inn_query = f'"{domain}" ИНН'
+                                    async with search_semaphore:
+                                        inn_res = await engine.search(inn_query, max_results=3, enrich_query=False, filter_marketplaces=False)
+                                    found_inn = False
+                                    for ir in inn_res:
+                                        text_c = f"{ir.title} {ir.snippet}"
+                                        m_inns = re.findall(r'(?:ИНН|инн)[\s:№#«"\'\xa0]{0,10}(\d{10}|\d{12})\b', text_c)
+                                        if m_inns:
+                                            quote.inn = m_inns[0]
+                                            from ..dadata_client import enrich_company_by_inn
+                                            d_info = await enrich_company_by_inn(quote.inn)
+                                            if d_info:
+                                                if d_info.get("company_name"):
+                                                    quote.company_name = d_info["company_name"]
+                                                if not quote.kpp and d_info.get("kpp"):
+                                                    quote.kpp = d_info["kpp"]
+                                                city_or_addr = d_info.get("city") or d_info.get("legal_address")
+                                                if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                                                    quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                                            domain_inn_cache[domain] = {
+                                                "inn": quote.inn,
+                                                "company_name": quote.company_name,
+                                                "kpp": quote.kpp,
+                                                "contacts": quote.contacts,
+                                            }
+                                            found_inn = True
+                                            break
+                                    if not found_inn:
+                                        domain_inn_cache[domain] = {}
+                                except Exception as e_inn:
+                                    logger.debug("Fallback domain INN search failed for %s: %s", domain, e_inn)
+                                    domain_inn_cache[domain] = {}
 
                     # Если ИНН найден, но официальное наименование компании не заполнено или равно домену, обогащаем через DaData
                     clean_cname = (quote.company_name or "").lower().replace("www.", "").strip()
@@ -835,8 +886,9 @@ async def process_single_item(
 
     # ВОЛНА 2 (АДАПТИВНЫЙ ПОИСК ДЛЯ ДОСТИЖЕНИЯ ЦЕЛЕВОГО КОЛИЧЕСТВА ПОСТАВЩИКОВ):
     consensus_count = _get_consensus_count()
+    target_cutoff = min(target_suppliers, max(min_target_suppliers, 3))
     wave2_urls: list[str] = []
-    if consensus_count < target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
+    if consensus_count < target_cutoff and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
         fallback_queries: list[str] = []
         if settings.has_active_ai_provider:
             fallback_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=2, city=city)
@@ -869,7 +921,7 @@ async def process_single_item(
 
     # ВОЛНА 3 (СВЕРХШИРОКИЙ ДОБОР ДЛЯ ДОСТИЖЕНИЯ ЦЕЛЕВОГО КОЛИЧЕСТВА ПОСТАВЩИКОВ):
     should_run_wave3 = (
-        consensus_count < target_suppliers
+        consensus_count < target_cutoff
         and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM
     )
     wave3_urls: list[str] = []
@@ -1098,6 +1150,7 @@ async def run_price_monitoring_pipeline(
             )
 
     proxy_url = os.getenv("PRICE_MONITORING_PROXY") or os.getenv("HTTPS_PROXY")
+    domain_inn_cache: dict[str, dict[str, Any]] = {}
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, proxy=proxy_url) as http_client:
         batch_size = max_parallel_items
         for i in range(0, total, batch_size):
@@ -1113,7 +1166,7 @@ async def run_price_monitoring_pipeline(
                         http_client,
                         search_sem,
                         max_suppliers=max_suppliers,
-                        min_target_suppliers=max_suppliers,
+                        min_target_suppliers=min(3, max_suppliers),
                         cluster_ratio=cluster_ratio,
                         filter_marketplaces=filter_marketplaces,
                         filter_foreign=filter_foreign,
@@ -1121,6 +1174,7 @@ async def run_price_monitoring_pipeline(
                         city=delivery_city,
                         geo_radius_km=geo_radius_km,
                         geo_scope=geo_scope,
+                        domain_inn_cache=domain_inn_cache,
                         **({"source_position": source_positions[item[0] - 1]} if source_positions is not None else {}),
                     )
                     for item in chunk_to_process

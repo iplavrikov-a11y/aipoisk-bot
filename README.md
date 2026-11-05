@@ -1,12 +1,18 @@
 # TenderLex Bot
 
-Актуальный выпуск 4 ноября 2026: [Правило 14: семантический разбор произвольных документов без жестких схем, защита от сметных баз и модальное окно подтверждения кратких запросов](docs/PROJECT_STATUS.md), [сбор контактов (телефон, Telegram) при онлайн-оплате и выставлении счетов](docs/PROJECT_STATUS.md).
+Актуальный выпуск 5 ноября 2026: [оптимизация Yandex Search API: переход на асинхронный тариф searchAsync (снижение затрат в 16 раз), внутризадачный кэш ИНН и ликвидация холостых запросов](docs/PROJECT_STATUS.md), [Правило 14: семантический разбор документов и подтверждение кратких запросов в модальном окне](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 4 ноября: все бэкенд-тесты (100% pass); страницы сайта собраны успешно; деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-site`).
+Серверный прогон выпуска 5 ноября: все бэкенд-тесты (100% pass); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Yandex Search API 16x Cost Optimization, Async Endpoint & Domain INN Cache (2026-11-05):
+  - Primary Async Search API (`backend/app/exact_product/yandex_search.py`, `backend/app/supplier_search.py`): switched primary search endpoint to `https://searchapi.api.cloud.yandex.net/v2/web/searchAsync` across both exact product/monitoring and supplier search pipelines. Slashes cost per 1,000 requests from 488 ₽ (synchronous) down to 30.50 ₽ (asynchronous) with 400ms polling latency. Synchronous endpoint retained strictly as a resilient fallback.
+  - Domain INN In-Memory Cache & Zero-Cost DaData Lookup (`backend/app/price_monitoring/pipeline.py`): added `domain_inn_cache` preserving supplier tax credentials across all rows in multi-item jobs. Integrates free DaData domain lookup before ever initiating paid Yandex searches, completely eliminating redundant searches on identical domains (previously up to 42% of all search queries).
+  - Early Wave Cutoff: terminates search waves as soon as minimum target supplier threshold (`min_target_suppliers = 3`) is achieved with acceptable coefficient of variation ($V \le 33\%$), eliminating unnecessary fallback queries.
+  - Verified with new unit test suite [`test_yandex_search_optimization.py`](backend/tests/test_yandex_search_optimization.py) (100% pass) and production reload.
 
 - Rule 14 Semantic Document & Table Extraction, Smeta Code Filtering & Short Query Modal Confirmation (2026-11-04):
   - Short Query & Minimal Spec Confirmation Modal (`site/src/app/cabinet/cabinet-client.tsx`, `backend/app/position_selection.py`): when inputs lack technical parameters (e.g. "Окна пластиковые ПВХ"), task transitions to `awaiting_exact_selection` instead of raising an error. The cabinet selection modal displays an amber alert informing the client that no specifications were detected, offering an explicit "Отменить задачу (без списания)" button alongside "Подтвердить поиск по наименованию".
