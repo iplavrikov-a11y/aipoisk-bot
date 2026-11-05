@@ -149,7 +149,13 @@
   - Expanded five commercial landing pages (776–977 words) and added service links to all 58 knowledge articles. GSC baseline: 995 impressions / 20 clicks / avg position 20.96 (28 days).
   - Verified: 32/32 Home v3 checks, 91 pages × 2 widths public gate, navigation gate, live deploy, IndexNow 12 URLs. Yandex Webmaster API is blocked by VPS network (no IPv6); Wordstat API is unavailable.
 
+- Infrastructure & 152-FZ Compliance (2026-11-06):
+  - Database localized to PostgreSQL 14 in Moscow, Russia (`79.133.182.215:5432`) in strict adherence to 152-FZ Art. 18 Part 5. Connected to application runtime via systemd SSH tunnel `tenderlex-pg-tunnel.service` (`127.0.0.1:5433`).
+  - Moscow Gateway Nginx with Let's Encrypt SSL (`tenderlex.ru`, `admin.tenderlex.ru`), keepalive connection pool (`keepalive 32`), and automatic retry upstream forwarding.
+  - Eliminated 504 Gateway Timeout bottleneck in customer chat route (from 11.7s down to 0.4s) and N+1 queries in customer jobs and session APIs.
+  - Verified with 1,410 backend tests passing (100%), full live deploy via `./scripts/deploy_tenderlex_live.sh`. Full application migration to Moscow deferred for future capacity planning; current Lite server hosts PostgreSQL & mail comfortably.
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
+- Russian database & gateway server: `79.133.182.215` (`AdminVPS OOO`, Moscow, Russia).
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
 - Admin Jobs Performance Acceleration, Eager Loading & Two-Stage Polling (2026-10-19):
   - Backend Query & N+1 Elimination (`backend/app/main.py`): added `selectinload(Job.files, Job.sources)` and pre-fetched all admin reruns in a single batch query (`child_reruns_map`), cutting 1800+ redundant database roundtrips down to 2 batch queries.
