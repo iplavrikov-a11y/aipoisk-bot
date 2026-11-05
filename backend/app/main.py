@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import hashlib
+from html import escape as html_escape
 import json
 import logging
 import os
@@ -1189,7 +1190,7 @@ def resolve_chat_job_id(job: Job) -> str:
     return job.id
 
 
-def chat_message_to_dict(msg: JobChatMessage) -> dict:
+def chat_message_to_dict(msg: JobChatMessage, job_map: dict[str, Job] | None = None) -> dict:
     attachments = []
     if msg.attachments_json:
         try:
@@ -1197,19 +1198,46 @@ def chat_message_to_dict(msg: JobChatMessage) -> dict:
             if isinstance(raw, list):
                 for idx, a in enumerate(raw):
                     if isinstance(a, dict):
+                        url = (
+                            f"/api/jobs/{msg.job_id}/chat/{msg.id}/attachment/{idx}"
+                            if msg.job_id
+                            else f"/api/admin/chat/{msg.id}/attachment/{idx}"
+                        )
+                        customer_url = (
+                            f"/api/customer/jobs/{msg.job_id}/chat/{msg.id}/attachment/{idx}"
+                            if msg.job_id
+                            else f"/api/customer/chat/{msg.id}/attachment/{idx}"
+                        )
                         attachments.append({
                             "index": idx,
                             "name": a.get("name") or Path(a.get("path", "")).name or "file",
                             "label": a.get("label") or a.get("name") or "Файл",
                             "size": a.get("size") or 0,
-                            "url": f"/api/jobs/{msg.job_id}/chat/{msg.id}/attachment/{idx}",
-                            "customer_url": f"/api/customer/jobs/{msg.job_id}/chat/{msg.id}/attachment/{idx}",
+                            "url": url,
+                            "customer_url": customer_url,
                         })
         except Exception:
             attachments = []
+
+    job_info = None
+    if job_map and msg.job_id and msg.job_id in job_map:
+        j = job_map[msg.job_id]
+        job_info = {
+            "job_id": j.id,
+            "job_number": getattr(j, "job_number", None),
+            "job_title": human_job_title(j),
+            "job_mode": j.mode,
+            "job_mode_label": mode_label(j.mode),
+            "job_status": j.status,
+        }
+
     return {
         "id": msg.id,
         "job_id": msg.job_id,
+        "job_info": job_info,
+        "job_number": job_info["job_number"] if job_info else None,
+        "job_title": job_info["job_title"] if job_info else None,
+        "job_mode_label": job_info["job_mode_label"] if job_info else None,
         "client_id": msg.client_id,
         "sender_role": msg.sender_role,
         "message": msg.message,
@@ -1870,6 +1898,225 @@ def customer_job_chat_attachment_route(
             status_code=403,
             detail="Файлы отчёта будут доступны для скачивания после согласования и оплаты на карточке задачи.",
         )
+
+    try:
+        raw = json.loads(msg.attachments_json or "[]")
+        if not isinstance(raw, list) or att_idx < 0 or att_idx >= len(raw):
+            raise HTTPException(status_code=404, detail="Вложение не найдено.")
+        att = raw[att_idx]
+        p = Path(str(att.get("path") or ""))
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail="Файл вложения не найден на сервере.")
+        return FileResponse(p, filename=att.get("name") or p.name)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=404, detail="Не удалось прочитать вложение.")
+
+
+@app.get("/api/customer/chat/messages")
+def customer_chat_messages_route(
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    client_id = context.user.client_id
+    client = context.user.client or db.get(Client, client_id)
+    if not client:
+        return {"authenticated": True, "messages": [], "jobs": [], "unread_admin_count": 0}
+
+    for j in client.jobs:
+        if not getattr(j, "is_admin_rerun", False):
+            get_job_chat_messages(db, j, auto_seed=True)
+
+    msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == client_id)
+        .order_by(JobChatMessage.created_at.asc())
+        .all()
+    )
+
+    job_map = {j.id: j for j in client.jobs}
+    client_jobs = []
+    for j in client.jobs:
+        if not getattr(j, "is_admin_rerun", False):
+            client_jobs.append({
+                "id": j.id,
+                "job_number": getattr(j, "job_number", None),
+                "title": human_job_title(j),
+                "mode": j.mode,
+                "mode_label": mode_label(j.mode),
+                "status": j.status,
+            })
+    client_jobs.sort(key=lambda x: x.get("job_number") or 0, reverse=True)
+
+    unread_count = sum(1 for m in msgs if m.sender_role == "admin" and not m.is_read_by_client)
+
+    return {
+        "authenticated": True,
+        "client": {
+            "id": client.id,
+            "name": client.name or context.user.name or "",
+            "email": context.user.email or "",
+            "phone": getattr(client, "phone", "") or getattr(context.user, "phone", "") or "",
+        },
+        "messages": [chat_message_to_dict(m, job_map=job_map) for m in msgs],
+        "jobs": client_jobs,
+        "unread_admin_count": unread_count,
+    }
+
+
+@app.post("/api/customer/chat")
+async def customer_chat_post_route(
+    message: str = Form(default=""),
+    job_id: str = Form(default=""),
+    files: list[UploadFile] = File(default=[]),
+    file: UploadFile | None = File(default=None),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    client_id = context.user.client_id
+    client = context.user.client or db.get(Client, client_id)
+    clean_message = str(message or "").strip()
+    clean_job_id = str(job_id or "").strip()
+
+    all_uploads: list[UploadFile] = []
+    if files and isinstance(files, (list, tuple)):
+        all_uploads.extend([f for f in files if isinstance(f, UploadFile)])
+    if file and isinstance(file, UploadFile) and file not in all_uploads:
+        all_uploads.append(file)
+
+    if not clean_message and not all_uploads:
+        raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
+
+    target_job = None
+    root_job_id = ""
+    if clean_job_id:
+        candidate = db.get(Job, clean_job_id)
+        if candidate and candidate.client_id == client_id:
+            target_job = candidate
+            root_job_id = resolve_chat_job_id(target_job)
+            target_dir = job_dir(root_job_id) / "chat"
+        else:
+            clean_job_id = ""
+
+    if not clean_job_id:
+        target_dir = Path(config.storage_path) / "clients" / client_id / "chat"
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    attachments: list[dict] = []
+    for uf in all_uploads:
+        if not uf.filename:
+            continue
+        content = await uf.read()
+        if content:
+            safe_name = Path(uf.filename).name
+            dest = target_dir / f"client_{int(time.time())}_{safe_name}"
+            dest.write_bytes(content)
+            attachments.append({
+                "path": str(dest),
+                "name": safe_name,
+                "label": safe_name,
+                "size": len(content),
+            })
+
+    phone_match = re.search(r'(?:\+?7|8)[\s\-\(]*\d{3}[\s\-\)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}', clean_message)
+    if phone_match:
+        extracted_phone = phone_match.group(0).strip()
+        if not getattr(context.user, "phone", ""):
+            context.user.phone = extracted_phone
+        if client and not getattr(client, "phone", ""):
+            client.phone = extracted_phone
+
+    new_msg = JobChatMessage(
+        id=new_id(),
+        job_id=root_job_id or clean_job_id or "",
+        client_id=client_id,
+        sender_role="client",
+        message=clean_message,
+        attachments_json=json.dumps(attachments, ensure_ascii=False),
+        is_read_by_client=True,
+        is_read_by_admin=False,
+        created_at=now_utc(),
+    )
+    db.add(new_msg)
+
+    # Mark prior admin messages as read by client
+    db.query(JobChatMessage).filter(
+        JobChatMessage.client_id == client_id,
+        JobChatMessage.sender_role == "admin",
+        JobChatMessage.is_read_by_client == False,
+    ).update({"is_read_by_client": True})
+
+    if target_job:
+        target_job.updated_at = now_utc()
+    db.commit()
+
+    # Telegram notification to admin
+    try:
+        from .admin_alerts import send_telegram_admin_alert
+        client_label = client.name if (client and client.name) else (context.user.email or "Клиент")
+        job_label = f" по задаче #{target_job.job_number or target_job.id[:6]}" if target_job else ""
+        tg_text = (
+            f"📩 <b>Новое сообщение от клиента{job_label}!</b>\n\n"
+            f"👤 <b>Клиент:</b> {html_escape(client_label)}\n"
+            f"✉️ <b>Email:</b> {html_escape(context.user.email or '')}\n"
+        )
+        phone_val = (getattr(client, "phone", "") if client else "") or getattr(context.user, "phone", "")
+        if phone_val:
+            tg_text += f"📞 <b>Телефон:</b> {html_escape(phone_val)}\n"
+        tg_text += f"💬 <b>Сообщение:</b> {html_escape(clean_message or '📎 Прикреплен файл')}\n\n"
+        tg_text += "👉 Ответить можно в панели администратора в разделе «Диалоги»."
+        await send_telegram_admin_alert(tg_text, deduplicate_key=f"chat_{new_msg.id}", throttle_seconds=0)
+    except Exception as exc:
+        logger.warning("Error notifying admin about customer chat message: %s", exc)
+
+    job_map = {j.id: j for j in client.jobs} if client else {}
+    msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == client_id)
+        .order_by(JobChatMessage.created_at.asc())
+        .all()
+    )
+    return {"ok": True, "messages": [chat_message_to_dict(m, job_map=job_map) for m in msgs]}
+
+
+@app.post("/api/customer/chat/read")
+def customer_chat_mark_read_route(
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    client_id = context.user.client_id
+    db.query(JobChatMessage).filter(
+        JobChatMessage.client_id == client_id,
+        JobChatMessage.sender_role == "admin",
+        JobChatMessage.is_read_by_client == False,
+    ).update({"is_read_by_client": True})
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/customer/chat/{message_id}/attachment/{att_idx}")
+def customer_chat_attachment_route(
+    message_id: str,
+    att_idx: int,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+):
+    client_id = context.user.client_id
+    msg = db.get(JobChatMessage, message_id)
+    if not msg or msg.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Сообщение не найдено.")
+
+    if msg.job_id:
+        job = db.get(Job, msg.job_id)
+        if job and msg.sender_role == "admin" and (
+            job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION
+            or (job.confirmation_kind == "admin_supplement_offer" and job.confirmation_outcome != "accepted")
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Файлы отчёта будут доступны для скачивания после согласования и оплаты на карточке задачи.",
+            )
 
     try:
         raw = json.loads(msg.attachments_json or "[]")
@@ -5034,7 +5281,7 @@ def admin_dialogs_list(
     db: Session = Depends(db_session),
     filter_unread: bool = False,
 ) -> dict:
-    chat_job_ids = [row[0] for row in db.query(JobChatMessage.job_id).distinct().all() if row[0]]
+    chat_client_ids = [row[0] for row in db.query(JobChatMessage.client_id).distinct().all() if row[0]]
     comment_jobs = (
         db.query(Job)
         .filter(
@@ -5046,38 +5293,47 @@ def admin_dialogs_list(
         )
         .all()
     )
-    all_job_ids = list(dict.fromkeys(chat_job_ids + [j.id for j in comment_jobs]))
-    if not all_job_ids:
+    all_client_ids = list(dict.fromkeys(chat_client_ids + [j.client_id for j in comment_jobs if j.client_id]))
+    if not all_client_ids:
         return {"dialogs": [], "total_unread_admin": 0}
 
-    jobs = (
-        db.query(Job)
-        .options(selectinload(Job.client).selectinload(Client.web_users))
-        .filter(Job.id.in_(all_job_ids))
+    clients = (
+        db.query(Client)
+        .options(selectinload(Client.web_users), selectinload(Client.jobs))
+        .filter(Client.id.in_(all_client_ids))
         .all()
     )
-    job_map = {j.id: j for j in jobs}
+    client_map = {c.id: c for c in clients}
 
     all_msgs = (
         db.query(JobChatMessage)
-        .filter(JobChatMessage.job_id.in_(all_job_ids))
+        .filter(JobChatMessage.client_id.in_(all_client_ids))
         .order_by(JobChatMessage.created_at.asc())
         .all()
     )
-    msgs_by_job: dict[str, list[JobChatMessage]] = {}
+    msgs_by_client: dict[str, list[JobChatMessage]] = {}
     for m in all_msgs:
-        msgs_by_job.setdefault(m.job_id, []).append(m)
+        msgs_by_client.setdefault(m.client_id, []).append(m)
 
     dialogs = []
     total_unread_admin = 0
 
-    for jid in all_job_ids:
-        job = job_map.get(jid)
-        if not job or getattr(job, "is_admin_rerun", False):
+    for cid in all_client_ids:
+        client = client_map.get(cid)
+        if not client:
             continue
-        msgs = msgs_by_job.get(jid)
+
+        msgs = msgs_by_client.get(cid)
         if not msgs:
-            msgs = get_job_chat_messages(db, job, auto_seed=True)
+            for j in client.jobs:
+                if not getattr(j, "is_admin_rerun", False):
+                    get_job_chat_messages(db, j, auto_seed=True)
+            msgs = (
+                db.query(JobChatMessage)
+                .filter(JobChatMessage.client_id == cid)
+                .order_by(JobChatMessage.created_at.asc())
+                .all()
+            )
             if not msgs:
                 continue
 
@@ -5088,37 +5344,253 @@ def admin_dialogs_list(
             continue
 
         last_m = msgs[-1]
-        client_name = job.client.name if job.client else ""
+        client_name = client.name if client else ""
         client_email = ""
-        client_phone = getattr(job.client, "phone", "") or ""
-        if job.client and job.client.web_users:
-            for wu in job.client.web_users:
+        client_phone = getattr(client, "phone", "") or ""
+        if client and client.web_users:
+            for wu in client.web_users:
                 if wu.email and not client_email:
                     client_email = wu.email
                 if getattr(wu, "phone", "") and not client_phone:
                     client_phone = wu.phone
 
+        client_jobs = []
+        for j in client.jobs:
+            if not getattr(j, "is_admin_rerun", False):
+                client_jobs.append({
+                    "job_id": j.id,
+                    "job_number": getattr(j, "job_number", None),
+                    "job_title": human_job_title(j),
+                    "job_mode": j.mode,
+                    "job_mode_label": mode_label(j.mode),
+                    "job_status": j.status,
+                    "created_at": j.created_at.isoformat() if j.created_at else None,
+                })
+        client_jobs.sort(key=lambda x: x.get("job_number") or 0, reverse=True)
+        primary_job = client_jobs[0] if client_jobs else None
+
         dialogs.append({
-            "job_id": job.id,
-            "job_number": getattr(job, "job_number", None),
-            "job_title": human_job_title(job),
-            "job_mode": job.mode,
-            "job_mode_label": mode_label(job.mode),
-            "job_status": job.status,
-            "client_id": job.client_id or "",
+            "client_id": client.id,
+            "client_number": getattr(client, "client_number", None),
             "client_name": client_name or "Без названия",
             "client_email": client_email,
             "client_phone": client_phone,
-            "telegram_id": job.client.telegram_id if job.client else "",
+            "telegram_id": client.telegram_id if client else "",
             "last_message": last_m.message or ("📎 Прикреплены файлы" if last_m.attachments_json != "[]" else ""),
             "last_message_at": last_m.created_at.isoformat() if last_m.created_at else None,
             "last_sender_role": last_m.sender_role,
             "unread_admin_count": unread_cnt,
             "total_messages": len(msgs),
+            "jobs": client_jobs,
+            "job_id": primary_job["job_id"] if primary_job else "",
+            "job_number": primary_job["job_number"] if primary_job else None,
+            "job_title": primary_job["job_title"] if primary_job else "",
+            "job_mode": primary_job["job_mode"] if primary_job else "",
+            "job_mode_label": primary_job["job_mode_label"] if primary_job else "",
+            "job_status": primary_job["job_status"] if primary_job else "",
         })
 
     dialogs.sort(key=lambda d: d.get("last_message_at") or "", reverse=True)
     return {"dialogs": dialogs, "total_unread_admin": total_unread_admin}
+
+
+@app.get("/api/admin/clients/{client_id}/chat", dependencies=[Depends(require_admin)])
+def admin_client_chat_get(client_id: str, db: Session = Depends(db_session)) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Клиент не найден.")
+
+    for j in client.jobs:
+        if not getattr(j, "is_admin_rerun", False):
+            get_job_chat_messages(db, j, auto_seed=True)
+
+    msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == client_id)
+        .order_by(JobChatMessage.created_at.asc())
+        .all()
+    )
+
+    updated = False
+    for m in msgs:
+        if m.sender_role == "client" and not m.is_read_by_admin:
+            m.is_read_by_admin = True
+            updated = True
+    if updated:
+        db.commit()
+
+    job_map = {j.id: j for j in client.jobs}
+    client_jobs = []
+    for j in client.jobs:
+        if not getattr(j, "is_admin_rerun", False):
+            client_jobs.append({
+                "job_id": j.id,
+                "job_number": getattr(j, "job_number", None),
+                "job_title": human_job_title(j),
+                "job_mode": j.mode,
+                "job_mode_label": mode_label(j.mode),
+                "job_status": j.status,
+            })
+    client_jobs.sort(key=lambda x: x.get("job_number") or 0, reverse=True)
+
+    client_email = ""
+    client_phone = getattr(client, "phone", "") or ""
+    if client.web_users:
+        for wu in client.web_users:
+            if wu.email and not client_email:
+                client_email = wu.email
+            if getattr(wu, "phone", "") and not client_phone:
+                client_phone = wu.phone
+
+    return {
+        "client": {
+            "id": client.id,
+            "number": client.client_number,
+            "name": client.name or "Без названия",
+            "email": client_email,
+            "phone": client_phone,
+            "telegram_id": client.telegram_id or "",
+        },
+        "jobs": client_jobs,
+        "messages": [chat_message_to_dict(m, job_map=job_map) for m in msgs],
+    }
+
+
+@app.post("/api/admin/clients/{client_id}/chat", dependencies=[Depends(require_admin)])
+async def admin_client_chat_post(
+    client_id: str,
+    message: str = Form(default=""),
+    job_id: str = Form(default=""),
+    notify_telegram: bool = Form(default=False),
+    files: list[UploadFile] = File(default=[]),
+    file: UploadFile | None = File(default=None),
+    db: Session = Depends(db_session),
+) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Клиент не найден.")
+
+    clean_message = str(message or "").strip()
+    clean_job_id = str(job_id or "").strip()
+
+    all_uploads: list[UploadFile] = []
+    if files and isinstance(files, (list, tuple)):
+        all_uploads.extend([f for f in files if isinstance(f, UploadFile)])
+    if file and isinstance(file, UploadFile) and file not in all_uploads:
+        all_uploads.append(file)
+
+    if not clean_message and not all_uploads:
+        raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
+
+    target_job = None
+    root_job_id = ""
+    if clean_job_id:
+        target_job = db.get(Job, clean_job_id)
+        if target_job and target_job.client_id == client_id:
+            root_job_id = resolve_chat_job_id(target_job)
+            target_dir = job_dir(root_job_id) / "chat"
+        else:
+            clean_job_id = ""
+
+    if not clean_job_id:
+        target_dir = Path(config.storage_path) / "clients" / client_id / "chat"
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    attachments: list[dict] = []
+    for uf in all_uploads:
+        if not uf.filename:
+            continue
+        content = await uf.read()
+        if content:
+            safe_name = Path(uf.filename).name
+            dest = target_dir / f"{int(time.time())}_{safe_name}"
+            dest.write_bytes(content)
+            attachments.append({
+                "path": str(dest),
+                "name": safe_name,
+                "label": safe_name,
+                "size": len(content),
+            })
+
+    new_msg = JobChatMessage(
+        id=new_id(),
+        job_id=root_job_id or clean_job_id or "",
+        client_id=client_id,
+        sender_role="admin",
+        message=clean_message,
+        attachments_json=json.dumps(attachments, ensure_ascii=False),
+        is_read_by_admin=True,
+        is_read_by_client=False,
+        created_at=now_utc(),
+    )
+    db.add(new_msg)
+
+    if target_job:
+        if clean_message:
+            target_job.admin_comment = clean_message
+        target_job.admin_supplement_at = now_utc()
+        target_job.updated_at = now_utc()
+    db.commit()
+
+    if notify_telegram and client.telegram_id:
+        try:
+            from .bot import send_admin_supplement_telegram
+            if target_job:
+                supp_list = get_job_admin_supplements(target_job)
+                await send_admin_supplement_telegram(
+                    telegram_id=client.telegram_id,
+                    job_title=human_job_title(target_job) or target_job.title,
+                    job_id=target_job.id,
+                    comment=clean_message,
+                    files=supp_list,
+                )
+            else:
+                bot_token = (config.bot_token or os.getenv("AIPOISK_BOT_TOKEN") or "").strip()
+                if bot_token:
+                    async with httpx.AsyncClient(timeout=8.0) as http_client:
+                        await http_client.post(
+                            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                            json={
+                                "chat_id": client.telegram_id,
+                                "text": f"💬 <b>Специалист TenderLex ответил вам:</b>\n\n{html_escape(clean_message)}",
+                                "parse_mode": "HTML",
+                            },
+                        )
+        except Exception as exc:
+            logger.warning("Error notifying telegram in admin client chat: %s", exc)
+
+    job_map = {j.id: j for j in client.jobs}
+    msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == client_id)
+        .order_by(JobChatMessage.created_at.asc())
+        .all()
+    )
+    return {"ok": True, "messages": [chat_message_to_dict(m, job_map=job_map) for m in msgs]}
+
+
+@app.get("/api/admin/chat/{message_id}/attachment/{att_idx}", dependencies=[Depends(require_admin)])
+def admin_chat_attachment(
+    message_id: str,
+    att_idx: int,
+    db: Session = Depends(db_session),
+):
+    msg = db.get(JobChatMessage, message_id)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Сообщение не найдено.")
+    try:
+        raw = json.loads(msg.attachments_json or "[]")
+        if not isinstance(raw, list) or att_idx < 0 or att_idx >= len(raw):
+            raise HTTPException(status_code=404, detail="Вложение не найдено.")
+        att = raw[att_idx]
+        p = Path(str(att.get("path") or ""))
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail="Файл вложения не найден на диске.")
+        return FileResponse(p, filename=att.get("name") or p.name)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=404, detail="Не удалось прочитать вложение.")
 
 
 @app.get("/api/jobs/{job_id}/chat", dependencies=[Depends(require_admin)])
@@ -5244,8 +5716,6 @@ def admin_job_chat_attachment(
         raise
     except Exception:
         raise HTTPException(status_code=404, detail="Не удалось прочитать вложение.")
-
-
 def read_job_evidence_payload(job: Job, *, storage_root: Path | None = None) -> dict:
     evidence_path = str(getattr(job, "evidence_path", "") or "")
     root = (storage_root or config.storage_path).resolve()

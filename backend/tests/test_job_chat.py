@@ -295,3 +295,123 @@ async def test_admin_supplement_offer_workflow(db, tmp_path, monkeypatch):
     # Chat must reflect decline
     chat_msgs_dec = get_job_chat_messages(db, job_dec)
     assert any(m.sender_role == "client" and "отклонил предложение" in m.message for m in chat_msgs_dec)
+
+
+@pytest.mark.asyncio
+async def test_client_centric_dialogs_and_unified_chat(db, tmp_path, monkeypatch):
+    import app.jobs as jobs_mod
+    monkeypatch.setattr(jobs_mod.config, "storage_dir", str(tmp_path))
+
+    from app.main import (
+        admin_client_chat_get,
+        admin_client_chat_post,
+        customer_chat_messages_route,
+        customer_chat_post_route,
+        customer_chat_mark_read_route,
+    )
+
+    client = Client(name="ООО Монолит", telegram_id="987654321")
+    db.add(client)
+    db.flush()
+
+    user = WebUser(
+        client_id=client.id,
+        email="monolit@tenderlex.ru",
+        password_hash="hash",
+        is_email_verified=True,
+    )
+    db.add(user)
+    db.flush()
+
+    job1 = Job(
+        client_id=client.id,
+        mode="supplier_search",
+        title="Поставка кирпича",
+        status="completed",
+        job_number=201,
+    )
+    job2 = Job(
+        client_id=client.id,
+        mode="price_monitoring",
+        title="Мониторинг цен на щебень",
+        status="completed",
+        job_number=202,
+    )
+    db.add_all([job1, job2])
+    db.commit()
+
+    web_sess = WebSession(id="sess-monolit", user_id=user.id)
+    ctx = WebAuthContext(user=user, session=web_sess)
+
+    # 1. Customer sends a general support inquiry
+    res1 = await customer_chat_post_route(
+        message="Здравствуйте! Как выставить счёт на юрлицо?",
+        context=ctx,
+        db=db,
+    )
+    assert res1["ok"] is True
+    assert len(res1["messages"]) == 1
+    assert res1["messages"][0]["job_id"] == ""
+
+    # 2. Customer sends a question tied to Job #201
+    res2 = await customer_chat_post_route(
+        message="По задаче с кирпичом: нужны сертификаты ГОСТ.",
+        job_id=job1.id,
+        context=ctx,
+        db=db,
+    )
+    assert res2["ok"] is True
+    assert len(res2["messages"]) == 2
+    assert res2["messages"][1]["job_number"] == 201
+
+    # 3. Check customer message feed endpoint
+    feed = customer_chat_messages_route(context=ctx, db=db)
+    assert feed["authenticated"] is True
+    assert len(feed["messages"]) == 2
+    assert len(feed["jobs"]) == 2
+    assert feed["unread_admin_count"] == 0
+
+    # 4. Check admin dialogs list: 1 entry for this client, not 2 separate rows!
+    d_res = admin_dialogs_list(db=db)
+    monolit_dialogs = [d for d in d_res["dialogs"] if d["client_id"] == client.id]
+    assert len(monolit_dialogs) == 1
+    diag = monolit_dialogs[0]
+    assert diag["client_name"] == "ООО Монолит"
+    assert diag["unread_admin_count"] == 2
+    assert len(diag["jobs"]) == 2
+    job_numbers = {j["job_number"] for j in diag["jobs"]}
+    assert 201 in job_numbers and 202 in job_numbers
+
+    # 5. Admin opens client chat: unread status marked as read
+    admin_feed = admin_client_chat_get(client_id=client.id, db=db)
+    assert len(admin_feed["messages"]) == 2
+    assert admin_feed["client"]["name"] == "ООО Монолит"
+    assert len(admin_feed["jobs"]) == 2
+
+    # Check unread count dropped to 0
+    d_res2 = admin_dialogs_list(db=db)
+    monolit_dialogs2 = [d for d in d_res2["dialogs"] if d["client_id"] == client.id]
+    assert monolit_dialogs2[0]["unread_admin_count"] == 0
+
+    # 6. Admin replies with reference to Job #201
+    res_admin = await admin_client_chat_post(
+        client_id=client.id,
+        job_id=job1.id,
+        message="Сертификаты прикрепили к отчёту по кирпичу.",
+        notify_telegram=False,
+        db=db,
+    )
+    assert res_admin["ok"] is True
+    assert len(res_admin["messages"]) == 3
+    assert res_admin["messages"][2]["sender_role"] == "admin"
+    assert res_admin["messages"][2]["job_number"] == 201
+
+    # 7. Customer sees 1 unread message from admin
+    feed2 = customer_chat_messages_route(context=ctx, db=db)
+    assert feed2["unread_admin_count"] == 1
+    assert len(feed2["messages"]) == 3
+
+    # Customer marks as read
+    customer_chat_mark_read_route(context=ctx, db=db)
+    feed3 = customer_chat_messages_route(context=ctx, db=db)
+    assert feed3["unread_admin_count"] == 0

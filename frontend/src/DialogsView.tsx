@@ -16,16 +16,21 @@ import {
   RefreshCw,
   Clock,
   Sparkles,
+  Tag,
 } from 'lucide-react'
 
-export interface DialogItem {
+export interface DialogJobSummary {
   job_id: string
   job_number?: number | null
   job_title: string
   job_mode: string
   job_mode_label: string
   job_status: string
+}
+
+export interface DialogItem {
   client_id: string
+  client_number?: number | null
   client_name: string
   client_email: string
   client_phone: string
@@ -35,6 +40,13 @@ export interface DialogItem {
   last_sender_role: 'admin' | 'client'
   unread_admin_count: number
   total_messages: number
+  jobs: DialogJobSummary[]
+  job_id?: string
+  job_number?: number | null
+  job_title?: string
+  job_mode?: string
+  job_mode_label?: string
+  job_status?: string
 }
 
 export interface ChatAttachment {
@@ -56,6 +68,10 @@ export interface ChatMessage {
   is_read_by_client: boolean
   is_read_by_admin: boolean
   created_at: string | null
+  job_number?: number | null
+  job_title?: string
+  job_mode_label?: string
+  job_info?: DialogJobSummary | null
 }
 
 function formatDate(iso?: string | null): string {
@@ -100,11 +116,14 @@ export function DialogsView({
   const [loading, setLoading] = useState(true)
   const [filterUnread, setFilterUnread] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
+  const [activeJobFilter, setActiveJobFilter] = useState<string>('all')
 
   const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([])
+  const [clientJobs, setClientJobs] = useState<DialogJobSummary[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [replyText, setReplyText] = useState('')
+  const [replyJobId, setReplyJobId] = useState<string>('')
   const [files, setFiles] = useState<File[]>([])
   const [notifyTelegram, setNotifyTelegram] = useState(true)
   const [sending, setSending] = useState(false)
@@ -123,8 +142,8 @@ export function DialogsView({
         const data = await res.json()
         const list: DialogItem[] = data.dialogs || []
         setDialogs(list)
-        if (selectFirst && list.length > 0 && !selectedJobId) {
-          setSelectedJobId(list[0].job_id)
+        if (selectFirst && list.length > 0 && !selectedClientId) {
+          setSelectedClientId(list[0].client_id)
         }
       }
     } catch (err) {
@@ -134,17 +153,23 @@ export function DialogsView({
     }
   }
 
-  async function loadChatMessages(jobId: string) {
+  async function loadChatMessages(clientId: string) {
     try {
       setLoadingMessages(true)
       setError('')
-      const res = await fetch(`/api/jobs/${jobId}/chat`, { credentials: 'same-origin', headers: authHeaders })
+      const res = await fetch(`/api/admin/clients/${clientId}/chat`, { credentials: 'same-origin', headers: authHeaders })
       if (res.ok) {
         const data = await res.json()
         setActiveMessages(data.messages || [])
+        const jobs: DialogJobSummary[] = data.jobs || []
+        setClientJobs(jobs)
+        // Reset reply context or default to latest job
+        setReplyJobId(jobs.length > 0 ? jobs[0].job_id : '')
+        setActiveJobFilter('all')
+
         // Update local dialog unread badge to 0
         setDialogs(prev =>
-          prev.map(d => (d.job_id === jobId ? { ...d, unread_admin_count: 0 } : d))
+          prev.map(d => (d.client_id === clientId ? { ...d, unread_admin_count: 0 } : d))
         )
       } else {
         const errText = await res.text()
@@ -162,36 +187,47 @@ export function DialogsView({
   }, [])
 
   useEffect(() => {
-    if (selectedJobId) {
-      loadChatMessages(selectedJobId)
+    if (selectedClientId) {
+      loadChatMessages(selectedClientId)
     } else {
       setActiveMessages([])
+      setClientJobs([])
     }
-  }, [selectedJobId])
+  }, [selectedClientId])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [activeMessages])
+  }, [activeMessages, activeJobFilter])
 
-  const selectedDialog = dialogs.find(d => d.job_id === selectedJobId)
+  const selectedDialog = dialogs.find(d => d.client_id === selectedClientId)
 
   const filteredDialogs = dialogs.filter(d => {
     if (filterUnread && d.unread_admin_count === 0) return false
     if (!searchQuery.trim()) return true
     const q = searchQuery.toLowerCase()
-    return (
+    const matchesClient =
       d.client_name.toLowerCase().includes(q) ||
       d.client_email.toLowerCase().includes(q) ||
       d.client_phone.toLowerCase().includes(q) ||
-      d.job_title.toLowerCase().includes(q) ||
       d.last_message.toLowerCase().includes(q) ||
-      (d.job_number && String(d.job_number).includes(q))
+      (d.client_number && String(d.client_number).includes(q))
+    const matchesJobs = d.jobs && d.jobs.some(j =>
+      j.job_title.toLowerCase().includes(q) ||
+      (j.job_number && String(j.job_number).includes(q))
     )
+    return matchesClient || Boolean(matchesJobs)
+  })
+
+  // Messages filtered by selected job filter within the thread
+  const displayedMessages = activeMessages.filter(m => {
+    if (activeJobFilter === 'all') return true
+    if (activeJobFilter === 'general') return !m.job_id
+    return m.job_id === activeJobFilter
   })
 
   async function handleSendReply(e?: React.FormEvent) {
     if (e) e.preventDefault()
-    if (!selectedJobId) return
+    if (!selectedClientId) return
     const text = replyText.trim()
     if (!text && files.length === 0) return
 
@@ -200,11 +236,12 @@ export function DialogsView({
     try {
       const formData = new FormData()
       formData.append('message', text)
+      formData.append('job_id', replyJobId || '')
       formData.append('notify_telegram', String(notifyTelegram))
       files.forEach(f => formData.append('files', f))
       if (files[0]) formData.append('file', files[0])
 
-      const res = await fetch(`/api/jobs/${selectedJobId}/chat`, {
+      const res = await fetch(`/api/admin/clients/${selectedClientId}/chat`, {
         method: 'POST',
         headers: authHeaders,
         body: formData,
@@ -217,10 +254,11 @@ export function DialogsView({
       setActiveMessages(data.messages || [])
       setReplyText('')
       setFiles([])
+
       // Update dialog snippet in left list
       setDialogs(prev =>
         prev.map(d =>
-          d.job_id === selectedJobId
+          d.client_id === selectedClientId
             ? {
                 ...d,
                 last_message: text || '📎 Прикреплен файл',
@@ -242,7 +280,7 @@ export function DialogsView({
 
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 120px)', minHeight: 520, gap: 14, background: '#f8fafc', padding: '12px 14px', borderRadius: 10, border: '1px solid #e2e8f0' }}>
-      {/* Left Column: Conversations List */}
+      {/* Left Column: Client Dialogs List */}
       <div style={{ width: 340, minWidth: 300, display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: 8, border: '1px solid #e2e8f0', overflow: 'hidden' }}>
         {/* Top filter bar */}
         <div style={{ padding: '10px 12px', borderBottom: '1px solid #f1f5f9', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -332,11 +370,11 @@ export function DialogsView({
             </div>
           ) : (
             filteredDialogs.map(d => {
-              const isSelected = d.job_id === selectedJobId
+              const isSelected = d.client_id === selectedClientId
               return (
                 <div
-                  key={d.job_id}
-                  onClick={() => setSelectedJobId(d.job_id)}
+                  key={d.client_id}
+                  onClick={() => setSelectedClientId(d.client_id)}
                   style={{
                     padding: '10px 12px',
                     borderBottom: '1px solid #f1f5f9',
@@ -355,19 +393,40 @@ export function DialogsView({
                     </span>
                   </div>
 
-                  <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontWeight: 600, color: '#475569' }}>
-                      {d.job_number ? `#${d.job_number}` : ''}
-                    </span>
-                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>
-                      {d.job_title}
-                    </span>
+                  {/* Client Subtext / Contacts & Job Chips */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 4 }}>
+                    {d.client_phone && (
+                      <span style={{ fontSize: 10.5, color: '#0f766e', fontWeight: 600, marginRight: 4 }}>
+                        {d.client_phone}
+                      </span>
+                    )}
+                    {d.jobs && d.jobs.length > 0 && d.jobs.slice(0, 3).map(j => (
+                      <span
+                        key={j.job_id}
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          background: '#e0f2fe',
+                          color: '#0369a1',
+                          padding: '1px 5px',
+                          borderRadius: 3,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        #{j.job_number || j.job_id.slice(0, 4)}
+                      </span>
+                    ))}
+                    {d.jobs && d.jobs.length > 3 && (
+                      <span style={{ fontSize: 10, color: '#94a3b8' }}>
+                        +{d.jobs.length - 3}
+                      </span>
+                    )}
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
                     <p style={{ margin: 0, fontSize: 11.5, color: d.unread_admin_count > 0 ? '#1e293b' : '#64748b', fontWeight: d.unread_admin_count > 0 ? 600 : 400, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}>
                       {d.last_sender_role === 'admin' && <span style={{ color: '#0d9488', marginRight: 4 }}>Вы:</span>}
-                      {d.last_message || 'Файлы отчёта'}
+                      {d.last_message || 'Диалог с клиентом'}
                     </p>
                     {d.unread_admin_count > 0 && (
                       <span style={{ background: '#ef4444', color: '#fff', fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 8, flexShrink: 0 }}>
@@ -382,7 +441,7 @@ export function DialogsView({
         </div>
       </div>
 
-      {/* Right Column: Active Dialogue Thread */}
+      {/* Right Column: Unified Client Dialogue Thread */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: 8, border: '1px solid #e2e8f0', overflow: 'hidden' }}>
         {selectedDialog ? (
           <>
@@ -393,14 +452,11 @@ export function DialogsView({
                   <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#1e293b' }}>
                     {selectedDialog.client_name}
                   </h4>
-                  {selectedDialog.job_number && (
-                    <span style={{ background: '#e0f2fe', color: '#0369a1', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 4 }}>
-                      #{selectedDialog.job_number}
+                  {selectedDialog.client_number && (
+                    <span style={{ background: '#f1f5f9', color: '#475569', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 4 }}>
+                      Клиент #{selectedDialog.client_number}
                     </span>
                   )}
-                  <span style={{ fontSize: 11, color: '#64748b' }}>
-                    ({selectedDialog.job_mode_label})
-                  </span>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, fontSize: 11, color: '#64748b', flexWrap: 'wrap' }}>
@@ -424,33 +480,80 @@ export function DialogsView({
                 </div>
               </div>
 
-              {onOpenJob && (
-                <button
-                  type="button"
-                  className="ghost small-text"
-                  onClick={() => onOpenJob(selectedDialog.job_id)}
-                  style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#0d9488', border: '1px solid #99f6e4', background: '#f0fdfa', borderRadius: 4, padding: '4px 8px' }}
-                >
-                  <ExternalLink size={12} />
-                  <span>Открыть карточку задачи</span>
-                </button>
+              {/* Job filter chips */}
+              {clientJobs.length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 10.5, color: '#64748b', fontWeight: 600 }}>Фильтр:</span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveJobFilter('all')}
+                    style={{
+                      border: 'none',
+                      fontSize: 10.5,
+                      fontWeight: 600,
+                      padding: '3px 7px',
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                      background: activeJobFilter === 'all' ? '#0d9488' : '#f1f5f9',
+                      color: activeJobFilter === 'all' ? '#fff' : '#475569',
+                    }}
+                  >
+                    Все ({activeMessages.length})
+                  </button>
+                  {clientJobs.map(j => (
+                    <button
+                      key={j.job_id}
+                      type="button"
+                      onClick={() => setActiveJobFilter(j.job_id)}
+                      style={{
+                        border: 'none',
+                        fontSize: 10.5,
+                        fontWeight: 600,
+                        padding: '3px 7px',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        background: activeJobFilter === j.job_id ? '#0284c7' : '#f1f5f9',
+                        color: activeJobFilter === j.job_id ? '#fff' : '#475569',
+                      }}
+                      title={j.job_title}
+                    >
+                      #{j.job_number || j.job_id.slice(0, 4)}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setActiveJobFilter('general')}
+                    style={{
+                      border: 'none',
+                      fontSize: 10.5,
+                      fontWeight: 600,
+                      padding: '3px 7px',
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                      background: activeJobFilter === 'general' ? '#64748b' : '#f1f5f9',
+                      color: activeJobFilter === 'general' ? '#fff' : '#475569',
+                    }}
+                  >
+                    Общие
+                  </button>
+                </div>
               )}
             </div>
 
             {/* Messages Thread */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10, background: '#f8fafc' }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, background: '#f8fafc' }}>
               {loadingMessages ? (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94a3b8', fontSize: 12, gap: 8 }}>
                   <Loader2 size={16} className="spin" />
                   <span>Загрузка сообщений...</span>
                 </div>
-              ) : activeMessages.length === 0 ? (
+              ) : displayedMessages.length === 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94a3b8', fontSize: 12, gap: 6 }}>
                   <MessageSquare size={28} color="#cbd5e1" />
-                  <span>В этой задаче пока нет сообщений. Напишите первое сообщение клиенту.</span>
+                  <span>{activeJobFilter !== 'all' ? 'По этой задаче пока нет сообщений.' : 'В диалоге с клиентом пока нет сообщений. Напишите первое сообщение.'}</span>
                 </div>
               ) : (
-                activeMessages.map(msg => {
+                displayedMessages.map(msg => {
                   const isAdmin = msg.sender_role === 'admin'
                   return (
                     <div
@@ -463,6 +566,27 @@ export function DialogsView({
                         alignSelf: isAdmin ? 'flex-end' : 'flex-start',
                       }}
                     >
+                      {/* Context badge if tied to a job */}
+                      {msg.job_id ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3, fontSize: 10, color: '#0369a1', background: '#e0f2fe', padding: '1px 7px', borderRadius: 4, fontWeight: 600 }}>
+                          <span>📌 Задача #{msg.job_number || msg.job_id.slice(0, 4)}: {msg.job_title}</span>
+                          {onOpenJob && (
+                            <button
+                              type="button"
+                              onClick={() => onOpenJob(msg.job_id)}
+                              style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#0284c7', padding: 0, display: 'flex', alignItems: 'center' }}
+                              title="Открыть карточку задачи"
+                            >
+                              <ExternalLink size={10} />
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ marginBottom: 3, fontSize: 10, color: '#64748b', fontWeight: 500 }}>
+                          💬 Общий чат поддержки
+                        </div>
+                      )}
+
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, fontSize: 10.5, color: '#64748b' }}>
                         {isAdmin ? (
                           <>
@@ -539,6 +663,25 @@ export function DialogsView({
                 </div>
               )}
 
+              {/* Task context selector */}
+              {clientJobs.length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontSize: 11, color: '#475569' }}>
+                  <span style={{ fontWeight: 600 }}>Контекст ответа:</span>
+                  <select
+                    value={replyJobId}
+                    onChange={e => setReplyJobId(e.target.value)}
+                    style={{ fontSize: 11, padding: '3px 6px', borderRadius: 4, border: '1px solid #cbd5e1', background: '#f8fafc', color: '#1e293b' }}
+                  >
+                    <option value="">Общий диалог (без привязки к задаче)</option>
+                    {clientJobs.map(j => (
+                      <option key={j.job_id} value={j.job_id}>
+                        Задача #{j.job_number || j.job_id.slice(0, 4)}: {j.job_title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               {files.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
                   {files.map((f, i) => (
@@ -574,42 +717,55 @@ export function DialogsView({
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#64748b', cursor: 'pointer', padding: '4px 8px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#f8fafc' }}>
-                    <Paperclip size={13} />
-                    <span>Прикрепить файл</span>
-                    <input
-                      type="file"
-                      multiple
-                      style={{ display: 'none' }}
-                      accept=".xlsx,.xls,.docx,.doc,.pdf,.zip"
-                      onChange={e => {
-                        if (e.target.files) {
-                          setFiles(Array.from(e.target.files))
-                        }
-                      }}
-                    />
-                  </label>
+                  {selectedDialog.telegram_id && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: '#0284c7', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={notifyTelegram}
+                        onChange={e => setNotifyTelegram(e.target.checked)}
+                      />
+                      <span>Уведомить в Telegram</span>
+                    </label>
+                  )}
 
-                  <button
-                    type="submit"
-                    disabled={sending || (!replyText.trim() && files.length === 0)}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      background: '#0d9488',
-                      color: '#fff',
-                      border: 'none',
-                      padding: '6px 14px',
-                      borderRadius: 6,
-                      fontSize: 12,
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {sending ? <Loader2 size={13} className="spin" /> : <Send size={13} />}
-                    <span>Отправить</span>
-                  </button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#64748b', cursor: 'pointer', padding: '5px 8px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#f8fafc' }}>
+                      <Paperclip size={13} />
+                      <span>Файл</span>
+                      <input
+                        type="file"
+                        multiple
+                        style={{ display: 'none' }}
+                        accept=".xlsx,.xls,.docx,.doc,.pdf,.zip"
+                        onChange={e => {
+                          if (e.target.files) {
+                            setFiles(Array.from(e.target.files))
+                          }
+                        }}
+                      />
+                    </label>
+
+                    <button
+                      type="submit"
+                      disabled={sending || (!replyText.trim() && files.length === 0)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        background: '#0d9488',
+                        color: '#fff',
+                        border: 'none',
+                        padding: '6px 14px',
+                        borderRadius: 6,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {sending ? <Loader2 size={13} className="spin" /> : <Send size={13} />}
+                      <span>Отправить</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </form>

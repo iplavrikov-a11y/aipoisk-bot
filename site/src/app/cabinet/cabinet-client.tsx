@@ -36,6 +36,7 @@ import {
   LogOut,
   Mail,
   MessageCircle,
+  MessageSquare,
   Paperclip,
   Pencil,
   Phone,
@@ -1243,7 +1244,7 @@ function CustomerJobChat({
   onJobUpdated: (updatedJob: CustomerJob) => void;
 }) {
   const hasMessages = Boolean(job.chat_messages && job.chat_messages.length > 0) || Boolean(job.admin_comment);
-  const [isOpen, setIsOpen] = useState(true);
+  const [isOpen, setIsOpen] = useState(false);
   const [replyText, setReplyText] = useState("");
   const [replyFiles, setReplyFiles] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
@@ -1331,17 +1332,79 @@ function CustomerJobChat({
         ]
       : [];
 
-  if (!hasMessages && !isOpen) {
+  if (!isOpen) {
+    if (!hasMessages) {
+      return (
+        <div className="col-span-12 mt-1">
+          <button
+            type="button"
+            onClick={() => {
+              window.dispatchEvent(
+                new CustomEvent("open_tenderlex_chat", {
+                  detail: {
+                    jobId: job.id,
+                    jobNumber: job.job_number,
+                    jobTitle: job.human_title || "",
+                  },
+                })
+              );
+            }}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-700 hover:text-teal-800 transition-colors cursor-pointer"
+          >
+            <MessageCircle size={13} />
+            <span>Написать специалисту TenderLex по задаче</span>
+          </button>
+        </div>
+      );
+    }
+
+    const lastMsg = messages[messages.length - 1];
     return (
-      <div className="col-span-12 mt-1">
-        <button
-          type="button"
-          onClick={() => setIsOpen(true)}
-          className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-700 hover:text-teal-800 transition-colors"
-        >
-          <MessageCircle size={13} />
-          <span>Написать специалисту TenderLex по задаче</span>
-        </button>
+      <div className="col-span-12 mt-1.5 px-3 py-2 rounded-xl bg-gradient-to-r from-teal-50/80 via-slate-50 to-white border border-teal-200/80 flex items-center justify-between gap-3 text-xs shadow-2xs">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-5 h-5 rounded-full bg-teal-600 text-white flex items-center justify-center shrink-0">
+            <Sparkles size={11} aria-hidden="true" />
+          </div>
+          <span className="font-bold text-teal-950 text-xs shrink-0">Переписка:</span>
+          <span className="text-slate-600 truncate max-w-sm sm:max-w-md">
+            {lastMsg?.message || "Экспертные материалы подготовлены"}
+          </span>
+          {Boolean(job.unread_admin_messages_count) && (
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white shrink-0 animate-pulse">
+              Новый ответ
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              window.dispatchEvent(
+                new CustomEvent("open_tenderlex_chat", {
+                  detail: {
+                    jobId: job.id,
+                    jobNumber: job.job_number,
+                    jobTitle: job.human_title || "",
+                  },
+                })
+              );
+            }}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-semibold transition-colors cursor-pointer shadow-2xs"
+          >
+            <MessageSquare size={12} />
+            <span>Открыть в чате</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsOpen(true)}
+            className="text-slate-500 hover:text-slate-800 text-[11px] font-medium flex items-center gap-0.5 cursor-pointer"
+            title="Показать историю на карточке"
+          >
+            <span>История ({messages.length})</span>
+            <ChevronDown size={12} />
+          </button>
+        </div>
       </div>
     );
   }
@@ -1363,17 +1426,34 @@ function CustomerJobChat({
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsOpen((prev) => !prev)}
-          className="text-slate-500 hover:text-slate-800 text-[11px] font-medium flex items-center gap-1 cursor-pointer"
-        >
-          {isOpen ? "Свернуть" : `Развернуть (${messages.length})`}
-          <ChevronDown
-            size={13}
-            className={`transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}
-          />
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              window.dispatchEvent(
+                new CustomEvent("open_tenderlex_chat", {
+                  detail: {
+                    jobId: job.id,
+                    jobNumber: job.job_number,
+                    jobTitle: job.human_title || "",
+                  },
+                })
+              );
+            }}
+            className="text-teal-700 hover:text-teal-900 text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+          >
+            <MessageSquare size={12} />
+            <span>Открыть в едином чате</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsOpen(false)}
+            className="text-slate-500 hover:text-slate-800 text-[11px] font-medium flex items-center gap-1 cursor-pointer"
+          >
+            <span>Свернуть</span>
+            <ChevronDown size={13} className="rotate-180" />
+          </button>
+        </div>
       </div>
 
       {isOpen && (
