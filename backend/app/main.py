@@ -1924,10 +1924,7 @@ def customer_chat_messages_route(
     if not client:
         return {"authenticated": True, "messages": [], "jobs": [], "unread_admin_count": 0}
 
-    for j in client.jobs:
-        if not getattr(j, "is_admin_rerun", False):
-            get_job_chat_messages(db, j, auto_seed=True)
-
+    # Fast single query for chat messages
     msgs = (
         db.query(JobChatMessage)
         .filter(JobChatMessage.client_id == client_id)
@@ -1935,19 +1932,49 @@ def customer_chat_messages_route(
         .all()
     )
 
-    job_map = {j.id: j for j in client.jobs}
-    client_jobs = []
-    for j in client.jobs:
-        if not getattr(j, "is_admin_rerun", False):
-            client_jobs.append({
-                "id": j.id,
-                "job_number": getattr(j, "job_number", None),
-                "title": human_job_title(j),
-                "mode": j.mode,
-                "mode_label": mode_label(j.mode),
-                "status": j.status,
-            })
-    client_jobs.sort(key=lambda x: x.get("job_number") or 0, reverse=True)
+    # Fetch recent jobs for chat context and auto-seeding
+    recent_jobs = (
+        db.query(Job)
+        .filter(Job.client_id == client_id, Job.is_admin_rerun.is_(False))
+        .order_by(Job.created_at.desc())
+        .limit(25)
+        .all()
+    )
+
+    # Only auto-seed if any recent job has admin comment/supplements and does not have chat messages yet
+    existing_job_ids = {m.job_id for m in msgs}
+    candidates = [
+        j for j in recent_jobs
+        if resolve_chat_job_id(j) not in existing_job_ids
+        and (getattr(j, "admin_comment", "") or get_job_admin_supplements(j))
+    ]
+    if candidates:
+        for j in candidates[:5]:
+            get_job_chat_messages(db, j, auto_seed=True)
+        msgs = (
+            db.query(JobChatMessage)
+            .filter(JobChatMessage.client_id == client_id)
+            .order_by(JobChatMessage.created_at.asc())
+            .all()
+        )
+
+    msg_job_ids = {m.job_id for m in msgs if m.job_id}
+    msg_jobs = db.query(Job).filter(Job.id.in_(msg_job_ids)).all() if msg_job_ids else []
+    job_map = {j.id: j for j in msg_jobs}
+    for j in recent_jobs:
+        job_map[j.id] = j
+
+    client_jobs = [
+        {
+            "id": j.id,
+            "job_number": getattr(j, "job_number", None),
+            "title": human_job_title(j),
+            "mode": j.mode,
+            "mode_label": mode_label(j.mode),
+            "status": j.status,
+        }
+        for j in recent_jobs
+    ]
 
     unread_count = sum(1 for m in msgs if m.sender_role == "admin" and not m.is_read_by_client)
 
@@ -5400,16 +5427,31 @@ def admin_client_chat_get(client_id: str, db: Session = Depends(db_session)) -> 
     if not client:
         raise HTTPException(status_code=404, detail="Клиент не найден.")
 
-    for j in client.jobs:
-        if not getattr(j, "is_admin_rerun", False):
-            get_job_chat_messages(db, j, auto_seed=True)
-
+    # Fast single query for chat messages
     msgs = (
         db.query(JobChatMessage)
         .filter(JobChatMessage.client_id == client_id)
         .order_by(JobChatMessage.created_at.asc())
         .all()
     )
+
+    # Only auto-seed if any job has admin comment/supplements and does not have chat messages yet
+    existing_job_ids = {m.job_id for m in msgs}
+    candidates = [
+        j for j in client.jobs
+        if not getattr(j, "is_admin_rerun", False)
+        and resolve_chat_job_id(j) not in existing_job_ids
+        and (getattr(j, "admin_comment", "") or get_job_admin_supplements(j))
+    ]
+    if candidates:
+        for j in candidates[:5]:
+            get_job_chat_messages(db, j, auto_seed=True)
+        msgs = (
+            db.query(JobChatMessage)
+            .filter(JobChatMessage.client_id == client_id)
+            .order_by(JobChatMessage.created_at.asc())
+            .all()
+        )
 
     updated = False
     for m in msgs:
@@ -6709,7 +6751,7 @@ def _customer_exact_product_positions(job: Job) -> list[dict]:
                  "source_url": row.get("source_url") or "",
                  "can_retry_position": bool(row.get("position_id") and read_selection(job).get("confirmed") and job.status == "completed")}
                 for row in report.get("positions", []) if isinstance(row, dict)]
-    except (OSError, ValueError, TypeError, AttributeError):
+    except Exception:
         return []
 
 

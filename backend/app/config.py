@@ -76,7 +76,11 @@ class AppConfig(BaseSettings):
 
     @property
     def storage_path(self) -> Path:
-        return Path(self.storage_dir).resolve()
+        p = Path(self.storage_dir)
+        if not p.is_absolute():
+            backend_dir = Path(__file__).resolve().parent.parent
+            return (backend_dir / p).resolve()
+        return p.resolve()
 
 
 config = AppConfig()

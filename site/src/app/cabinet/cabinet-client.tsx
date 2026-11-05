@@ -1603,6 +1603,8 @@ export function CabinetClient() {
     return () => clearInterval(timer);
   }, []);
   const [session, setSession] = useState<SessionPayload | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [telegramVerifying, setTelegramVerifying] = useState(false);
   const [jobs, setJobs] = useState<CustomerJob[]>([]);
   const [jobsPage, setJobsPage] = useState(1);
   const [jobsTotal, setJobsTotal] = useState(0);
@@ -2127,30 +2129,34 @@ export function CabinetClient() {
   const hasFindMoreSuppliers = jobs.some((job) => job.can_find_more_suppliers);
 
   async function loadSession() {
-    const response = await fetch("/api/customer/auth/session", { credentials: "same-origin", cache: "no-store" });
-    if (response.status === 401 || response.status === 404) {
-      setSession(null);
-      invoiceRequestVersion.current++;
-      setCustomerInvoices([]);
-      setCustomerInvoicesTotal(0);
-      return;
-    }
-    const payload = await readJson<SessionPayload>(response);
-    setSession(payload.authenticated ? payload : null);
-    if (payload.authenticated) {
-      loadCustomerInvoices();
-      if (payload.user?.phone) {
-        setPayerPhone((cur) => cur || formatPhoneRu(payload.user?.phone || ""));
+    try {
+      const response = await fetch("/api/customer/auth/session", { credentials: "same-origin", cache: "no-store" });
+      if (response.status === 401 || response.status === 404) {
+        setSession(null);
+        invoiceRequestVersion.current++;
+        setCustomerInvoices([]);
+        setCustomerInvoicesTotal(0);
+        return null;
       }
-      if (payload.user?.telegram_username) {
-        setPayerTelegram((cur) => cur || (payload.user?.telegram_username ? (payload.user.telegram_username.startsWith("@") ? payload.user.telegram_username : `@${payload.user.telegram_username}`) : ""));
+      const payload = await readJson<SessionPayload>(response);
+      setSession(payload.authenticated ? payload : null);
+      if (payload.authenticated) {
+        loadCustomerInvoices();
+        if (payload.user?.phone) {
+          setPayerPhone((cur) => cur || formatPhoneRu(payload.user?.phone || ""));
+        }
+        if (payload.user?.telegram_username) {
+          setPayerTelegram((cur) => cur || (payload.user?.telegram_username ? (payload.user.telegram_username.startsWith("@") ? payload.user.telegram_username : `@${payload.user.telegram_username}`) : ""));
+        }
+      } else {
+        invoiceRequestVersion.current++;
+        setCustomerInvoices([]);
+        setCustomerInvoicesTotal(0);
       }
-    } else {
-      invoiceRequestVersion.current++;
-      setCustomerInvoices([]);
-      setCustomerInvoicesTotal(0);
+      return payload;
+    } finally {
+      setSessionLoading(false);
     }
-    return payload;
   }
 
   const HISTORY_PAGE_SIZE = 12;
@@ -2401,9 +2407,7 @@ export function CabinetClient() {
     if (authEvent === "registration_success" || authEvent === "login_success") {
       window.history.replaceState(null, "", window.location.pathname + window.location.search);
     }
-    loadSession().then((payload) => {
-      if (payload?.authenticated && (authEvent === "registration_success" || authEvent === "login_success")) trackGoal(authEvent);
-    }).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+
     const params = new URLSearchParams(window.location.search);
     const scenarioParam = params.get("scenario") || params.get("mode");
     const validScenarios: Scenario[] = ["procurement_report", "supplier_search", "analysis_and_suppliers", "exact_product", "price_monitoring"];
@@ -2441,6 +2445,10 @@ export function CabinetClient() {
     const tgHash = hashParams.get("hash") || params.get("hash");
 
     if (tgAuthResult || (tgId && tgHash)) {
+      setBusy(true);
+      setTelegramVerifying(true);
+      setSessionLoading(true);
+
       const payload: Record<string, string> = {};
       if (tgAuthResult) {
         payload.tgAuthResult = tgAuthResult;
@@ -2455,8 +2463,6 @@ export function CabinetClient() {
         if (storedRef) payload.ref = storedRef;
       }
 
-      window.history.replaceState(null, "", window.location.pathname);
-
       fetch("/api/customer/auth/telegram/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2469,13 +2475,24 @@ export function CabinetClient() {
           }
           return res.json();
         })
-        .then((payload: { is_new?: boolean; success?: boolean }) => {
-          if (payload.success) trackGoal(payload.is_new ? "registration_success" : "login_success");
+        .then((respData: { is_new?: boolean; success?: boolean }) => {
+          if (respData.success) trackGoal(respData.is_new ? "registration_success" : "login_success");
+          window.history.replaceState(null, "", window.location.pathname + (params.toString() ? `?${params.toString()}` : ""));
           return loadSession();
         })
         .catch((err) => {
+          window.history.replaceState(null, "", window.location.pathname + (params.toString() ? `?${params.toString()}` : ""));
           setError(err instanceof Error ? err.message : "Не удалось подтвердить авторизацию через Telegram.");
+          setSessionLoading(false);
+        })
+        .finally(() => {
+          setBusy(false);
+          setTelegramVerifying(false);
         });
+    } else {
+      loadSession().then((payload) => {
+        if (payload?.authenticated && (authEvent === "registration_success" || authEvent === "login_success")) trackGoal(authEvent);
+      }).catch((err) => setError(err instanceof Error ? err.message : String(err)));
     }
 
     const verified = params.get("email_verified");
@@ -3411,6 +3428,36 @@ export function CabinetClient() {
       setBusy(false);
       setRetryConfirmJob(null);
     }
+  }
+
+  if (sessionLoading) {
+    return (
+      <main className="tl-cabinet tl-cabinet-loading cabinet-page min-h-screen bg-slate-50/70 flex flex-col items-center justify-center p-4 sm:p-8 font-sans text-slate-900">
+        <header className="tl-cabinet-auth-header w-full max-w-5xl mx-auto flex items-center justify-between pb-6 mb-8 border-b border-slate-200/80">
+          <a className="flex items-center gap-3 font-extrabold text-slate-900 text-xl hover:text-teal-700 transition-colors" href="/">
+            <Image src="/tenderlex-logo.png" alt="TenderLex" width={36} height={36} priority />
+            <span>TenderLex</span>
+          </a>
+          <a className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 hover:text-teal-700 transition-colors bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-xl border border-slate-200 shadow-2xs" href="/">
+            На главную
+          </a>
+        </header>
+
+        <section className="w-full max-w-md bg-white p-8 sm:p-10 rounded-3xl border border-slate-200/90 shadow-xl flex flex-col items-center justify-center text-center space-y-4 my-auto">
+          <Loader2 size={40} className="animate-spin text-teal-600" aria-hidden="true" />
+          <div className="space-y-1.5">
+            <h2 className="text-base sm:text-lg font-bold text-slate-900">
+              {telegramVerifying ? "Вход через Telegram..." : "Загрузка кабинета..."}
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-500 leading-relaxed">
+              {telegramVerifying
+                ? "Проверяем данные авторизации и открываем сессию"
+                : "Синхронизируем данные вашего аккаунта"}
+            </p>
+          </div>
+        </section>
+      </main>
+    );
   }
 
   if (!authenticated) {
