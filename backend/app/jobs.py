@@ -59,7 +59,14 @@ from .exact_product import (
     is_exact_position_resolved,
 )
 from .price_monitoring import run_price_monitoring_pipeline
-from .position_selection import AWAITING_POSITION_SELECTION, AWAITING_EXACT_SELECTION, build_selection_snapshot, read_selection, selected_positions
+from .position_selection import (
+    AWAITING_POSITION_SELECTION,
+    AWAITING_EXACT_SELECTION,
+    build_selection_snapshot,
+    extract_unit_and_quantity_from_position,
+    read_selection,
+    selected_positions,
+)
 from .procurement_report import generate_procurement_report
 from .quote_request import build_quote_request_markdown, build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
@@ -1880,7 +1887,7 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
                  message="Проверьте распознанные товары и выберите позиции для мониторинга. Поиск и резервирование начнутся после подтверждения.")
         return
     chosen = selected_positions(job)
-    items = [(str(row.get("name") or ""), str(row.get("unit") or "шт")) for row in chosen]
+    items = [(str(row.get("name") or ""), extract_unit_and_quantity_from_position(row)[0] or "шт") for row in chosen]
 
     if not items:
         _set_job(

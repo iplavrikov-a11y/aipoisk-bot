@@ -25,8 +25,8 @@ import jwt
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-from sqlalchemy import func, or_
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import and_, case, func, or_
+from sqlalchemy.orm import Session, object_session, selectinload
 
 from .ai import call_llm, resolve_job_ai_info
 from .result_offers import (
@@ -132,6 +132,7 @@ from .models import (
     ClientTelegramAccount,
     Invoice,
     Job,
+    JobChatMessage,
     JobFile,
     JobSource,
     OnboardingReminder,
@@ -1145,6 +1146,119 @@ def customer_revoke_api_key(
     return {"ok": True}
 
 
+def get_job_admin_supplements(job: Job) -> list[dict]:
+    raw_path = getattr(job, "admin_supplement_path", "") or ""
+    if not raw_path:
+        return []
+    raw_path = raw_path.strip()
+    if raw_path.startswith("[") and raw_path.endswith("]"):
+        try:
+            data = json.loads(raw_path)
+            if isinstance(data, list):
+                res = []
+                for idx, item in enumerate(data):
+                    if isinstance(item, dict) and item.get("path"):
+                        p = Path(str(item["path"]))
+                        if p.is_file():
+                            label = item.get("label") or ("Дополнительный отчет (эксперт)" if len(data) == 1 else f"Дополнительный отчет {idx + 1} (эксперт)")
+                            res.append({
+                                "path": str(p),
+                                "name": item.get("name") or p.name,
+                                "label": label,
+                                "kind": "admin_supplement" if len(data) == 1 else f"admin_supplement_{idx}",
+                            })
+                if res:
+                    return res
+        except Exception:
+            pass
+    p = Path(raw_path)
+    if p.is_file():
+        name = getattr(job, "admin_supplement_name", "") or p.name
+        return [{
+            "path": str(p),
+            "name": name,
+            "label": "Дополнительный отчет (эксперт)",
+            "kind": "admin_supplement",
+        }]
+    return []
+
+
+def resolve_chat_job_id(job: Job) -> str:
+    if getattr(job, "is_admin_rerun", False) and getattr(job, "parent_job_id", ""):
+        return job.parent_job_id
+    return job.id
+
+
+def chat_message_to_dict(msg: JobChatMessage) -> dict:
+    attachments = []
+    if msg.attachments_json:
+        try:
+            raw = json.loads(msg.attachments_json)
+            if isinstance(raw, list):
+                for idx, a in enumerate(raw):
+                    if isinstance(a, dict):
+                        attachments.append({
+                            "index": idx,
+                            "name": a.get("name") or Path(a.get("path", "")).name or "file",
+                            "label": a.get("label") or a.get("name") or "Файл",
+                            "size": a.get("size") or 0,
+                            "url": f"/api/jobs/{msg.job_id}/chat/{msg.id}/attachment/{idx}",
+                            "customer_url": f"/api/customer/jobs/{msg.job_id}/chat/{msg.id}/attachment/{idx}",
+                        })
+        except Exception:
+            attachments = []
+    return {
+        "id": msg.id,
+        "job_id": msg.job_id,
+        "client_id": msg.client_id,
+        "sender_role": msg.sender_role,
+        "message": msg.message,
+        "attachments": attachments,
+        "is_read_by_client": bool(msg.is_read_by_client),
+        "is_read_by_admin": bool(msg.is_read_by_admin),
+        "created_at": msg.created_at.isoformat() if msg.created_at else None,
+    }
+
+
+def get_job_chat_messages(db: Session, job: Job, auto_seed: bool = True) -> list[JobChatMessage]:
+    root_id = resolve_chat_job_id(job)
+    msgs = db.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).order_by(JobChatMessage.created_at.asc()).all()
+    if not msgs and auto_seed:
+        target_job = job
+        if root_id != job.id:
+            parent = db.get(Job, root_id)
+            if parent:
+                target_job = parent
+        admin_c = str(getattr(target_job, "admin_comment", "") or getattr(job, "admin_comment", "") or "").strip()
+        supplements = get_job_admin_supplements(target_job) or get_job_admin_supplements(job)
+        if admin_c or supplements:
+            atts = []
+            for s in supplements:
+                atts.append({
+                    "name": s.get("name") or "Дополнительный отчет",
+                    "label": s.get("label") or s.get("name") or "Дополнительный отчет",
+                    "path": s.get("path", ""),
+                })
+            first_msg = JobChatMessage(
+                id=new_id(),
+                job_id=root_id,
+                client_id=target_job.client_id or job.client_id or "",
+                sender_role="admin",
+                message=admin_c or "Экспертный отчёт TenderLex подготовлен и прикреплен к задаче.",
+                attachments_json=json.dumps(atts, ensure_ascii=False),
+                is_read_by_admin=True,
+                is_read_by_client=True,
+                created_at=target_job.admin_supplement_at or target_job.updated_at or now_utc(),
+            )
+            try:
+                db.add(first_msg)
+                db.commit()
+                msgs = [first_msg]
+            except Exception:
+                db.rollback()
+    return msgs
+
+
 @app.get("/api/customer/jobs")
 def customer_jobs_api(
     response: Response,
@@ -1185,7 +1299,18 @@ def customer_jobs_api(
         query = query.filter(Job.status == clean_status)
     total = query.count()
     jobs = query.order_by(Job.created_at.desc()).offset(safe_offset).limit(safe_limit).all()
-    items = [customer_job_to_dict(job) for job in jobs]
+    job_ids = [j.id for j in jobs]
+    chat_map: dict[str, list[dict]] = {}
+    if job_ids:
+        raw_msgs = (
+            db.query(JobChatMessage)
+            .filter(JobChatMessage.job_id.in_(job_ids))
+            .order_by(JobChatMessage.created_at.asc())
+            .all()
+        )
+        for m in raw_msgs:
+            chat_map.setdefault(m.job_id, []).append(chat_message_to_dict(m))
+    items = [customer_job_to_dict(job, db=db, chat_messages=chat_map.get(job.id)) for job in jobs]
     if include_pagination:
         return {"items": items, "total": total, "limit": safe_limit, "offset": safe_offset}
     return items
@@ -1628,6 +1753,127 @@ async def customer_start_supplier_search_route(
         "message": "Поиск поставщиков успешно запущен на основе подобранных товаров и аналогов.",
         "job": customer_job_to_dict(job, db=db),
     }
+
+
+@app.post("/api/customer/jobs/{job_id}/chat")
+async def customer_job_chat_route(
+    job_id: str,
+    message: str = Form(default=""),
+    files: list[UploadFile] = File(default=[]),
+    file: UploadFile | None = File(default=None),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    root_id = resolve_chat_job_id(job)
+    clean_message = str(message or "").strip()
+
+    all_uploads: list[UploadFile] = []
+    if files and isinstance(files, (list, tuple)):
+        all_uploads.extend([f for f in files if isinstance(f, UploadFile)])
+    if file and isinstance(file, UploadFile) and file not in all_uploads:
+        all_uploads.append(file)
+
+    if not clean_message and not all_uploads:
+        raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
+
+    get_job_chat_messages(db, job, auto_seed=True)
+
+    target_dir = job_dir(root_id) / "chat"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    attachments: list[dict] = []
+    for uf in all_uploads:
+        if not uf.filename:
+            continue
+        content = await uf.read()
+        if content:
+            safe_name = Path(uf.filename).name
+            dest = target_dir / f"client_{int(time.time())}_{safe_name}"
+            dest.write_bytes(content)
+            attachments.append({
+                "path": str(dest),
+                "name": safe_name,
+                "label": safe_name,
+                "size": len(content),
+            })
+
+    phone_match = re.search(r'(?:\+?7|8)[\s\-\(]*\d{3}[\s\-\)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}', clean_message)
+    if phone_match:
+        extracted_phone = phone_match.group(0).strip()
+        if not getattr(context.user, "phone", ""):
+            context.user.phone = extracted_phone
+        if job.client and not getattr(job.client, "phone", ""):
+            job.client.phone = extracted_phone
+
+    new_msg = JobChatMessage(
+        id=new_id(),
+        job_id=root_id,
+        client_id=job.client_id or "",
+        sender_role="client",
+        message=clean_message,
+        attachments_json=json.dumps(attachments, ensure_ascii=False),
+        is_read_by_client=True,
+        is_read_by_admin=False,
+        created_at=now_utc(),
+    )
+    db.add(new_msg)
+
+    db.query(JobChatMessage).filter(
+        JobChatMessage.job_id == root_id,
+        JobChatMessage.sender_role == "admin",
+        JobChatMessage.is_read_by_client == False,
+    ).update({"is_read_by_client": True})
+
+    job.updated_at = now_utc()
+    db.commit()
+
+    msgs = db.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).order_by(JobChatMessage.created_at.asc()).all()
+    return {"ok": True, "messages": [chat_message_to_dict(m) for m in msgs]}
+
+
+@app.post("/api/customer/jobs/{job_id}/chat/read")
+def customer_job_chat_mark_read_route(
+    job_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    root_id = resolve_chat_job_id(job)
+    db.query(JobChatMessage).filter(
+        JobChatMessage.job_id == root_id,
+        JobChatMessage.sender_role == "admin",
+        JobChatMessage.is_read_by_client == False,
+    ).update({"is_read_by_client": True})
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/customer/jobs/{job_id}/chat/{message_id}/attachment/{att_idx}")
+def customer_job_chat_attachment_route(
+    job_id: str,
+    message_id: str,
+    att_idx: int,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+):
+    job = _customer_job_or_404(db, job_id, context)
+    root_id = resolve_chat_job_id(job)
+    msg = db.get(JobChatMessage, message_id)
+    if not msg or msg.job_id != root_id:
+        raise HTTPException(status_code=404, detail="Сообщение не найдено.")
+    try:
+        raw = json.loads(msg.attachments_json or "[]")
+        if not isinstance(raw, list) or att_idx < 0 or att_idx >= len(raw):
+            raise HTTPException(status_code=404, detail="Вложение не найдено.")
+        att = raw[att_idx]
+        p = Path(str(att.get("path") or ""))
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail="Файл вложения не найден на сервере.")
+        return FileResponse(p, filename=att.get("name") or p.name)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=404, detail="Не удалось прочитать вложение.")
 
 
 # ==============================================================================
@@ -3839,8 +4085,9 @@ def list_jobs(
     visible_jobs = jobs if include_internal else [job for job in jobs if not is_internal_job(job) and not getattr(job, "is_admin_rerun", False)]
     sliced_jobs = visible_jobs[:safe_limit]
 
-    # Pre-fetch admin reruns in a single batch query to avoid N+1 queries per job
+    # Pre-fetch admin reruns and chat counts in single batch queries to avoid N+1 queries per job
     child_reruns_map: dict[str, list[Job]] = {}
+    chat_counts_map: dict[str, tuple[int, int]] = {}
     if sliced_jobs:
         all_reruns = (
             db.query(Job)
@@ -3856,9 +4103,23 @@ def list_jobs(
             if r.parent_job_id:
                 child_reruns_map.setdefault(r.parent_job_id, []).append(r)
 
+        job_ids = [j.id for j in sliced_jobs]
+        raw_chat_rows = (
+            db.query(
+                JobChatMessage.job_id,
+                func.count(JobChatMessage.id),
+                func.sum(case((and_(JobChatMessage.sender_role == "client", JobChatMessage.is_read_by_admin == False), 1), else_=0))
+            )
+            .filter(JobChatMessage.job_id.in_(job_ids))
+            .group_by(JobChatMessage.job_id)
+            .all()
+        )
+        for jid, tot, unread in raw_chat_rows:
+            chat_counts_map[jid] = (int(tot or 0), int(unread or 0))
+
     settings = get_or_create_settings(db)
     return [
-        job_to_dict(job, settings=settings, db=db, child_reruns_map=child_reruns_map)
+        job_to_dict(job, settings=settings, db=db, child_reruns_map=child_reruns_map, chat_counts_map=chat_counts_map)
         for job in sliced_jobs
     ]
 
@@ -4400,6 +4661,13 @@ async def upload_admin_supplement(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    # Если админ нажал «Дополнить отчёт» на карточке экспертного перезапуска (is_admin_rerun),
+    # привязываем дополнение к родительской задаче клиента, чтобы клиент увидел его в личном кабинете.
+    if getattr(job, "is_admin_rerun", False) and getattr(job, "parent_job_id", ""):
+        parent_job = db.get(Job, job.parent_job_id)
+        if parent_job is not None:
+            job = parent_job
+
     clean_comment = str(comment if isinstance(comment, str) else "").strip()
     supplement_items: list[dict] = []
 
@@ -4486,6 +4754,103 @@ async def upload_admin_supplement(
         job.error = ""
         job.message = "Дополнено экспертом TenderLex"
 
+    # Если клиенту отправляется дополненный отчёт (из экспертного перезапуска или загруженный файл),
+    # досписываем средства за вновь найденные позиции (или за выполненный отчёт, если задача ранее упала в ошибку).
+    if supplement_items and job.client_id and not getattr(job, "is_admin_rerun", False):
+        try:
+            client_obj = db.get(Client, job.client_id)
+            if client_obj is not None:
+                charged_txs = (
+                    db.query(BillingTransaction)
+                    .filter(
+                        BillingTransaction.job_id == job.id,
+                        BillingTransaction.operation == "charge",
+                    )
+                    .all()
+                )
+                already_charged_units = sum(int(tx.units or 0) for tx in charged_txs)
+                already_charged_kopeks = sum(int(tx.amount_kopeks or 0) for tx in charged_txs)
+                avail_kopeks = max(
+                    0,
+                    int(client_obj.money_balance_kopeks or 0) - int(client_obj.money_reserved_kopeks or 0),
+                )
+
+                root_id = job.parent_job_id if getattr(job, "parent_job_id", "") else job.id
+                all_rel_jobs = (
+                    db.query(Job)
+                    .filter(or_(Job.id == root_id, Job.parent_job_id == root_id, Job.id == job.id))
+                    .all()
+                )
+                max_verified = max(
+                    [int(getattr(rj, "verified_count", 0) or 0) for rj in all_rel_jobs],
+                    default=int(getattr(job, "verified_count", 0) or 0),
+                )
+                if max_verified > int(getattr(job, "verified_count", 0) or 0):
+                    job.verified_count = max_verified
+
+                if job.mode in ("price_monitoring", "exact_product"):
+                    sel_data = read_selection(job)
+                    unit_price_kopeks = (
+                        int(sel_data.get("price_kopeks"))
+                        if "price_kopeks" in sel_data and sel_data.get("price_kopeks") is not None
+                        else effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
+                    )
+                    if max_verified > already_charged_units and unit_price_kopeks > 0 and avail_kopeks > 0:
+                        delta_units = max_verified - already_charged_units
+                        needed_kopeks = delta_units * unit_price_kopeks
+                        charge_kopeks = min(needed_kopeks, avail_kopeks)
+                        if charge_kopeks > 0:
+                            charged_u = max(1, charge_kopeks // unit_price_kopeks)
+                            client_obj.money_balance_kopeks = int(client_obj.money_balance_kopeks or 0) - charge_kopeks
+                            db.add(
+                                BillingTransaction(
+                                    client_id=client_obj.id,
+                                    job_id=job.id,
+                                    kind=job.mode,
+                                    operation="charge",
+                                    units=charged_u,
+                                    amount_kopeks=charge_kopeks,
+                                    note=f"Оплата по дополненному экспертному отчёту: +{charged_u} поз. (всего найдено {max_verified} поз.)",
+                                )
+                            )
+                else:
+                    if already_charged_kopeks == 0 and avail_kopeks > 0:
+                        unit_price_kopeks = effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
+                        charge_kopeks = min(unit_price_kopeks, avail_kopeks)
+                        if charge_kopeks > 0:
+                            client_obj.money_balance_kopeks = int(client_obj.money_balance_kopeks or 0) - charge_kopeks
+                            db.add(
+                                BillingTransaction(
+                                    client_id=client_obj.id,
+                                    job_id=job.id,
+                                    kind=job.mode,
+                                    operation="charge",
+                                    units=1,
+                                    amount_kopeks=charge_kopeks,
+                                    note="Оплата за подготовленный экспертный отчёт",
+                                )
+                            )
+        except Exception as bill_exc:
+            logger.warning("Failed to settle supplement charge for job %s: %s", job.id, bill_exc)
+
+    # Seed prior messages if any
+    get_job_chat_messages(db, job, auto_seed=True)
+
+    # Record chat message from admin with supplement files and comment
+    root_id = job.parent_job_id if getattr(job, "parent_job_id", "") and getattr(job, "is_admin_rerun", False) else job.id
+    chat_msg = JobChatMessage(
+        id=new_id(),
+        job_id=root_id,
+        client_id=job.client_id or "",
+        sender_role="admin",
+        message=clean_comment or "Экспертный отчёт TenderLex дополнен новыми материалами.",
+        attachments_json=json.dumps(supplement_items, ensure_ascii=False),
+        is_read_by_admin=True,
+        is_read_by_client=False,
+        created_at=now_utc(),
+    )
+    db.add(chat_msg)
+
     job.admin_supplement_at = now_utc()
     job.updated_at = now_utc()
     db.commit()
@@ -4513,6 +4878,223 @@ async def upload_admin_supplement(
         "job": job_to_dict(job, db=db),
         "telegram_notified": tg_sent,
     }
+
+
+@app.get("/api/admin/dialogs", dependencies=[Depends(require_admin)])
+def admin_dialogs_list(
+    db: Session = Depends(db_session),
+    filter_unread: bool = False,
+) -> dict:
+    chat_job_ids = [row[0] for row in db.query(JobChatMessage.job_id).distinct().all() if row[0]]
+    comment_jobs = (
+        db.query(Job)
+        .filter(
+            or_(
+                func.coalesce(Job.admin_comment, "") != "",
+                func.coalesce(Job.admin_supplement_path, "") != "",
+            ),
+            Job.is_admin_rerun == False,
+        )
+        .all()
+    )
+    all_job_ids = list(dict.fromkeys(chat_job_ids + [j.id for j in comment_jobs]))
+    if not all_job_ids:
+        return {"dialogs": [], "total_unread_admin": 0}
+
+    jobs = (
+        db.query(Job)
+        .options(selectinload(Job.client).selectinload(Client.web_users))
+        .filter(Job.id.in_(all_job_ids))
+        .all()
+    )
+    job_map = {j.id: j for j in jobs}
+
+    all_msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.job_id.in_(all_job_ids))
+        .order_by(JobChatMessage.created_at.asc())
+        .all()
+    )
+    msgs_by_job: dict[str, list[JobChatMessage]] = {}
+    for m in all_msgs:
+        msgs_by_job.setdefault(m.job_id, []).append(m)
+
+    dialogs = []
+    total_unread_admin = 0
+
+    for jid in all_job_ids:
+        job = job_map.get(jid)
+        if not job or getattr(job, "is_admin_rerun", False):
+            continue
+        msgs = msgs_by_job.get(jid)
+        if not msgs:
+            msgs = get_job_chat_messages(db, job, auto_seed=True)
+            if not msgs:
+                continue
+
+        unread_cnt = sum(1 for m in msgs if m.sender_role == "client" and not m.is_read_by_admin)
+        total_unread_admin += unread_cnt
+
+        if filter_unread and unread_cnt == 0:
+            continue
+
+        last_m = msgs[-1]
+        client_name = job.client.name if job.client else ""
+        client_email = ""
+        client_phone = getattr(job.client, "phone", "") or ""
+        if job.client and job.client.web_users:
+            for wu in job.client.web_users:
+                if wu.email and not client_email:
+                    client_email = wu.email
+                if getattr(wu, "phone", "") and not client_phone:
+                    client_phone = wu.phone
+
+        dialogs.append({
+            "job_id": job.id,
+            "job_number": getattr(job, "job_number", None),
+            "job_title": human_job_title(job),
+            "job_mode": job.mode,
+            "job_mode_label": mode_label(job.mode),
+            "job_status": job.status,
+            "client_id": job.client_id or "",
+            "client_name": client_name or "Без названия",
+            "client_email": client_email,
+            "client_phone": client_phone,
+            "telegram_id": job.client.telegram_id if job.client else "",
+            "last_message": last_m.message or ("📎 Прикреплены файлы" if last_m.attachments_json != "[]" else ""),
+            "last_message_at": last_m.created_at.isoformat() if last_m.created_at else None,
+            "last_sender_role": last_m.sender_role,
+            "unread_admin_count": unread_cnt,
+            "total_messages": len(msgs),
+        })
+
+    dialogs.sort(key=lambda d: d.get("last_message_at") or "", reverse=True)
+    return {"dialogs": dialogs, "total_unread_admin": total_unread_admin}
+
+
+@app.get("/api/jobs/{job_id}/chat", dependencies=[Depends(require_admin)])
+def admin_job_chat_get(job_id: str, db: Session = Depends(db_session)) -> dict:
+    job = resolve_admin_job(job_id, db)
+    if not job:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    msgs = get_job_chat_messages(db, job, auto_seed=True)
+    updated = False
+    for m in msgs:
+        if m.sender_role == "client" and not m.is_read_by_admin:
+            m.is_read_by_admin = True
+            updated = True
+    if updated:
+        db.commit()
+    return {"messages": [chat_message_to_dict(m) for m in msgs]}
+
+
+@app.post("/api/jobs/{job_id}/chat", dependencies=[Depends(require_admin)])
+async def admin_job_chat_post(
+    job_id: str,
+    message: str = Form(default=""),
+    notify_telegram: bool = Form(default=False),
+    files: list[UploadFile] = File(default=[]),
+    file: UploadFile | None = File(default=None),
+    db: Session = Depends(db_session),
+) -> dict:
+    job = resolve_admin_job(job_id, db)
+    if not job:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    root_id = resolve_chat_job_id(job)
+    clean_message = str(message or "").strip()
+
+    all_uploads: list[UploadFile] = []
+    if files and isinstance(files, (list, tuple)):
+        all_uploads.extend([f for f in files if isinstance(f, UploadFile)])
+    if file and isinstance(file, UploadFile) and file not in all_uploads:
+        all_uploads.append(file)
+
+    if not clean_message and not all_uploads:
+        raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
+
+    get_job_chat_messages(db, job, auto_seed=True)
+
+    target_dir = job_dir(root_id) / "chat"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    attachments: list[dict] = []
+    for uf in all_uploads:
+        if not uf.filename:
+            continue
+        content = await uf.read()
+        if content:
+            safe_name = Path(uf.filename).name
+            dest = target_dir / f"{int(time.time())}_{safe_name}"
+            dest.write_bytes(content)
+            attachments.append({
+                "path": str(dest),
+                "name": safe_name,
+                "label": safe_name,
+                "size": len(content),
+            })
+
+    new_msg = JobChatMessage(
+        id=new_id(),
+        job_id=root_id,
+        client_id=job.client_id or "",
+        sender_role="admin",
+        message=clean_message,
+        attachments_json=json.dumps(attachments, ensure_ascii=False),
+        is_read_by_admin=True,
+        is_read_by_client=False,
+        created_at=now_utc(),
+    )
+    db.add(new_msg)
+
+    target_job = db.get(Job, root_id) or job
+    if clean_message:
+        target_job.admin_comment = clean_message
+    target_job.admin_supplement_at = now_utc()
+    target_job.updated_at = now_utc()
+    db.commit()
+
+    if notify_telegram:
+        target_tg_id = target_job.created_by_telegram_id or (target_job.client.telegram_id if target_job.client else "")
+        if target_tg_id:
+            try:
+                from .bot import send_admin_supplement_telegram
+                supp_list = get_job_admin_supplements(target_job)
+                await send_admin_supplement_telegram(
+                    telegram_id=target_tg_id,
+                    job_title=human_job_title(target_job) or target_job.title,
+                    job_id=target_job.id,
+                    comment=clean_message,
+                    files=supp_list,
+                )
+            except Exception as exc:
+                logger.warning("Error notifying telegram in admin chat: %s", exc)
+
+    msgs = db.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).order_by(JobChatMessage.created_at.asc()).all()
+    return {"ok": True, "messages": [chat_message_to_dict(m) for m in msgs]}
+
+
+@app.get("/api/jobs/{job_id}/chat/{message_id}/attachment/{att_idx}", dependencies=[Depends(require_admin)])
+def admin_job_chat_attachment(
+    job_id: str,
+    message_id: str,
+    att_idx: int,
+    db: Session = Depends(db_session),
+):
+    msg = db.get(JobChatMessage, message_id)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Сообщение не найдено.")
+    try:
+        raw = json.loads(msg.attachments_json or "[]")
+        if not isinstance(raw, list) or att_idx < 0 or att_idx >= len(raw):
+            raise HTTPException(status_code=404, detail="Вложение не найдено.")
+        att = raw[att_idx]
+        p = Path(str(att.get("path") or ""))
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail="Файл вложения не найден на диске.")
+        return FileResponse(p, filename=att.get("name") or p.name)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=404, detail="Не удалось прочитать вложение.")
 
 
 def read_job_evidence_payload(job: Job, *, storage_root: Path | None = None) -> dict:
@@ -5368,7 +5950,13 @@ def customer_billing_transaction_to_dict(transaction: BillingTransaction) -> dic
     }
 
 
-def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session | None = None) -> dict:
+def customer_job_to_dict(
+    job: Job,
+    include_files: bool = False,
+    *,
+    db: Session | None = None,
+    chat_messages: list[dict] | None = None,
+) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
     result_files = customer_job_result_files(job)
     confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
@@ -5407,6 +5995,27 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
     status_lbl = human_status_label(job.status)
     if job.status == "failed" and getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY and ("реестр" in (job.error or "").lower() or "реестр" in (job.message or "").lower()):
         status_lbl = "нет в реестре"
+
+    chat_list: list[dict] = []
+    unread_admin_cnt = 0
+    if chat_messages is not None:
+        chat_list = chat_messages
+        unread_admin_cnt = sum(1 for m in chat_messages if m.get("sender_role") == "admin" and not m.get("is_read_by_client"))
+    else:
+        s = db or object_session(job)
+        if s:
+            try:
+                root_id = resolve_chat_job_id(job)
+                raw_msgs = s.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).order_by(JobChatMessage.created_at.asc()).all()
+                if not raw_msgs and (getattr(job, "admin_comment", "") or getattr(job, "admin_supplement_path", "")):
+                    raw_msgs = get_job_chat_messages(s, job, auto_seed=True)
+                for m in raw_msgs:
+                    chat_list.append(chat_message_to_dict(m))
+                    if m.sender_role == "admin" and not m.is_read_by_client:
+                        unread_admin_cnt += 1
+            except Exception:
+                pass
+
     data = {
         "id": job.id,
         "job_number": getattr(job, "job_number", None),
@@ -5449,6 +6058,8 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "admin_comment": getattr(job, "admin_comment", "") or "",
         "admin_supplement_name": getattr(job, "admin_supplement_name", "") or "",
         "admin_supplement_at": job.admin_supplement_at.isoformat() if getattr(job, "admin_supplement_at", None) else None,
+        "chat_messages": chat_list,
+        "unread_admin_messages_count": unread_admin_cnt,
         "yandex_requests_count": getattr(job, "yandex_requests_count", 0) or 0,
         "yandex_cost_rub": getattr(job, "yandex_cost_rub", 0.0) or 0.0,
         "yandex_cost_label": f"{(getattr(job, 'yandex_cost_rub', 0.0) or 0.0):.2f} ₽",
@@ -7165,6 +7776,7 @@ def job_to_dict(
     settings: SystemSettings | None = None,
     db: Session | None = None,
     child_reruns_map: dict[str, list[Job]] | None = None,
+    chat_counts_map: dict[str, tuple[int, int]] | None = None,
 ) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
     evidence_path = str(getattr(job, "evidence_path", "") or "")
@@ -7187,6 +7799,19 @@ def job_to_dict(
         users_with_email = [u for u in client_web_users if getattr(u, "email", None)]
         if users_with_email:
             client_email = users_with_email[0].email or ""
+
+    chat_msgs_count = 0
+    unread_client_msgs = 0
+    if chat_counts_map is not None:
+        chat_msgs_count, unread_client_msgs = chat_counts_map.get(job.id, (0, 0))
+    elif db:
+        try:
+            root_id = resolve_chat_job_id(job)
+            chat_msgs = db.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).all()
+            chat_msgs_count = len(chat_msgs)
+            unread_client_msgs = sum(1 for m in chat_msgs if m.sender_role == "client" and not m.is_read_by_admin)
+        except Exception:
+            pass
 
     created_by_raw = str(getattr(job, "created_by_telegram_id", "") or "").strip()
     created_by_label = ""
@@ -7266,6 +7891,8 @@ def job_to_dict(
         "admin_comment": getattr(job, "admin_comment", "") or "",
         "admin_supplement_name": getattr(job, "admin_supplement_name", "") or "",
         "admin_supplement_at": job.admin_supplement_at.isoformat() if getattr(job, "admin_supplement_at", None) else None,
+        "chat_messages_count": chat_msgs_count,
+        "unread_client_messages_count": unread_client_msgs,
         "error": job.error,
         "ai_provider": ai_info.get("ai_provider", ""),
         "ai_provider_name": ai_info.get("ai_provider_name", ""),

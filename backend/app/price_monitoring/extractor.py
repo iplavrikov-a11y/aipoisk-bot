@@ -598,7 +598,21 @@ def compute_deterministic_normalized_price(
         p = round((raw_price / 1000.0) + 1e-9, 2)
         return p, norm_target, f"На сайте: {raw_price:,.0f} ₽/км. Пересчитано в м (/1000): {p:,.2f} ₽/м"
 
-    # 3. Фасовка, упаковки, тара (бочки, канистры, мешки, коробки, пачки, рулоны, бухты).
+    # СМЕТНЫЕ КРАТНЫЕ ЕДИНИЦЫ (10 шт, 100 шт, 1000 шт, 10 м, 100 м, 1000 м2 и т.д.):
+    m_target_mult = re.fullmatch(r"(10|100|1000)(шт|м|м2|м3|кг|л|компл)", norm_target)
+    m_site_mult = re.fullmatch(r"(10|100|1000)(шт|м|м2|м3|кг|л|компл)", norm_site)
+    if m_target_mult and norm_site == m_target_mult.group(2):
+        mult = float(m_target_mult.group(1))
+        b_unit = m_target_mult.group(2)
+        p = round((raw_price * mult) + 1e-9, 2)
+        return p, norm_target, f"На сайте: {raw_price:,.2f} ₽/{b_unit}. Пересчитано за {int(mult)} {b_unit} (x{int(mult)}): {p:,.2f} ₽/{norm_target}"
+    if m_site_mult and norm_target == m_site_mult.group(2):
+        mult = float(m_site_mult.group(1))
+        b_unit = m_site_mult.group(2)
+        p = round((raw_price / mult) + 1e-9, 2)
+        return p, norm_target, f"На сайте: {raw_price:,.2f} ₽ за {int(mult)} {b_unit}. Пересчитано за 1 {norm_target} (/{int(mult)}): {p:,.2f} ₽/{norm_target}"
+
+    # 3. Фасовка, упаковки, тара (бочки, канистры, мешки, коробки, пачки, рулоны, бухты, листы).
     # A unit label alone cannot prove the contents of a purchasable container;
     # conversion needs the extractor's explicit source-backed fields.
     qty = pack_quantity
@@ -611,21 +625,39 @@ def compute_deterministic_normalized_price(
     pack_keywords = ("уп", "пач", "кор", "мешок", "бочк", "канистр", "рулон", "бухт", "ведр", "банк", "компл")
     is_pack_unit = any(k in site_unit.lower() for k in pack_keywords)
     if qty and qty > 0 and base_u and is_price_for_whole_pack:
-        # Случай А: На сайте цена за тару/упаковку Q базовых единиц, а требуется базовая единица (или кратная ей)
+        # Случай А: На сайте цена за тару/упаковку/рулон/лист Q базовых единиц, а требуется базовая единица
         if norm_target == base_u:
             p = round((raw_price / qty) + 1e-9, 2)
             lbl = site_unit if site_unit else "упаковку/тару"
             return p, norm_target, f"На сайте: {raw_price:,.2f} ₽ за {lbl} ({qty} {norm_target}). Пересчитано за 1 {norm_target}: {p:,.2f} ₽/{norm_target}"
 
-        # Случай Б: Тара в кг (например, мешок 50 кг), а заказчику нужны тонны (т)
+        # Случай А2: На сайте цена за тару/упаковку/лист Q базовых единиц, а требуется кратная сметная единица (10 шт, 100 шт, 10 м, 1000 м2)
+        if m_target_mult and base_u == m_target_mult.group(2):
+            mult = float(m_target_mult.group(1))
+            b_unit = m_target_mult.group(2)
+            p = round(((raw_price / qty) * mult) + 1e-9, 2)
+            lbl = site_unit if site_unit else "упаковку/тару"
+            return p, norm_target, f"На сайте: {raw_price:,.2f} ₽ за {lbl} ({qty} {b_unit}). Пересчитано за {int(mult)} {b_unit}: {p:,.2f} ₽/{norm_target}"
+
+        # Случай Б: Тара в кг (например, мешок 50 кг, ведро 25 кг, лист 31.4 кг), а заказчику нужны тонны (т)
         if base_u in ("кг", "килограмм") and norm_target in ("т", "тонна"):
             p = round(((raw_price / qty) * 1000.0) + 1e-9, 2)
             return p, norm_target, f"На сайте: {raw_price:,.2f} ₽ за тару ({qty} кг). Пересчитано в тонны (x1000/{qty}): {p:,.0f} ₽/т"
+
+        # Случай Б2: Тара в граммах (например, туба 400 г), а заказчику нужны кг
+        if base_u in ("г", "грамм", "гр") and norm_target in ("кг", "килограмм"):
+            p = round(((raw_price / qty) * 1000.0) + 1e-9, 2)
+            return p, norm_target, f"На сайте: {raw_price:,.2f} ₽ за тару ({qty} г). Пересчитано в кг (x1000/{qty}): {p:,.2f} ₽/кг"
 
         # Случай В: Тара в литрах (например, бочка 200 л), а заказчику нужны кубометры (м³)
         if base_u in ("л", "литр") and norm_target in ("м3", "куб", "кубометр"):
             p = round(((raw_price / qty) * 1000.0) + 1e-9, 2)
             return p, norm_target, f"На сайте: {raw_price:,.2f} ₽ за тару ({qty} л). Пересчитано в м³ (x1000/{qty}): {p:,.0f} ₽/м³"
+
+        # Случай В2: Тара в мл (например, туба 310 мл), а заказчику нужны литры (л)
+        if base_u in ("мл", "миллилитр") and norm_target in ("л", "литр"):
+            p = round(((raw_price / qty) * 1000.0) + 1e-9, 2)
+            return p, norm_target, f"На сайте: {raw_price:,.2f} ₽ за тару ({qty} мл). Пересчитано в л (x1000/{qty}): {p:,.2f} ₽/л"
 
     # Случай Г: Заказчик просит упаковку из Q штук/кг, а на сайте цена за 1 штуку/кг
     if qty and qty > 1 and base_u and is_pack_unit and not is_price_for_whole_pack:
@@ -750,13 +782,13 @@ HOMOGLYPHS = str.maketrans({
 })
 
 
-def _is_complex_identifier(token: str) -> bool:
+def _is_complex_identifier(token: str, full_text: str = "") -> bool:
     """Use the same model/specification distinction during search and page matching."""
     token = token.strip("()[]{}<>\"'*#№!, =")
     if " " in token:
         return False
     # Preserve the extractor's support for long numeric catalog identifiers.
-    return is_drawing_or_part_code(token) or bool(re.fullmatch(r"\d{9,}", token))
+    return is_drawing_or_part_code(token, full_text) or bool(re.fullmatch(r"\d{9,}", token))
 
 
 def _has_deterministic_identifier_conflict(
@@ -784,25 +816,27 @@ def _has_deterministic_identifier_conflict(
             all_raw_tokens.extend(tid_str.split())
         else:
             all_raw_tokens.append(tid_str)
-    for tok in re.split(r"[\s,;]+", target_item_name):
+    # Исключаем дробные числа с запятой (например 2,18385), чтобы при разбиении по запятой дробная часть не считалась артикулом
+    target_without_comma_decimals = re.sub(r"\b\d+,\d+\b", " ", target_item_name)
+    for tok in re.split(r"[\s,;]+", target_without_comma_decimals):
         all_raw_tokens.append(tok)
 
     for tok in all_raw_tokens:
         c_tok = tok.strip("()[]{}<>\"'*#№!, =")
-        if _is_complex_identifier(c_tok) and c_tok not in candidates:
+        if _is_complex_identifier(c_tok, target_item_name) and c_tok not in candidates:
             candidates.append(c_tok)
         # Если сложный артикул содержит разделители модификаций/опций (/ или -):
         if "/" in c_tok:
             base_part = c_tok.split("/")[0].strip("()[]{}<>\"'*#№!, =")
-            if _is_complex_identifier(base_part) and base_part not in candidates:
+            if _is_complex_identifier(base_part, target_item_name) and base_part not in candidates:
                 candidates.append(base_part)
             if "-" in base_part:
                 sub_base = base_part.rsplit("-", 1)[0].strip("()[]{}<>\"'*#№!, =")
-                if _is_complex_identifier(sub_base) and sub_base not in candidates:
+                if _is_complex_identifier(sub_base, target_item_name) and sub_base not in candidates:
                     candidates.append(sub_base)
         elif "-" in c_tok and c_tok.count("-") >= 2:
             base_prefix = c_tok.split("-")[0].strip("()[]{}<>\"'*#№!, =")
-            if _is_complex_identifier(base_prefix) and base_prefix not in candidates:
+            if _is_complex_identifier(base_prefix, target_item_name) and base_prefix not in candidates:
                 candidates.append(base_prefix)
 
     if not candidates:
@@ -1115,7 +1149,7 @@ URL страницы: {url}
             pack_quantity=pack_quantity,
             pack_base_unit=pack_base_unit,
             is_price_for_whole_pack=is_price_for_whole_pack,
-            existing_comment=str(parsed.get("conversion_comment") or ""),
+            existing_comment="",
         )
 
         # A known source unit must either match the requested unit or have an

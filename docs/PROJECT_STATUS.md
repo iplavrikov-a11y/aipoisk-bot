@@ -1,6 +1,43 @@
 # TenderLex: Project Status
 
-## Актуальное состояние — 5 ноября 2026 (Москва) — Защита биллинга при повторных запусках (Re-Reserve on Retry) и аудит списаний
+## Актуальное состояние — 5 ноября 2026 (Москва) — Двусторонняя переписка с клиентами (Job Chat), досписание за дополненные отчёты и оптимизация смет мониторинга цен
+
+**Реализация полноценной двусторонней связи с клиентами в кабинете и админ-панели, досписание баланса при отправке экспертных отчетов и исправление смет мониторинга цен**:
+
+1. **Двусторонняя переписка клиент–эксперт (`JobChatMessage`) в 3 точках контакта**:
+   - **Личный кабинет заказчика на сайте (`site/src/app/cabinet/cabinet-client.tsx`)**:
+     - Блок «Комментарий специалистов» модернизирован в интерактивный компонент `CustomerJobChat` на карточке задачи.
+     - Заказчик видит всю историю сообщений и прикреплённых экспертом файлов, может написать ответ (например, указать контактный телефон или уточнить требования по товару) и прикрепить файлы.
+     - При вводе номера телефона система автоматически распознает его и сохраняет в профиль пользователя (`user.phone` и `client.phone`), решая проблему отсутствия контактов для обратной связи.
+     - При открытии карточки задачи непрочитанные сообщения эксперта автоматически помечаются прочитанными (`POST /api/customer/jobs/{job_id}/chat/read`).
+   - **Модальное окно дополнения отчёта (`➕`) в админ-панели (`frontend/src/App.tsx`)**:
+     - В модальном окне дополнения отчёта отображается полная история переписки с заказчиком по данной задаче.
+     - На кнопке `➕` карточки задачи в админке появляется бейдж `🔴 +N` при наличии новых ответов от клиента.
+   - **Новый раздел «Диалоги» в левом сайдбаре панели управления (`frontend/src/DialogsView.tsx`)**:
+     - Добавлен пункт навигации «Диалоги» со счетчиком непрочитанных обращений.
+     - Двухколоночный интерфейс: слева список диалогов с поиском по клиенту/задаче и фильтрами «Все» / «Непрочитанные»; справа — карточка клиента с контактами, быстрая ссылка на задачу, лента сообщений, поле быстрого ответа и отправка файлов.
+
+2. **Автоматическое досписание баланса при отправке дополненного отчёта (`upload_admin_supplement`)**:
+   - Если администратор нажимает «Дополнить отчёт» на карточке экспертного перезапуска (`is_admin_rerun`, например `#1040`), дополнение автоматически маршрутизируется в родительскую задачу клиента (`#1036`).
+   - Система пересчитывает найденные позиции (`verified_count`) и производит досписание с баланса клиента за вновь найденные позиции (`+44 поз. * 99 ₽ = 4 356 ₽`) или за подготовку отчёта, если изначальная задача падала в ошибку.
+   - В историю сообщений автоматически добавляется запись эксперта с прикреплёнными файлами отчёта.
+
+3. **Исправление парсинга смет мониторинга цен и универсализация единиц измерения (Правило 14)**:
+   - **Дробные числа через запятую**: устранена ошибка, когда объёмы вида `2,18385` или `0,005292` разбивались по запятой на несколько чисел, формируя фиктивные 5–6-значные артикулы.
+   - **Единицы измерения из DOCX/PDF**: функция `extract_unit_and_quantity_from_position` извлекает реальные единицы (`т`, `кг`, `м³`, `м²`, `100 шт`, `10 м`, `п.м.`), нормализует Unicode-степени (`²` -> `2`, `³` -> `3`) и передает их в валидатор Правила 14 вместо дефолтных «шт».
+   - **Исключение платных запросов ИНН для товаров без цен**: поиск ИНН домена теперь выполняется только для поставщиков с найденной ненулевой ценой.
+
+4. **Результаты экспертного восстановления задачи #1040 (клиент ИП Будин, смета 64 позиции)**:
+   - Исходный прогон клиента дал всего 12 найденных позиций.
+   - Экспертный перезапуск с сохранением найденного чекпоинта и обновленными правилами дал **57 найденных позиций из 64 (89% покрытия)** при стоимости доработки всего 104.43 ₽ (214 запросов Яндекса).
+   - Готовый файл `Результат - Отчет по ценам.xlsx` проверен и готов к отправке клиенту.
+
+5. **Тестирование и деплой**:
+   - Добавлен набор интеграционных тестов `backend/tests/test_job_chat.py` (двусторонний обмен сообщениями, распознавание телефона, серилизация в API, смена статусов прочитанности).
+   - Все 1 408 тестов бэкенда, сборка Vite админ-панели и сборка Next.js сайта успешно пройдены.
+   - Сервисы перезапущены и проверены скриптом `./scripts/deploy_tenderlex_live.sh`.
+
+## Предыдущее состояние — 5 ноября 2026 (Москва) — Защита биллинга при повторных запусках (Re-Reserve on Retry) и аудит списаний
 
 **Ликвидация утечки списаний при перезапуске упавших задач, двухфазное дорезервирование и аудит базы клиентов**:
 
@@ -2939,62 +2976,7 @@ Load-test boundary:
   `280 passed`, `46` subtests passed, `2` existing FastAPI deprecation
   warnings. Live worker was active after restart, and backend SQLite connection
   reported `journal_mode=wal`, `busy_timeout=30000`, `synchronous=1`.
-- Local health endpoint: HTTP 200.
-- API, bot, and worker services: active after restart.
-- Live DB has `job_sources`.
-- Live DB has the supplier AI/audit columns:
-  `quality_score`, `quality_tier`, `procurement_item_id`,
-  `procurement_item`, `ai_confidence`, `site_type`, `product_fit`,
-  `evidence_snippet`, `contact_evidence_snippet`, `ai_rank_confidence`,
-  `ai_rank_reason`.
-- Browser extraction smoke: email and phone extracted from rendered content.
-- Multi-domain supplier eval suite: present and covered by tests.
-- Failed supplier-search jobs persist `evidence.json` instead of creating a report without AI verification.
-- Admin API can read job evidence through `/api/jobs/{job_id}/evidence`.
-- Admin API exposes supplier quality monitoring through `/api/ops/supplier-quality`.
-- Source links can create source-only documentation-analysis jobs, are stored
-  in `job_sources`, and are included in source context for AI report/combined
-  analysis.
-- Generic procurement links are supported alongside EIS links.
-- Manual and AI-gated Minpromtorg/GISP registry handling is covered by supplier
-  discovery flow tests and evidence payloads.
-- Regression from job `[внутренний ID исключён]` was diagnosed:
-  Telegram had accepted a zip with an EIS link in the caption, but saved
-  `sources=0`; after the fix, caption links are collected for documentation
-  analysis. The same EIS link now fetches `37280` chars of official context,
-  including customer, `ИНН 5504002648`, `КПП 222543001`, application deadline
-  `08.06.2026`, and initial price `448 960,00 ₽`.
-- Supplier XLSX filenames and first-row headings include the source ТЗ title plus the AI-extracted short procurement subject.
-- Supplier XLSX comments are short customer-facing notes based on product fit: exact item, possible analog, category, or profile supplier.
-- AI supplier query generation retries transient failures and records non-empty
-  diagnostics; Telegram still shows only a concise customer-facing reason.
-- AI contact placeholders are blocked from customer reports; extracted site
-  contacts are used when available, otherwise the supplier is downgraded or
-  rejected.
-- Reprocessed failed supplier job `[внутренний ID исключён]`
-  finished as `partial`, `13/15`, with `ai_required=true`, `ai_used=true`, and
-  no invalid contact placeholders in the XLSX.
-- Supplier search now separates broad товарная группа / номенклатура from exact
-  ТЗ characteristics. For a steel-rope job that previously returned `8/15`,
-  the reprocessed result is `15/15`: AI generated broad category queries,
-  expanded the rerank review pool from `36` to `55` candidates, and the XLSX
-  has no bad contact placeholders or broken phone formats.
-- The supplier target is a minimum, not a hard cap. The same steel-rope job now
-  returns `19` verified suppliers with a configured minimum of `15`; no extra
-  paid batch is run after the minimum is reached, but already AI-verified extra
-  rows from the active batch stay in the XLSX.
-- **DaData & Registry Manufacturer Enrichment (2026-08-14)**:
-  - Integrated asynchronous DaData client (`backend/app/dadata_client.py`) with caching by INN for legal entity data extraction (status, full legal name, standardized legal address, region, CEO name/position, OGRN, KPP).
-  - Upgraded registry fallback pipeline: unmatched GISP/Minpromtorg manufacturers are no longer injected as empty stubs. The system automatically launches targeted web searches (`"{ИНН}" официальный сайт` + `"{Наименование}" контакты`), filters directory/aggregator domains, crawls official websites, and extracts direct phones and emails (>90% contact discovery rate across 10 real test procurements).
-  - Added DaData auto-enrichment for all accepted suppliers with valid INN to ensure uniform region and contact person population.
-- **Safe Cascading Client Deletion (2026-08-14)**:
-  - Fixed `_force_delete_client` in `backend/app/main.py` to safely delete all cascading dependencies of a specific client in correct foreign key dependency order (`WebSession`, `WebPasswordResetRequest`, `WebEmailVerificationToken`, `AccountLinkToken`, `WebUser`, `ClientTelegramAccount`, `UserJourneyEvent`, `OnboardingReminder`, `ClientTariffOverride`, `SupplierResult`, `JobFile`, `JobSource`, `BillingTransaction`, `Job` and on-disk job folders).
-  - Prevents SQLite IntegrityError/500 failures and ensures 100% isolation from other clients or global system state.
-- **Admin Clients Tab Real-Time Polling & Instant Refresh (2026-08-26)**:
-  - Integrated dedicated background polling loop for `/api/clients` and `/api/dashboard` (8s on active Clients tab, 25s on other tabs, and instant refresh on window focus / tab visibility / view change), so new customer registrations appear immediately without manual page reload.
-- **B2B Outreach Email Bounce / NDR Diagnostics & Auto-Categorization (2026-08-26)**:
-  - Added dedicated Bounce / Non-Delivery Report parser (`parse_bounce_info`, `sync_imap_inbox`) recognizing `MAILER-DAEMON`, `postmaster`, `ksmg`, and antispam failure notices.
-  - Extracts failed recipient email, links incoming failure message to its `OutreachLead`, marks lead status as `bounced` with exact diagnostic failure reason (e.g. `550 Access Denied`), and upd
+- Lo
 ... [truncated for diff preview]
   - Extracts failed recipient email, links incoming failure message to its `OutreachLead`, marks lead status as `bounced` with exact diagnostic failure reason (e.g. `550 Access Denied`), and updates task bounce statistics.
   - Implemented retroactive backfill linking existing bounce records in the database.

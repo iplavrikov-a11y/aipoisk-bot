@@ -42,6 +42,7 @@ import {
   Users,
   XCircle,
   Mail,
+  MessageSquare,
   MessageSquarePlus,
   Send,
   TrendingUp,
@@ -57,8 +58,9 @@ import { McpApiView } from './McpApiView'
 import { PriceMonitoringView } from './PriceMonitoringView'
 import { CookiesView } from './CookiesView'
 import { InvoicesView } from './InvoicesView'
+import { DialogsView } from './DialogsView'
 
-type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'invoices' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring' | 'cookies'
+type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'dialogs' | 'billing' | 'invoices' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring' | 'cookies'
 
 type Dashboard = {
   clients: number
@@ -302,6 +304,8 @@ type Job = {
   admin_comment?: string
   admin_supplement_name?: string
   admin_supplement_at?: string | null
+  chat_messages_count?: number
+  unread_client_messages_count?: number
   error: string
   ai_provider?: string
   ai_provider_name?: string
@@ -718,6 +722,10 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   jobs: {
     title: 'Задачи',
     description: 'Последние запуски бота, статусы обработки и готовые файлы для скачивания.',
+  },
+  dialogs: {
+    title: 'Диалоги с клиентами',
+    description: 'Двусторонняя переписка по задачам, ответы клиентов и отправка экспертных материалов.',
   },
   billing: {
     title: 'Тарифы',
@@ -1716,11 +1724,17 @@ export function App() {
     activeItem?.scrollIntoView({ block: 'nearest', inline: 'center' })
   }, [view])
 
+  const totalUnreadDialogs = useMemo(
+    () => jobs.reduce((sum, j) => sum + (j.unread_client_messages_count || 0), 0),
+    [jobs]
+  )
+
   const nav = [
     { id: 'dashboard' as const, label: 'Сводка', icon: ShieldCheck },
     { id: 'seo' as const, label: 'SEO и Трафик', icon: Globe },
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
+    { id: 'dialogs' as const, label: 'Диалоги', icon: MessageSquare, badge: totalUnreadDialogs },
     { id: 'outreach' as const, label: 'Лиды и Рассылка', icon: Mail },
     { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
     { id: 'invoices' as const, label: 'Счета и оплаты', icon: FileCheck },
@@ -1774,6 +1788,20 @@ export function App() {
               >
                 <Icon size={17} />
                 <span>{item.label}</span>
+                {Boolean((item as any).badge) && (
+                  <span style={{
+                    marginLeft: 'auto',
+                    background: '#ef4444',
+                    color: '#fff',
+                    borderRadius: 10,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    padding: '1px 6px',
+                    lineHeight: '14px',
+                  }}>
+                    +{(item as any).badge}
+                  </span>
+                )}
               </a>
             )
           })}
@@ -1867,6 +1895,15 @@ export function App() {
                 await loadAll()
               }}
               loading={jobsLoading}
+            />
+          </AdminErrorBoundary>
+        )}
+        {isReady && view === 'dialogs' && (
+          <AdminErrorBoundary sectionName="Диалоги">
+            <DialogsView
+              onOpenJob={jobId => {
+                setView('jobs')
+              }}
             />
           </AdminErrorBoundary>
         )}
@@ -4726,12 +4763,48 @@ function JobsView({
                 {/* Supplement button */}
                 <button
                   type="button"
-                  className={`icon-button small ${job.has_admin_supplement ? 'accent-active' : ''}`}
-                  style={job.has_admin_supplement ? { color: '#0d9488', borderColor: '#99f6e4', background: '#f0fdfa' } : undefined}
+                  className={`icon-button small ${job.unread_client_messages_count ? 'danger-badge' : job.has_admin_supplement ? 'accent-active' : ''}`}
+                  style={{
+                    position: 'relative',
+                    ...(job.unread_client_messages_count
+                      ? { color: '#dc2626', borderColor: '#fca5a5', background: '#fef2f2' }
+                      : job.has_admin_supplement
+                      ? { color: '#0d9488', borderColor: '#99f6e4', background: '#f0fdfa' }
+                      : undefined),
+                  }}
                   onClick={() => setSupplementModalJob(job)}
-                  title={job.has_admin_supplement ? 'Редактировать дополнение эксперта' : 'Дополнить отчет / отправить клиенту'}
+                  title={
+                    job.unread_client_messages_count
+                      ? `Новые сообщения от клиента (${job.unread_client_messages_count})`
+                      : job.has_admin_supplement
+                      ? 'Чат и дополнение эксперта'
+                      : 'Дополнить отчет / написать клиенту'
+                  }
                 >
                   <MessageSquarePlus size={13} />
+                  {Boolean(job.unread_client_messages_count) && (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        top: -5,
+                        right: -5,
+                        background: '#ef4444',
+                        color: '#fff',
+                        borderRadius: '50%',
+                        fontSize: 9,
+                        fontWeight: 700,
+                        width: 15,
+                        height: 15,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        lineHeight: 1,
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+                      }}
+                    >
+                      {job.unread_client_messages_count}
+                    </span>
+                  )}
                 </button>
 
                 {/* Admin Rerun button */}
@@ -4945,12 +5018,40 @@ function AdminSupplementModal({
   const [comment, setComment] = useState(() => defaultAdminComment(job))
   const [candidates, setCandidates] = useState<SupplementCandidate[]>([])
   const [loadingCandidates, setLoadingCandidates] = useState(true)
+  const [chatMessages, setChatMessages] = useState<any[]>([])
+  const [loadingChat, setLoadingChat] = useState(true)
   const [sourceMode, setSourceMode] = useState<'job_file' | 'upload'>('job_file')
   const [selectedJobFileKinds, setSelectedJobFileKinds] = useState<string[]>([])
   const [files, setFiles] = useState<File[]>([])
   const [notifyTelegram, setNotifyTelegram] = useState(() => !isWebClient)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    async function loadChat() {
+      try {
+        const token = localStorage.getItem('tenderlex_admin_token') || sessionStorage.getItem('tenderlex_admin_token') || ''
+        const res = await fetch(`/api/jobs/${job.id}/chat`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (active && Array.isArray(data.messages)) {
+            setChatMessages(data.messages)
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load job chat in modal:', err)
+      } finally {
+        if (active) setLoadingChat(false)
+      }
+    }
+    loadChat()
+    return () => {
+      active = false
+    }
+  }, [job.id])
 
   useEffect(() => {
     let active = true
@@ -5075,6 +5176,84 @@ function AdminSupplementModal({
               {job.admin_supplement_name && (
                 <div style={{ marginTop: 4, fontSize: 11, color: '#0f766e', fontWeight: 600 }}>
                   ✨ Текущий прикрепленный отчет: {job.admin_supplement_name}
+                </div>
+              )}
+            </div>
+
+            {/* Chat History Thread */}
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <MessageSquare size={14} color="#0d9488" />
+                  <span>История переписки по задаче ({chatMessages.length})</span>
+                </span>
+                {loadingChat && <Loader2 size={12} className="spin" color="#64748b" />}
+              </div>
+
+              {loadingChat ? (
+                <div style={{ fontSize: 11, color: '#94a3b8', padding: '6px 0' }}>Загрузка истории переписки...</div>
+              ) : chatMessages.length === 0 ? (
+                <div style={{ fontSize: 11, color: '#64748b', fontStyle: 'italic' }}>
+                  Переписка по задаче ещё не велась. Ваше сообщение будет первым в истории.
+                </div>
+              ) : (
+                <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingRight: 4 }}>
+                  {chatMessages.map((m, idx) => {
+                    const isAdmin = m.sender_role === 'admin'
+                    return (
+                      <div
+                        key={m.id || idx}
+                        style={{
+                          background: isAdmin ? '#f0fdfa' : '#fff',
+                          border: isAdmin ? '1px solid #99f6e4' : '1px solid #e2e8f0',
+                          borderRadius: 6,
+                          padding: '6px 8px',
+                          fontSize: 11.5,
+                          maxWidth: '92%',
+                          alignSelf: isAdmin ? 'flex-end' : 'flex-start',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2, fontSize: 10, color: '#64748b' }}>
+                          <strong style={{ color: isAdmin ? '#0d9488' : '#1e293b' }}>
+                            {isAdmin ? 'Вы (Эксперт)' : 'Клиент'}
+                          </strong>
+                          <span>·</span>
+                          <span>{formatDate(m.created_at)}</span>
+                        </div>
+                        <div style={{ whiteSpace: 'pre-wrap', color: '#1e293b', lineHeight: 1.4 }}>
+                          {m.message}
+                        </div>
+                        {m.attachments && m.attachments.length > 0 && (
+                          <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                            {m.attachments.map((att: any) => (
+                              <a
+                                key={att.index}
+                                href={att.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                download
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  background: isAdmin ? '#ccfbf1' : '#f1f5f9',
+                                  color: isAdmin ? '#0f766e' : '#334155',
+                                  fontSize: 10.5,
+                                  padding: '2px 6px',
+                                  borderRadius: 4,
+                                  textDecoration: 'none',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                <Download size={10} />
+                                <span>{att.name}</span>
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>

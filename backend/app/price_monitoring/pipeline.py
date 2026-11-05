@@ -352,13 +352,15 @@ validate_and_reconcile_item_quotes = cluster_and_reconcile_item_quotes
 
 
 def _attach_source_position(result: ItemPriceResult, source: dict[str, Any]) -> None:
+    from ..position_selection import extract_unit_and_quantity_from_position
     result.position_id = str(source.get("position_id") or source.get("id") or "")
     result.source_position_no = source.get("source_position_no") or source.get("position_no")
     result.source_file = str(source.get("source_file") or "")
     result.source_sheet = str(source.get("source_sheet") or "")
     result.source_row = source.get("source_row")
     result.source_excerpt = str(source.get("source_excerpt") or "")
-    result.quantity = str(source.get("quantity") or "")
+    ext_unit, ext_qty = extract_unit_and_quantity_from_position(source)
+    result.quantity = str(source.get("quantity") or ext_qty or "")
     result.requirements = [dict(requirement) for requirement in source.get("requirements") or [] if isinstance(requirement, dict)]
 
 
@@ -458,7 +460,7 @@ async def generate_monitoring_queries_ai(
 2. Составь запросы естественной длины (3-6 слов) для нахождения страниц с реальными коммерческими ценами:
    - Прямой коммерческий запрос по целевому названию и марке со словами 'купить цена'
    - Запрос по точной марке/артикулу у поставщиков и дилеров со склада
-   - Запрос по производителю, каталогу или оптовому прайс-листу
+   - Запрос по производителю, каталогу или оптовому прайс-листу с учетом требуемой единицы измерения "{unit}"
 3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО включать стоп-слова ('не менее', 'в соответствии с', 'требуется'), мусор 1С и лишние служебные знаки.
 4. Запросы должны приводить на коммерческие страницы реальных компаний, складов и производителей в РФ.
 5. СМЕТНЫЕ И КЛАССИФИКАЦИОННЫЕ КОДЫ (ПРАВИЛО 14):
@@ -555,16 +557,28 @@ async def process_single_item(
         unit=unit,
     )
     if source_position is not None:
+        from ..position_selection import extract_unit_and_quantity_from_position
+        ext_unit, _ = extract_unit_and_quantity_from_position(source_position)
+        if ext_unit and (not unit or (unit == "шт" and not source_position.get("unit"))):
+            unit = ext_unit
+            item_res.unit = ext_unit
         _attach_source_position(item_res, source_position)
-        # Only this selected row's explicit requirements influence query and offer matching.
-        # Filter out tender classification metadata (ОКПД2, КТРУ, ТН ВЭД) from requirements_text
+        # Only this selected row's explicit technical requirements influence query and offer matching.
+        # Filter out tender/smeta classification metadata, quantities, units, and internal notes from requirements_text.
+        _NON_SPEC_REQ_PARAMS = (
+            "окпд", "ктру", "тнвэд", "тн вэд", "okpd", "ktru",
+            "код сметы", "шифр", "обоснование", "фсбц", "кср", "фер", "тер", "гэсн", "фснб", "тсн",
+            "количество", "объем закупки", "объём закупки",
+            "единица измерения", "ед. изм", "ед.изм",
+            "примечание", "комментарий",
+        )
         requirements_text = "; ".join(
             f"{requirement.get('param_name')}: {requirement.get('tz_requirement')}"
             for requirement in item_res.requirements
             if requirement.get("param_name") and requirement.get("tz_requirement")
             and not is_classifier_code(str(requirement.get("param_name", "")))
             and not is_classifier_code(str(requirement.get("tz_requirement", "")))
-            and not any(k in str(requirement.get("param_name", "")).lower() for k in ("окпд", "ктру", "тнвэд", "тн вэд", "okpd", "ktru"))
+            and not any(k in str(requirement.get("param_name", "")).lower() for k in _NON_SPEC_REQ_PARAMS)
         )
         if requirements_text:
             clean = f"{clean}; {requirements_text}"
@@ -621,8 +635,13 @@ async def process_single_item(
         queries = _preserve_exact_codes(queries)
     diagnostics["waves_run"].append(1)
 
+    seen_queries: set[str] = set()
     async with search_semaphore:
         for q in queries[:4]:
+            q_norm = " ".join(q.lower().split())
+            if q_norm in seen_queries:
+                continue
+            seen_queries.add(q_norm)
             diagnostics["search_queries"] += 1
             try:
                 results = await engine.search(
@@ -778,6 +797,15 @@ async def process_single_item(
                                 quote.contacts = kdata["contacts"]
                             break
 
+                    # Если ИНН уже извлечен со страницы или через DaData в extract_supplier_quote — сохраняем в кэш домена
+                    if quote.inn and domain and not domain_inn_cache.get(domain):
+                        domain_inn_cache[domain] = {
+                            "inn": quote.inn,
+                            "company_name": quote.company_name,
+                            "kpp": quote.kpp,
+                            "contacts": quote.contacts,
+                        }
+
                     # Если ИНН поставщика всё ещё не найден, проверяем кэш доменов или обогащаем через DaData/поиск
                     if not quote.inn and domain:
                         cached_entry = domain_inn_cache.get(domain)
@@ -815,8 +843,9 @@ async def process_single_item(
                             except Exception as d_exc:
                                 logger.debug("DaData domain lookup failed for %s: %s", domain, d_exc)
 
-                            # 2. Если DaData не нашел, выполняем поиск в Яндексе ровно ОДИН раз на уникальный домен
-                            if not resolved and isinstance(engine, YandexSearchEngine):
+                            # 2. Платный поиск ИНН в Яндексе внутри цикла кандидатов выполняем ТОЛЬКО для котировок с реальной ценой (quote.price_rub > 0).
+                            # Для котировок "по запросу" (price_rub == 0) не тратим платные запросы заранее.
+                            if not resolved and quote.price_rub > 0 and isinstance(engine, YandexSearchEngine):
                                 try:
                                     inn_query = f'"{domain}" ИНН'
                                     async with search_semaphore:
@@ -898,6 +927,10 @@ async def process_single_item(
         diagnostics["waves_run"].append(2)
         async with search_semaphore:
             for bq in fallback_queries[:4]:
+                bq_norm = " ".join(bq.lower().split())
+                if bq_norm in seen_queries:
+                    continue
+                seen_queries.add(bq_norm)
                 diagnostics["search_queries"] += 1
                 try:
                     b_results = await engine.search(
@@ -943,6 +976,10 @@ async def process_single_item(
 
         async with search_semaphore:
             for wq in wave3_queries[:4]:
+                wq_norm = " ".join(wq.lower().split())
+                if wq_norm in seen_queries:
+                    continue
+                seen_queries.add(wq_norm)
                 diagnostics["search_queries"] += 1
                 try:
                     w_results = await engine.search(
@@ -1151,6 +1188,17 @@ async def run_price_monitoring_pipeline(
 
     proxy_url = os.getenv("PRICE_MONITORING_PROXY") or os.getenv("HTTPS_PROXY")
     domain_inn_cache: dict[str, dict[str, Any]] = {}
+    for prev_item in results:
+        for pq in prev_item.quotes:
+            if pq.inn and pq.url:
+                d_prev = urlparse(pq.url).netloc.lower().replace("www.", "")
+                if d_prev and d_prev not in domain_inn_cache:
+                    domain_inn_cache[d_prev] = {
+                        "inn": pq.inn,
+                        "company_name": pq.company_name,
+                        "kpp": pq.kpp,
+                        "contacts": pq.contacts,
+                    }
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, proxy=proxy_url) as http_client:
         batch_size = max_parallel_items
         for i in range(0, total, batch_size):

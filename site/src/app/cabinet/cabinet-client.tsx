@@ -296,6 +296,7 @@ type CustomerInvoice = {
 type CustomerJob = {
   id: string;
   job_number?: number | null;
+  client_id?: string;
   mode: JobMode;
   mode_label: string;
   supplier_search_policy?: string;
@@ -349,6 +350,25 @@ type CustomerJob = {
   admin_comment?: string;
   admin_supplement_name?: string;
   admin_supplement_at?: string | null;
+  chat_messages?: Array<{
+    id: string;
+    job_id: string;
+    client_id: string;
+    sender_role: "admin" | "client";
+    message: string;
+    attachments: Array<{
+      index: number;
+      name: string;
+      label: string;
+      size: number;
+      url: string;
+      customer_url: string;
+    }>;
+    is_read_by_client: boolean;
+    is_read_by_admin: boolean;
+    created_at: string | null;
+  }>;
+  unread_admin_messages_count?: number;
   awaiting_customer_confirmation: boolean;
   confirmation_kind?: string;
   multi_item_details?: {
@@ -1210,6 +1230,289 @@ function DeliveryPriorityControl({ geoRadiusEnabled, deliveryCity, geoRadiusKm, 
                 </div>
               ) : null}
             </section>
+  );
+}
+
+function CustomerJobChat({
+  job,
+  csrf,
+  onJobUpdated,
+}: {
+  job: CustomerJob;
+  csrf: string;
+  onJobUpdated: (updatedJob: CustomerJob) => void;
+}) {
+  const hasMessages = Boolean(job.chat_messages && job.chat_messages.length > 0) || Boolean(job.admin_comment);
+  const [isOpen, setIsOpen] = useState(true);
+  const [replyText, setReplyText] = useState("");
+  const [replyFiles, setReplyFiles] = useState<File[]>([]);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isOpen && job.unread_admin_messages_count && job.unread_admin_messages_count > 0) {
+      fetch(`/api/customer/jobs/${job.id}/chat/read`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "x-csrf-token": csrf },
+      })
+        .then(() => {
+          onJobUpdated({
+            ...job,
+            unread_admin_messages_count: 0,
+            chat_messages: job.chat_messages?.map((m) =>
+              m.sender_role === "admin" ? { ...m, is_read_by_client: true } : m
+            ),
+          });
+        })
+        .catch(() => {});
+    }
+  }, [isOpen, job.id, job.unread_admin_messages_count, csrf]);
+
+  async function handleSendReply(e: React.FormEvent) {
+    e.preventDefault();
+    const text = replyText.trim();
+    if (!text && replyFiles.length === 0) return;
+
+    setSending(true);
+    setError("");
+    try {
+      const formData = new FormData();
+      formData.append("message", text);
+      replyFiles.forEach((f) => formData.append("files", f));
+      if (replyFiles[0]) formData.append("file", replyFiles[0]);
+
+      const res = await fetch(`/api/customer/jobs/${job.id}/chat`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "x-csrf-token": csrf },
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || "Ошибка отправки ответа");
+      }
+
+      const data = await res.json();
+      setReplyText("");
+      setReplyFiles([]);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      onJobUpdated({
+        ...job,
+        chat_messages: data.messages || job.chat_messages,
+        unread_admin_messages_count: 0,
+      });
+    } catch (err: any) {
+      setError(err.message || "Не удалось отправить сообщение");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const messages =
+    job.chat_messages && job.chat_messages.length > 0
+      ? job.chat_messages
+      : job.admin_comment
+      ? [
+          {
+            id: "initial-comment",
+            job_id: job.id,
+            client_id: job.client_id || "",
+            sender_role: "admin" as const,
+            message: job.admin_comment,
+            attachments: [],
+            is_read_by_client: true,
+            is_read_by_admin: true,
+            created_at: job.admin_supplement_at || job.updated_at || job.created_at,
+          },
+        ]
+      : [];
+
+  if (!hasMessages && !isOpen) {
+    return (
+      <div className="col-span-12 mt-1">
+        <button
+          type="button"
+          onClick={() => setIsOpen(true)}
+          className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-700 hover:text-teal-800 transition-colors"
+        >
+          <MessageCircle size={13} />
+          <span>Написать специалисту TenderLex по задаче</span>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="col-span-12 mt-2 p-3.5 rounded-xl bg-gradient-to-b from-teal-50/90 to-slate-50 border border-teal-200/90 text-slate-800 text-xs shadow-2xs">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2">
+          <div className="w-5 h-5 rounded-full bg-teal-600 text-white flex items-center justify-center shrink-0">
+            <Sparkles size={11} aria-hidden="true" />
+          </div>
+          <span className="font-bold text-teal-950 text-xs">
+            Переписка со специалистом TenderLex
+          </span>
+          {Boolean(job.unread_admin_messages_count) && (
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white animate-pulse">
+              Новый ответ
+            </span>
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setIsOpen((prev) => !prev)}
+          className="text-slate-500 hover:text-slate-800 text-[11px] font-medium flex items-center gap-1 cursor-pointer"
+        >
+          {isOpen ? "Свернуть" : `Развернуть (${messages.length})`}
+          <ChevronDown
+            size={13}
+            className={`transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}
+          />
+        </button>
+      </div>
+
+      {isOpen && (
+        <div className="space-y-3 mt-2">
+          <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+            {messages.map((m, idx) => {
+              const isAdmin = m.sender_role === "admin";
+              return (
+                <div
+                  key={m.id || idx}
+                  className={`flex flex-col ${isAdmin ? "items-start" : "items-end"}`}
+                >
+                  <div className="flex items-center gap-1.5 mb-1 text-[10px] text-slate-500">
+                    <span
+                      className={`font-semibold ${isAdmin ? "text-teal-800" : "text-slate-700"}`}
+                    >
+                      {isAdmin ? "Специалист TenderLex" : "Вы"}
+                    </span>
+                    {m.created_at && (
+                      <>
+                        <span>·</span>
+                        <span>{formatDate(m.created_at)}</span>
+                      </>
+                    )}
+                  </div>
+
+                  <div
+                    className={`p-2.5 rounded-xl max-w-[92%] leading-relaxed ${
+                      isAdmin
+                        ? "bg-white border border-teal-200/90 text-slate-800 shadow-2xs"
+                        : "bg-teal-600 text-white border border-teal-700 shadow-2xs"
+                    }`}
+                  >
+                    <p className="whitespace-pre-wrap font-normal m-0">{m.message}</p>
+
+                    {m.attachments && m.attachments.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-slate-100 flex flex-wrap gap-1.5">
+                        {m.attachments.map((att) => (
+                          <a
+                            key={att.index}
+                            href={att.customer_url || att.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            download
+                            className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                              isAdmin
+                                ? "bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200"
+                                : "bg-teal-700 hover:bg-teal-800 text-white border border-teal-800"
+                            }`}
+                          >
+                            <Download size={11} />
+                            <span>{att.name}</span>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <form onSubmit={handleSendReply} className="pt-2 border-t border-teal-100 space-y-2">
+            {error && (
+              <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[11px]">
+                {error}
+              </div>
+            )}
+
+            {replyFiles.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {replyFiles.map((f, i) => (
+                  <span
+                    key={i}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] bg-teal-100 text-teal-800 font-medium"
+                  >
+                    <Paperclip size={10} />
+                    <span>{f.name}</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setReplyFiles((prev) => prev.filter((_, idx) => idx !== i))
+                      }
+                      className="ml-0.5 text-teal-800 hover:text-teal-950 font-bold"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <textarea
+                  rows={2}
+                  value={replyText}
+                  onChange={(e) => setReplyText(e.target.value)}
+                  placeholder="Ответьте специалисту (укажите ваш телефон или уточните требования)..."
+                  className="w-full p-2 text-xs rounded-lg border border-slate-300 focus:outline-none focus:ring-1 focus:ring-teal-500 focus:border-teal-500 bg-white resize-y"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Прикрепить файл"
+                  className="inline-flex items-center justify-center p-2 rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 transition-colors"
+                >
+                  <Paperclip size={14} />
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    accept=".xlsx,.xls,.docx,.doc,.pdf,.zip,.png,.jpg,.jpeg"
+                    onChange={(e) => {
+                      if (e.target.files) {
+                        setReplyFiles(Array.from(e.target.files));
+                      }
+                    }}
+                  />
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={sending || (!replyText.trim() && replyFiles.length === 0)}
+                  className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white font-semibold text-xs transition-colors shadow-2xs"
+                >
+                  {sending ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                  <span>Ответить</span>
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -4888,15 +5191,13 @@ export function CabinetClient() {
                     </div>
                   ) : null}
 
-                  {job.admin_comment ? (
-                    <div className="col-span-12 mt-2 p-3 rounded-md bg-teal-50/90 border border-teal-200 text-slate-800 text-xs">
-                      <div className="flex items-center gap-1.5 font-bold text-teal-900 mb-1">
-                        <Sparkles size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-                        <span>Комментарий специалистов TenderLex:</span>
-                      </div>
-                      <p className="whitespace-pre-wrap text-slate-700 leading-relaxed font-normal">{job.admin_comment}</p>
-                    </div>
-                  ) : null}
+                  <CustomerJobChat
+                    job={job}
+                    csrf={csrf}
+                    onJobUpdated={(updated) => {
+                      setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
+                    }}
+                  />
 
                   {(!job.awaiting_customer_confirmation || job.confirmation_kind !== "multi_item_strategy") &&
                   job.multi_item_details?.items &&

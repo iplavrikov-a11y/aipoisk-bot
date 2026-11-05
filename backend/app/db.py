@@ -76,6 +76,8 @@ def _ensure_schema() -> None:
             Base.metadata.tables["invoices"].create(bind=connection, checkfirst=True)
         if "yookassa_payments" in Base.metadata.tables:
             Base.metadata.tables["yookassa_payments"].create(bind=connection, checkfirst=True)
+        if "job_chat_messages" in Base.metadata.tables:
+            Base.metadata.tables["job_chat_messages"].create(bind=connection, checkfirst=True)
         invoice_existing = _existing_columns(inspector, "invoices")
         for column, definition in {
             "settlement_mode": "VARCHAR(32) DEFAULT ''",

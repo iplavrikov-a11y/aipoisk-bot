@@ -55,20 +55,26 @@ def normalize_unit(unit: str) -> str:
     """Приводит единицу измерения к единому нормализованному виду."""
     if not unit:
         return "шт"
-    u = unit.strip().lower().replace(".", "").replace(" ", "")
+    u = unit.strip().lower().replace("²", "2").replace("³", "3").replace(".", "").replace(" ", "")
     mapping = {
-        "м2": "м2", "квм": "м2", "квметр": "м2",
-        "м3": "м3", "кубм": "м3", "куб": "м3",
+        "м2": "м2", "квм": "м2", "квметр": "м2", "мкв": "м2",
+        "м3": "м3", "кубм": "м3", "куб": "м3", "кубометр": "м3", "мкуб": "м3",
         "кг": "кг", "килограмм": "кг", "к-г": "кг",
         "т": "т", "тн": "т", "тонна": "т", "тонн": "т",
         "шт": "шт", "штука": "шт", "штук": "шт", "ед": "шт",
         "уп": "уп", "упак": "уп", "упаковка": "уп", "пачка": "уп", "пач": "уп",
         "л": "л", "литр": "л", "литров": "л",
-        "м": "м", "погм": "м", "погметр": "м", "метр": "м",
+        "м": "м", "пм": "м", "мп": "м", "погм": "м", "погметр": "м", "метр": "м", "метров": "м",
         "компл": "компл", "комплект": "компл", "набор": "компл",
         "рул": "рулон", "рулон": "рулон",
     }
-    return mapping.get(u, u)
+    if u in mapping:
+        return mapping[u]
+    m_mult = re.fullmatch(r"(10|100|1000)([a-zа-яё0-9\-]+)", u)
+    if m_mult:
+        prefix, tail = m_mult.group(1), m_mult.group(2)
+        return f"{prefix}{mapping.get(tail, tail)}"
+    return u
 
 
 def extract_package_hints(raw_name: str, target_unit: str) -> dict:
@@ -116,7 +122,10 @@ def extract_generic_nomenclature_codes(name: str) -> list[str]:
     """
     if not name:
         return []
-    tokens = re.findall(r'\b[A-Za-zА-Яа-я0-9\-_./]{3,}\b', name)
+    # Исключаем дробные числа через запятую (например 2,18385 или 0,019412), чтобы дробный хвост (18385)
+    # не отрезался запятой и не воспринимался как 5-значный заводской артикул детали.
+    sanitized_name = re.sub(r'\b\d+,\d+\b', ' ', name)
+    tokens = re.findall(r'\b[A-Za-zА-Яа-я0-9\-_./]{3,}\b', sanitized_name)
     codes: list[str] = []
     seen: set[str] = set()
     for t in tokens:
@@ -201,8 +210,10 @@ def is_drawing_or_part_code(token: str, full_text: str = "") -> bool:
     has_digits = bool(re.search(r'\d', token))
     if has_letters and has_digits and len(token) >= 4:
         return True
-    # Числовой артикул детали (5-8 цифр, например 130539, 26038)
+    # Числовой артикул детали (5-8 цифр, например 130539, 26038), если это не дробная часть числа в тексте (2,18385)
     if re.fullmatch(r'\d{5,8}', token):
+        if full_text and re.search(r'\d[.,]' + re.escape(token) + r'\b', full_text):
+            return False
         return True
     return False
 

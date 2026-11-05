@@ -886,3 +886,18 @@ class YooKassaPayment(Base):
         }
 
 
+class JobChatMessage(Base):
+    __tablename__ = "job_chat_messages"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    job_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    sender_role: Mapped[str] = mapped_column(String(20), default="admin", index=True)  # "admin" | "client"
+    message: Mapped[str] = mapped_column(Text, default="")
+    attachments_json: Mapped[str] = mapped_column(Text, default="[]")
+    is_read_by_client: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_read_by_admin: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+

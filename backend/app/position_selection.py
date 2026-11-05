@@ -38,6 +38,26 @@ def read_selection(job: Job) -> dict[str, Any]:
     return value
 
 
+def extract_unit_and_quantity_from_position(row: dict[str, Any]) -> tuple[str, str]:
+    """Extract (unit, quantity) from top-level fields or fallback to requirements metadata."""
+    if not isinstance(row, dict):
+        return "", ""
+    unit = str(row.get("unit") or "").strip()
+    quantity = str(row.get("quantity") or "").strip()
+    for req in row.get("requirements") or []:
+        if not isinstance(req, dict):
+            continue
+        pname = str(req.get("param_name") or "").strip().lower()
+        val = str(req.get("tz_requirement") or "").strip()
+        if not val:
+            continue
+        if not unit and any(k in pname for k in ("единица измерения", "ед. изм", "ед.изм", "единица")):
+            unit = val
+        elif not quantity and any(k in pname for k in ("количество", "объем закупки", "объём закупки")):
+            quantity = val
+    return unit, quantity
+
+
 def build_selection_snapshot(items: list[dict], *, price_kopeks: int, mode: str = "exact_product") -> str:
     rows = []
     has_short_prompt = False
@@ -47,6 +67,11 @@ def build_selection_snapshot(items: list[dict], *, price_kopeks: int, mode: str 
         row = dict(original)
         row_id = uuid.uuid4().hex[:16]
         pos_name = str(original.get("name") or original.get("name_in_tz") or f"Позиция {index}").strip()
+        ext_unit, ext_qty = extract_unit_and_quantity_from_position(row)
+        if ext_unit and not row.get("unit"):
+            row["unit"] = ext_unit
+        if ext_qty and not row.get("quantity"):
+            row["quantity"] = ext_qty
         row.update(id=row_id, position_id=row_id, position_no=original.get("position_no") or index,
                    name=pos_name)
         # Отмечаем позиции без характеристик или с кратким запросом для подтверждения клиентом

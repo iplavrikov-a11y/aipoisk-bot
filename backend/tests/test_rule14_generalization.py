@@ -183,3 +183,72 @@ async def test_extractor_uses_explicit_package_facts_through_full_caller():
     assert quote is not None
     assert quote.price_rub == 100.0
     assert quote.unit == "кг"
+
+
+def test_comma_decimal_quantities_never_become_part_codes():
+    """Smeta decimal quantities like 2,18385 or 0,019412 must not split into 5-digit SKU codes."""
+    from app.price_monitoring.cleaner import (
+        extract_generic_nomenclature_codes,
+        is_drawing_or_part_code,
+    )
+    from app.price_monitoring.extractor import _has_deterministic_identifier_conflict
+
+    text = "Сталь листовая оцинкованная; Толщина: 0,5 мм; Количество для запроса цены: 2,18385"
+    codes = extract_generic_nomenclature_codes(text)
+    assert "18385" not in codes
+    assert not is_drawing_or_part_code("18385", text)
+    assert not _has_deterministic_identifier_conflict(
+        text,
+        [],
+        "Сталь листовая оцинкованная 0.5 мм по цене 88 000 руб/т",
+        "https://metal.example/list-ocinkovannyj-05",
+    )
+
+
+def test_smeta_unit_and_quantity_extracted_from_requirements():
+    """Positions parsed from DOCX/PDF smetas store unit and quantity in requirements."""
+    from app.position_selection import (
+        build_selection_snapshot,
+        extract_unit_and_quantity_from_position,
+    )
+    import json
+
+    raw_pos = {
+        "name": "Сталь листовая оцинкованная",
+        "unit": None,
+        "quantity": None,
+        "requirements": [
+            {"param_name": "Код сметы", "tz_requirement": "ФСБЦ-08.3.05.02-0072"},
+            {"param_name": "Толщина", "tz_requirement": "0,5 мм"},
+            {"param_name": "Единица измерения", "tz_requirement": "т"},
+            {"param_name": "Количество для запроса цены", "tz_requirement": "2,18385"},
+        ],
+    }
+    u, q = extract_unit_and_quantity_from_position(raw_pos)
+    assert u == "т"
+    assert q == "2,18385"
+
+    snap = json.loads(build_selection_snapshot([raw_pos], price_kopeks=1200, mode="price_monitoring"))
+    assert snap["items"][0]["unit"] == "т"
+    assert snap["items"][0]["quantity"] == "2,18385"
+
+
+def test_smeta_unicode_and_multiplier_units_normalize_and_convert():
+    """Unicode superscripts (м², м³), п.м., and smeta multiplier units (100 шт, 10 м, 1000 м²) convert deterministically."""
+    from app.price_monitoring.cleaner import normalize_unit
+
+    assert normalize_unit("м²") == "м2"
+    assert normalize_unit("м³") == "м3"
+    assert normalize_unit("п.м.") == "м"
+    assert normalize_unit("100 шт") == "100шт"
+    assert normalize_unit("1000 м²") == "1000м2"
+    assert normalize_unit("10 м") == "10м"
+
+    p_100, u_100, c_100 = compute_deterministic_normalized_price(2.5, "шт", "100 шт")
+    assert (p_100, u_100) == (250.0, "100шт")
+    assert c_100 is not None
+
+    p_10m, u_10m, c_10m = compute_deterministic_normalized_price(45.0, "п.м.", "10 м")
+    assert (p_10m, u_10m) == (450.0, "10м")
+    assert c_10m is not None
+
