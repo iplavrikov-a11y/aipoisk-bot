@@ -4393,12 +4393,28 @@ async def upload_admin_supplement(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     if (source_mode == "job_file" or raw_kinds) and not all_uploads:
-        output_items = package_job_output_items(job)
-        for target_kind in raw_kinds:
+        root_id = job.parent_job_id if getattr(job, "parent_job_id", "") else job.id
+        related_jobs_map: dict[str, Job] = {
+            rj.id: rj
+            for rj in db.query(Job).filter(
+                or_(
+                    Job.id == root_id,
+                    Job.parent_job_id == root_id,
+                    Job.id == job.id,
+                )
+            ).all()
+        }
+        for raw_k in raw_kinds:
+            if ":" in raw_k:
+                target_jid, _, target_kind = raw_k.partition(":")
+            else:
+                target_jid, target_kind = job.id, raw_k
+            src_job = related_jobs_map.get(target_jid) or db.get(Job, target_jid) or job
+            output_items = package_job_output_items(src_job)
             for item in output_items:
                 k = str(item.get("kind") or "").strip()
                 p = Path(str(item.get("path") or ""))
-                if k == target_kind or p.name == target_kind:
+                if k == target_kind or p.name == target_kind or k == raw_k or p.name == raw_k:
                     if p.is_file():
                         dest = target_dir / f"supplement_{p.name}"
                         shutil.copy2(p, dest)
@@ -4439,6 +4455,13 @@ async def upload_admin_supplement(
 
     if clean_comment:
         job.admin_comment = clean_comment
+
+    if job.status == "failed" and (supplement_items or clean_comment):
+        job.status = "completed"
+        job.progress = 100
+        job.error = ""
+        job.message = "Дополнено экспертом TenderLex"
+
     job.admin_supplement_at = now_utc()
     job.updated_at = now_utc()
     db.commit()

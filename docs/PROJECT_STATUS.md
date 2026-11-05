@@ -2961,6 +2961,8 @@ Load-test boundary:
   - Integrated dedicated background polling loop for `/api/clients` and `/api/dashboard` (8s on active Clients tab, 25s on other tabs, and instant refresh on window focus / tab visibility / view change), so new customer registrations appear immediately without manual page reload.
 - **B2B Outreach Email Bounce / NDR Diagnostics & Auto-Categorization (2026-08-26)**:
   - Added dedicated Bounce / Non-Delivery Report parser (`parse_bounce_info`, `sync_imap_inbox`) recognizing `MAILER-DAEMON`, `postmaster`, `ksmg`, and antispam failure notices.
+  - Extracts failed recipient email, links incoming failure message to its `OutreachLead`, marks lead status as `bounced` with exact diagnostic failure reason (e.g. `550 Access Denied`), and upd
+... [truncated for diff preview]
   - Extracts failed recipient email, links incoming failure message to its `OutreachLead`, marks lead status as `bounced` with exact diagnostic failure reason (e.g. `550 Access Denied`), and updates task bounce statistics.
   - Implemented retroactive backfill linking existing bounce records in the database.
   - Added filter tabs in Admin Outreach View: `Все`, `Живые ответы`, `Ошибки доставки (Bounce)`, `Новые`, `Спам` with visual badges and diagnostic reason cards.
@@ -3057,7 +3059,6 @@ risks are narrower:
     - Fixed legacy default unit cost setting from `0.04 ₽` (40 ₽ / 1,000 requests) to actual Yandex Cloud Search API rate of `0.488 ₽` (488 ₽ / 1,000 requests with VAT).
     - Synchronized across database `system_settings`, backend config, models, schemas, and all search pipelines (`supplier_search`, `price_monitoring`, `exact_product`, `outreach_search`).
     - Recalculated cost display in admin panel for recent jobs, providing 100% accurate financial reconciliation between admin statistics and Yandex Cloud billing accounts.
-
 
 
 

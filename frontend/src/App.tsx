@@ -4940,13 +4940,15 @@ function AdminSupplementModal({
   onClose: () => void
   onSuccess: () => Promise<void>
 }) {
+  const rawTg = String(job.created_by_telegram_id || '').trim()
+  const isWebClient = !rawTg || rawTg.startsWith('web:') || !/^-?\d+$/.test(rawTg)
   const [comment, setComment] = useState(() => defaultAdminComment(job))
   const [candidates, setCandidates] = useState<SupplementCandidate[]>([])
   const [loadingCandidates, setLoadingCandidates] = useState(true)
   const [sourceMode, setSourceMode] = useState<'job_file' | 'upload'>('job_file')
   const [selectedJobFileKinds, setSelectedJobFileKinds] = useState<string[]>([])
   const [files, setFiles] = useState<File[]>([])
-  const [notifyTelegram, setNotifyTelegram] = useState(true)
+  const [notifyTelegram, setNotifyTelegram] = useState(() => !isWebClient)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -5054,13 +5056,21 @@ function AdminSupplementModal({
 
         <form onSubmit={handleSubmit} className="supplement-modal-form">
           <div className="supplement-modal-scroll-body">
-            <p style={{ fontSize: 12, margin: 0 }}>Прикрепите комментарий и готовые файлы к задаче клиента. Новый поиск не запускается. Доставка в Telegram зависит от отметки ниже.</p>
+            <p style={{ fontSize: 12, margin: 0, color: '#475569' }}>
+              Прикрепите комментарий эксперта и готовые файлы. Они сразу станут доступны клиенту в его личном кабинете на сайте.
+            </p>
             <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', fontSize: 12 }}>
               <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: 2 }}>
                 {job.job_number ? `[#${job.job_number}] ` : ''}{job.human_title || job.title}
               </div>
-              <div style={{ color: '#64748b', fontSize: 11 }}>
-                Клиент: {job.client_name || 'Не указан'} {job.created_by_telegram_id ? `· TG ID: ${job.created_by_telegram_id}` : ''}
+              <div style={{ color: '#64748b', fontSize: 11, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span>Клиент: <strong>{job.client_name || 'Не указан'}</strong></span>
+                <span>·</span>
+                {isWebClient ? (
+                  <span style={{ color: '#0d9488', fontWeight: 600 }}>🌐 Личный кабинет на сайте</span>
+                ) : (
+                  <span style={{ color: '#0284c7' }}>✈️ Telegram ID: <code>{rawTg}</code></span>
+                )}
               </div>
               {job.admin_supplement_name && (
                 <div style={{ marginTop: 4, fontSize: 11, color: '#0f766e', fontWeight: 600 }}>
@@ -5243,14 +5253,21 @@ function AdminSupplementModal({
               </small>
             </div>
 
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={notifyTelegram}
-                onChange={e => setNotifyTelegram(e.target.checked)}
-              />
-              <span>Отправить уведомление и файл в Telegram бот клиенту</span>
-            </label>
+            {isWebClient ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#0f766e', background: '#f0fdfa', border: '1px solid #99f6e4', padding: '6px 10px', borderRadius: 6 }}>
+                <span>🌐</span>
+                <span>Клиент работает через <strong>веб-кабинет</strong>. Отчёт и комментарий сразу отобразятся на карточке задачи.</span>
+              </div>
+            ) : (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={notifyTelegram}
+                  onChange={e => setNotifyTelegram(e.target.checked)}
+                />
+                <span>Продублировать уведомление и файлы в Telegram-бот клиенту</span>
+              </label>
+            )}
 
             {error && (
               <div style={{ color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', padding: '6px 10px', borderRadius: 6, fontSize: 12 }}>
@@ -5265,7 +5282,15 @@ function AdminSupplementModal({
             </button>
             <button type="submit" className="primary" disabled={loading} style={{ background: '#0d9488', borderColor: '#0d9488', fontSize: 12, padding: '6px 16px' }}>
               {loading ? <Loader2 size={13} className="spin" /> : <Send size={13} />}
-              <span>{loading ? 'Сохранение...' : notifyTelegram ? 'Сохранить и отправить в Telegram' : 'Сохранить дополнение в кабинете'}</span>
+              <span>
+                {loading
+                  ? 'Сохранение...'
+                  : isWebClient
+                  ? 'Опубликовать в личном кабинете'
+                  : notifyTelegram
+                  ? 'Опубликовать в кабинете и отправить в Telegram'
+                  : 'Опубликовать в личном кабинете'}
+              </span>
             </button>
           </div>
         </form>
