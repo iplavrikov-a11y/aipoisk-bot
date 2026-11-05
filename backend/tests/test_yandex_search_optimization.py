@@ -82,3 +82,4 @@ async def test_domain_inn_cache_avoids_duplicate_yandex_queries():
     # Pre-populate domain_inn_cache and verify it resolves without searching
     assert "cached-supplier.ru" in domain_inn_cache
     assert domain_inn_cache["cached-supplier.ru"]["inn"] == "7701234567"
+

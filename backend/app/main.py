@@ -2532,11 +2532,19 @@ async def _fetch_yandex_billing_balance() -> dict:
                 return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "billing_api_failed"}
 
             data = billing_response.json()
+            balance_val = float(data.get("balance", 0.0))
+            is_active_val = bool(data.get("active", False))
             result = {
-                "balance": float(data.get("balance", 0.0)),
+                "balance": balance_val,
                 "currency": data.get("currency", "RUB"),
-                "is_active": data.get("active", False),
+                "is_active": is_active_val,
             }
+            if balance_val < 150.0 or not is_active_val:
+                try:
+                    from .admin_alerts import notify_low_yandex_balance
+                    notify_low_yandex_balance(balance_val, is_active_val)
+                except Exception as alert_exc:
+                    logger.debug("Failed to dispatch low yandex balance alert: %s", alert_exc)
             _yandex_billing_cache["data"] = result
             _yandex_billing_cache["timestamp"] = time.time()
             return result
@@ -6819,6 +6827,8 @@ def build_system_status(settings: SystemSettings, db: Session, yandex_balance: f
     }
     services = api_service_statuses(settings, yandex_balance=yandex_balance)
     warnings = []
+    if yandex_balance is not None and yandex_balance < 150.0:
+        warnings.append(f"Баланс Яндекс.Облака подходит к концу ({yandex_balance:.2f} ₽). Пополните счёт во избежание сбоев в поиске.")
     if server["disk_free_gb"] < 10:
         warnings.append("На сервере осталось меньше 10 ГБ свободного места.")
     if server["ram_percent"] >= 85:

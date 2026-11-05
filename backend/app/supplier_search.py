@@ -33,6 +33,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .ai import call_llm, parse_json_object
+from .admin_alerts import notify_yandex_search_error
 from .config import config
 from .dadata_client import enrich_company_by_inn
 from .models import SystemSettings
@@ -4504,9 +4505,10 @@ async def _search_with_yandex(
         return ""
 
     groups_on_page = _yandex_groups_on_page(settings)
+    async_supported = True
 
     async def search_one_page(client: httpx.AsyncClient, query: str, page: int) -> list[Candidate]:
-        nonlocal requests_count, headers
+        nonlocal requests_count, headers, async_supported
         async with semaphore:
             body = {
                 "query": {"searchType": "SEARCH_TYPE_RU", "queryText": query, "page": str(page)},
@@ -4515,32 +4517,41 @@ async def _search_with_yandex(
                 "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
             }
             requests_count += 1
-            # Primary: Cost-effective asynchronous search (16x cheaper: 30.50 ₽ vs 488 ₽ per 1,000 requests)
-            try:
-                response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-                if response.status_code == 429:
-                    await asyncio.sleep(2.0)
+            # Primary: Cost-effective asynchronous search (if enabled on the cloud folder)
+            if async_supported:
+                try:
                     response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-                if response.status_code == 200:
-                    operation_id = str(response.json().get("id") or "")
-                    if operation_id:
-                        raw_data = await _poll_yandex_operation(client, operation_id)
-                        if raw_data:
-                            return _parse_yandex_xml(raw_data, query=query)
-            except Exception as async_exc:
-                logger.debug("Yandex async search call failed, trying sync fallback: %s", async_exc)
+                    if response.status_code == 200:
+                        operation_id = str(response.json().get("id") or "")
+                        if operation_id:
+                            raw_data = await _poll_yandex_operation(client, operation_id)
+                            if raw_data:
+                                return _parse_yandex_xml(raw_data, query=query)
+                    elif response.status_code == 429:
+                        # Async rate limit / unprovisioned quota: fall back permanently for this search run
+                        async_supported = False
+                    elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
+                        notify_yandex_search_error(response.status_code, response.text, query=query)
+                except Exception as async_exc:
+                    logger.debug("Yandex async search call failed, trying sync fallback: %s", async_exc)
 
-            # Fallback: Synchronous endpoint if async failed or returned empty
+            # Fallback: Synchronous endpoint
             try:
                 response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
                 if response.status_code == 429:
-                    await asyncio.sleep(2.0)
+                    await asyncio.sleep(1.0)
                     response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
                 if response.status_code == 200:
                     data = response.json()
                     raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
                     if raw_data:
                         return _parse_yandex_xml(raw_data, query=query)
+                elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
+                    logger.warning("Yandex search auth/billing error: status=%s error=%s", response.status_code, response.text[:200])
+                    notify_yandex_search_error(response.status_code, response.text, query=query)
+                    return []
+                else:
+                    logger.warning("Yandex sync search status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
             except Exception as sync_exc:
                 logger.debug("Yandex sync search call failed: %s", sync_exc)
                 return []

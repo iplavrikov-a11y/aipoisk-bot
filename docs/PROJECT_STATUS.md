@@ -3043,4 +3043,16 @@ risks are narrower:
 - **DaData API Protection**: Restricted DaData company search endpoints (`/api/customer/dadata/company-by-inn`, `/api/dadata/company-by-inn`) to authenticated customer sessions.
 - **Automated Password Reset Self-Service**: Resolved legacy admin panel ticket creation during automated email password resets. Requests with successfully dispatched emails are auto-resolved (`completed`) for security audit without cluttering the admin panel with manual intervention banners.
 
+## Infrastructure Monitoring & Proactive Admin Alerts (November 2026)
+
+- **Dedicated Infrastructure Alert Dispatcher (`backend/app/admin_alerts.py`)**:
+  - Implemented direct Telegram alerting for the platform owner (`AIPOISK_OWNER_TELEGRAM_ID=320433711`) through `@tenderlex_bot`.
+  - **Yandex Search API Failure Detection**: Immediate alert when Yandex returns `401`, `402`, `403 PermissionDenied`, or billing suspension, notifying the owner with exact error details and required action before customer tasks fail silently.
+  - **Proactive Low Balance Warning**: Periodic automated polling of Yandex Cloud Billing API (`_fetch_yandex_billing_balance`) in `worker_loop` every 30 minutes; sends warning when balance drops below 150 ₽.
+  - **AI Provider Outage Detection**: Real-time alerts on `401 Unauthorized` (expired key), `402 Payment Required` (empty account balance), or `429 Quota Exceeded` across all LLM backends (Polza, OpenRouter, Gemini, OpenAI, Z.ai).
+  - **Customer Job Failure Alerts**: Alerts dispatched when customer tasks fail due to unhandled exceptions or external service outages.
+  - **Intelligent Deduplication & Throttling**: 15-minute throttle for identical API errors and 4-hour throttle for low balance alerts to prevent notification flooding.
+  - **Graceful Search Fallbacks**: Automatic fast fallback from `searchAsync` to synchronous search when async quota/rate limits are hit, avoiding delays while preserving real-time supplier discovery.
+
+
 

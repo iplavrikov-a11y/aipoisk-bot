@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 import structlog
 from .search_metrics import record_search_request
+from ..admin_alerts import notify_yandex_search_error
 
 logger = structlog.get_logger(__name__)
 
@@ -88,6 +89,7 @@ class YandexSearchEngine:
         self.api_key = api_key
         self._client: Optional[httpx.AsyncClient] = None
         self.total_requests: int = 0
+        self._async_supported: bool = True
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -175,28 +177,29 @@ class YandexSearchEngine:
                 }
 
                 page_results: list[YandexSearchResult] = []
-                # Primary path: Asynchronous search (16x cheaper: 30.50 ₽ vs 488 ₽ per 1,000 requests)
-                try:
-                    record_search_request()
-                    async_resp = await client.post(self.V2_ASYNC_API_URL, json=body, headers=headers)
-                    if async_resp.status_code == 429:
-                        await asyncio.sleep(2.0)
+                # Primary path: Asynchronous search (if supported by cloud folder quota)
+                if self._async_supported:
+                    try:
                         record_search_request()
                         async_resp = await client.post(self.V2_ASYNC_API_URL, json=body, headers=headers)
-                    if async_resp.status_code == 200:
-                        op_id = async_resp.json().get("id")
-                        if op_id:
-                            page_results = await self._wait_for_v2_operation(op_id, headers)
-                except Exception as async_exc:
-                    logger.debug("exact_product yandex async search failed, fallback to sync: %s", async_exc)
+                        if async_resp.status_code == 200:
+                            op_id = async_resp.json().get("id")
+                            if op_id:
+                                page_results = await self._wait_for_v2_operation(op_id, headers)
+                        elif async_resp.status_code == 429:
+                            self._async_supported = False
+                        elif async_resp.status_code in (401, 402, 403) or "PermissionDenied" in async_resp.text:
+                            notify_yandex_search_error(async_resp.status_code, async_resp.text, query=search_query)
+                    except Exception as async_exc:
+                        logger.debug("exact_product yandex async search failed, fallback to sync: %s", async_exc)
 
-                # Fallback path: Synchronous endpoint if async failed or returned empty
+                # Fallback path: Synchronous endpoint
                 if not page_results:
                     try:
                         record_search_request()
                         response = await client.post(self.V2_API_URL, json=body, headers=headers)
                         if response.status_code == 429:
-                            await asyncio.sleep(2.0)
+                            await asyncio.sleep(1.0)
                             record_search_request()
                             response = await client.post(self.V2_API_URL, json=body, headers=headers)
                         if response.status_code == 200:
@@ -204,6 +207,9 @@ class YandexSearchEngine:
                             raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
                             if raw_data:
                                 page_results = self._parse_v2_xml(raw_data)
+                        elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
+                            logger.warning("exact_product yandex auth/billing error", status=response.status_code, error=response.text[:200])
+                            notify_yandex_search_error(response.status_code, response.text, query=search_query)
                     except Exception as sync_exc:
                         logger.debug("exact_product yandex sync search exception: %s", sync_exc)
 

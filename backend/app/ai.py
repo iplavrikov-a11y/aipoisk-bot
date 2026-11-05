@@ -618,6 +618,17 @@ async def _post_llm_request(
             if response.status_code >= 400:
                 detail = response.text.strip()[:500]
                 retriable = response.status_code in _RETRIABLE_STATUS
+                if response.status_code in (401, 402, 429) or "quota" in detail.lower() or "insufficient" in detail.lower():
+                    try:
+                        from .admin_alerts import notify_ai_provider_error
+                        notify_ai_provider_error(
+                            provider=selection.provider_name or selection.provider_id,
+                            model=selection.model,
+                            status_code=response.status_code,
+                            error_text=detail,
+                        )
+                    except Exception:
+                        pass
                 last_error = LLMError(
                     f"{selection.provider_name}:{selection.model} HTTP {response.status_code}: "
                     f"{detail or response.reason_phrase}",

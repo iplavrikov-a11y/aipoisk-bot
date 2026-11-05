@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import socket
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -583,7 +584,17 @@ async def worker_loop(*, poll_interval: float = WORKER_POLL_INTERVAL_SECONDS, co
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
     worker_concurrency = _normalized_worker_concurrency(concurrency if concurrency is not None else config.worker_concurrency)
     running_tasks: set[asyncio.Task[None]] = set()
+    last_billing_check: float = 0.0
     while True:
+        now_ts = time.time()
+        if (now_ts - last_billing_check) > 1800:
+            last_billing_check = now_ts
+            try:
+                from .main import _fetch_yandex_billing_balance
+                asyncio.create_task(_fetch_yandex_billing_balance())
+            except Exception:
+                pass
+
         finished = {task for task in running_tasks if task.done()}
         if finished:
             running_tasks.difference_update(finished)
@@ -848,6 +859,17 @@ def _process_job_sync(job_id: str) -> None:
             _set_job(db, job, status="failed", progress=100, message=fail_msg, error=str(exc))
             job.completed_at = now_utc()
             db.commit()
+            try:
+                from .admin_alerts import notify_job_infrastructure_failure
+                client_name = getattr(job.client, "name", "") if job.client else f"Клиент #{job.client_id}"
+                notify_job_infrastructure_failure(
+                    job_number=job.job_number or 0,
+                    client_name=client_name or "Неизвестный клиент",
+                    mode=job.mode or "",
+                    error_text=str(exc),
+                )
+            except Exception:
+                pass
     finally:
         db.close()
 
