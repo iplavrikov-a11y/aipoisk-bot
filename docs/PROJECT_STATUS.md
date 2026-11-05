@@ -3060,5 +3060,17 @@ risks are narrower:
     - Synchronized across database `system_settings`, backend config, models, schemas, and all search pipelines (`supplier_search`, `price_monitoring`, `exact_product`, `outreach_search`).
     - Recalculated cost display in admin panel for recent jobs, providing 100% accurate financial reconciliation between admin statistics and Yandex Cloud billing accounts.
 
+## Expert Supplement & Client Delivery Transparency (November 2026)
+
+- **Channel-Aware Client Delivery UX (`frontend/src/App.tsx`)**:
+  - Distinguishes web-registered accounts (`web:...` identifiers) from Telegram-linked users in the admin supplement modal.
+  - Automatically disables Telegram push checkboxes and switches primary modal CTA from misleading *"Сохранить и отправить в Telegram"* to clear **`Опубликовать в личном кабинете клиента`** for web customers.
+  - Displays customer channel clearly: `🌐 Личный кабинет на сайте` vs `✈️ Telegram ID: {id}`.
+- **Rerun Artifact Composite ID Resolution (`backend/app/main.py`)**:
+  - Fixed composite file identifier parsing (`job_id:file_kind`) in `upload_admin_supplement`. Expert rerun files (👑 Доработка) from child jobs are now correctly mapped, copied to the job supplement vault, and registered in `admin_supplement_path`.
+  - Automatically transitions failed parent jobs (`status = "failed"`) to `status = "completed"` with `message = "Дополнено экспертом TenderLex"` upon attaching expert deliverables, ensuring immediate unblocked access in customer cabinets.
+  - Retains emerald badge `✨ Дополнено экспертом` and individual file download actions in customer web cabinets.
+
+
 
 
