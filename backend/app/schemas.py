@@ -40,7 +40,7 @@ class SettingsPatch(BaseModel):
     supplier_search_provider_order: str | None = None
     yandex_search_folder_id: str | None = None
     yandex_search_api_key: str | None = None
-    yandex_search_price_per_request: float | None = 0.04
+    yandex_search_price_per_request: float | None = 0.488
     google_search_api_key: str | None = None
     google_search_cse_id: str | None = None
     prompt_settings_json: str | None = None

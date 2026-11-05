@@ -955,7 +955,7 @@ async def run_outreach_search_task(
 ) -> None:
     """Executes enterprise-grade B2B supplier search with Adaptive Multi-Pass loop, Playwright crawling & strict Yandex pricing."""
     sys_settings = get_fresh_system_settings(session_factory)
-    yandex_unit_price = float(getattr(sys_settings, "yandex_search_price_per_request", 0.04) or 0.04)
+    yandex_unit_price = float(getattr(sys_settings, "yandex_search_price_per_request", 0.488) or 0.488)
     folder_id = getattr(sys_settings, "yandex_search_folder_id", "") or ""
     api_key = getattr(sys_settings, "yandex_search_api_key", "") or ""
 

@@ -4345,7 +4345,7 @@ async def discover_candidates(
             "reserve_only": reserve_only,
         },
         "yandex_requests_count": yandex_total_requests,
-        "yandex_cost_rub": round(yandex_total_requests * float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04), 2),
+        "yandex_cost_rub": round(yandex_total_requests * float(getattr(settings, "yandex_search_price_per_request", 0.488) or 0.488), 2),
         "reports": reports,
     }
 

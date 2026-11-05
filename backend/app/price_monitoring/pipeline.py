@@ -1232,7 +1232,7 @@ async def run_price_monitoring_pipeline(
     not_found_count = total - found_count
     total_charged_rub = round(found_count * price_per_position_rub, 2)
 
-    unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
+    unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.488) or 0.488)
     yandex_requests = int(getattr(engine, "total_requests", 0) or 0)
     yandex_cost = round(yandex_requests * unit_price, 2)
 

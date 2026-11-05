@@ -1517,7 +1517,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     persisted_rows = accepted or fallback_rows
     _persist_supplier_rows(db, job, persisted_rows)
     job.verified_count = len(persisted_rows)
-    y_reqs, y_cost = extract_yandex_job_metrics(evidence, getattr(settings, "yandex_search_price_per_request", 0.04))
+    y_reqs, y_cost = extract_yandex_job_metrics(evidence, getattr(settings, "yandex_search_price_per_request", 0.488))
     job.yandex_requests_count = y_reqs
     job.yandex_cost_rub = y_cost
     _set_job(db, job, status="running", progress=97, message="Формирую Excel и проверочные данные")
@@ -2175,7 +2175,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     persisted_rows = accepted or fallback_rows
     _persist_supplier_rows(db, job, persisted_rows)
     job.verified_count = len(persisted_rows)
-    y_reqs, y_cost = extract_yandex_job_metrics(supplier_evidence, getattr(settings, "yandex_search_price_per_request", 0.04))
+    y_reqs, y_cost = extract_yandex_job_metrics(supplier_evidence, getattr(settings, "yandex_search_price_per_request", 0.488))
     job.yandex_requests_count = y_reqs
     job.yandex_cost_rub = y_cost
     out_dir = job_dir(job.id) / "output"

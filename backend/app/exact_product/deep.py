@@ -2072,7 +2072,7 @@ async def resolve_clarify_parameters(
                     except Exception as b_err:
                         logger.debug("resolve_clarify_batch_sub_failed", error=str(b_err))
 
-    cost_per_req = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
+    cost_per_req = float(getattr(settings, "yandex_search_price_per_request", 0.488) or 0.488)
     cost = round(total_search_queries * cost_per_req, 4)
     return ResolveResult(resolved_count, cost)
 
