@@ -247,7 +247,7 @@ class ClientTelegramAccount(Base):
     __tablename__ = "client_telegram_accounts"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
     telegram_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     username: Mapped[str] = mapped_column(String(255), default="")
     name: Mapped[str] = mapped_column(String(255), default="")
@@ -416,7 +416,7 @@ class UserJourneyEvent(Base):
     __tablename__ = "user_journey_events"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
+    client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), nullable=True, index=True)
     channel: Mapped[str] = mapped_column(String(20), index=True)
     actor_ref: Mapped[str] = mapped_column(String(64), default="")
     event_name: Mapped[str] = mapped_column(String(80), index=True)
@@ -572,7 +572,7 @@ class JobFile(Base):
     job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), index=True)
     original_filename: Mapped[str] = mapped_column(Text)
     stored_path: Mapped[str] = mapped_column(Text)
-    parse_status: Mapped[str] = mapped_column(String(40), default="pending")
+    parse_status: Mapped[str] = mapped_column(String(255), default="pending")
     extracted_chars: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
@@ -588,7 +588,7 @@ class JobSource(Base):
     kind: Mapped[str] = mapped_column(String(40), default="procurement_url")
     label: Mapped[str] = mapped_column(Text, default="")
     value: Mapped[str] = mapped_column(Text, default="")
-    parse_status: Mapped[str] = mapped_column(String(40), default="pending")
+    parse_status: Mapped[str] = mapped_column(String(255), default="pending")
     context_path: Mapped[str] = mapped_column(Text, default="")
     extracted_chars: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(Text, default="")
@@ -848,7 +848,7 @@ class YooKassaPayment(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     payment_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
-    user_id: Mapped[str | None] = mapped_column(ForeignKey("web_users.id"), nullable=True, default="", index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("web_users.id"), nullable=True, default=None, index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     amount_rub: Mapped[int] = mapped_column(Integer, nullable=False)
     bonus_rub: Mapped[int] = mapped_column(Integer, default=0)

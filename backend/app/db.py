@@ -28,9 +28,24 @@ SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
 def _sqlite_connect_args(database_url: str) -> dict:
-    if not database_url.startswith("sqlite"):
-        return {}
-    return {"check_same_thread": False, "timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
+    if database_url.startswith("sqlite"):
+        return {"check_same_thread": False, "timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
+    if database_url.startswith("postgresql"):
+        # Remote PostgreSQL (RU data centre): detect dead peers quickly.
+        return {
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+            "connect_timeout": 10,
+        }
+    return {}
+
+
+def _engine_pool_kwargs(database_url: str) -> dict:
+    if database_url.startswith("postgresql"):
+        return {"pool_size": 8, "max_overflow": 8, "pool_recycle": 240, "pool_timeout": 30}
+    return {}
 
 
 def _configure_sqlite_connection(dbapi_connection) -> None:
@@ -47,6 +62,7 @@ engine = create_engine(
     DATABASE_URL,
     connect_args=_sqlite_connect_args(DATABASE_URL),
     pool_pre_ping=True,
+    **_engine_pool_kwargs(DATABASE_URL),
 )
 
 if DATABASE_URL.startswith("sqlite"):
@@ -55,10 +71,46 @@ if DATABASE_URL.startswith("sqlite"):
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
+def _use_naive_datetimes_for_postgres() -> None:
+    """Keep SQLite semantics on PostgreSQL: DateTime columns are naive (TIMESTAMP WITHOUT TIME ZONE).
+
+    The code base was written against SQLite, which returns naive datetimes even for
+    ``DateTime(timezone=True)``. Mirroring that avoids naive/aware comparison errors.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    from sqlalchemy import DateTime
+
+    for table in Base.metadata.tables.values():
+        for column in table.columns:
+            if isinstance(column.type, DateTime):
+                column.type.timezone = False
+
+
+def _ensure_postgres_number_triggers(connection) -> None:
+    """PostgreSQL replacement for the SQLite triggers assigning clients.client_number / jobs.job_number."""
+    for table, column in (("clients", "client_number"), ("jobs", "job_number")):
+        connection.exec_driver_sql(
+            f"CREATE OR REPLACE FUNCTION assign_{table}_{column}() RETURNS trigger AS $$ "
+            f"BEGIN IF NEW.{column} IS NULL THEN "
+            f"NEW.{column} := (SELECT COALESCE(MAX({column}), 0) + 1 FROM {table}); "
+            f"END IF; RETURN NEW; END; "
+            f"$$ LANGUAGE plpgsql"
+        )
+        connection.exec_driver_sql(
+            f"DO $$ BEGIN "
+            f"IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_{table}_assign_number') THEN "
+            f"CREATE TRIGGER trg_{table}_assign_number BEFORE INSERT ON {table} "
+            f"FOR EACH ROW EXECUTE FUNCTION assign_{table}_{column}(); "
+            f"END IF; END $$;"
+        )
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
     from . import outreach_models  # noqa: F401
 
+    _use_naive_datetimes_for_postgres()
     Base.metadata.create_all(bind=engine)
     _ensure_schema()
     _ensure_legacy_client_accounts()
@@ -333,35 +385,47 @@ def _ensure_schema() -> None:
                 "ON clients(client_number) WHERE client_number IS NOT NULL"
             )
         )
-        connection.execute(
-            text(
-                """
-            CREATE TRIGGER IF NOT EXISTS trg_clients_assign_number
-            AFTER INSERT ON clients
-            WHEN NEW.client_number IS NULL
-            BEGIN
-                UPDATE clients
-                SET client_number = (SELECT COALESCE(MAX(client_number), 0) + 1 FROM clients)
-                WHERE id = NEW.id;
-            END;
-        """
+        if connection.dialect.name == "sqlite":
+            connection.execute(
+                text(
+                    """
+                CREATE TRIGGER IF NOT EXISTS trg_clients_assign_number
+                AFTER INSERT ON clients
+                WHEN NEW.client_number IS NULL
+                BEGIN
+                    UPDATE clients
+                    SET client_number = (SELECT COALESCE(MAX(client_number), 0) + 1 FROM clients)
+                    WHERE id = NEW.id;
+                END;
+            """
+                )
             )
-        )
         for column, definition in job_additions.items():
             if column not in jobs_existing:
                 connection.execute(text(f"ALTER TABLE jobs ADD COLUMN {column} {definition}"))
-        connection.execute(text("UPDATE jobs SET job_number = rowid WHERE job_number IS NULL"))
+        if connection.dialect.name == "sqlite":
+            connection.execute(text("UPDATE jobs SET job_number = rowid WHERE job_number IS NULL"))
+        else:
+            connection.execute(text(
+                "UPDATE jobs SET job_number = numbered.rn FROM ("
+                "SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) + "
+                "(SELECT COALESCE(MAX(job_number), 0) FROM jobs) AS rn FROM jobs WHERE job_number IS NULL"
+                ") AS numbered WHERE jobs.id = numbered.id"
+            ))
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_job_number ON jobs(job_number) WHERE job_number IS NOT NULL"))
-        connection.execute(text("""
-            CREATE TRIGGER IF NOT EXISTS trg_jobs_assign_number
-            AFTER INSERT ON jobs
-            WHEN NEW.job_number IS NULL
-            BEGIN
-                UPDATE jobs
-                SET job_number = (SELECT COALESCE(MAX(job_number), 0) + 1 FROM jobs)
-                WHERE id = NEW.id;
-            END;
-        """))
+        if connection.dialect.name == "sqlite":
+            connection.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS trg_jobs_assign_number
+                AFTER INSERT ON jobs
+                WHEN NEW.job_number IS NULL
+                BEGIN
+                    UPDATE jobs
+                    SET job_number = (SELECT COALESCE(MAX(job_number), 0) + 1 FROM jobs)
+                    WHERE id = NEW.id;
+                END;
+            """))
+        else:
+            _ensure_postgres_number_triggers(connection)
         for column, definition in billing_transaction_additions.items():
             if billing_transactions_existing and column not in billing_transactions_existing:
                 connection.execute(text(f"ALTER TABLE billing_transactions ADD COLUMN {column} {definition}"))

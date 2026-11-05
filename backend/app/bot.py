@@ -4509,7 +4509,7 @@ async def _initiate_yookassa_checkout(
     confirmation = payment_data.get("confirmation", {}) or {}
     confirmation_url = str(confirmation.get("confirmation_url") or "")
 
-    web_user_id = client.web_users[0].id if getattr(client, "web_users", None) else ""
+    web_user_id = client.web_users[0].id if getattr(client, "web_users", None) else None
     yk_record = YooKassaPayment(
         payment_id=yoo_payment_id,
         client_id=client.id,

@@ -2553,7 +2553,7 @@ def _process_yookassa_payment_success(
         new_record = YooKassaPayment(
             payment_id=payment_id,
             client_id=client.id,
-            user_id=user_id or "",
+            user_id=user_id or None,
             status="succeeded",
             amount_rub=amount_rub,
             bonus_rub=bonus_rub,
