@@ -179,6 +179,15 @@ def resolve_requested_billing_kinds(
 
 
 def client_balance_summary(db: Session, client: Client) -> dict:
+    if getattr(client, "tariff_overrides", None) is None:
+        try:
+            client.tariff_overrides = (
+                db.query(ClientTariffOverride)
+                .filter(ClientTariffOverride.client_id == client.id)
+                .all()
+            )
+        except Exception:
+            pass
     money = money_balance_summary(db, client)
     return {
         KIND_SUPPLIER_SEARCH: balance_counter(db, client, KIND_SUPPLIER_SEARCH),

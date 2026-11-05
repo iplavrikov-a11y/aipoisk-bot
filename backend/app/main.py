@@ -1338,7 +1338,7 @@ def customer_jobs_api(
         )
         for m in raw_msgs:
             chat_map.setdefault(m.job_id, []).append(chat_message_to_dict(m))
-    items = [customer_job_to_dict(job, db=db, chat_messages=chat_map.get(job.id)) for job in jobs]
+    items = [customer_job_to_dict(job, db=db, chat_messages=chat_map.get(job.id, [])) for job in jobs]
     if include_pagination:
         return {"items": items, "total": total, "limit": safe_limit, "offset": safe_offset}
     return items
@@ -6457,11 +6457,14 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
     settings = get_or_create_settings(db)
     tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
     deposit_packages = [item for item in tariffs if item["kind"] == "deposit"]
-    price_search = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH) or 9900
-    price_exact = effective_price_kopeks(db, user.client, KIND_EXACT_PRODUCT) or 9900
-    price_report = effective_price_kopeks(db, user.client, KIND_PROCUREMENT_REPORT) or 9900
-    price_extra = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH_EXTRA) or 4900
-    price_monitoring = effective_price_kopeks(db, user.client, KIND_PRICE_MONITORING) or int(getattr(settings, "price_monitoring_default_price_kopeks", 5000) or 5000)
+    balance = client_usage_summary(db, user.client)
+
+    eff = balance.get("effective_prices", {})
+    price_search = int(eff.get(KIND_SUPPLIER_SEARCH, {}).get("price_kopeks") or 9900)
+    price_exact = int(eff.get(KIND_EXACT_PRODUCT, {}).get("price_kopeks") or 9900)
+    price_report = int(eff.get(KIND_PROCUREMENT_REPORT, {}).get("price_kopeks") or 9900)
+    price_extra = int(eff.get(KIND_SUPPLIER_SEARCH_EXTRA, {}).get("price_kopeks") or 4900)
+    price_monitoring = int(eff.get(KIND_PRICE_MONITORING, {}).get("price_kopeks") or int(getattr(settings, "price_monitoring_default_price_kopeks", 5000) or 5000))
     function_prices = {
         "supplier_search": {"price_kopeks": price_search, "price_rub": round(price_search / 100)},
         "exact_product": {"price_kopeks": price_exact, "price_rub": round(price_exact / 100)},
@@ -6475,7 +6478,7 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
         "csrf_token": csrf_token,
         "csrf_header": CSRF_HEADER,
         "user": customer_user_to_dict(db, user),
-        "balance": client_usage_summary(db, user.client),
+        "balance": balance,
         "limits": {
             "max_upload_mb": int(settings.max_upload_mb or 50),
             "max_files_per_batch": int(settings.max_files_per_batch or 20),
