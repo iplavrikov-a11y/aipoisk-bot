@@ -124,7 +124,7 @@ export function SiteFooter() {
       <div className="border-t border-slate-200 bg-slate-50 py-6 px-4 sm:px-6 text-slate-500 text-[11px] leading-relaxed">
         <div className="container max-w-6xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
           <div className="text-slate-600">
-            <span>© {new Date().getFullYear()} TenderLex. Все права защищены. Работает по всей территории РФ.</span>
+            <span>© {new Date().getFullYear()} Сервис «ТендерЛекс» (TenderLex). Все права защищены. Базы данных размещены на территории РФ.</span>
           </div>
           <div className="text-slate-500 text-[11px]">
             <span>ИП Груздев И. В. • ИНН 352516048881 • ОГРНИП 323352500038991 • </span>
