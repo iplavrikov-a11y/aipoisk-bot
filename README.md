@@ -1,12 +1,18 @@
 # TenderLex Bot
 
-Актуальный выпуск 5 ноября 2026: [оптимизация Yandex Search API: переход на асинхронный тариф searchAsync (снижение затрат в 16 раз), внутризадачный кэш ИНН и ликвидация холостых запросов](docs/PROJECT_STATUS.md), [Правило 14: семантический разбор документов и подтверждение кратких запросов в модальном окне](docs/PROJECT_STATUS.md).
+Актуальный выпуск 5 ноября 2026: [защита биллинга при повторных запусках (Re-Reserve on Retry) и аудит списаний](docs/PROJECT_STATUS.md), [оптимизация Yandex Search API: переход на асинхронный тариф searchAsync (снижение затрат в 16 раз)](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 5 ноября: все бэкенд-тесты (100% pass); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`).
+Серверный прогон выпуска 5 ноября: все бэкенд-тесты (1 404 теста, 100% pass); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Billing Resilience, Re-Reserve on Retry & Deductions Audit (2026-11-05):
+  - Two-Phase Re-Reservation Protocol (`backend/app/billing.py`): updated `_reserve_job_units_locked` to check if a job lacks an active reservation (`_job_reserved_remaining <= 0`) and has not yet been charged (`not _job_has_operation(OP_CHARGE)`). When retrying a failed task whose reservation was previously returned to customer balance (`OP_RELEASE`), the prior release row is purged and `OP_RESERVE` is reactivated with updated timestamp and note, strictly honoring database constraint `uq_billing_transaction_job_kind_operation` while re-locking client funds.
+  - Multi-Channel Retry Gates (`backend/app/main.py`, `backend/app/bot.py`): added mandatory balance checks and `reserve_job_units` invocations across web cabinet retry (`POST /api/customer/jobs/{job_id}/retry`), admin panel retry (`POST /api/jobs/{job_id}/retry`), and Telegram bot callback (`retry_normal_callback`). If client funds are insufficient, actionable errors (HTTP 402 / alerts) prevent zero-cost runs.
+  - Database Audit & Compensation Retention: verified 548 historical client jobs — 525 (95.8%) billed normally 1-to-1. Only 23 uncharged jobs existed across whole system history (all legacy admin tests or retried failures). Preserved client Екатерина (#85) 495 ₽ balance intact as platform goodwill compensation for the morning service disruption.
+  - Unit Tests: added `test_retry_after_failure_re_reserves_and_charges_successfully` and `test_retry_after_failure_insufficient_funds_raises_billing_error` in `backend/tests/test_billing.py` (31/31 pass). Live deployment verified.
 
 - Yandex Search API 16x Cost Optimization, Async Endpoint & Domain INN Cache (2026-11-05):
   - Primary Async Search API (`backend/app/exact_product/yandex_search.py`, `backend/app/supplier_search.py`): switched primary search endpoint to `https://searchapi.api.cloud.yandex.net/v2/web/searchAsync` across both exact product/monitoring and supplier search pipelines. Slashes cost per 1,000 requests from 488 ₽ (synchronous) down to 30.50 ₽ (asynchronous) with 400ms polling latency. Synchronous endpoint retained strictly as a resilient fallback.

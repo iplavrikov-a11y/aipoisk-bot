@@ -1298,6 +1298,18 @@ def customer_job_retry_api(
         job.supplier_search_policy = normalized
     if multi_item_mode in ("balanced", "per_item"):
         job.multi_item_mode = multi_item_mode
+    if job.client and not getattr(job, "is_admin_rerun", False):
+        supplier_search_count = 1
+        dobor_ctx = read_dobor_context(job)
+        if getattr(job, "multi_item_mode", "") == "per_item":
+            raw_items = (dobor_ctx.get("procurement_profile") or {}).get("items") or []
+            selected_ids = dobor_ctx.get("selected_item_ids")
+            supplier_search_count = len(selected_ids) if selected_ids is not None else len(raw_items)
+            supplier_search_count = max(1, supplier_search_count)
+        try:
+            reserve_job_units(db, job.client, job, supplier_search_count=supplier_search_count)
+        except BillingError as exc:
+            raise HTTPException(status_code=402, detail=str(exc)) from exc
     job.status = "pending"
     job.progress = 0
     job.error = ""
@@ -3998,6 +4010,18 @@ def retry_job(
     if multi_item_mode in ("balanced", "per_item"):
         job.multi_item_mode = multi_item_mode
         update_dobor_context_dict(job, {"multi_item_confirmed": True})
+    if job.client and not getattr(job, "is_admin_rerun", False):
+        supplier_search_count = 1
+        dobor_ctx = read_dobor_context(job)
+        if getattr(job, "multi_item_mode", "") == "per_item":
+            raw_items = (dobor_ctx.get("procurement_profile") or {}).get("items") or []
+            selected_ids = dobor_ctx.get("selected_item_ids")
+            supplier_search_count = len(selected_ids) if selected_ids is not None else len(raw_items)
+            supplier_search_count = max(1, supplier_search_count)
+        try:
+            reserve_job_units(db, job.client, job, supplier_search_count=supplier_search_count)
+        except BillingError as exc:
+            raise HTTPException(status_code=400, detail=f"Недостаточно средств у клиента для перезапуска: {exc}") from exc
     job.status = "pending"
     job.progress = 0
     job.error = ""

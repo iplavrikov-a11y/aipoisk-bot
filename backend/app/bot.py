@@ -3493,6 +3493,16 @@ async def retry_normal_callback(callback: CallbackQuery) -> None:
         if not job:
             await callback.message.answer("⚠️ Задача не найдена.")
             return
+        client = job.client
+        if client and not getattr(job, "is_admin_rerun", False):
+            try:
+                reserve_job_units(db, client, job, supplier_search_count=1)
+            except BillingError as exc:
+                await callback.message.answer(
+                    f"⚠️ Недостаточно средств для запуска обычного поиска:\n{exc}\n\nПополните баланс для продолжения.",
+                    reply_markup=main_menu(),
+                )
+                return
         job.supplier_search_policy = SUPPLIER_POLICY_NORMAL
         job.status = "pending"
         job.progress = 0

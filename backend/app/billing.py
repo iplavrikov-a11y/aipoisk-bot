@@ -647,7 +647,9 @@ def _reserve_job_units_locked(db: Session, client: Client, job: Job, *, supplier
     units_to_reserve = {
         kind: count
         for kind, count in units.items()
-        if count > 0 and not _job_has_operation(db, job.id, kind, OP_RESERVE)
+        if count > 0
+        and _job_reserved_remaining(db, job.id, kind) <= 0
+        and not _job_has_operation(db, job.id, kind, OP_CHARGE)
     }
     error = access_error_for_units(db, client, units_to_reserve)
     if error:
@@ -657,25 +659,59 @@ def _reserve_job_units_locked(db: Session, client: Client, job: Job, *, supplier
         if amount > 0:
             client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0)) + amount
         has_geo = bool(job and getattr(job, "geo_radius_km", None) and int(job.geo_radius_km or 0) > 0)
-        reserve_note = (
-            f"Резерв средств перед запуском задачи (радиус {job.geo_radius_km} км)"
-            if has_geo and amount > 0
-            else ("Резерв средств перед запуском задачи" if amount > 0 else "Резерв перед запуском задачи")
-        )
-        db.add(
-            BillingTransaction(
-                client_id=client.id,
-                job_id=job.id,
-                kind=kind,
-                operation=OP_RESERVE,
-                units=count,
-                amount_kopeks=amount,
-                balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
-                reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
-                note=reserve_note,
-                created_by="system",
+
+        existing_release = (
+            db.query(BillingTransaction)
+            .filter(
+                BillingTransaction.job_id == job.id,
+                BillingTransaction.kind == kind,
+                BillingTransaction.operation == OP_RELEASE,
             )
+            .first()
         )
+        if existing_release:
+            db.delete(existing_release)
+
+        existing_reserve = (
+            db.query(BillingTransaction)
+            .filter(
+                BillingTransaction.job_id == job.id,
+                BillingTransaction.kind == kind,
+                BillingTransaction.operation == OP_RESERVE,
+            )
+            .first()
+        )
+
+        is_retry = existing_reserve is not None
+        prefix = "Повторный резерв средств перед запуском задачи" if is_retry else "Резерв средств перед запуском задачи"
+        reserve_note = (
+            f"{prefix} (радиус {job.geo_radius_km} км)"
+            if has_geo and amount > 0
+            else (prefix if amount > 0 else ("Повторный резерв перед запуском задачи" if is_retry else "Резерв перед запуском задачи"))
+        )
+
+        if existing_reserve:
+            existing_reserve.units = count
+            existing_reserve.amount_kopeks = amount
+            existing_reserve.balance_after_kopeks = max(0, int(client.money_balance_kopeks or 0))
+            existing_reserve.reserved_after_kopeks = max(0, int(client.money_reserved_kopeks or 0))
+            existing_reserve.note = reserve_note
+            existing_reserve.created_at = now_utc()
+        else:
+            db.add(
+                BillingTransaction(
+                    client_id=client.id,
+                    job_id=job.id,
+                    kind=kind,
+                    operation=OP_RESERVE,
+                    units=count,
+                    amount_kopeks=amount,
+                    balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
+                    reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
+                    note=reserve_note,
+                    created_by="system",
+                )
+            )
     db.commit()
 
 
