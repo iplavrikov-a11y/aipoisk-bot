@@ -127,3 +127,171 @@ async def test_job_chat_two_way_workflow(db):
     customer_job_chat_mark_read_route(job_id=job.id, context=ctx, db=db)
     c_dict3 = customer_job_to_dict(job, db=db)
     assert c_dict3["unread_admin_messages_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_supplement_offer_workflow(db, tmp_path, monkeypatch):
+    from pathlib import Path
+    import app.main as main_mod
+    import app.result_offers as ro_mod
+
+    import app.jobs as jobs_mod
+    monkeypatch.setattr(jobs_mod.config, "storage_dir", str(tmp_path))
+
+    client = Client(name="ИП Строитель", telegram_id="web:builder", money_balance_kopeks=1000000) # 10 000 rub
+    db.add(client)
+    db.flush()
+
+    user = WebUser(client_id=client.id, email="builder@tenderlex.ru", password_hash="h", is_email_verified=True)
+    db.add(user)
+    db.flush()
+
+    web_sess = WebSession(id="sess-offer", user_id=user.id)
+    ctx = WebAuthContext(user=user, session=web_sess)
+
+    job = Job(
+        client_id=client.id,
+        mode="price_monitoring",
+        title="Смета на арматуру",
+        status="completed",
+        verified_count=12,
+        job_number=102,
+    )
+    db.add(job)
+    db.flush()
+
+    # Initial charge for 12 positions
+    from app.models import BillingTransaction
+    db.add(BillingTransaction(client_id=client.id, job_id=job.id, kind="price_monitoring", operation="charge", units=12, amount_kopeks=118800))
+    db.commit()
+
+    # 1. Admin prepares supplement offer: 56 positions total (+44 positions, 4 356 rub)
+    # Mock data directory for result_offers
+    monkeypatch.setattr(ro_mod, "Path", lambda *args: tmp_path / Path(*args[1:]) if len(args) > 1 and args[0] == "data/jobs" else Path(*args))
+
+    # Child rerun job found 56 positions
+    rerun_job = Job(
+        client_id=client.id,
+        parent_job_id=job.id,
+        mode="price_monitoring",
+        title="[Админ] Перезапуск",
+        status="completed",
+        verified_count=56,
+        is_admin_rerun=True,
+    )
+    db.add(rerun_job)
+    db.commit()
+
+    # Create dummy output file in rerun job
+    rerun_out_dir = tmp_path / rerun_job.id / "output"
+    rerun_out_dir.mkdir(parents=True, exist_ok=True)
+    fake_xlsx = rerun_out_dir / "supplement_table.xlsx"
+    fake_xlsx.write_text("dummy xlsx data")
+
+    # Upload supplement as offer
+    from app.main import upload_admin_supplement, accept_customer_partial_job_api, decline_customer_partial_job_api, customer_job_result_files
+    from unittest.mock import MagicMock
+    from fastapi import UploadFile
+
+    import io
+    # Admin uploads supplement as offer
+    res = await upload_admin_supplement(
+        job_id=job.id,
+        comment="Нашли 56 позиций вместо 12.",
+        notify_telegram=False,
+        source_mode="upload",
+        as_offer=True,
+        offer_charge_rub=4356.0,
+        files=[UploadFile(filename="supplement_table.xlsx", file=io.BytesIO(b"dummy xlsx bytes"))],
+        db=db,
+    )
+    assert res["success"] is True
+
+    # Check job state after sending offer
+    db.refresh(job)
+    assert job.status == "awaiting_customer_confirmation"
+    assert job.confirmation_kind == "admin_supplement_offer"
+    assert job.confirmation_outcome == "pending"
+
+    # Client balance should NOT be debited yet!
+    db.refresh(client)
+    assert client.money_balance_kopeks == 1000000
+
+    # In customer serialization, files are locked
+    c_dict = customer_job_to_dict(job, db=db)
+    assert c_dict["awaiting_customer_confirmation"] is True
+    assert c_dict["result_offer"] is not None
+    assert c_dict["result_offer"]["kind"] == "admin_supplement_offer"
+    assert c_dict["result_offer"]["charge_amount_rub"] == 4356.0
+    assert c_dict["result_offer"]["can_accept"] is True
+    assert len(c_dict["result_files"]) == 0  # Locked!
+
+    # 2. Customer accepts the offer
+    accept_res = accept_customer_partial_job_api(job.id, context=ctx, db=db)
+    assert accept_res["success"] is True
+
+    db.refresh(job)
+    db.refresh(client)
+    assert job.status == "completed"
+    assert job.confirmation_outcome == "accepted"
+    # Balance must be debited by 4 356.00 rub (435600 kopeks)
+    assert client.money_balance_kopeks == 1000000 - 435600
+
+    # Charge transaction should be recorded
+    charge_tx = db.query(BillingTransaction).filter(BillingTransaction.job_id == job.id, BillingTransaction.amount_kopeks == 435600).first()
+    assert charge_tx is not None
+    assert charge_tx.operation == "charge"
+
+    # Files must now be unlocked!
+    c_files = customer_job_result_files(job)
+    assert len(c_files) >= 1
+    assert any(f.get("is_admin_supplement") for f in c_files)
+
+    # Chat must have acceptance confirmation message
+    chat_msgs = get_job_chat_messages(db, job)
+    assert any(m.sender_role == "client" and "Клиент принял предложение" in m.message for m in chat_msgs)
+
+    # 3. Test decline workflow on a separate job
+    job_dec = Job(
+        client_id=client.id,
+        mode="price_monitoring",
+        title="Смета на кирпич",
+        status="completed",
+        verified_count=10,
+        job_number=103,
+    )
+    db.add(job_dec)
+    db.commit()
+
+    # Upload supplement offer for job_dec
+    await upload_admin_supplement(
+        job_id=job_dec.id,
+        comment="Нашли ещё 20 позиций.",
+        notify_telegram=False,
+        source_mode="upload",
+        as_offer=True,
+        offer_charge_rub=1980.0,
+        files=[UploadFile(filename="brick_supplement.xlsx", file=io.BytesIO(b"data"))],
+        db=db,
+    )
+    db.refresh(job_dec)
+    assert job_dec.status == "awaiting_customer_confirmation"
+
+    balance_before_decline = client.money_balance_kopeks
+    decline_res = decline_customer_partial_job_api(job_dec.id, context=ctx, db=db)
+    assert decline_res["success"] is True
+
+    db.refresh(job_dec)
+    db.refresh(client)
+    assert job_dec.status == "completed"
+    assert job_dec.confirmation_outcome == "declined"
+    # Balance must NOT be debited
+    assert client.money_balance_kopeks == balance_before_decline
+
+    # Declined supplement files must not be exposed to the customer
+    dec_files = customer_job_result_files(job_dec)
+    assert not any(f.get("is_admin_supplement") for f in dec_files)
+
+    # Chat must reflect decline
+    chat_msgs_dec = get_job_chat_messages(db, job_dec)
+    assert any(m.sender_role == "client" and "отклонил предложение" in m.message for m in chat_msgs_dec)

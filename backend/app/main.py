@@ -1861,6 +1861,16 @@ def customer_job_chat_attachment_route(
     msg = db.get(JobChatMessage, message_id)
     if not msg or msg.job_id != root_id:
         raise HTTPException(status_code=404, detail="Сообщение не найдено.")
+
+    if msg.sender_role == "admin" and (
+        job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION
+        or (job.confirmation_kind == "admin_supplement_offer" and job.confirmation_outcome != "accepted")
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Файлы отчёта будут доступны для скачивания после согласования и оплаты на карточке задачи.",
+        )
+
     try:
         raw = json.loads(msg.attachments_json or "[]")
         if not isinstance(raw, list) or att_idx < 0 or att_idx >= len(raw):
@@ -4534,11 +4544,75 @@ def get_job_supplement_candidates(job_id: str, db: Session = Depends(db_session)
                     "created_at": rj.created_at.isoformat() if rj.created_at else None,
                 })
 
+    # Calculate offer preview
+    max_verified = max(
+        [int(getattr(rj, "verified_count", 0) or 0) for rj in related_jobs],
+        default=int(getattr(job, "verified_count", 0) or 0),
+    )
+    charged_txs = (
+        db.query(BillingTransaction)
+        .filter(
+            BillingTransaction.job_id == root_id,
+            BillingTransaction.operation == "charge",
+        )
+        .all()
+    )
+    already_charged_units = sum(int(tx.units or 0) for tx in charged_txs)
+    already_charged_kopeks = sum(int(tx.amount_kopeks or 0) for tx in charged_txs)
+
+    client_obj = db.get(Client, job.client_id) if job.client_id else None
+    avail_kopeks = (
+        max(0, int(client_obj.money_balance_kopeks or 0) - int(client_obj.money_reserved_kopeks or 0))
+        if client_obj
+        else 0
+    )
+
+    unit_price_kopeks = 0
+    if client_obj:
+        if job.mode in ("price_monitoring", "exact_product"):
+            sel_data = read_selection(job)
+            unit_price_kopeks = (
+                int(sel_data.get("price_kopeks"))
+                if "price_kopeks" in sel_data and sel_data.get("price_kopeks") is not None
+                else effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
+            )
+        else:
+            unit_price_kopeks = effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
+
+    if job.mode in ("price_monitoring", "exact_product"):
+        delta_units = max(0, max_verified - already_charged_units)
+        needed_kopeks = delta_units * unit_price_kopeks
+    else:
+        delta_units = 1 if already_charged_kopeks == 0 else 0
+        needed_kopeks = unit_price_kopeks if delta_units > 0 else 0
+
+    charge_rub = round(needed_kopeks / 100, 2)
+    prior_c = already_charged_units or int(job.verified_count or 0)
+    default_offer_comment = (
+        f"Здравствуйте! Специалисты TenderLex пересчитали спецификацию: найдено {max_verified} поз. "
+        f"(ранее было {prior_c} поз.). Готовы выдать дополненный экспертный отчёт. "
+        f"Стоимость доплаты составит {charge_rub} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи."
+    )
+
+    offer_preview = {
+        "client_id": job.client_id or "",
+        "client_name": client_obj.name if client_obj else "",
+        "client_balance_rub": round(avail_kopeks / 100, 2),
+        "prior_verified_count": prior_c,
+        "new_verified_count": max_verified,
+        "delta_units": delta_units,
+        "unit_price_rub": round(unit_price_kopeks / 100, 2),
+        "charge_amount_rub": charge_rub,
+        "can_afford": avail_kopeks >= needed_kopeks,
+        "default_offer_comment": default_offer_comment,
+    }
+
     return {
         "success": True,
         "job_id": job.id,
         "root_job_id": root_id,
         "candidates": candidates,
+        "offer_preview": offer_preview,
     }
 
 
@@ -4655,6 +4729,8 @@ async def upload_admin_supplement(
     source_mode: str = Form(default="upload"),
     file_kinds: str = Form(default=""),
     file_kind: str = Form(default=""),
+    as_offer: bool = Form(default=False),
+    offer_charge_rub: float | None = Form(default=None),
     db: Session = Depends(db_session),
 ) -> dict:
     job = resolve_admin_job(job_id, db)
@@ -4748,102 +4824,164 @@ async def upload_admin_supplement(
     if clean_comment:
         job.admin_comment = clean_comment
 
-    if job.status == "failed" and (supplement_items or clean_comment):
+    # Рассчитываем позиции и стоимость доплаты
+    root_id = job.parent_job_id if getattr(job, "parent_job_id", "") and getattr(job, "is_admin_rerun", False) else job.id
+    all_rel_jobs = (
+        db.query(Job)
+        .filter(or_(Job.id == root_id, Job.parent_job_id == root_id, Job.id == job.id))
+        .all()
+    )
+    max_verified = max(
+        [int(getattr(rj, "verified_count", 0) or 0) for rj in all_rel_jobs],
+        default=int(getattr(job, "verified_count", 0) or 0),
+    )
+    charged_txs = (
+        db.query(BillingTransaction)
+        .filter(
+            BillingTransaction.job_id == root_id,
+            BillingTransaction.operation == "charge",
+        )
+        .all()
+    )
+    already_charged_units = sum(int(tx.units or 0) for tx in charged_txs)
+    already_charged_kopeks = sum(int(tx.amount_kopeks or 0) for tx in charged_txs)
+
+    client_obj = db.get(Client, job.client_id) if job.client_id else None
+    avail_kopeks = (
+        max(0, int(client_obj.money_balance_kopeks or 0) - int(client_obj.money_reserved_kopeks or 0))
+        if client_obj
+        else 0
+    )
+
+    unit_price_kopeks = 0
+    if client_obj:
+        if job.mode in ("price_monitoring", "exact_product"):
+            sel_data = read_selection(job)
+            unit_price_kopeks = (
+                int(sel_data.get("price_kopeks"))
+                if "price_kopeks" in sel_data and sel_data.get("price_kopeks") is not None
+                else effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
+            )
+        else:
+            unit_price_kopeks = effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
+
+    if job.mode in ("price_monitoring", "exact_product"):
+        delta_units = max(0, max_verified - already_charged_units)
+        needed_kopeks = delta_units * unit_price_kopeks
+    else:
+        delta_units = 1 if already_charged_kopeks == 0 else 0
+        needed_kopeks = unit_price_kopeks if delta_units > 0 else 0
+
+    # Normalize Form parameters when invoked directly in tests
+    is_offer = False
+    if isinstance(as_offer, bool):
+        is_offer = as_offer
+    elif hasattr(as_offer, "default"):
+        is_offer = bool(as_offer.default)
+    elif isinstance(as_offer, str):
+        is_offer = as_offer.lower() in ("true", "1", "yes")
+
+    clean_charge_rub: float | None = None
+    if isinstance(offer_charge_rub, (int, float)):
+        clean_charge_rub = float(offer_charge_rub)
+    elif hasattr(offer_charge_rub, "default") and isinstance(getattr(offer_charge_rub, "default", None), (int, float)):
+        clean_charge_rub = float(offer_charge_rub.default)
+    elif isinstance(offer_charge_rub, str) and offer_charge_rub.strip():
+        try:
+            clean_charge_rub = float(offer_charge_rub.strip())
+        except ValueError:
+            clean_charge_rub = None
+
+    if clean_charge_rub is not None:
+        needed_kopeks = max(0, int(round(clean_charge_rub * 100)))
+
+    charge_rub = round(needed_kopeks / 100, 2)
+    prior_c = already_charged_units or int(job.verified_count or 0)
+
+    # Если отправляется как предложение клиенту на согласование (деньги спишутся только после согласия)
+    if is_offer and needed_kopeks > 0:
+        offer_payload = {
+            "kind": "admin_supplement_offer",
+            "created_at": now_utc().isoformat(),
+            "expires_at": (now_utc() + timedelta(days=3)).isoformat(),
+            "prior_count": prior_c,
+            "new_count": max_verified,
+            "delta_units": delta_units,
+            "unit_price_kopeks": unit_price_kopeks,
+            "charge_amount_kopeks": needed_kopeks,
+            "charge_amount_rub": charge_rub,
+            "comment": clean_comment,
+            "items": supplement_items,
+            "status": "pending",
+        }
+        (target_dir / "supplement_offer.json").write_text(
+            json.dumps(offer_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        job.status = STATUS_AWAITING_CUSTOMER_CONFIRMATION
+        job.confirmation_kind = "admin_supplement_offer"
+        job.confirmation_outcome = "pending"
+        job.confirmation_offered_at = now_utc()
+        job.confirmation_expires_at = now_utc() + timedelta(days=3)
+        job.progress = 100
+        job.message = f"Эксперты TenderLex пересчитали спецификацию: найдено {max_verified} поз. Ожидается подтверждение клиента на доплату {charge_rub} ₽."
+
+        chat_text = clean_comment or (
+            f"Здравствуйте! Специалисты TenderLex пересчитали вашу спецификацию: найдено {max_verified} поз. (ранее было {prior_c} поз.). "
+            f"Готовы выдать дополненный экспертный отчёт. Стоимость доплаты составит {charge_rub} ₽ с баланса. "
+            f"Подтвердите, пожалуйста, согласие на карточке задачи в кабинете."
+        )
+    else:
+        # Прямая публикация без ожидания согласования (или бесплатное дополнение)
+        if supplement_items and job.client_id and not getattr(job, "is_admin_rerun", False) and needed_kopeks > 0:
+            try:
+                if client_obj is not None and avail_kopeks > 0:
+                    actual_charge = min(needed_kopeks, avail_kopeks)
+                    if actual_charge > 0:
+                        client_obj.money_balance_kopeks = int(client_obj.money_balance_kopeks or 0) - actual_charge
+                        existing_charge = (
+                            db.query(BillingTransaction)
+                            .filter(
+                                BillingTransaction.job_id == job.id,
+                                BillingTransaction.kind == job.mode,
+                                BillingTransaction.operation == "charge",
+                            )
+                            .first()
+                        )
+                        tx_kind = f"{job.mode}_supplement" if existing_charge is not None else job.mode
+                        db.add(
+                            BillingTransaction(
+                                client_id=client_obj.id,
+                                job_id=job.id,
+                                kind=tx_kind,
+                                operation="charge",
+                                units=delta_units or 1,
+                                amount_kopeks=actual_charge,
+                                note=f"Оплата по дополненному экспертному отчёту: +{delta_units} поз. (всего найдено {max_verified} поз.)",
+                            )
+                        )
+            except Exception as bill_exc:
+                logger.warning("Failed to settle supplement charge for job %s: %s", job.id, bill_exc)
+
+        if max_verified > int(getattr(job, "verified_count", 0) or 0):
+            job.verified_count = max_verified
+
         job.status = "completed"
         job.progress = 100
         job.error = ""
         job.message = "Дополнено экспертом TenderLex"
-
-    # Если клиенту отправляется дополненный отчёт (из экспертного перезапуска или загруженный файл),
-    # досписываем средства за вновь найденные позиции (или за выполненный отчёт, если задача ранее упала в ошибку).
-    if supplement_items and job.client_id and not getattr(job, "is_admin_rerun", False):
-        try:
-            client_obj = db.get(Client, job.client_id)
-            if client_obj is not None:
-                charged_txs = (
-                    db.query(BillingTransaction)
-                    .filter(
-                        BillingTransaction.job_id == job.id,
-                        BillingTransaction.operation == "charge",
-                    )
-                    .all()
-                )
-                already_charged_units = sum(int(tx.units or 0) for tx in charged_txs)
-                already_charged_kopeks = sum(int(tx.amount_kopeks or 0) for tx in charged_txs)
-                avail_kopeks = max(
-                    0,
-                    int(client_obj.money_balance_kopeks or 0) - int(client_obj.money_reserved_kopeks or 0),
-                )
-
-                root_id = job.parent_job_id if getattr(job, "parent_job_id", "") else job.id
-                all_rel_jobs = (
-                    db.query(Job)
-                    .filter(or_(Job.id == root_id, Job.parent_job_id == root_id, Job.id == job.id))
-                    .all()
-                )
-                max_verified = max(
-                    [int(getattr(rj, "verified_count", 0) or 0) for rj in all_rel_jobs],
-                    default=int(getattr(job, "verified_count", 0) or 0),
-                )
-                if max_verified > int(getattr(job, "verified_count", 0) or 0):
-                    job.verified_count = max_verified
-
-                if job.mode in ("price_monitoring", "exact_product"):
-                    sel_data = read_selection(job)
-                    unit_price_kopeks = (
-                        int(sel_data.get("price_kopeks"))
-                        if "price_kopeks" in sel_data and sel_data.get("price_kopeks") is not None
-                        else effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
-                    )
-                    if max_verified > already_charged_units and unit_price_kopeks > 0 and avail_kopeks > 0:
-                        delta_units = max_verified - already_charged_units
-                        needed_kopeks = delta_units * unit_price_kopeks
-                        charge_kopeks = min(needed_kopeks, avail_kopeks)
-                        if charge_kopeks > 0:
-                            charged_u = max(1, charge_kopeks // unit_price_kopeks)
-                            client_obj.money_balance_kopeks = int(client_obj.money_balance_kopeks or 0) - charge_kopeks
-                            db.add(
-                                BillingTransaction(
-                                    client_id=client_obj.id,
-                                    job_id=job.id,
-                                    kind=job.mode,
-                                    operation="charge",
-                                    units=charged_u,
-                                    amount_kopeks=charge_kopeks,
-                                    note=f"Оплата по дополненному экспертному отчёту: +{charged_u} поз. (всего найдено {max_verified} поз.)",
-                                )
-                            )
-                else:
-                    if already_charged_kopeks == 0 and avail_kopeks > 0:
-                        unit_price_kopeks = effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
-                        charge_kopeks = min(unit_price_kopeks, avail_kopeks)
-                        if charge_kopeks > 0:
-                            client_obj.money_balance_kopeks = int(client_obj.money_balance_kopeks or 0) - charge_kopeks
-                            db.add(
-                                BillingTransaction(
-                                    client_id=client_obj.id,
-                                    job_id=job.id,
-                                    kind=job.mode,
-                                    operation="charge",
-                                    units=1,
-                                    amount_kopeks=charge_kopeks,
-                                    note="Оплата за подготовленный экспертный отчёт",
-                                )
-                            )
-        except Exception as bill_exc:
-            logger.warning("Failed to settle supplement charge for job %s: %s", job.id, bill_exc)
+        chat_text = clean_comment or "Экспертный отчёт TenderLex дополнен новыми материалами."
 
     # Seed prior messages if any
     get_job_chat_messages(db, job, auto_seed=True)
 
-    # Record chat message from admin with supplement files and comment
-    root_id = job.parent_job_id if getattr(job, "parent_job_id", "") and getattr(job, "is_admin_rerun", False) else job.id
+    # Record chat message from admin
     chat_msg = JobChatMessage(
         id=new_id(),
         job_id=root_id,
         client_id=job.client_id or "",
         sender_role="admin",
-        message=clean_comment or "Экспертный отчёт TenderLex дополнен новыми материалами.",
+        message=chat_text,
         attachments_json=json.dumps(supplement_items, ensure_ascii=False),
         is_read_by_admin=True,
         is_read_by_client=False,
@@ -4860,16 +4998,27 @@ async def upload_admin_supplement(
         target_tg_id = job.created_by_telegram_id or (job.client.telegram_id if job.client else "")
         if target_tg_id:
             try:
-                from .bot import send_admin_supplement_telegram
-
-                supp_list = get_job_admin_supplements(job)
-                tg_sent = await send_admin_supplement_telegram(
-                    telegram_id=target_tg_id,
-                    job_title=human_job_title(job) or job.title,
-                    job_id=job.id,
-                    comment=job.admin_comment,
-                    files=supp_list,
-                )
+                if as_offer and needed_kopeks > 0:
+                    from .bot import bot
+                    tg_text = (
+                        f"📋 *Предложение по задаче «{human_job_title(job) or job.title}»*\n\n"
+                        f"Специалисты TenderLex пересчитали спецификацию: найдено *{max_verified}* позиций "
+                        f"(ранее было {prior_c}).\n"
+                        f"Стоимость доплаты: *{charge_rub} ₽* с баланса.\n\n"
+                        f"Перейдите в личный кабинет на сайте https://tenderlex.ru/cabinet для согласования и скачивания отчёта."
+                    )
+                    await bot.send_message(chat_id=int(target_tg_id), text=tg_text, parse_mode="Markdown")
+                    tg_sent = True
+                else:
+                    from .bot import send_admin_supplement_telegram
+                    supp_list = get_job_admin_supplements(job)
+                    tg_sent = await send_admin_supplement_telegram(
+                        telegram_id=target_tg_id,
+                        job_title=human_job_title(job) or job.title,
+                        job_id=job.id,
+                        comment=job.admin_comment,
+                        files=supp_list,
+                    )
             except Exception as exc:
                 logger.warning("Error notifying telegram in admin-supplement: %s", exc)
 
@@ -6107,15 +6256,18 @@ def customer_job_result_files(job: Job) -> list[dict]:
                 "filename": path.name,
             }
         )
-    for supp in get_job_admin_supplements(job):
-        result.append(
-            {
-                "kind": supp["kind"],
-                "label": supp["label"],
-                "filename": supp["name"],
-                "is_admin_supplement": True,
-            }
-        )
+    if job.confirmation_kind == "admin_supplement_offer" and job.confirmation_outcome == "declined":
+        pass
+    else:
+        for supp in get_job_admin_supplements(job):
+            result.append(
+                {
+                    "kind": supp["kind"],
+                    "label": supp["label"],
+                    "filename": supp["name"],
+                    "is_admin_supplement": True,
+                }
+            )
     return result
 
 
@@ -6381,6 +6533,8 @@ def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebA
     _ensure_customer_job_result_delivery_allowed(job)
     normalized_kind = str(file_kind or "").strip()
     if normalized_kind in {"admin_supplement", "admin-supplement"} or normalized_kind.startswith("admin_supplement_") or normalized_kind.startswith("admin-supplement_"):
+        if job.confirmation_kind == "admin_supplement_offer" and job.confirmation_outcome == "declined":
+            raise HTTPException(status_code=403, detail="Вы отказались от предложения по дополнительному отчёту.")
         supplements = get_job_admin_supplements(job)
         if not supplements:
             raise HTTPException(status_code=404, detail="Дополнительный файл не найден.")

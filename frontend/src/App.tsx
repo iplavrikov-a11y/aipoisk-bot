@@ -5004,6 +5004,19 @@ type SupplementCandidate = {
   created_at?: string | null
 }
 
+type OfferPreview = {
+  client_id?: string
+  client_name?: string
+  client_balance_rub?: number
+  prior_verified_count?: number
+  new_verified_count?: number
+  delta_units?: number
+  unit_price_rub?: number
+  charge_amount_rub?: number
+  can_afford?: boolean
+  default_offer_comment?: string
+}
+
 function AdminSupplementModal({
   job,
   onClose,
@@ -5018,6 +5031,9 @@ function AdminSupplementModal({
   const [comment, setComment] = useState(() => defaultAdminComment(job))
   const [candidates, setCandidates] = useState<SupplementCandidate[]>([])
   const [loadingCandidates, setLoadingCandidates] = useState(true)
+  const [offerPreview, setOfferPreview] = useState<OfferPreview | null>(null)
+  const [asOffer, setAsOffer] = useState(true)
+  const [offerChargeRub, setOfferChargeRub] = useState<number | ''>('')
   const [chatMessages, setChatMessages] = useState<any[]>([])
   const [loadingChat, setLoadingChat] = useState(true)
   const [sourceMode, setSourceMode] = useState<'job_file' | 'upload'>('job_file')
@@ -5063,7 +5079,7 @@ function AdminSupplementModal({
         })
         if (res.ok) {
           const data = await res.json()
-          if (active && data.candidates && Array.isArray(data.candidates)) {
+          if (data && active && data.candidates && Array.isArray(data.candidates)) {
             const list: SupplementCandidate[] = data.candidates
             setCandidates(list)
             if (list.length > 0) {
@@ -5076,6 +5092,14 @@ function AdminSupplementModal({
               setSourceMode('job_file')
             } else {
               setSourceMode('upload')
+            }
+          }
+          if (data && active && data.offer_preview) {
+            const prev = data.offer_preview as OfferPreview
+            setOfferPreview(prev)
+            setOfferChargeRub(prev.charge_amount_rub ?? 0)
+            if (prev.default_offer_comment && !job.admin_comment) {
+              setComment(prev.default_offer_comment)
             }
           }
         }
@@ -5125,6 +5149,10 @@ function AdminSupplementModal({
       }
       formData.append('comment', comment.trim())
       formData.append('notify_telegram', String(notifyTelegram))
+      formData.append('as_offer', String(asOffer))
+      if (offerChargeRub !== '') {
+        formData.append('offer_charge_rub', String(offerChargeRub))
+      }
 
       const token = localStorage.getItem('tenderlex_admin_token') || sessionStorage.getItem('tenderlex_admin_token') || ''
       const res = await fetch(`/api/jobs/${job.id}/admin-supplement`, {
@@ -5179,6 +5207,46 @@ function AdminSupplementModal({
                 </div>
               )}
             </div>
+
+            {offerPreview && (
+              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#166534', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span>💡</span>
+                    <span>Согласование и доплата за пересчитанный отчёт</span>
+                  </span>
+                  <span style={{ fontSize: 11, color: '#15803d', fontWeight: 600 }}>
+                    Баланс клиента: {offerPreview.client_balance_rub ?? 0} ₽
+                  </span>
+                </div>
+                <div style={{ fontSize: 11.5, color: '#166534', lineHeight: 1.5, marginBottom: 8 }}>
+                  Найдено позиций: <strong>{offerPreview.new_verified_count}</strong> (ранее оплачено {offerPreview.prior_verified_count}).
+                  {offerPreview.delta_units ? ` Дополнительно: +${offerPreview.delta_units} поз. × ${offerPreview.unit_price_rub} ₽ = ` : ' '}
+                  <strong style={{ fontSize: 13, color: '#0f766e' }}>{offerPreview.charge_amount_rub} ₽</strong>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6, borderTop: '1px solid #dcfce7' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="as_offer_toggle"
+                      checked={asOffer}
+                      onChange={() => setAsOffer(true)}
+                    />
+                    <span>Отправить клиенту как предложение на согласование (со списанием {offerPreview.charge_amount_rub} ₽ только после согласия)</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 500, color: '#475569', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="as_offer_toggle"
+                      checked={!asOffer}
+                      onChange={() => setAsOffer(false)}
+                    />
+                    <span>Опубликовать сразу (списать {offerPreview.charge_amount_rub} ₽ без согласования)</span>
+                  </label>
+                </div>
+              </div>
+            )}
 
             {/* Chat History Thread */}
             <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px' }}>
@@ -5464,6 +5532,8 @@ function AdminSupplementModal({
               <span>
                 {loading
                   ? 'Сохранение...'
+                  : asOffer && (offerPreview?.charge_amount_rub ?? 0) > 0
+                  ? `Отправить предложение клиенту (${offerPreview?.charge_amount_rub} ₽)`
                   : isWebClient
                   ? 'Опубликовать в личном кабинете'
                   : notifyTelegram

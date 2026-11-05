@@ -3153,7 +3153,7 @@ export function CabinetClient() {
       });
       if (!response.ok) throw new Error(parseError(await response.text()));
       await readJson(response);
-      setMessage("Отчёт принят. Результат можно скачать в строке задачи.");
+      setMessage(job.confirmation_kind === "admin_supplement_offer" ? "Дополненный отчёт успешно принят и оплачен. Файлы готовы к скачиванию." : "Отчёт принят. Результат можно скачать в строке задачи.");
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -3173,7 +3173,9 @@ export function CabinetClient() {
         credentials: "same-origin",
         headers: { "x-csrf-token": csrf },
       });
+      if (!response.ok) throw new Error(parseError(await response.text()));
       await readJson(response);
+      setMessage(job.confirmation_kind === "admin_supplement_offer" ? "Вы отказались от предложения. Списание средств не производилось." : "Отказ зафиксирован.");
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -4757,7 +4759,7 @@ export function CabinetClient() {
 
           {jobs.length ? (
             jobs.map((job) => {
-              const offer = (job as unknown as { result_offer?: { kind?: string; can_accept?: boolean; can_decline?: boolean } }).result_offer;
+              const offer = (job as unknown as { result_offer?: { kind?: string; charge_amount_rub?: number; new_count?: number; prior_count?: number; delta_units?: number; can_accept?: boolean; can_decline?: boolean; comment?: string } }).result_offer;
               const isFailed = job.status === "failed" || job.status === "error";
               const isCancelledOrDeclined = job.status === "cancelled" || job.status === "customer_declined";
               const isExpired = job.status === "confirmation_expired" || job.status === "delivery_expired";
@@ -4974,7 +4976,7 @@ export function CabinetClient() {
                               disabled={busy}
                             >
                               <CheckCircle2 size={15} aria-hidden="true" />
-                              <span>{offer?.kind === "registry_fallback" ? "Получить без реестра" : "Получить и списать"}</span>
+                              <span>{offer?.kind === "registry_fallback" ? "Получить без реестра" : offer?.kind === "admin_supplement_offer" ? `Принять и оплатить (${offer.charge_amount_rub || 0} ₽)` : "Получить и списать"}</span>
                             </button>
                           ) : null}
                           {!offer || offer.can_decline ? (
@@ -5188,6 +5190,73 @@ export function CabinetClient() {
                           ))}
                         </div>
                       </details>
+                    </div>
+                  ) : null}
+
+                  {job.awaiting_customer_confirmation && job.confirmation_kind === "admin_supplement_offer" && offer ? (
+                    <div className="col-span-12 my-2.5 p-4 rounded-xl bg-gradient-to-r from-teal-50 via-emerald-50/70 to-teal-50 border border-teal-200 shadow-xs">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-teal-600 text-white shadow-xs">
+                              ✨ Предложение эксперта
+                            </span>
+                            <span className="font-bold text-sm text-slate-800">
+                              Готов пересчитанный отчёт
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-700 leading-relaxed">
+                            {offer.new_count && offer.new_count > 0 ? (
+                              <>
+                                Найдено <strong>{offer.new_count}</strong> позиций (ранее было {offer.prior_count || 0}).
+                                {offer.delta_units && offer.delta_units > 0 ? ` Дополнительно подобрано +${offer.delta_units} поз.` : ""}
+                              </>
+                            ) : (
+                              "Эксперты TenderLex подготовили доработанный отчёт по вашей спецификации."
+                            )}
+                            {offer.charge_amount_rub && offer.charge_amount_rub > 0 ? (
+                              <> Стоимость доплаты с баланса: <strong className="text-teal-800 font-bold">{offer.charge_amount_rub} ₽</strong>.</>
+                            ) : (
+                              " Доплата не требуется."
+                            )}
+                          </p>
+                          {offer.comment ? (
+                            <p className="text-xs text-slate-600 italic border-l-2 border-teal-400 pl-2.5 mt-1.5">
+                              «{offer.comment}»
+                            </p>
+                          ) : null}
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1.5 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              markJobAsViewed(job.id);
+                              acceptPartial(job);
+                            }}
+                            disabled={busy}
+                          >
+                            <CheckCircle2 size={15} aria-hidden="true" />
+                            <span>Принять и оплатить ({offer.charge_amount_rub || 0} ₽)</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              markJobAsViewed(job.id);
+                              declinePartial(job);
+                            }}
+                            disabled={busy}
+                          >
+                            <XCircle size={15} className="text-rose-600" aria-hidden="true" />
+                            <span>Отказаться</span>
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   ) : null}
 

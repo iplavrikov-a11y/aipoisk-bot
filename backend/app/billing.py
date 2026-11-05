@@ -126,6 +126,8 @@ def billing_kind_label(kind: str) -> str:
         return "Подбор товара и аналогов"
     if kind == KIND_PRICE_MONITORING:
         return "Мониторинг цен"
+    if "supplement" in kind:
+        return "Дополнительный отчёт эксперта"
     return "Поставщики"
 
 

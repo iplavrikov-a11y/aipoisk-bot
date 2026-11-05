@@ -22,10 +22,20 @@ from .billing import (
     _release_job_kind_reservation,
     job_reserved_amount_kopeks,
 )
-from .models import Job, UserJourneyEvent, now_utc, parse_json_dict
+from .models import (
+    BillingTransaction,
+    Client,
+    Job,
+    JobChatMessage,
+    UserJourneyEvent,
+    new_id,
+    now_utc,
+    parse_json_dict,
+)
 
 CONFIRMATION_KIND_PARTIAL_COUNT = "partial_count"
 CONFIRMATION_KIND_REGISTRY_FALLBACK = "registry_fallback"
+CONFIRMATION_KIND_ADMIN_SUPPLEMENT = "admin_supplement_offer"
 
 DECISION_PENDING = "pending"
 DECISION_ACCEPTED = "accepted"
@@ -66,7 +76,7 @@ def publish_job_result_offer(
     offered_at: datetime | None = None,
 ) -> None:
     """Publish a locked offer after every immutable output template is on disk."""
-    if kind not in {CONFIRMATION_KIND_PARTIAL_COUNT, CONFIRMATION_KIND_REGISTRY_FALLBACK}:
+    if kind not in {CONFIRMATION_KIND_PARTIAL_COUNT, CONFIRMATION_KIND_REGISTRY_FALLBACK, CONFIRMATION_KIND_ADMIN_SUPPLEMENT}:
         raise ValueError(f"Unsupported result offer kind: {kind}")
     now = _utc(offered_at or now_utc())
     job.confirmation_kind = kind
@@ -102,6 +112,11 @@ def accept_job_result_offer(db: Session, job: Job, *, channel: str) -> Job:
             _expire_pending_decision_locked(db, job, now=now)
             db.commit()
             raise ResultOfferGone("Срок подтверждения результата истёк.")
+        if job.confirmation_kind == CONFIRMATION_KIND_ADMIN_SUPPLEMENT:
+            _settle_admin_supplement_offer_accepted_locked(db, job, now=now, channel=channel)
+            db.commit()
+            db.refresh(job)
+            return job
         if job.confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK:
             _activate_manifest(job, MANIFEST_FULL)
         job.confirmation_outcome = DECISION_ACCEPTED
@@ -134,6 +149,11 @@ def decline_job_result_offer(db: Session, job: Job, *, channel: str) -> Job:
         now = _utc(now_utc())
         if job.confirmation_outcome != DECISION_PENDING or job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION:
             raise ResultOfferConflict("Подтверждение уже не актуально.")
+        if job.confirmation_kind == CONFIRMATION_KIND_ADMIN_SUPPLEMENT:
+            _settle_admin_supplement_offer_declined_locked(db, job, now=now, channel=channel)
+            db.commit()
+            db.refresh(job)
+            return job
         if job.confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK:
             _settle_registry_fallback_without_supplier_locked(
                 db,
@@ -242,7 +262,7 @@ def expire_result_offers(db: Session, *, current_time: datetime | None = None) -
     now = _utc(current_time or now_utc())
     jobs = (
         db.query(Job)
-        .filter(Job.confirmation_kind.in_([CONFIRMATION_KIND_PARTIAL_COUNT, CONFIRMATION_KIND_REGISTRY_FALLBACK]))
+        .filter(Job.confirmation_kind.in_([CONFIRMATION_KIND_PARTIAL_COUNT, CONFIRMATION_KIND_REGISTRY_FALLBACK, CONFIRMATION_KIND_ADMIN_SUPPLEMENT]))
         .filter(
             (Job.confirmation_outcome == DECISION_PENDING)
             | ((Job.confirmation_outcome == DECISION_ACCEPTED) & (Job.offer_delivery_outcome == DELIVERY_PENDING))
@@ -330,6 +350,37 @@ def result_offer_to_dict(db: Session | None, job: Job, _evidence: dict | None = 
     kind = str(job.confirmation_kind or "")
     if not kind:
         return None
+    now = _utc(now_utc())
+    if kind == CONFIRMATION_KIND_ADMIN_SUPPLEMENT:
+        from .jobs import job_dir
+        offer_path = job_dir(job.id) / "supplement" / "supplement_offer.json"
+        meta: dict = {}
+        if offer_path.is_file():
+            try:
+                meta = json.loads(offer_path.read_text(encoding="utf-8"))
+            except Exception:
+                meta = {}
+        pending = job.confirmation_outcome == DECISION_PENDING and not _deadline_passed(job.confirmation_expires_at, now)
+        charge_kopeks = int(meta.get("charge_amount_kopeks") or 0)
+        return {
+            "kind": kind,
+            "title": "Предложение принять пересчитанный экспертный отчёт",
+            "prior_count": int(meta.get("prior_count") or 0),
+            "new_count": int(meta.get("new_count") or job.verified_count or 0),
+            "delta_units": int(meta.get("delta_units") or 0),
+            "unit_price_rub": round(int(meta.get("unit_price_kopeks") or 0) / 100, 2),
+            "decision_outcome": str(job.confirmation_outcome or ""),
+            "decision_offered_at": _iso(job.confirmation_offered_at),
+            "decision_expires_at": _iso(job.confirmation_expires_at),
+            "decision_decided_at": _iso(job.confirmation_decided_at),
+            "delivery_outcome": str(job.offer_delivery_outcome or ""),
+            "charge_amount_kopeks": charge_kopeks,
+            "charge_amount_rub": round(charge_kopeks / 100, 2),
+            "can_accept": bool(pending),
+            "can_decline": bool(pending),
+            "comment": str(meta.get("comment") or job.admin_comment or ""),
+            "files": meta.get("items") or [],
+        }
     full_manifest = _manifest_template(job, MANIFEST_FULL, _evidence=_evidence)
     offered_entitlements = [
         _normalize_job_billing_kind(job, item)
@@ -379,6 +430,26 @@ def result_offer_to_dict(db: Session | None, job: Job, _evidence: dict | None = 
 
 
 def _expire_pending_decision_locked(db: Session, job: Job, *, now: datetime) -> None:
+    if job.confirmation_kind == CONFIRMATION_KIND_ADMIN_SUPPLEMENT:
+        job.confirmation_outcome = DECISION_EXPIRED
+        job.confirmation_decided_at = now
+        job.status = "completed"
+        job.message = "Срок действия предложения о дополнении отчёта истёк; списания нет"
+        job.updated_at = now
+        root_id = job.parent_job_id if getattr(job, "parent_job_id", "") and getattr(job, "is_admin_rerun", False) else job.id
+        db.add(
+            JobChatMessage(
+                id=new_id(),
+                job_id=root_id,
+                client_id=job.client_id or "",
+                sender_role="admin",
+                message="⏳ Срок действия предложения о платном дополнении отчёта истёк. Списание средств не производилось.",
+                is_read_by_admin=True,
+                is_read_by_client=True,
+                created_at=now,
+            )
+        )
+        return
     if job.confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK:
         _settle_registry_fallback_without_supplier_locked(
             db,
@@ -447,6 +518,152 @@ def _settle_registry_fallback_without_supplier_locked(
         job.status = status_for_standalone
         job.message = "Результат без подтверждения реестра не выдан; списания нет"
     job.updated_at = now
+
+
+def _settle_admin_supplement_offer_accepted_locked(
+    db: Session,
+    job: Job,
+    *,
+    now: datetime,
+    channel: str,
+) -> None:
+    from .jobs import job_dir
+    offer_path = job_dir(job.id) / "supplement" / "supplement_offer.json"
+    offer_meta: dict = {}
+    if offer_path.is_file():
+        try:
+            offer_meta = json.loads(offer_path.read_text(encoding="utf-8"))
+        except Exception:
+            offer_meta = {}
+
+    charge_amount_kopeks = int(offer_meta.get("charge_amount_kopeks") or 0)
+    delta_units = int(offer_meta.get("delta_units") or 0)
+    new_count = int(offer_meta.get("new_count") or job.verified_count or 0)
+
+    if job.client_id and charge_amount_kopeks > 0:
+        client = db.get(Client, job.client_id)
+        if client:
+            avail_kopeks = max(
+                0,
+                int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0),
+            )
+            if avail_kopeks < charge_amount_kopeks:
+                shortage = round((charge_amount_kopeks - avail_kopeks) / 100, 2)
+                raise ResultOfferConflict(
+                    f"Недостаточно средств на балансе. Для принятия отчёта пополните баланс на {shortage} ₽."
+                )
+            client.money_balance_kopeks = int(client.money_balance_kopeks or 0) - charge_amount_kopeks
+            existing_charge = (
+                db.query(BillingTransaction)
+                .filter(
+                    BillingTransaction.job_id == job.id,
+                    BillingTransaction.kind == job.mode,
+                    BillingTransaction.operation == "charge",
+                )
+                .first()
+            )
+            tx_kind = f"{job.mode}_supplement" if existing_charge is not None else job.mode
+            db.add(
+                BillingTransaction(
+                    id=new_id(),
+                    client_id=client.id,
+                    job_id=job.id,
+                    kind=tx_kind,
+                    operation="charge",
+                    units=delta_units or 1,
+                    amount_kopeks=charge_amount_kopeks,
+                    note=f"Оплата по согласованному экспертному отчёту: +{delta_units} поз. (всего {new_count} поз.)",
+                    created_at=now,
+                )
+            )
+
+    job.confirmation_outcome = DECISION_ACCEPTED
+    job.confirmation_decided_at = now
+    if new_count > int(job.verified_count or 0):
+        job.verified_count = new_count
+    job.status = "completed"
+    job.progress = 100
+    charge_rub = round(charge_amount_kopeks / 100, 2)
+    job.message = (
+        f"Клиент принял дополненный отчёт эксперта (+{delta_units} поз., списано {charge_rub} ₽)"
+        if charge_amount_kopeks > 0
+        else "Клиент принял дополненный отчёт эксперта"
+    )
+    job.error = ""
+    if job.completed_at is None:
+        job.completed_at = now
+    job.updated_at = now
+
+    offer_meta["status"] = "accepted"
+    offer_meta["accepted_at"] = now.isoformat()
+    try:
+        offer_path.write_text(json.dumps(offer_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+    root_id = job.parent_job_id if getattr(job, "parent_job_id", "") and getattr(job, "is_admin_rerun", False) else job.id
+    chat_text = (
+        f"✅ Клиент принял предложение и подтвердил оплату дополненного отчёта ({charge_rub} ₽ с баланса). Отчёт готов к скачиванию."
+        if charge_amount_kopeks > 0
+        else "✅ Клиент принял дополненный экспертный отчёт. Отчёт готов к скачиванию."
+    )
+    db.add(
+        JobChatMessage(
+            id=new_id(),
+            job_id=root_id,
+            client_id=job.client_id or "",
+            sender_role="client",
+            message=chat_text,
+            is_read_by_admin=False,
+            is_read_by_client=True,
+            created_at=now,
+        )
+    )
+
+
+def _settle_admin_supplement_offer_declined_locked(
+    db: Session,
+    job: Job,
+    *,
+    now: datetime,
+    channel: str,
+) -> None:
+    from .jobs import job_dir
+    offer_path = job_dir(job.id) / "supplement" / "supplement_offer.json"
+    offer_meta: dict = {}
+    if offer_path.is_file():
+        try:
+            offer_meta = json.loads(offer_path.read_text(encoding="utf-8"))
+        except Exception:
+            offer_meta = {}
+
+    job.confirmation_outcome = DECISION_DECLINED
+    job.confirmation_decided_at = now
+    job.status = "completed"
+    job.message = "Клиент отказался от предложения по дополнению отчёта; списания нет"
+    job.error = ""
+    job.updated_at = now
+
+    offer_meta["status"] = "declined"
+    offer_meta["declined_at"] = now.isoformat()
+    try:
+        offer_path.write_text(json.dumps(offer_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+    root_id = job.parent_job_id if getattr(job, "parent_job_id", "") and getattr(job, "is_admin_rerun", False) else job.id
+    db.add(
+        JobChatMessage(
+            id=new_id(),
+            job_id=root_id,
+            client_id=job.client_id or "",
+            sender_role="client",
+            message="❌ Клиент отклонил предложение о платном дополнении отчёта. Списание средств не производилось.",
+            is_read_by_admin=False,
+            is_read_by_client=True,
+            created_at=now,
+        )
+    )
 
 
 def _release_all_locked(db: Session, job: Job, *, note: str) -> None:
