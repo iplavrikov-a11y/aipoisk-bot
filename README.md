@@ -149,10 +149,17 @@
   - Expanded five commercial landing pages (776–977 words) and added service links to all 58 knowledge articles. GSC baseline: 995 impressions / 20 clicks / avg position 20.96 (28 days).
   - Verified: 32/32 Home v3 checks, 91 pages × 2 widths public gate, navigation gate, live deploy, IndexNow 12 URLs. Yandex Webmaster API is blocked by VPS network (no IPv6); Wordstat API is unavailable.
 
-- Infrastructure & 152-FZ Compliance (2026-11-06):
+- Infrastructure, High Availability & 152-FZ Compliance (2026-11-06):
   - Database localized to PostgreSQL 14 in Moscow, Russia (`79.133.182.215:5432`) in strict adherence to 152-FZ Art. 18 Part 5. Connected to application runtime via systemd SSH tunnel `tenderlex-pg-tunnel.service` (`127.0.0.1:5433`).
   - Moscow Gateway Nginx with Let's Encrypt SSL (`tenderlex.ru`, `admin.tenderlex.ru`), keepalive connection pool (`keepalive 32`), and automatic retry upstream forwarding.
   - Eliminated 504 Gateway Timeout bottleneck in customer chat route (from 11.7s down to 0.4s) and N+1 queries in customer jobs and session APIs.
+  - High Availability & Resilience Watchdog:
+    - Added automated self-healing watchdog `tenderlex-pg-watchdog.service` and timer (`tenderlex-pg-watchdog.timer`) executing every 60s.
+    - Two-tier latency filtering: absorbs transient cross-border jitter before triggering recovery.
+    - Automated SSH tunnel restart and post-recovery verification with direct Telegram alerts sent to the owner/admin via Telegram Bot API.
+    - Hardened SSH keepalives (`ServerAliveInterval 10`, `ServerAliveCountMax 2`) detecting dropped sockets within 20s.
+    - Hardened PostgreSQL timeouts (`idle_in_transaction_session_timeout = '2min'`) preventing zombie locks from blocking connection pools.
+    - Diagnosed upstream port 5432 filtering by AdminVPS datacenter edge firewall; direct connection path prepared pending support ticket unblock.
   - Verified with 1,410 backend tests passing (100%), full live deploy via `./scripts/deploy_tenderlex_live.sh`. Full application migration to Moscow deferred for future capacity planning; current Lite server hosts PostgreSQL & mail comfortably.
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Russian database & gateway server: `79.133.182.215` (`AdminVPS OOO`, Moscow, Russia).
