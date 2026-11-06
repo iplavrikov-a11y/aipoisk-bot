@@ -160,7 +160,11 @@
     - Hardened SSH keepalives (`ServerAliveInterval 10`, `ServerAliveCountMax 2`) detecting dropped sockets within 20s.
     - Hardened PostgreSQL timeouts (`idle_in_transaction_session_timeout = '2min'`) preventing zombie locks from blocking connection pools.
     - Diagnosed upstream port 5432 filtering by AdminVPS datacenter edge firewall; direct connection path prepared pending support ticket unblock.
-  - Verified with 1,410 backend tests passing (100%), full live deploy via `./scripts/deploy_tenderlex_live.sh`. Full application migration to Moscow deferred for future capacity planning; current Lite server hosts PostgreSQL & mail comfortably.
+  - Weekend Full-Migration & Server Sizing Blueprint (`docs/INFRASTRUCTURE_152FZ_MIGRATION_MEMO.md`):
+    - Comprehensive workload audit of all server projects (TenderLex, EmailAgent, Hermes, Iva, Picsbot, databases).
+    - Russian Target Server (AdminVPS Moscow): Recommended upgrade from Lite (1 vCPU / 1 GB) to **Pro RU (8 vCPU / 16 GB RAM / 160 GB NVMe)** for stable concurrent execution of all web apps, background workers, and PostgreSQL with zero swap latency. Minimum viable tier: Start RU (4 vCPU / 8 GB RAM / 80 GB NVMe).
+    - Netherlands Server: Downsized to minimal **Promo/Micro VPS (1-2 vCPU / 2-4 GB RAM / 20-30 GB NVMe)** functioning exclusively as a lightweight outbound AI egress gateway for LLM APIs (OpenAI, Claude, Gemini, Groq) that restrict Russian IPs.
+  - Verified with 1,410 backend tests passing (100%), full live deploy via `./scripts/deploy_tenderlex_live.sh`.
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Russian database & gateway server: `79.133.182.215` (`AdminVPS OOO`, Moscow, Russia).
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
