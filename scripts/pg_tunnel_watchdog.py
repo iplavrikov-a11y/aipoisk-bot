@@ -74,7 +74,7 @@ def send_telegram_alert(bot_token: str, owner_id: str, message: str) -> bool:
         return False
 
 
-def test_postgres_connection(db_url: str, timeout_sec: int = 5) -> bool:
+def test_postgres_connection(db_url: str, timeout_sec: int = 10) -> bool:
     """Try establishing a fresh connection and running SELECT 1."""
     if not db_url.startswith("postgresql"):
         return True  # Not postgres, skip check
@@ -129,8 +129,8 @@ def main() -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     db_url, bot_token, owner_id = load_env_credentials()
 
-    # Step 1: First test
-    if test_postgres_connection(db_url, timeout_sec=5):
+    # Step 1: First test (10s timeout)
+    if test_postgres_connection(db_url, timeout_sec=10):
         # Connection healthy
         if OUTAGE_FLAG.exists():
             # We recovered from a prior outage!
@@ -147,21 +147,27 @@ def main() -> int:
             )
         return 0
 
-    # Step 2: Connection failed. Retry once after 2 seconds to absorb transient network jitter
-    logger.info("Initial connection test failed. Retrying in 2 seconds...")
-    time.sleep(2)
-    if test_postgres_connection(db_url, timeout_sec=5):
-        logger.info("Retry succeeded; transient jitter ignored.")
+    # Step 2: Connection failed. Retry with pauses to absorb transient cross-border network jitter
+    logger.info("Initial connection test failed. Retrying in 5 seconds (attempt 2/3)...")
+    time.sleep(5)
+    if test_postgres_connection(db_url, timeout_sec=10):
+        logger.info("Retry 2 succeeded; transient jitter ignored.")
         return 0
 
-    # Step 3: Both attempts failed. Connection is genuinely down/stalled.
-    logger.error("Connection failed twice. Triggering tunnel restart...")
+    logger.warning("Attempt 2 failed. Retrying in 5 seconds (attempt 3/3)...")
+    time.sleep(5)
+    if test_postgres_connection(db_url, timeout_sec=10):
+        logger.info("Retry 3 succeeded; transient jitter ignored.")
+        return 0
+
+    # Step 3: All 3 attempts failed over 35+ seconds. Connection is genuinely down/stalled.
+    logger.error("Connection failed 3 times across 35s. Triggering tunnel restart...")
     OUTAGE_FLAG.touch(exist_ok=True)
     restart_tunnel()
 
-    # Step 4: Allow tunnel 3 seconds to establish socket, then test recovery
-    time.sleep(3)
-    if test_postgres_connection(db_url, timeout_sec=5):
+    # Step 4: Allow tunnel 5 seconds to establish socket, then test recovery
+    time.sleep(5)
+    if test_postgres_connection(db_url, timeout_sec=10):
         logger.info("Tunnel restart succeeded. Database connection recovered!")
         OUTAGE_FLAG.unlink(missing_ok=True)
         send_telegram_alert(

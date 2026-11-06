@@ -690,18 +690,29 @@ def _check_cancelled(job_id: str, db: Session | None = None, job: Job | None = N
         _CANCELLED.discard(job_id)
         raise JobCancelledError("Задача отменена")
     if db is not None:
-        current = job or db.get(Job, job_id)
-        if current is not None:
-            try:
-                db.refresh(current, attribute_names=["status"])
-            except TypeError:
-                db.refresh(current)
-            if current.status == "cancelled":
-                raise JobCancelledError("Задача отменена")
+        try:
+            current = job or db.get(Job, job_id)
+            if current is not None:
+                try:
+                    db.refresh(current, attribute_names=["status"])
+                except TypeError:
+                    db.refresh(current)
+                if current.status == "cancelled":
+                    raise JobCancelledError("Задача отменена")
+        except JobCancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Job %s cancellation poll transient DB warning (continuing job): %s", job_id, exc)
 
 
 def _set_job(db: Session, job: Job, *, status: str | None = None, progress: int | None = None, message: str | None = None, error: str | None = None) -> None:
-    _check_cancelled(str(job.id), db=db, job=job)
+    try:
+        _check_cancelled(str(job.id), db=db, job=job)
+    except JobCancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("Job %s cancellation check in _set_job warning: %s", job.id, exc)
+
     if status is not None:
         job.status = status
     if progress is not None:
@@ -711,7 +722,24 @@ def _set_job(db: Session, job: Job, *, status: str | None = None, progress: int 
     if error is not None:
         job.error = document_parser.clean_surrogates(str(error))
     job.updated_at = now_utc()
-    db.commit()
+
+    for attempt in range(3):
+        try:
+            db.commit()
+            break
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if attempt == 2:
+                if status in ("completed", "failed", "cancelled"):
+                    logger.error("Job %s critical status %s commit failed after 3 attempts: %s", job.id, status, exc)
+                    raise
+                else:
+                    logger.warning("Job %s progress update commit skipped due to DB error: %s", job.id, exc)
+                    return
+            time.sleep(0.5 * (attempt + 1))
     try:
         from .event_bus import job_event_bus
         job_event_bus.publish({
@@ -833,25 +861,56 @@ def _process_job_sync(job_id: str) -> None:
             stage = "supplier_search"
             _process_supplier_search(db, job, settings, context)
     except JobCancelledError as exc:
-        db.rollback()
-        job = db.get(Job, job_id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        try:
+            job = db.get(Job, job_id)
+        except Exception:
+            try:
+                db.close()
+                db = SessionLocal()
+                job = db.get(Job, job_id)
+            except Exception:
+                job = None
         if job:
-            release_job_reservation(db, job, note="Резерв возвращён: задача отменена")
-            job.status = "cancelled"
-            job.progress = 100
-            job.message = str(exc)
-            job.error = ""
-            job.completed_at = now_utc()
-            job.updated_at = now_utc()
-            db.commit()
+            try:
+                release_job_reservation(db, job, note="Резерв возвращён: задача отменена")
+                job.status = "cancelled"
+                job.progress = 100
+                job.message = str(exc)
+                job.error = ""
+                job.completed_at = now_utc()
+                job.updated_at = now_utc()
+                db.commit()
+            except Exception:
+                pass
     except Exception as exc:
-        db.rollback()
-        job = db.get(Job, job_id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        try:
+            job = db.get(Job, job_id)
+        except Exception:
+            try:
+                db.close()
+                db = SessionLocal()
+                job = db.get(Job, job_id)
+            except Exception:
+                job = None
         if job and job.status in {"cancelled", "completed"}:
             return
         if job:
-            release_job_reservation(db, job, note="Резерв возвращён: задача завершилась ошибкой")
-            _persist_failure_evidence(db, job, exc, stage=stage)
+            try:
+                release_job_reservation(db, job, note="Резерв возвращён: задача завершилась ошибкой")
+            except Exception:
+                pass
+            try:
+                _persist_failure_evidence(db, job, exc, stage=stage)
+            except Exception:
+                pass
             fail_msg = (
                 "В файле нет позиций для поиска"
                 if (
@@ -863,9 +922,12 @@ def _process_job_sync(job_id: str) -> None:
                 )
                 else "Ошибка обработки"
             )
-            _set_job(db, job, status="failed", progress=100, message=fail_msg, error=str(exc))
-            job.completed_at = now_utc()
-            db.commit()
+            try:
+                _set_job(db, job, status="failed", progress=100, message=fail_msg, error=str(exc))
+                job.completed_at = now_utc()
+                db.commit()
+            except Exception:
+                pass
             try:
                 from .admin_alerts import notify_job_infrastructure_failure
                 client_name = getattr(job.client, "name", "") if job.client else f"Клиент #{job.client_id}"

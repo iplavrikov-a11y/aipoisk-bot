@@ -31,11 +31,11 @@ def _sqlite_connect_args(database_url: str) -> dict:
     if database_url.startswith("sqlite"):
         return {"check_same_thread": False, "timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
     if database_url.startswith("postgresql"):
-        # Remote PostgreSQL (RU data centre): detect dead peers quickly.
+        # Remote PostgreSQL (RU data centre): detect dead peers quickly and keep tunnel active.
         return {
             "keepalives": 1,
-            "keepalives_idle": 30,
-            "keepalives_interval": 10,
+            "keepalives_idle": 15,
+            "keepalives_interval": 5,
             "keepalives_count": 3,
             "connect_timeout": 10,
         }
@@ -44,7 +44,7 @@ def _sqlite_connect_args(database_url: str) -> dict:
 
 def _engine_pool_kwargs(database_url: str) -> dict:
     if database_url.startswith("postgresql"):
-        return {"pool_size": 8, "max_overflow": 8, "pool_recycle": 1800, "pool_timeout": 30}
+        return {"pool_size": 8, "max_overflow": 8, "pool_recycle": 180, "pool_timeout": 30}
     return {}
 
 
