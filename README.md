@@ -1,12 +1,17 @@
 # TenderLex Bot
 
-Актуальный выпуск 7 ноября 2026: [межпроцессный пейсинг Yandex Search API v2 (1.0 RPS), привязка к IPv4, снижение стоимости задач в 16–50 раз (до 0.12–0.40 ₽) и ускорение пайплайнов в 6–16 раз](docs/PROJECT_STATUS.md), [перенос БД в РФ (152-ФЗ), оптимизация Telegram-авторизации и устранение N+1 узких мест](docs/PROJECT_STATUS.md).
+Актуальный выпуск 7 ноября 2026: [интерактивные кнопки пополнения и живой проверки баланса Яндекс.Облака в Telegram-алертах](docs/PROJECT_STATUS.md), [межпроцессный пейсинг Yandex Search API v2 (1.0 RPS), привязка к IPv4, снижение стоимости задач в 16–50 раз (до 0.12–0.40 ₽) и ускорение пайплайнов в 6–16 раз](docs/PROJECT_STATUS.md), [перенос БД в РФ (152-ФЗ), оптимизация Telegram-авторизации и устранение N+1 узких мест](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 7 ноября: все бэкенд-тесты (1 417 тестов, 100% pass); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
+Серверный прогон выпуска 7 ноября: все бэкенд-тесты (1 418 тестов, 100% pass); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Interactive Yandex Cloud Billing Top-Up & Live Balance Check in Telegram Alerts (2026-11-07):
+  - One-Tap Billing Console & Live Verification Keyboard (`backend/app/admin_alerts.py`, `backend/app/main.py`): enriched `notify_low_yandex_balance` and `notify_yandex_search_error` with inline keyboard buttons (`💳 Пополнить баланс (Яндекс.Облако)` linking directly to `https://console.yandex.cloud/billing/accounts/dn2i7mph462v2u6ff922`, `🔄 Проверить баланс сейчас`, and folder console quick link).
+  - Real-Time Uncached Balance Callback (`backend/app/bot.py`, `backend/app/admin_alerts.py`): implemented `query_yandex_billing_balance_live` and callback handler `owner_check_yc_balance` (`handle_owner_check_yc_balance`) guarded by owner Telegram ID (`AIPOISK_OWNER_TELEGRAM_ID`), querying IAM and Yandex Cloud Billing API (`billingAccounts/{id}`) in real time without intermediate cache and updating the alert message in place.
+  - Verified with unit tests in `backend/tests/test_admin_alerts.py` (1,418 total backend tests passing) and live deployment.
 
 - Cross-Process Yandex Search API v2 Pacing (1.0 RPS), IPv4 Transport Binding & 16x–50x Cost Reduction Across All Modules (2026-11-07):
   - Cross-Process `searchAsync` Rate Limiter & IPv4 Transport (`backend/app/exact_product/yandex_search.py`, `backend/app/supplier_search.py`, `backend/app/outreach_search.py`): implemented atomic `/dev/shm/tenderlex_yandex_rps.lock` slot reservation (`_reserve_cross_process_slot`, `1.15s` interval / `0.87 RPS`) across `tenderlex-worker`, `tenderlex-api`, and `tenderlex-bot` to strictly honor Yandex Cloud's `1.0 RPS` `searchAsync` quota. Bound `httpx.AsyncHTTPTransport(local_address="0.0.0.0")` to eliminate IPv6 connection hangs on `202.71.13.57`. Prevented empty async XML responses (`error code=15`) from triggering `0.488 ₽` synchronous fallbacks.

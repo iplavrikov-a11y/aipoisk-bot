@@ -61,6 +61,12 @@ class AdminAlertsTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Критический сбой Яндекс.Поиск API", args[0])
         self.assertIn("PermissionDenied", args[0])
         self.assertEqual(kwargs.get("deduplicate_key"), "yandex_search_permission_denied")
+        markup = kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        self.assertEqual(markup["inline_keyboard"][0][0]["text"], "💳 Пополнить баланс (Яндекс.Облако)")
+        self.assertIn("console.yandex.cloud/billing/accounts/", markup["inline_keyboard"][0][0]["url"])
+        self.assertEqual(markup["inline_keyboard"][1][0]["callback_data"], "owner_check_yc_balance")
+        self.assertEqual(len(markup["inline_keyboard"]), 3)
 
     @patch("app.admin_alerts.dispatch_telegram_admin_alert")
     def test_notify_low_yandex_balance(self, mock_dispatch: AsyncMock) -> None:
@@ -69,6 +75,49 @@ class AdminAlertsTestCase(unittest.IsolatedAsyncioTestCase):
         args, kwargs = mock_dispatch.call_args
         self.assertIn("45.50 ₽", args[0])
         self.assertEqual(kwargs.get("deduplicate_key"), "yandex_balance_low")
+        markup = kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        self.assertEqual(markup["inline_keyboard"][0][0]["text"], "💳 Пополнить баланс (Яндекс.Облако)")
+        self.assertEqual(
+            markup["inline_keyboard"][0][0]["url"],
+            "https://console.yandex.cloud/billing/accounts/dn2i7mph462v2u6ff922",
+        )
+        self.assertEqual(markup["inline_keyboard"][1][0]["callback_data"], "owner_check_yc_balance")
+
+    @patch("app.bot.config")
+    @patch("app.admin_alerts.query_yandex_billing_balance_live", new_callable=AsyncMock)
+    async def test_handle_owner_check_yc_balance(
+        self, mock_query: AsyncMock, mock_config: AsyncMock
+    ) -> None:
+        from unittest.mock import MagicMock
+        from app.bot import handle_owner_check_yc_balance
+
+        mock_config.owner_telegram_id = "998877"
+        mock_query.return_value = {
+            "balance": 1081.80,
+            "currency": "RUB",
+            "is_active": True,
+            "billing_account_id": "dn2i7mph462v2u6ff922",
+        }
+
+        callback = MagicMock()
+        callback.from_user.id = 998877
+        callback.data = "owner_check_yc_balance"
+        callback.answer = AsyncMock()
+        callback.message = MagicMock()
+        callback.message.edit_text = AsyncMock()
+
+        await handle_owner_check_yc_balance(callback)
+
+        callback.answer.assert_called_once()
+        answer_args, answer_kwargs = callback.answer.call_args
+        self.assertIn("1081.80 ₽", answer_args[0])
+        self.assertTrue(answer_kwargs.get("show_alert"))
+
+        callback.message.edit_text.assert_called_once()
+        edit_args, edit_kwargs = callback.message.edit_text.call_args
+        self.assertIn("Баланс Яндекс.Облака в норме!", edit_args[0])
+        self.assertIn("1081.80 ₽", edit_args[0])
 
     @patch("app.admin_alerts.dispatch_telegram_admin_alert")
     def test_notify_ai_provider_error(self, mock_dispatch: AsyncMock) -> None:

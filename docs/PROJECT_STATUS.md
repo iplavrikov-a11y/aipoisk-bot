@@ -25,9 +25,13 @@
 5. **Устойчивость сохранения задач при кратковременных обрывах PostgreSQL-туннеля (`backend/app/jobs.py`)**:
    - В `_set_job` и `_persist_supplier_rows` добавлены 3 попытки коммита с `db.rollback()` и повторным применением состояния объекта `Job` в сессии, предотвращающие падение задач по `psycopg2.OperationalError: SSL SYSCALL error: EOF detected`.
 
-6. **Проверка на боевых эмуляциях и автотестах**:
+6. **Интерактивные кнопки пополнения и живой проверки баланса Яндекс.Облака в Telegram-алертах (`backend/app/admin_alerts.py`, `backend/app/bot.py`, `backend/app/main.py`)**:
+   - Уведомления о низком балансе (`notify_low_yandex_balance`) и критических сбоях поиска (`notify_yandex_search_error`) дополнены inline-клавиатурой (`yandex_billing_inline_markup`) с прямой кнопкой перехода в платёжный аккаунт `https://console.yandex.cloud/billing/accounts/dn2i7mph462v2u6ff922` и кнопкой `🔄 Проверить баланс сейчас` (`owner_check_yc_balance`).
+   - В `handle_owner_check_yc_balance` реализован прямой некэшируемый запрос остатка и статуса аккаунта через IAM + Yandex Cloud Billing API (`query_yandex_billing_balance_live`) с обновлением текста сообщения в чате владельца.
+
+7. **Проверка на боевых эмуляциях и автотестах**:
    - Проведены 7 полных боевых эмуляций на реальных задачах клиентов по всем 3 функциям и их режимам (`0` синхронных запросов, стоимость `0.12–0.40 ₽`, ускорение с 36–94 мин до 3.3–9.0 мин без потери качества).
-   - Все **1 417 бэкенд-тестов** (`pytest backend/tests -q`) пройдены на 100%, живой деплой верифицирован (`./scripts/deploy_tenderlex_live.sh`).
+   - Все **1 418 бэкенд-тестов** (`pytest backend/tests -q`) пройдены на 100%, живой деплой верифицирован (`./scripts/deploy_tenderlex_live.sh`).
 
 ---
 

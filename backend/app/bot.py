@@ -5909,6 +5909,84 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
         db.close()
 
 
+@router.callback_query(F.data == "owner_check_yc_balance")
+async def handle_owner_check_yc_balance(callback: CallbackQuery) -> None:
+    owner_id = str(config.owner_telegram_id or "").strip()
+    user_id = str(callback.from_user.id if callback.from_user else "")
+    if not owner_id or user_id != owner_id:
+        await callback.answer("Действие доступно только владельцу сервиса.", show_alert=True)
+        return
+
+    from .admin_alerts import (
+        DEFAULT_YANDEX_BILLING_ACCOUNT_ID,
+        get_yandex_billing_console_url,
+        query_yandex_billing_balance_live,
+    )
+
+    info = await query_yandex_billing_balance_live()
+    if info.get("error"):
+        await callback.answer(
+            f"Не удалось получить актуальный баланс Яндекс.Облака ({info['error']}).",
+            show_alert=True,
+        )
+        return
+
+    balance_val = float(info.get("balance", 0.0))
+    is_active = bool(info.get("is_active", False))
+    billing_id = str(info.get("billing_account_id") or DEFAULT_YANDEX_BILLING_ACCOUNT_ID)
+    status_label = "активен" if is_active else "заблокирован"
+    now_str = time.strftime("%H:%M:%S", time.localtime())
+
+    if balance_val >= 150.0 and is_active:
+        title = "✅ <b>TenderLex: Баланс Яндекс.Облака в норме!</b>"
+        footer = f"👉 <i>Проверено в {now_str}. Поиск поставщиков работает штатно.</i>"
+    else:
+        title = "⚠️ <b>TenderLex: Заканчивается баланс Яндекс.Облака!</b>"
+        footer = (
+            f"👉 <i>Проверено в {now_str}. Пополните счёт в Яндекс.Облаке "
+            f"во избежание сбоев в поиске поставщиков.</i>"
+        )
+
+    new_text = (
+        f"{title}\n\n"
+        f"<b>Текущий остаток:</b> <code>{balance_val:.2f} ₽</code>\n"
+        f"<b>Статус аккаунта:</b> {status_label}\n\n"
+        f"{footer}"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💳 Пополнить баланс (Яндекс.Облако)",
+                    url=get_yandex_billing_console_url(billing_id),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Проверить баланс сейчас",
+                    callback_data="owner_check_yc_balance",
+                )
+            ],
+        ]
+    )
+
+    if callback.message:
+        try:
+            await callback.message.edit_text(
+                new_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            pass
+
+    await callback.answer(
+        f"Актуальный баланс: {balance_val:.2f} ₽ ({status_label})",
+        show_alert=True,
+    )
+
+
 async def _handle_operator_chat_message(message: Message) -> bool:
     chat_id = message.chat.id
     text = str(message.text or "").strip() if message.text else ""

@@ -3084,7 +3084,7 @@ async def _fetch_yandex_billing_balance() -> dict:
             if balance_val < 150.0 or not is_active_val:
                 try:
                     from .admin_alerts import notify_low_yandex_balance
-                    notify_low_yandex_balance(balance_val, is_active_val)
+                    notify_low_yandex_balance(balance_val, is_active_val, billing_account_id=billing_id)
                 except Exception as alert_exc:
                     logger.debug("Failed to dispatch low yandex balance alert: %s", alert_exc)
             _yandex_billing_cache["data"] = result
