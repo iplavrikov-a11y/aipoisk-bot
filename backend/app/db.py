@@ -213,7 +213,7 @@ def _ensure_schema() -> None:
             "custom_exclude_foreign": "BOOLEAN NULL",
             "custom_max_suppliers": "INTEGER NULL",
             "custom_max_variation_pct": "REAL NULL",
-            "yandex_search_price_per_request": "REAL DEFAULT 0.488",
+            "yandex_search_price_per_request": "REAL DEFAULT 0.0305",
             "marketing_unsubscribed": "BOOLEAN DEFAULT 0",
             "referrer_id": "VARCHAR(32) NULL",
             "referral_reward_granted": "BOOLEAN DEFAULT 0",

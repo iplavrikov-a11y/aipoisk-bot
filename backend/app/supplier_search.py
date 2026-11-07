@@ -905,7 +905,7 @@ def _minprom_registry_sqlite_meta(sqlite_path: Path | None = None) -> dict[str, 
             fresh = (
                 rows.get("source_jsonl_mtime_ns") == str(stat.st_mtime_ns)
                 and rows.get("source_jsonl_size") == str(stat.st_size)
-                and rows.get("schema_version") == MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION
+                and rows.get("schema_version") in {MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION, "3"}
             )
         return {
             "sqlite_ready": bool(entry_count and entry_count == fts_count and fresh),
@@ -976,7 +976,7 @@ def _minprom_registry_sqlite_is_fresh(index_path: Path, sqlite_path: Path) -> bo
         return (
             rows.get("source_jsonl_mtime_ns") == str(stat.st_mtime_ns)
             and rows.get("source_jsonl_size") == str(stat.st_size)
-            and rows.get("schema_version") == MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION
+            and rows.get("schema_version") in {MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION, "3"}
         )
     except Exception:
         return False
@@ -2230,12 +2230,19 @@ async def _discover_suppliers_impl(
         accepted = _filter_minprom_verified_suppliers(accepted, minprom_context)
     elif minprom_context.status == "ok" and minprom_context.entries:
         await _emit_progress(progress_callback, 90, "Обогащаю контакты и реквизиты реестра через DaData и поиск")
+        enrich_metrics: dict[str, int] = {"yandex_requests_count": 0}
         accepted = await _enrich_unmatched_registry_suppliers(
             settings,
             accepted,
             minprom_context,
             limit=effective_delivery_target,
+            metrics_out=enrich_metrics,
         )
+        if enrich_metrics.get("yandex_requests_count", 0) > 0 and isinstance(search_meta, dict):
+            extra_reqs = int(enrich_metrics["yandex_requests_count"])
+            search_meta["yandex_requests_count"] = int(search_meta.get("yandex_requests_count") or 0) + extra_reqs
+            unit_p = float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305)
+            search_meta["yandex_cost_rub"] = round(int(search_meta["yandex_requests_count"]) * unit_p, 2)
 
     # Enrich general accepted suppliers with missing region/director
     accepted = await _enrich_accepted_suppliers_with_dadata(accepted)
@@ -2345,6 +2352,7 @@ async def _enrich_unmatched_registry_suppliers(
     accepted: list[dict],
     registry_context: MinpromRegistryContext,
     limit: int = 15,
+    metrics_out: dict[str, int] | None = None,
 ) -> list[dict]:
     """Ensures ALL GISP registry entries appear in results and enriches them via DaData + targeted search."""
     if registry_context.status != "ok" or not registry_context.entries:
@@ -2389,15 +2397,17 @@ async def _enrich_unmatched_registry_suppliers(
         unmatched_entries = unmatched_entries[:limit]
 
     semaphore = asyncio.Semaphore(3)
+    search_budget_remaining = 6
 
     async def _enrich_single_entry(entry: dict) -> dict:
+        nonlocal search_budget_remaining
         async with semaphore:
             inn = re.sub(r"\D+", "", str(entry.get("inn") or ""))
             mfr = str(entry.get("manufacturer") or "").strip()
             product = str(entry.get("product") or "").strip()
             registry_number = str(entry.get("registry_number") or "").strip()
 
-            # Step 1: DaData enrichment
+            # Step 1: DaData enrichment (Free)
             dadata: dict[str, Any] = {}
             if inn:
                 try:
@@ -2413,35 +2423,48 @@ async def _enrich_unmatched_registry_suppliers(
             dadata_emails = dadata.get("emails") or []
             dadata_sites = dadata.get("sites") or []
 
-            # Step 2: Targeted web search for website & contacts
-            site = ""
-            evidence_url = ""
-            contact_url = ""
+            # Step 2: Use free DaData site first; only run paid web search if site is still missing
+            site = dadata_sites[0] if dadata_sites else ""
+            evidence_url = site
+            contact_url = site
             phone = dadata_phones[0] if dadata_phones else ""
             email = dadata_emails[0] if dadata_emails else ""
 
             queries = []
-            if inn:
-                queries.append(f'"{inn}" официальный сайт')
-            if mfr:
-                clean_name = re.sub(
-                    r'(?:ООО|АО|ЗАО|ПАО|ОАО|НАО|НПК|НМФ|ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ|АКЦИОНЕРНОЕ ОБЩЕСТВО)\s*',
-                    "",
-                    mfr,
-                    flags=re.I,
-                ).strip(' "«»')
-                if clean_name and len(clean_name) >= 3:
+            if not site and search_budget_remaining > 0:
+                clean_name = ""
+                if mfr:
+                    clean_name = re.sub(
+                        r'(?:ООО|АО|ЗАО|ПАО|ОАО|НАО|НПК|НМФ|ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ|АКЦИОНЕРНОЕ ОБЩЕСТВО)\s*',
+                        "",
+                        mfr,
+                        flags=re.I,
+                    ).strip(' "«»')
+                if inn and clean_name and len(clean_name) >= 3:
+                    queries.append(f'"{inn}" "{clean_name}" официальный сайт контакты')
+                elif inn:
+                    queries.append(f'"{inn}" официальный сайт')
+                elif clean_name and len(clean_name) >= 3:
                     queries.append(f'"{clean_name}" официальный сайт контакты')
 
-            if queries:
+            if queries and not site and search_budget_remaining > 0:
+                search_budget_remaining -= 1
                 try:
                     candidates: list[Candidate] = []
                     if settings.yandex_search_folder_id and settings.yandex_search_api_key:
-                        candidates, _ = await _search_with_yandex(settings, queries, max_results=6)
+                        candidates, enrich_reqs = await _search_with_yandex(
+                            settings,
+                            queries[:1],
+                            max_results=6,
+                            expand_queries=False,
+                            max_pages_per_query=1,
+                        )
+                        if metrics_out is not None:
+                            metrics_out["yandex_requests_count"] = int(metrics_out.get("yandex_requests_count") or 0) + int(enrich_reqs or 0)
                     elif settings.google_search_api_key and settings.google_search_cse_id:
-                        candidates = await _search_with_google(settings, queries, max_results=6)
+                        candidates = await _search_with_google(settings, queries[:1], max_results=6)
                     else:
-                        candidates = await _search_with_ddgs(queries, max_results=6)
+                        candidates = await _search_with_ddgs(queries[:1], max_results=6)
 
                     valid_candidates = []
                     for c in candidates:
@@ -2455,29 +2478,26 @@ async def _enrich_unmatched_registry_suppliers(
                         site = chosen_candidate.url
                         evidence_url = chosen_candidate.url
                         contact_url = chosen_candidate.url
-                        try:
-                            pages = await collect_pages(chosen_candidate.url)
-                            if pages:
-                                comb_text = "\n".join(p.get("text", "") for p in pages)
-                                phones = sorted(set(PHONE_RE.findall(comb_text)))
-                                emails = sorted(set(EMAIL_RE.findall(comb_text)))
-                                verified_p = _verified_phone("", phones)
-                                verified_e = _verified_email("", emails)
-                                if verified_p:
-                                    phone = verified_p
-                                if verified_e:
-                                    email = verified_e
-                                contact_url = contact_page_url(pages, emails, phones) or chosen_candidate.url
-                                evidence_url = pages[0].get("url") or chosen_candidate.url
-                        except Exception as crawl_exc:
-                            logger.warning("Targeted crawl failed for %s: %s", chosen_candidate.url, crawl_exc)
                 except Exception as search_exc:
                     logger.warning("Targeted search failed for entry %s: %s", inn or mfr, search_exc)
 
-            if not site and dadata_sites:
-                site = dadata_sites[0]
-                evidence_url = site
-                contact_url = site
+            if site and (not phone or not email):
+                try:
+                    pages = await collect_pages(site)
+                    if pages:
+                        comb_text = "\n".join(p.get("text", "") for p in pages)
+                        phones = sorted(set(PHONE_RE.findall(comb_text)))
+                        emails = sorted(set(EMAIL_RE.findall(comb_text)))
+                        verified_p = _verified_phone("", phones)
+                        verified_e = _verified_email("", emails)
+                        if verified_p and not phone:
+                            phone = verified_p
+                        if verified_e and not email:
+                            email = verified_e
+                        contact_url = contact_page_url(pages, emails, phones) or site
+                        evidence_url = pages[0].get("url") or site
+                except Exception as crawl_exc:
+                    logger.warning("Targeted crawl failed for %s: %s", site, crawl_exc)
 
             # Step 3: Build clean comment
             comment_parts = [
@@ -4345,7 +4365,7 @@ async def discover_candidates(
             "reserve_only": reserve_only,
         },
         "yandex_requests_count": yandex_total_requests,
-        "yandex_cost_rub": round(yandex_total_requests * float(getattr(settings, "yandex_search_price_per_request", 0.488) or 0.488), 2),
+        "yandex_cost_rub": round(yandex_total_requests * float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305), 2),
         "reports": reports,
     }
 
@@ -4471,11 +4491,12 @@ async def _search_with_yandex(
     semaphore = asyncio.Semaphore(3)
     requests_count = 0
 
-    async def _poll_yandex_operation(client: httpx.AsyncClient, operation_id: str) -> str:
+    async def _poll_yandex_operation(client: httpx.AsyncClient, operation_id: str) -> str | None:
         poll_delays = [
             0.5, 0.8, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0,
             2.0, 2.0, 2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 2.5, 2.5,
-            2.5, 2.5, 3.0, 3.0, 3.0, 3.0, 3.0
+            2.5, 2.5, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0,
+            3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0
         ]
         consecutive_429 = 0
         for _poll_idx in range(len(poll_delays)):
@@ -4496,13 +4517,13 @@ async def _search_with_yandex(
                     continue
                 if data.get("error"):
                     logger.warning("Yandex search async operation finished with error: id=%s error=%s", operation_id, data.get("error"))
-                    return ""
+                    return None
                 return str((data.get("response") or {}).get("rawData") or "")
             except Exception as poll_exc:
                 logger.debug("Yandex operation poll error: id=%s exc=%s", operation_id, poll_exc)
                 continue
         logger.warning("Yandex search async operation timed out after %d attempts: operation_id=%s", len(poll_delays), operation_id)
-        return ""
+        return None
 
     groups_on_page = _yandex_groups_on_page(settings)
     async_supported = True
@@ -4516,45 +4537,52 @@ async def _search_with_yandex(
                 "responseFormat": "FORMAT_XML",
                 "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
             }
-            requests_count += 1
-            # Primary: Cost-effective asynchronous search (if enabled on the cloud folder)
+            # Primary: Cost-effective asynchronous search (30.50 ₽ / 1k reqs vs 488 ₽ / 1k reqs sync)
             if async_supported:
                 try:
-                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
+                    from .exact_product.yandex_search import _paced_async_post
+                    response = await _paced_async_post(
+                        client,
+                        "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync",
+                        headers=headers,
+                        json=body,
+                    )
                     if response.status_code == 200:
+                        requests_count += 1
                         operation_id = str(response.json().get("id") or "")
                         if operation_id:
                             raw_data = await _poll_yandex_operation(client, operation_id)
-                            if raw_data:
-                                return _parse_yandex_xml(raw_data, query=query)
-                    elif response.status_code == 429:
-                        # Async rate limit / unprovisioned quota: fall back permanently for this search run
+                            if raw_data is not None:
+                                return _parse_yandex_xml(raw_data, query=query) if raw_data else []
+                    elif response.status_code in (404, 501):
                         async_supported = False
                     elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
                         notify_yandex_search_error(response.status_code, response.text, query=query)
                 except Exception as async_exc:
-                    logger.debug("Yandex async search call failed, trying sync fallback: %s", async_exc)
+                    logger.debug("Yandex async search call failed: %s", async_exc)
 
-            # Fallback: Synchronous endpoint
-            try:
-                response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
-                if response.status_code == 429:
-                    await asyncio.sleep(1.0)
+            # Fallback: Synchronous endpoint ONLY if explicitly enabled via AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK=1
+            if os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK") == "1" or not async_supported:
+                try:
                     response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
-                if response.status_code == 200:
-                    data = response.json()
-                    raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
-                    if raw_data:
-                        return _parse_yandex_xml(raw_data, query=query)
-                elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
-                    logger.warning("Yandex search auth/billing error: status=%s error=%s", response.status_code, response.text[:200])
-                    notify_yandex_search_error(response.status_code, response.text, query=query)
+                    if response.status_code == 429:
+                        await asyncio.sleep(1.5)
+                        response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
+                    if response.status_code == 200:
+                        requests_count += 1
+                        data = response.json()
+                        raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
+                        if raw_data:
+                            return _parse_yandex_xml(raw_data, query=query)
+                    elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
+                        logger.warning("Yandex search auth/billing error: status=%s error=%s", response.status_code, response.text[:200])
+                        notify_yandex_search_error(response.status_code, response.text, query=query)
+                        return []
+                    else:
+                        logger.warning("Yandex sync search status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
+                except Exception as sync_exc:
+                    logger.debug("Yandex sync search call failed: %s", sync_exc)
                     return []
-                else:
-                    logger.warning("Yandex sync search status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
-            except Exception as sync_exc:
-                logger.debug("Yandex sync search call failed: %s", sync_exc)
-                return []
             return []
 
     headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
@@ -4592,7 +4620,11 @@ async def _search_with_yandex(
         return all_candidates
 
     chunk_size = 4
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=60,
+        follow_redirects=True,
+        transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
+    ) as client:
         for start in range(0, len(search_queries), chunk_size):
             chunk = search_queries[start : start + chunk_size]
             tasks = [asyncio.create_task(search_one(client, query)) for query in chunk]
@@ -5296,8 +5328,21 @@ def _sanitize_minprom_comment_claims(comment: str, registry_context: MinpromRegi
 
 async def collect_pages(url: str) -> list[dict]:
     pages: list[dict] = []
-    async with httpx.AsyncClient(timeout=18, follow_redirects=True, headers={"User-Agent": "TenderLex supplier verifier"}) as client:
+    connect_failed = False
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    }
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(10.0, connect=4.5),
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
         first = await fetch_page(client, url)
+        connect_failed = bool(getattr(client, "_last_connect_failed", False))
         if first:
             pages.append(first)
             links = extract_internal_links(first["html"], first["url"])
@@ -5319,7 +5364,7 @@ async def collect_pages(url: str) -> list[dict]:
                         break
     if pages and _pages_have_contact(pages):
         return pages
-    if _is_non_html_url(url):
+    if _is_non_html_url(url) or (not pages and connect_failed):
         return pages
     browser_page = await fetch_page_with_browser(url)
     if browser_page:
@@ -5333,6 +5378,10 @@ async def collect_pages(url: str) -> list[dict]:
 
 
 async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
+    try:
+        setattr(client, "_last_connect_failed", False)
+    except Exception:
+        pass
     try:
         response = await client.get(url)
         if response.status_code >= 400:
@@ -5358,6 +5407,12 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
         if "text/html" not in ctype and "text/plain" not in ctype:
             return None
         html_text = response.text[:300000]
+    except (httpx.ConnectTimeout, httpx.ConnectError):
+        try:
+            setattr(client, "_last_connect_failed", True)
+        except Exception:
+            pass
+        return None
     except Exception:
         return None
     return html_text_to_page(html_text, str(response.url))

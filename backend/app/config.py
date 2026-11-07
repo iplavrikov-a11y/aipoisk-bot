@@ -39,7 +39,7 @@ class AppConfig(BaseSettings):
     default_yandex_search_folder_id: str = ""
     default_yandex_search_api_key: str = ""
     default_yandex_max_pages_per_query: int = 3
-    default_yandex_search_price_per_request: float = 0.488
+    default_yandex_search_price_per_request: float = 0.0305
     default_google_search_api_key: str = ""
     default_google_search_cse_id: str = ""
     default_document_settings_json: str = "{}"

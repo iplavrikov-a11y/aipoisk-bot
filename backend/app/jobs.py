@@ -546,6 +546,13 @@ def _claim_job_for_worker(worker_id: str) -> str | None:
         expire_result_offers(db)
         expire_stale_confirmations(db)
         return claim_next_job(db, worker_id=worker_id)
+    except Exception as exc:
+        logger.warning("Transient DB error in _claim_job_for_worker: %s", exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return None
     finally:
         db.close()
 
@@ -713,18 +720,17 @@ def _set_job(db: Session, job: Job, *, status: str | None = None, progress: int 
     except Exception as exc:
         logger.warning("Job %s cancellation check in _set_job warning: %s", job.id, exc)
 
-    if status is not None:
-        job.status = status
-    if progress is not None:
-        job.progress = max(0, min(100, progress))
-    if message is not None:
-        job.message = document_parser.clean_surrogates(str(message))
-    if error is not None:
-        job.error = document_parser.clean_surrogates(str(error))
-    job.updated_at = now_utc()
-
     for attempt in range(3):
         try:
+            if status is not None:
+                job.status = status
+            if progress is not None:
+                job.progress = max(0, min(100, progress))
+            if message is not None:
+                job.message = document_parser.clean_surrogates(str(message))
+            if error is not None:
+                job.error = document_parser.clean_surrogates(str(error))
+            job.updated_at = now_utc()
             db.commit()
             break
         except Exception as exc:
@@ -1160,42 +1166,54 @@ def _persist_failure_evidence(db: Session, job: Job, exc: Exception, *, stage: s
 
 
 def _persist_supplier_rows(db: Session, job: Job, accepted: list[dict]) -> None:
-    db.query(SupplierResult).filter(SupplierResult.job_id == job.id).delete()
-    for row in accepted:
-        db.add(
-            SupplierResult(
-                job_id=job.id,
-                company_name=row.get("company_name", ""),
-                region=row.get("region", ""),
-                status=row.get("status", ""),
-                product=row.get("product", ""),
-                contact_person=row.get("contact_person", ""),
-                phone=row.get("phone", ""),
-                email=row.get("email", ""),
-                site=row.get("site", ""),
-                evidence_url=row.get("evidence_url", ""),
-                contact_url=row.get("contact_url", ""),
-                comments=row.get("comments", ""),
-                evidence_status=row.get("evidence_status", "verified"),
-                match_level=row.get("match_level", ""),
-                source=row.get("source", ""),
-                search_query=row.get("search_query", ""),
-                quality_score=int(row.get("quality_score") or 0),
-                quality_tier=row.get("quality_tier", ""),
-                procurement_item_id=row.get("procurement_item_id", ""),
-                procurement_item=row.get("procurement_item", ""),
-                ai_confidence=int(row.get("ai_confidence") or 0),
-                site_type=row.get("site_type", ""),
-                product_fit=row.get("product_fit", ""),
-                evidence_snippet=row.get("evidence_snippet", ""),
-                contact_evidence_snippet=row.get("contact_evidence_snippet", ""),
-                ai_rank_confidence=int(row.get("ai_rank_confidence") or 0),
-                ai_rank_reason=row.get("ai_rank_reason", ""),
-                supplier_city=str(row.get("supplier_city") or row.get("city") or "")[:255],
-                supplier_distance_km=int(row.get("supplier_distance_km")) if row.get("supplier_distance_km") is not None else None,
-            )
-        )
-    db.commit()
+    for attempt in range(3):
+        try:
+            db.query(SupplierResult).filter(SupplierResult.job_id == job.id).delete()
+            for row in accepted:
+                db.add(
+                    SupplierResult(
+                        job_id=job.id,
+                        company_name=row.get("company_name", ""),
+                        region=row.get("region", ""),
+                        status=row.get("status", ""),
+                        product=row.get("product", ""),
+                        contact_person=row.get("contact_person", ""),
+                        phone=row.get("phone", ""),
+                        email=row.get("email", ""),
+                        site=row.get("site", ""),
+                        evidence_url=row.get("evidence_url", ""),
+                        contact_url=row.get("contact_url", ""),
+                        comments=row.get("comments", ""),
+                        evidence_status=row.get("evidence_status", "verified"),
+                        match_level=row.get("match_level", ""),
+                        source=row.get("source", ""),
+                        search_query=row.get("search_query", ""),
+                        quality_score=int(row.get("quality_score") or 0),
+                        quality_tier=row.get("quality_tier", ""),
+                        procurement_item_id=row.get("procurement_item_id", ""),
+                        procurement_item=row.get("procurement_item", ""),
+                        ai_confidence=int(row.get("ai_confidence") or 0),
+                        site_type=row.get("site_type", ""),
+                        product_fit=row.get("product_fit", ""),
+                        evidence_snippet=row.get("evidence_snippet", ""),
+                        contact_evidence_snippet=row.get("contact_evidence_snippet", ""),
+                        ai_rank_confidence=int(row.get("ai_rank_confidence") or 0),
+                        ai_rank_reason=row.get("ai_rank_reason", ""),
+                        supplier_city=str(row.get("supplier_city") or row.get("city") or "")[:255],
+                        supplier_distance_km=int(row.get("supplier_distance_km")) if row.get("supplier_distance_km") is not None else None,
+                    )
+                )
+            db.commit()
+            return
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if attempt == 2:
+                raise
+            logger.warning("Job %s _persist_supplier_rows transient DB error (attempt %d/3): %s", job.id, attempt + 1, exc)
+            time.sleep(1.0 * (attempt + 1))
 
 
 def _source_title(job: Job) -> str:
@@ -1586,7 +1604,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     persisted_rows = accepted or fallback_rows
     _persist_supplier_rows(db, job, persisted_rows)
     job.verified_count = len(persisted_rows)
-    y_reqs, y_cost = extract_yandex_job_metrics(evidence, getattr(settings, "yandex_search_price_per_request", 0.488))
+    y_reqs, y_cost = extract_yandex_job_metrics(evidence, getattr(settings, "yandex_search_price_per_request", 0.0305))
     job.yandex_requests_count = y_reqs
     job.yandex_cost_rub = y_cost
     _set_job(db, job, status="running", progress=97, message="Формирую Excel и проверочные данные")
@@ -2244,7 +2262,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     persisted_rows = accepted or fallback_rows
     _persist_supplier_rows(db, job, persisted_rows)
     job.verified_count = len(persisted_rows)
-    y_reqs, y_cost = extract_yandex_job_metrics(supplier_evidence, getattr(settings, "yandex_search_price_per_request", 0.488))
+    y_reqs, y_cost = extract_yandex_job_metrics(supplier_evidence, getattr(settings, "yandex_search_price_per_request", 0.0305))
     job.yandex_requests_count = y_reqs
     job.yandex_cost_rub = y_cost
     out_dir = job_dir(job.id) / "output"
@@ -2609,7 +2627,7 @@ def clear_storage() -> None:
     shutil.rmtree(config.storage_path, ignore_errors=True)
     config.storage_path.mkdir(parents=True, exist_ok=True)
 
-def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float = 0.04) -> tuple[int, float]:
+def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float = 0.0305) -> tuple[int, float]:
     if not isinstance(evidence, dict):
         return 0, 0.0
     if not evidence.get("search") and isinstance(evidence.get("supplier_search"), dict):
@@ -2637,6 +2655,6 @@ def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float =
             q_len = len(queries) if isinstance(queries, list) else 0
             pages_per_q = 2.0 if added > 50 else 1.5
             req_count = int(q_len * pages_per_q)
-    unit_price = float(price_per_request) if price_per_request else 0.04
+    unit_price = float(price_per_request) if price_per_request else 0.0305
     cost_rub = round(req_count * unit_price, 2)
     return req_count, cost_rub

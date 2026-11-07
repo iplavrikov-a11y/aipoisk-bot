@@ -43,7 +43,7 @@ class SystemSettings(Base):
     logistics_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     trial_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     trial_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=2)
-    yandex_search_price_per_request: Mapped[float] = mapped_column(Float, default=0.488)
+    yandex_search_price_per_request: Mapped[float] = mapped_column(Float, default=0.0305)
     trial_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=2)
     trial_file_limit: Mapped[int] = mapped_column(Integer, default=10)
     trial_balance_rub: Mapped[int] = mapped_column(Integer, default=0)

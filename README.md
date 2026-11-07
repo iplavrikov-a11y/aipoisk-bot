@@ -1,12 +1,20 @@
 # TenderLex Bot
 
-Актуальный выпуск 5 ноября 2026: [клиент-центричные диалоги в админке, единый виджет поддержки в кабинете и минималистичные карточки задач](docs/PROJECT_STATUS.md), [двусторонняя переписка клиент–эксперт и досписание баланса](docs/PROJECT_STATUS.md), [оптимизация Yandex Search API: переход на асинхронный тариф searchAsync (снижение затрат в 16 раз)](docs/PROJECT_STATUS.md).
+Актуальный выпуск 7 ноября 2026: [межпроцессный пейсинг Yandex Search API v2 (1.0 RPS), привязка к IPv4, снижение стоимости задач в 16–50 раз (до 0.12–0.40 ₽) и ускорение пайплайнов в 6–16 раз](docs/PROJECT_STATUS.md), [перенос БД в РФ (152-ФЗ), оптимизация Telegram-авторизации и устранение N+1 узких мест](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 5 ноября: все бэкенд-тесты (1 410 тестов, 100% pass); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
+Серверный прогон выпуска 7 ноября: все бэкенд-тесты (1 417 тестов, 100% pass); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Cross-Process Yandex Search API v2 Pacing (1.0 RPS), IPv4 Transport Binding & 16x–50x Cost Reduction Across All Modules (2026-11-07):
+  - Cross-Process `searchAsync` Rate Limiter & IPv4 Transport (`backend/app/exact_product/yandex_search.py`, `backend/app/supplier_search.py`, `backend/app/outreach_search.py`): implemented atomic `/dev/shm/tenderlex_yandex_rps.lock` slot reservation (`_reserve_cross_process_slot`, `1.15s` interval / `0.87 RPS`) across `tenderlex-worker`, `tenderlex-api`, and `tenderlex-bot` to strictly honor Yandex Cloud's `1.0 RPS` `searchAsync` quota. Bound `httpx.AsyncHTTPTransport(local_address="0.0.0.0")` to eliminate IPv6 connection hangs on `202.71.13.57`. Prevented empty async XML responses (`error code=15`) from triggering `0.488 ₽` synchronous fallbacks.
+  - Supplier Search Registry & Crawler Speedup (`backend/app/supplier_search.py`): prioritized zero-cost DaData sites in `_enrich_unmatched_registry_suppliers`, capped fallback Yandex queries at 6 (`expand_queries=False`), reduced candidate HTTP connect timeout to `4.5s` with browser `User-Agent`, and skipped Playwright fallback on unreachable hosts (`ConnectTimeout`/`ConnectError`). Added support for shared Minpromtorg SQLite FTS5 `schema_version = "3"`.
+  - Exact Product Parallel Source Expansion & Adaptive Round 2 (`backend/app/exact_product/matcher.py`, `backend/app/exact_product/deep.py`): parallelized `expand_candidate_sources_ai` across top-2 candidates, skipped redundant `resolve_clarify_parameters` sub-queries when expanded docs are present, and introduced adaptive Round 2 (skipping LLM query generation and capping analog queries at 2 when Round 1 achieves `fails == 0` and `coverage >= 0.85`).
+  - Price Monitoring Wave URL Budget & Direct Requisites Probe (`backend/app/price_monitoring/pipeline.py`, `backend/app/price_monitoring/extractor.py`): aligned Wave 1–3 URL collection stops with fetch budgets, prioritized `/rekvizity/` links over anchor/about links, and added direct HTTP probing of `/rekvizity/` and `/contacts/` before firing paid Yandex INN queries.
+  - PostgreSQL Tunnel EOF Resilience (`backend/app/jobs.py`): added 3-attempt commit retry with `db.rollback()` and state re-application in `_set_job` and `_persist_supplier_rows`.
+  - Live Emulations & Tests: validated across 7 live client task emulations covering all modes of `supplier_search`, `exact_product`, and `price_monitoring` (`0` sync fallbacks, `0.12–0.40 ₽` per job, 6.5x–16.6x faster execution) and 1,417 backend tests (`100% pass`).
 
 - Client-Centric Unified Dialogs, Cabinet Support Widget & Collapsed Task Cards (2026-11-05):
   - Client-Centric Dialogues in Admin (`frontend/src/DialogsView.tsx`): transitioned conversation grouping from per-task fragmentation to "1 client = 1 conversation thread" with aggregated task badges (`[#1036] [#1037]`). Cross-task chronological timeline displays contextual task badges (`📌 Задача #1036`) with quick links, and admin reply bar includes context selector dropdown (`[Общий диалог]` or `[Задача #1036]`).

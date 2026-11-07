@@ -483,22 +483,42 @@ async def fetch_page_content_and_meta(
         elif is_oos:
             schema_block = "[ВНИМАНИЕ]: СТАТУС НАЛИЧИЯ: НЕТ В НАЛИЧИИ НА СКЛАДЕ (ПОД ЗАКАЗ)\n\n"
 
-        # Находим ссылку на страницу контактов/реквизитов, если ИНН не найден в теле страницы
-        # Находим ссылку на страницу контактов/реквизитов, если ИНН или контакты не найдены в теле страницы
-        contacts_suburl: Optional[str] = None
+        # Находим ссылки на страницы реквизитов/контактов, если ИНН или контакты не найдены в теле страницы
+        contacts_suburls: List[str] = []
         if not inn or not contacts:
+            base_parsed = urlparse(url)
+            priority_urls: List[str] = []
+            secondary_urls: List[str] = []
+            seen_suburls = {url.split("#")[0].rstrip("/")}
             for a_tag in soup.find_all("a", href=True):
                 href = a_tag["href"].strip()
+                if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+                    continue
                 txt = a_tag.get_text().strip().lower()
                 href_low = href.lower()
-                if (
-                    re.search(r'(?:contacts|kontakty|rekvizit|requisites|about|o-kompanii)', href_low)
-                    or any(w in txt for w in ("контакт", "реквизит", "о компании", "о магазине", "о нас", "связь"))
-                ):
-                    full_c_url = urljoin(url, href)
-                    if urlparse(full_c_url).netloc == urlparse(url).netloc:
-                        contacts_suburl = full_c_url
-                        break
+                is_req = bool(
+                    re.search(r'(?:rekvizit|requisites)', href_low)
+                    or "реквизит" in txt
+                )
+                is_contact = bool(
+                    re.search(r'(?:contacts|kontakty|about|o-kompanii)', href_low)
+                    or any(w in txt for w in ("контакт", "о компании", "о магазине", "о нас"))
+                )
+                if is_req or is_contact:
+                    full_c_url = urljoin(url, href).split("#")[0]
+                    norm_c_url = full_c_url.rstrip("/")
+                    parsed_c = urlparse(full_c_url)
+                    if (
+                        parsed_c.netloc == base_parsed.netloc
+                        and parsed_c.path != base_parsed.path
+                        and norm_c_url not in seen_suburls
+                    ):
+                        seen_suburls.add(norm_c_url)
+                        if is_req:
+                            priority_urls.append(full_c_url)
+                        else:
+                            secondary_urls.append(full_c_url)
+            contacts_suburls = (priority_urls + secondary_urls)[:2]
 
         # Извлекаем отдельно текст футера (реквизиты, телефоны)
         footer_text = ""
@@ -517,20 +537,23 @@ async def fetch_page_content_and_meta(
         if footer_text:
             combined_text += "\n\n[РЕКВИЗИТЫ И ПОДВАЛ САЙТА]:\n" + footer_text[:1000]
 
-        # Если ИНН или контактов всё ещё нет, но есть ссылка на контакты, пробуем быстро подтянуть реквизиты
-        if (not inn or not contacts) and contacts_suburl:
-            try:
-                c_resp = await client.get(contacts_suburl, headers=headers, timeout=httpx.Timeout(3.5, connect=2.0))
-                if c_resp.status_code == 200:
-                    c_inn, c_kpp, c_contacts = _extract_inn_kpp_contacts(c_resp.text)
-                    if c_inn and not inn:
-                        inn = c_inn
-                    if c_kpp and not kpp:
-                        kpp = c_kpp
-                    if c_contacts and not contacts:
-                        contacts = c_contacts
-            except Exception:
-                pass
+        # Если ИНН или контактов всё ещё нет, но есть ссылки на реквизиты/контакты, пробуем быстро подтянуть реквизиты
+        if (not inn or not contacts) and contacts_suburls:
+            for c_url in contacts_suburls:
+                try:
+                    c_resp = await client.get(c_url, headers=headers, timeout=httpx.Timeout(3.5, connect=2.0))
+                    if c_resp.status_code == 200 and c_resp.text:
+                        c_inn, c_kpp, c_contacts = _extract_inn_kpp_contacts(c_resp.text)
+                        if c_inn and not inn:
+                            inn = c_inn
+                        if c_kpp and not kpp:
+                            kpp = c_kpp
+                        if c_contacts and not contacts:
+                            contacts = c_contacts
+                        if inn and contacts:
+                            break
+                except Exception:
+                    pass
 
         return combined_text, inn, kpp, contacts
     except Exception:

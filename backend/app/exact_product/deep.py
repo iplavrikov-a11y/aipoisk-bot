@@ -1238,7 +1238,7 @@ async def fetch_batch_web_documents(urls: List[str], max_docs: int = 6) -> List[
 
     # Берем кандидатов с запасом (+4), чтобы сбой 1-2 сайтов не уменьшал итоговый пул документов
     fetch_targets = valid_urls[: max_docs + 4]
-    async with httpx.AsyncClient(timeout=14.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.5), follow_redirects=True) as client:
         tasks = [fetch_web_or_pdf_document(client, u) for u in fetch_targets]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -2072,7 +2072,7 @@ async def resolve_clarify_parameters(
                     except Exception as b_err:
                         logger.debug("resolve_clarify_batch_sub_failed", error=str(b_err))
 
-    cost_per_req = float(getattr(settings, "yandex_search_price_per_request", 0.488) or 0.488)
+    cost_per_req = float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305)
     cost = round(total_search_queries * cost_per_req, 4)
     return ResolveResult(resolved_count, cost)
 
@@ -2471,7 +2471,7 @@ async def detect_exact_products_deep(
         if positions and cf_docs:
             existing_urls = {d.get("url") for d in cf_docs if d.get("url")}
             try:
-                await resolve_clarify_parameters(positions, existing_urls, cf_docs)
+                await resolve_clarify_parameters(positions, existing_urls, cf_docs, max_sub_queries=0)
             except Exception as res_err:
                 logger.debug("resolve_clarify_in_cf_failed", error=str(res_err))
 

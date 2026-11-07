@@ -378,7 +378,12 @@ async def analyze_exact_product(
         report = await _analyze_exact_product(settings, context, procurement_title, progress_callback, selected_positions)
         report.yandex_requests_count = metrics.requests
         unit_price = getattr(settings, "yandex_search_price_per_request", None)
-        report.yandex_cost_rub = round(metrics.requests * float(0.04 if unit_price is None else unit_price), 2)
+        eff_price = float(0.0305 if unit_price is None else unit_price)
+        if getattr(metrics, "sync_requests", 0) > 0 and eff_price < 0.1:
+            async_reqs = max(0, metrics.requests - metrics.sync_requests)
+            report.yandex_cost_rub = round(async_reqs * eff_price + metrics.sync_requests * 0.488, 2)
+        else:
+            report.yandex_cost_rub = round(metrics.requests * eff_price, 2)
         report.search_metrics_available = True
         return report
     finally:

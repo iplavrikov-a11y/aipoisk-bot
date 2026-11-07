@@ -1553,13 +1553,17 @@ async def expand_candidate_sources_ai(
     q_specs = f"{item_anchor}{brand} {model} характеристики"
     q_passport = f"{item_anchor}{brand} {model} паспорт PDF"
 
+    curr_cov = float((candidate.get("matrix") or {}).get("coverage") or 0.0)
+    expand_queries = [q_passport] if (len(existing_domains) >= 2 or curr_cov >= 0.75) else [q_specs, q_passport]
+
     raw_results = []
-    for q in (q_specs, q_passport):
-        try:
-            r = await _fetch_search_results_for_specs(q, max_results=6)
-            raw_results.extend(r or [])
-        except Exception as q_err:
-            logger.debug("expand_sources_search_failed", query=q, error=str(q_err))
+    search_res_list = await asyncio.gather(
+        *(_fetch_search_results_for_specs(q, max_results=6) for q in expand_queries),
+        return_exceptions=True,
+    )
+    for res_batch in search_res_list:
+        if isinstance(res_batch, list):
+            raw_results.extend(res_batch)
 
     new_urls = []
     for res in raw_results:
@@ -2363,17 +2367,22 @@ async def _fetch_product_links_from_listings(
     }
     links: List[str] = []
     seen = set()
-    async with httpx.AsyncClient(timeout=12.0, follow_redirects=True, headers=headers) as client:
-        for listing_url in listing_urls[:4]:
-            if not listing_url or not listing_url.startswith("http"):
+    valid_listings = [u for u in listing_urls[:4] if u and u.startswith("http")]
+    if not valid_listings:
+        return links
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(8.0, connect=4.0),
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
+        responses = await asyncio.gather(
+            *(client.get(u) for u in valid_listings),
+            return_exceptions=True,
+        )
+        for listing_url, resp in zip(valid_listings, responses):
+            if isinstance(resp, BaseException) or getattr(resp, "status_code", 500) >= 400:
                 continue
-            try:
-                resp = await client.get(listing_url)
-                if resp.status_code >= 400:
-                    continue
-                html = resp.text
-            except Exception:
-                continue
+            html = resp.text
             for m in re.finditer(r"href=[\"']([^\"'#]+)[\"']", html):
                 href = m.group(1)
                 full = urljoin(listing_url, href).split("?")[0].rstrip("/")
@@ -2699,15 +2708,16 @@ async def detect_exact_products_characteristic_first(
                 f'{clean_pos_base} каталог моделей характеристики',
                 f'{clean_pos_base} отечественные аналоги производители',
             ):
-                if q_gen.lower() not in {q.lower() for q in queries} and len(queries) < 14:
+                if q_gen.lower() not in {q.lower() for q in queries} and len(queries) < 8:
                     queries.append(q_gen)
 
         # 5. Дополняем дополнительными поисковыми фразами от ИИ
         for iq in (initial_queries or []):
             iq_str = str(iq).strip()
-            if iq_str and iq_str.lower() not in {q.lower() for q in queries} and len(queries) < 14:
+            if iq_str and iq_str.lower() not in {q.lower() for q in queries} and len(queries) < 8:
                 queries.append(iq_str)
 
+        queries = queries[:8]
         if not queries:
             return None
 
@@ -2842,7 +2852,18 @@ async def detect_exact_products_characteristic_first(
             str(c.get("brand") or c.get("manufacturer") or "").lower().strip()
             for c in ranked if c.get("matrix", {}).get("fails", 0) == 0 and _has_real_maker(c, pos_hint)
         }) if ranked else 0
-        need_round2 = (best is None) or (best["matrix"]["fails"] > 0) or (best["matrix"]["coverage"] < 0.5) or (clean_brand_count < 2)
+        best_is_strong = bool(
+            best is not None
+            and best["matrix"]["fails"] == 0
+            and best["matrix"]["coverage"] >= 0.85
+        )
+        has_hint_analogs = bool(pos_hint and pos_hint.get("analogs") and clean_brand_count >= 1)
+        need_round2 = (
+            (best is None)
+            or (best["matrix"]["fails"] > 0)
+            or (best["matrix"]["coverage"] < 0.5)
+            or (clean_brand_count < 2 and not (best_is_strong and has_hint_analogs))
+        )
         if need_round2:
             if progress_callback:
                 await progress_callback(72, f"Позиция {pos_idx}: дополнительный поиск карточек из каталогов и паспортов...")
@@ -2860,7 +2881,12 @@ async def detect_exact_products_characteristic_first(
                 for ed in extra_docs:
                     _seen.add(ed.get("url"))
 
-            round2_queries = await _second_round_queries_ai(best, pos_requirements, pos_name)
+            # Если основной кандидат уже подтверждён с высоким покрытием (>= 85%) без расхождений,
+            # не тратим LLM-вызов и запросы на повторный поиск его характеристик — ищем только аналоги (до 2 запросов)
+            if best_is_strong:
+                round2_queries = []
+            else:
+                round2_queries = await _second_round_queries_ai(best, pos_requirements, pos_name)
             if clean_brand_count < 2 and best:
                 b_val = str(best.get("brand") or "").strip()
                 if b_val and _is_clean_maker_or_brand(b_val):
@@ -2879,6 +2905,15 @@ async def detect_exact_products_characteristic_first(
                         am = a.get("model") or ""
                         if ab and _is_clean_maker_or_brand(ab):
                             round2_queries.append(f"{pos_name} {ab} {am}".strip())
+            seen_r1 = {" ".join(str(q).lower().split()) for q in queries}
+            dedup_round2: List[str] = []
+            for rq in round2_queries:
+                rq_norm = " ".join(str(rq or "").lower().split())
+                if rq_norm and rq_norm not in seen_r1:
+                    seen_r1.add(rq_norm)
+                    dedup_round2.append(str(rq).strip())
+            max_r2 = 2 if best_is_strong else 4
+            round2_queries = dedup_round2[:max_r2]
             _, docs2, _ = await search_and_fetch(round2_queries, max_docs=6)
             docs2 = [d for d in docs2 if d.get("url") not in _seen]
             for d2 in docs2:
@@ -2931,13 +2966,20 @@ async def detect_exact_products_characteristic_first(
             if progress_callback:
                 await progress_callback(85, f"Позиция {pos_idx}: сбор независимых источников и кросс-сверка (консенсус)...")
             consensus_checked = set()
-            for top_c in ranked[:3]:
+            top_to_expand = []
+            for top_c in ranked[:2]:
                 c_key = f"{top_c.get('brand')} {top_c.get('model')}".lower().strip()
                 consensus_checked.add(c_key)
                 if not top_c.get("is_tender_evidence"):
-                    await expand_candidate_sources_ai(top_c, pos_name, _seen, pos_requirements, max_sources=4)
-                    if len(top_c.get("fused_docs", [])) >= 2:
-                        top_c["matrix"] = await enrich_candidate_multi_source_consensus_ai(top_c, pos_requirements, pos_name)
+                    top_to_expand.append(top_c)
+            if top_to_expand:
+                await asyncio.gather(
+                    *(expand_candidate_sources_ai(tc, pos_name, _seen, pos_requirements, max_sources=3) for tc in top_to_expand),
+                    return_exceptions=True,
+                )
+                for tc in top_to_expand:
+                    if len(tc.get("fused_docs", [])) >= 2:
+                        tc["matrix"] = await enrich_candidate_multi_source_consensus_ai(tc, pos_requirements, pos_name)
             ranked = rank_candidates(candidates, hint_brand=hint_b, hint_model=eff_model, minprom_required=is_minprom_req, minprom_manufacturers=minprom_mfrs)
             best = ranked[0] if ranked else None
             # Если после консенсуса в топ вышел новый кандидат, дообогащаем его тоже

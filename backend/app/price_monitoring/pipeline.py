@@ -643,6 +643,8 @@ async def process_single_item(
                 continue
             seen_queries.add(q_norm)
             diagnostics["search_queries"] += 1
+            before_w1 = len(candidate_urls)
+            results: list[YandexSearchResult] = []
             try:
                 results = await engine.search(
                     q, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
@@ -656,7 +658,8 @@ async def process_single_item(
             except Exception as e:
                 diagnostics["search_errors"] += 1
                 logger.warning("Search query error for %s: %s", q, e)
-            if len(candidate_urls) >= 30:
+            added_w1 = len(candidate_urls) - before_w1
+            if len(candidate_urls) >= 18 or (len(results) >= 8 and added_w1 <= 1 and len(candidate_urls) >= 6):
                 break
 
     seen_domains: set[str] = set()
@@ -843,6 +846,44 @@ async def process_single_item(
                             except Exception as d_exc:
                                 logger.debug("DaData domain lookup failed for %s: %s", domain, d_exc)
 
+                            # 1b. Быстрая прямая проверка стандартных страниц реквизитов домена (/rekvizity/, /contacts/) без платных запросов
+                            if not resolved and quote.price_rub > 0 and http_client is not None:
+                                from .extractor import _extract_inn_kpp_contacts
+                                for req_path in ("/rekvizity/", "/contacts/"):
+                                    try:
+                                        probe_resp = await http_client.get(
+                                            f"https://{domain}{req_path}",
+                                            timeout=httpx.Timeout(2.5, connect=1.5),
+                                        )
+                                        if getattr(probe_resp, "status_code", 0) == 200 and getattr(probe_resp, "text", ""):
+                                            p_inn, p_kpp, p_contacts = _extract_inn_kpp_contacts(probe_resp.text)
+                                            if p_inn:
+                                                quote.inn = p_inn
+                                                if p_kpp and not quote.kpp:
+                                                    quote.kpp = p_kpp
+                                                if p_contacts and not quote.contacts:
+                                                    quote.contacts = p_contacts
+                                                from ..dadata_client import enrich_company_by_inn
+                                                d_info = await enrich_company_by_inn(quote.inn)
+                                                if d_info:
+                                                    if d_info.get("company_name"):
+                                                        quote.company_name = d_info["company_name"]
+                                                    if not quote.kpp and d_info.get("kpp"):
+                                                        quote.kpp = d_info["kpp"]
+                                                    city_or_addr = d_info.get("city") or d_info.get("legal_address")
+                                                    if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                                                        quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                                                domain_inn_cache[domain] = {
+                                                    "inn": quote.inn,
+                                                    "company_name": quote.company_name,
+                                                    "kpp": quote.kpp,
+                                                    "contacts": quote.contacts,
+                                                }
+                                                resolved = True
+                                                break
+                                    except Exception:
+                                        pass
+
                             # 2. Платный поиск ИНН в Яндексе внутри цикла кандидатов выполняем ТОЛЬКО для котировок с реальной ценой (quote.price_rub > 0).
                             # Для котировок "по запросу" (price_rub == 0) не тратим платные запросы заранее.
                             if not resolved and quote.price_rub > 0 and isinstance(engine, YandexSearchEngine):
@@ -926,12 +967,14 @@ async def process_single_item(
             fallback_queries = _preserve_exact_codes(fallback_queries)
         diagnostics["waves_run"].append(2)
         async with search_semaphore:
-            for bq in fallback_queries[:4]:
+            for bq in fallback_queries[:3]:
                 bq_norm = " ".join(bq.lower().split())
                 if bq_norm in seen_queries:
                     continue
                 seen_queries.add(bq_norm)
                 diagnostics["search_queries"] += 1
+                before_w2 = len(wave2_urls)
+                b_results: list[YandexSearchResult] = []
                 try:
                     b_results = await engine.search(
                         bq, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
@@ -945,7 +988,9 @@ async def process_single_item(
                 except Exception as b_exc:
                     diagnostics["search_errors"] += 1
                     logger.warning("Broad search query error for %s: %s", bq, b_exc)
-                if len(candidate_urls) + len(wave2_urls) >= 45:
+                added_w2 = len(wave2_urls) - before_w2
+                wave2_needed = max(6, WAVE_2_EXTRACTION_LIMIT - llm_extractions_done + 3)
+                if len(wave2_urls) >= wave2_needed or len(candidate_urls) + len(wave2_urls) >= 36 or (len(b_results) >= 8 and added_w2 <= 1):
                     break
 
         if wave2_urls:
@@ -975,12 +1020,14 @@ async def process_single_item(
         diagnostics["waves_run"].append(3)
 
         async with search_semaphore:
-            for wq in wave3_queries[:4]:
+            for wq in wave3_queries[:2]:
                 wq_norm = " ".join(wq.lower().split())
                 if wq_norm in seen_queries:
                     continue
                 seen_queries.add(wq_norm)
                 diagnostics["search_queries"] += 1
+                before_w3 = len(wave3_urls)
+                w_results: list[YandexSearchResult] = []
                 try:
                     w_results = await engine.search(
                         wq, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
@@ -994,7 +1041,9 @@ async def process_single_item(
                 except Exception as w_exc:
                     diagnostics["search_errors"] += 1
                     logger.warning("Wave 3 search query error for %s: %s", wq, w_exc)
-                if len(candidate_urls) + len(wave2_urls) + len(wave3_urls) >= 55:
+                added_w3 = len(wave3_urls) - before_w3
+                wave3_needed = max(4, MAX_LLM_EXTRACTIONS_PER_ITEM - llm_extractions_done + 2)
+                if len(wave3_urls) >= wave3_needed or len(candidate_urls) + len(wave2_urls) + len(wave3_urls) >= 42 or (len(w_results) >= 8 and added_w3 <= 1):
                     break
 
         if wave3_urls:
@@ -1280,9 +1329,14 @@ async def run_price_monitoring_pipeline(
     not_found_count = total - found_count
     total_charged_rub = round(found_count * price_per_position_rub, 2)
 
-    unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.488) or 0.488)
+    unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305)
     yandex_requests = int(getattr(engine, "total_requests", 0) or 0)
-    yandex_cost = round(yandex_requests * unit_price, 2)
+    sync_requests = int(getattr(engine, "sync_requests", 0) or 0)
+    async_requests = max(0, yandex_requests - sync_requests)
+    if sync_requests > 0 and unit_price < 0.1:
+        yandex_cost = round(async_requests * unit_price + sync_requests * 0.488, 2)
+    else:
+        yandex_cost = round(yandex_requests * unit_price, 2)
 
     if progress_callback:
         progress_callback(100, f"Готово! Найдено подтвержденных цен для {found_count} из {total} позиций")
