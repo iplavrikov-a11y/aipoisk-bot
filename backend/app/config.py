@@ -39,7 +39,7 @@ class AppConfig(BaseSettings):
     default_yandex_search_folder_id: str = ""
     default_yandex_search_api_key: str = ""
     default_yandex_max_pages_per_query: int = 3
-    default_yandex_search_price_per_request: float = 0.04
+    default_yandex_search_price_per_request: float = 0.0305
     default_google_search_api_key: str = ""
     default_google_search_cse_id: str = ""
     default_document_settings_json: str = "{}"
@@ -76,7 +76,11 @@ class AppConfig(BaseSettings):
 
     @property
     def storage_path(self) -> Path:
-        return Path(self.storage_dir).resolve()
+        p = Path(self.storage_dir)
+        if not p.is_absolute():
+            backend_dir = Path(__file__).resolve().parent.parent
+            return (backend_dir / p).resolve()
+        return p.resolve()
 
 
 config = AppConfig()

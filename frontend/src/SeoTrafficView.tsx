@@ -418,16 +418,21 @@ export function SeoTrafficView() {
   const [data, setData] = useState<Data | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [checkedAt, setCheckedAt] = useState('')
   useEffect(() => {
     let disposed = false
     let controller: AbortController | null = null
+    let hasAttemptedSync = false
     async function sync() {
       if (disposed || document.hidden || controller) return
+      const initialLoad = !hasAttemptedSync
+      hasAttemptedSync = true
       controller = new AbortController()
       const current = controller
       const timeout = window.setTimeout(() => current.abort(), 90000)
-      setLoading(true)
+      if (initialLoad) setLoading(true)
+      else setRefreshing(true)
       try {
         const response = await fetch('/api/seo-analytics', {
           credentials: 'same-origin',
@@ -457,7 +462,10 @@ export function SeoTrafficView() {
           )
       } finally {
         window.clearTimeout(timeout)
-        if (!disposed) setLoading(false)
+        if (!disposed) {
+          if (initialLoad) setLoading(false)
+          else setRefreshing(false)
+        }
         if (controller === current) controller = null
       }
     }
@@ -504,7 +512,13 @@ export function SeoTrafficView() {
         </span>
         <p className="seo-caption">
           Сбор источников: {stamp(data?.updated_at)}. Проверка панели:{' '}
-          {stamp(checkedAt)}. Панель проверяет данные каждые 2 минуты, пока
+          {stamp(checkedAt)}.{' '}
+          {refreshing && (
+            <span className="seo-refresh-state" role="status">
+              Проверяем обновления…
+            </span>
+          )}{' '}
+          Панель проверяет данные каждые 2 минуты, пока
           открыта; сбор источников использует отдельный фоновый цикл.
         </p>
       </section>

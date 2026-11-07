@@ -206,7 +206,7 @@ def get_outreach_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
 def _normalize_task_cost(task: OutreachSearchTask, db: Session) -> None:
     """Ensures task costs strictly track real Yandex Search API cost."""
     sys_s = db.query(SystemSettings).filter(SystemSettings.id == 1).first()
-    price = float(getattr(sys_s, "yandex_search_price_per_request", 0.04) or 0.04)
+    price = float(getattr(sys_s, "yandex_search_price_per_request", 0.0305) or 0.0305)
     reqs = task.yandex_requests or 0
     if reqs == 0 and (task.scanned_sites > 0 or task.queries_count > 0 or task.collected_count > 0):
         reqs = max(

@@ -15,18 +15,56 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
   const allowed = Boolean(counterId && /^\d+$/.test(counterId) && pathname && !/^\/api(?:\/|$)/.test(pathname));
 
   useEffect(() => {
+    let stored: string | null = null;
     try {
-      const stored = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
+      stored = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
       setConsent(stored === "granted" || stored === "denied" ? stored : "unknown");
-    } catch { setConsent("unknown"); }
+    } catch {
+      setConsent("unknown");
+    }
+
+    if (stored === "denied") return;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const handleEngagement = () => {
+      try {
+        const current = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
+        if (current === "denied") return;
+        window.localStorage.setItem(ANALYTICS_CONSENT_KEY, "granted");
+      } catch { /* Local storage may fail in private mode. */ }
+      configureAnalytics(counterId, true);
+      setConsent("granted");
+      cleanupEngagement();
+    };
+
+    const cleanupEngagement = () => {
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("scroll", handleEngagement);
+      window.removeEventListener("pointerdown", handleEngagement);
+      window.removeEventListener("keydown", handleEngagement);
+    };
+
+    if (stored !== "granted") {
+      timer = setTimeout(handleEngagement, 3000);
+      window.addEventListener("scroll", handleEngagement, { passive: true, once: true });
+      window.addEventListener("pointerdown", handleEngagement, { passive: true, once: true });
+      window.addEventListener("keydown", handleEngagement, { passive: true, once: true });
+    }
+
     function sync(event: StorageEvent) {
       if (event.key !== ANALYTICS_CONSENT_KEY) return;
       const next = event.newValue === "granted" || event.newValue === "denied" ? event.newValue : "unknown";
       configureAnalytics(counterId, next === "granted");
       setConsent(next);
+      if (next === "denied") {
+        cleanupEngagement();
+      }
     }
     window.addEventListener("storage", sync);
-    return () => window.removeEventListener("storage", sync);
+    return () => {
+      cleanupEngagement();
+      window.removeEventListener("storage", sync);
+    };
   }, [counterId]);
 
   useEffect(() => {
@@ -89,7 +127,7 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
   return <>
     {consent === "unknown" ? (
       <aside className="cookie-consent" aria-label="Настройки аналитики">
-        <p>TenderLex использует необходимые данные для работы сайта. С вашего разрешения Яндекс Метрика учитывает посещения и действия, чтобы улучшать сервис. <a href="/privacy#cookies">Подробнее</a></p>
+        <p>TenderLex использует cookie и аналитику для сохранения истории проверок ТЗ и корректной работы сервиса. С вашего разрешения Яндекс Метрика учитывает посещения и действия, чтобы улучшать сервис. <a href="/privacy#cookies">Подробнее</a></p>
         <div>
           <button type="button" className="cookie-secondary" onClick={() => choose("denied")}>Только необходимые</button>
           <button type="button" className="cookie-primary" onClick={() => choose("granted")}>Разрешить аналитику</button>

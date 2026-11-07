@@ -43,7 +43,7 @@ ProgressCallback = Any  # Callable[[int, str], Coroutine]
 
 _MAX_CANDIDATE_DOCS = 12
 
-MAX_EXACT_POSITIONS_PER_JOB = 5
+MAX_EXACT_POSITIONS_PER_JOB = 100
 _MAX_FACTS_PER_DOC = 40
 _CITY_SUFFIX_RE = re.compile(r"\s*[-–—]\s*[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s*$")
 
@@ -99,30 +99,35 @@ _TZ_REQUIREMENTS_LLM_PROMPT = """Ты — извлекатель требова�
 [{{"param_name": "...", "tz_requirement": "..."}}]
 """
 
-TZ_STRUCTURE_PROMPT = """Ты — аналитик технических заданий по государственным закупкам (44-ФЗ/223-ФЗ).
-Твоя задача — ТОЛЬКО ПЕРЕПИСАТЬ ХАРАКТЕРИСТИКИ ИЗ ТЕКСТА ТЗ.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО пытаться угадать или понять, какой товар заложен в характеристиках!
-Ты не подбираешь товар и не догадываешься о бренде по размерам или свойствам. Ты только дословно переносишь характеристики из текста.
+TZ_STRUCTURE_PROMPT = """Ты — аналитик технических заданий, спецификаций и смет по государственным и коммерческим закупкам (ПРАВИЛО 14: СЕМАНТИЧЕСКИЙ РАЗБОР ЛЮБЫХ ДОКУМЕНТОВ БЕЗ ЖЕСТКИХ ШАБЛОНОВ).
+Твоя задача — извлечь перечень закупаемых товаров, оборудования или материалов из текста документа (произвольные таблицы Word/Excel, спецификации, сметы, ведомости или свободный текст).
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдумывать параметры или догадываться о брендах. Ты переносишь реальные данные из текста.
 
-Текст технического задания:
+Текст документа:
 {spec}
 
-ЗАДАЧИ:
-1. "item_name" — общий предмет закупки в именительном падеже из текста ТЗ, БЕЗ городов/адресов/заказчиков.
-2. "city" — населённый пункт/адрес из ТЗ, если указан (иначе "").
-3. "positions" — РАЗБИЕНИЕ ТЗ НА ПОЗИЦИИ (товары). Каждый РАЗНЫЙ товар — отдельная позиция:
-   - "name" — наименование позиции прямо из текста ТЗ (для поиска: тип + модель/типоразмер, например
-     «Кран шаровой LD Стриж Ду-100», «Бумага для гофрирования», без «или эквивалент», без города);
-   - "brand_hint" — бренд/марка, ТОЛЬКО если прямо написана словами в тексте ТЗ (например, «LD», «Кама»). Если в тексте прямого слова нет — СТРОГО пустая строка "";
-   - "model_hint" — модель/артикул, ТОЛЬКО если прямо написана словами в тексте ТЗ (например, «Стриж Ду-100», «Б-0»). Если нет — СТРОГО пустая строка "";
-   - "manufacturer_hint" — завод-изготовитель/производитель, ТОЛЬКО если он прямо назван словами в тексте ТЗ (например, юридическое лицо «ООО Завод Прибормаш»). Если не назван — СТРОГО пустая строка "";
-   - "analogs" — список аналогов, ТОЛЬКО если в тексте ТЗ прямо перечислены конкретные аналоги: [{{"brand": "...", "model": "...", "manufacturer": "..."}}], иначе [];
-   - "requirements" — ПОЛНЫЙ СПИСОК СВОИХ ХАРАКТЕРИСТИК позиции: "param_name" (наименование параметра,
-     например «Масса бумаги площадью 1м2, г», «Условный диаметр Ду, мм») и "tz_requirement"
-     (требование дословно: диапазон, значение, ГОСТ, код, перечисление). Переноси дословно, ничего не выбрасывай;
-   - "search_queries" — 3-4 РЕАЛИСТИЧНЫХ поисковых запроса для Яндекса/Google, составленных специально под эту позицию с учётом ключевых характеристик и стандартов (например: «насос консольный 50 м3/ч 4 кВт характеристики», «канат стальной ГОСТ 2688-80 11 мм характеристики», «кабель силовой ВВГнг-LS 3х2.5 ГОСТ каталог»);
-   - формулировки можно аккуратно нормализовать (опечатки, регистр), но ЧИСЛА, единицы и коды — строго из текста;
-   - ИСКЛЮЧАЙ из характеристик: общие условия поставки, сроки, оплату, гарантийные обязательства по контракту («гарантия с даты подписания акта приема-передачи»), общие требования к новизне («товар новый, не бывший в употреблении»). В requirements включай ТОЛЬКО физические, конструктивные, размерные, функциональные и эксплуатационные характеристики самого изделия.
+ИНСТРУКЦИИ (ПРАВИЛО 14):
+1. "item_name" — общий предмет закупки в именительном падеже (например «Поставка строительных материалов», «Оконные блоки ПВХ», без городов/адресов).
+2. "city" — населённый пункт/город поставки, если указан в документе (иначе "").
+3. "positions" — РАЗБИЕНИЕ ДОКУМЕНТА НА ПОЗИЦИИ (товары/материалы). Каждое изделие — отдельная позиция:
+   - "name" — чистое коммерческое наименование товара (тип + основные параметры, например «Блок оконный ПВХ двустворчатый 1300х1400 мм», «Желоб оцинкованный Ø185 мм», «Кран шаровой LD Стриж Ду-100»).
+   - "unit" — единица измерения («шт», «м», «м2», «м3», «компл», «кг», «т», «пог. м» и т.д.). По умолчанию "шт".
+   - "quantity" — количество из документа (строка с числом, например "58", "10", "1", если не указано — "").
+   - "brand_hint" — бренд/марка, ТОЛЬКО если прямо написана словами в тексте (например «Rehau», «LD», «Кама»). Иначе пустая строка "".
+   - "model_hint" — заводская модель/артикул, ТОЛЬКО если прямо написана словами (например «Стриж Ду-100», «Б-0»). Иначе пустая строка "".
+   - "manufacturer_hint" — завод-изготовитель, ТОЛЬКО если прямо назван словами (например «ООО Завод Прибормаш»). Иначе пустая строка "".
+   - "analogs" — список конкретных аналогов, если прямо перечислены в документе: [{{"brand": "...", "model": "...", "manufacturer": "..."}}], иначе [].
+   - "requirements" — физические, размерные, эксплуатационные параметры товара: "param_name" и "tz_requirement" (диапазоны, размеры, ГОСТ, материалы). Переноси точно, ничего не выбрасывай. Не включай условия оплаты, гарантии по контракту и общие фразы.
+   - "is_short_prompt" — true, если в документе дано только краткое наименование без подробной технической спецификации/характеристик; иначе false.
+   - "search_queries" — 3-4 РЕАЛИСТИЧНЫХ поисковых запроса для Яндекса, составленных специально под эту позицию для поиска прямых поставщиков, складов и производителей в РФ (например: «окна пластиковые пвх двухстворчатые купить оптом», «желоб водосточный оцинкованный 185 мм цена от производителя»).
+
+КРИТИЧЕСКОЕ ПРАВИЛО ПО СМЕТНЫМ БАЗАМ И КЛАССИФИКАТОРАМ:
+В документах (сметах, актах) часто встречаются внутренние шифры расценок, коды сметных баз и классификаторов (например, ФСБЦ, ГЭСН, ФЕР, ТЕР, КСР, ТСН, цифровые коды вида 11.3.02.01-0018 или 12.1.01.05-0038).
+Семантически понимай, что это бухгалтерские/сметные расценки, а НЕ названия товаров и НЕ заводские артикулы!
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО:
+- Включать сметные коды в "name" (наименованием товара должно быть само физическое изделие: «Желоб оцинкованный Ø185 мм», а не «Код сметы: ФСБЦ...»).
+- Записывать сметные шифры в "brand_hint", "model_hint" или "manufacturer_hint".
+- Включать сметные шифры в "search_queries" (поисковые запросы ищут реальных поставщиков и склады, а не нормативные базы).
 
 Ответь СТРОГО в формате JSON:
 {{
@@ -131,11 +136,14 @@ TZ_STRUCTURE_PROMPT = """Ты — аналитик технических зад
   "positions": [
     {{
       "name": "...",
+      "unit": "шт",
+      "quantity": "1",
       "brand_hint": "",
       "model_hint": "",
       "manufacturer_hint": "",
       "analogs": [],
       "requirements": [{{"param_name": "...", "tz_requirement": "..."}}],
+      "is_short_prompt": false,
       "search_queries": ["запрос 1", "запрос 2", "запрос 3"]
     }}
   ]
@@ -580,6 +588,7 @@ def extract_tz_requirements_regex(spec_text: str) -> List[Dict[str, str]]:
 
 async def parse_tz_structure(
     spec_text: str,
+    preserve_empty_positions: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     ИИ-разбор структуры ТЗ (это РАЗБОР ТЕКСТА, не выбор товара): предмет закупки без географии,
@@ -589,7 +598,7 @@ async def parse_tz_structure(
     формулировки можно, выдумывать числа нельзя.
     Возвращает {"item_name","city","positions":[{"name","requirements","brand_hint","model_hint","manufacturer_hint","analogs"}]} или None.
     """
-    if not spec_text or len(spec_text.strip()) < 30:
+    if not spec_text or len(spec_text.strip()) < 3:
         return None
     from .product_brand_detector import extract_clean_spec_text
     spec_clean = extract_clean_spec_text(spec_text) or spec_text
@@ -669,16 +678,22 @@ async def parse_tz_structure(
                     grounded_analogs.append({"brand": ab, "model": am, "manufacturer": af})
 
         search_q = [str(q).strip() for q in pos.get("search_queries") or [] if str(q).strip()]
+        unit = str(pos.get("unit") or "").strip() or "шт"
+        quantity = str(pos.get("quantity") or "").strip()
+        is_short = bool(pos.get("is_short_prompt") or (len(name) < 30 and (not reqs or all(r.get("tz_requirement") == name for r in reqs))))
 
-        if name and len(reqs) >= 1:
+        if name and (reqs or preserve_empty_positions):
             positions.append({
                 "name": name,
+                "unit": unit,
+                "quantity": quantity,
                 "requirements": reqs,
                 "brand_hint": brand_h,
                 "model_hint": model_h,
                 "manufacturer_hint": mfr_h,
                 "analogs": grounded_analogs,
                 "search_queries": search_q,
+                "is_short_prompt": is_short,
             })
 
     item_name = str(data.get("item_name") or "").strip()
@@ -1538,13 +1553,17 @@ async def expand_candidate_sources_ai(
     q_specs = f"{item_anchor}{brand} {model} характеристики"
     q_passport = f"{item_anchor}{brand} {model} паспорт PDF"
 
+    curr_cov = float((candidate.get("matrix") or {}).get("coverage") or 0.0)
+    expand_queries = [q_passport] if (len(existing_domains) >= 2 or curr_cov >= 0.75) else [q_specs, q_passport]
+
     raw_results = []
-    for q in (q_specs, q_passport):
-        try:
-            r = await _fetch_search_results_for_specs(q, max_results=6)
-            raw_results.extend(r or [])
-        except Exception as q_err:
-            logger.debug("expand_sources_search_failed", query=q, error=str(q_err))
+    search_res_list = await asyncio.gather(
+        *(_fetch_search_results_for_specs(q, max_results=6) for q in expand_queries),
+        return_exceptions=True,
+    )
+    for res_batch in search_res_list:
+        if isinstance(res_batch, list):
+            raw_results.extend(res_batch)
 
     new_urls = []
     for res in raw_results:
@@ -1603,17 +1622,6 @@ def _is_concrete_specific_model(m_raw: str, generic_words: Set[str]) -> bool:
     m_clean = str(m_raw).strip().lower().replace("ё", "е")
     comp = _compact(m_clean)
     if comp in generic_words:
-        return False
-
-    generic_categories = {
-        "товар", "продукция", "изделие", "оборудование", "материал",
-        "бумага", "картон", "канат", "трос", "подшипник", "панель",
-        "уплотнение", "пластина", "техпластина", "лента", "труба",
-        "кран", "вентиль", "задвижка", "клапан", "насос", "двигатель",
-        "фильтр", "датчик", "кабель", "провод", "лампа", "светильник",
-        "выключатель", "автомат", "рулон", "лист", "плита"
-    }
-    if comp in generic_categories:
         return False
 
     # Должен содержать конкретные идентификаторы: цифры, типоразмеры (120х195), артикулы с дефисами/слэшами
@@ -2359,17 +2367,22 @@ async def _fetch_product_links_from_listings(
     }
     links: List[str] = []
     seen = set()
-    async with httpx.AsyncClient(timeout=12.0, follow_redirects=True, headers=headers) as client:
-        for listing_url in listing_urls[:4]:
-            if not listing_url or not listing_url.startswith("http"):
+    valid_listings = [u for u in listing_urls[:4] if u and u.startswith("http")]
+    if not valid_listings:
+        return links
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(8.0, connect=4.0),
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
+        responses = await asyncio.gather(
+            *(client.get(u) for u in valid_listings),
+            return_exceptions=True,
+        )
+        for listing_url, resp in zip(valid_listings, responses):
+            if isinstance(resp, BaseException) or getattr(resp, "status_code", 500) >= 400:
                 continue
-            try:
-                resp = await client.get(listing_url)
-                if resp.status_code >= 400:
-                    continue
-                html = resp.text
-            except Exception:
-                continue
+            html = resp.text
             for m in re.finditer(r"href=[\"']([^\"'#]+)[\"']", html):
                 href = m.group(1)
                 full = urljoin(listing_url, href).split("?")[0].rstrip("/")
@@ -2507,6 +2520,7 @@ async def detect_exact_products_characteristic_first(
     progress_callback: Optional[ProgressCallback] = None,
     full_context: Optional[str] = None,
     evidence_data: Optional[Dict[str, Any]] = None,
+    prepared_positions: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
     """
     Характеристики ТЗ → поиск товара по характеристикам → факты из документов → матрица → решение.
@@ -2514,7 +2528,7 @@ async def detect_exact_products_characteristic_first(
     Возвращает (positions, docs) или None, если найти кандидатов не удалось
     (тогда вызывающий код использует резервную схему).
     """
-    if not spec_text or len(spec_text.strip()) < 30:
+    if not spec_text or len(spec_text.strip()) < 3:
         return None
 
     if evidence_data is None and full_context and len(str(full_context).strip()) >= 50:
@@ -2526,7 +2540,7 @@ async def detect_exact_products_characteristic_first(
 
     from .product_brand_detector import extract_clean_spec_text
     spec_text = extract_clean_spec_text(spec_text)
-    if not spec_text or len(spec_text.strip()) < 30:
+    if not spec_text or len(spec_text.strip()) < 3:
         return None
 
     if progress_callback:
@@ -2539,12 +2553,15 @@ async def detect_exact_products_characteristic_first(
     # Основной путь: ИИ разбирает структуру ТЗ (понимает, где город, а где характеристики,
     # нарезает мультипозиционное ТЗ на отдельные товары). Защита от выдумывания:
     # числа каждого требования обязаны присутствовать в тексте ТЗ.
-    tz_structure = await parse_tz_structure(spec_norm)
+    tz_structure = ({"positions": prepared_positions, "item_name": procurement_title}
+                    if prepared_positions is not None else await parse_tz_structure(spec_norm))
     if tz_structure:
         item_name = tz_structure.get("item_name") or ""
         tz_positions = tz_structure.get("positions") or []
 
     # Резерв: если ИИ-структура пуста, пробуем прямое извлечение требований через ИИ
+    if not tz_positions and prepared_positions is not None:
+        return None
     if not tz_positions:
         requirements = await extract_tz_requirements(spec_norm)
         if len(requirements) < 2:
@@ -2691,15 +2708,16 @@ async def detect_exact_products_characteristic_first(
                 f'{clean_pos_base} каталог моделей характеристики',
                 f'{clean_pos_base} отечественные аналоги производители',
             ):
-                if q_gen.lower() not in {q.lower() for q in queries} and len(queries) < 14:
+                if q_gen.lower() not in {q.lower() for q in queries} and len(queries) < 8:
                     queries.append(q_gen)
 
         # 5. Дополняем дополнительными поисковыми фразами от ИИ
         for iq in (initial_queries or []):
             iq_str = str(iq).strip()
-            if iq_str and iq_str.lower() not in {q.lower() for q in queries} and len(queries) < 14:
+            if iq_str and iq_str.lower() not in {q.lower() for q in queries} and len(queries) < 8:
                 queries.append(iq_str)
 
+        queries = queries[:8]
         if not queries:
             return None
 
@@ -2834,7 +2852,18 @@ async def detect_exact_products_characteristic_first(
             str(c.get("brand") or c.get("manufacturer") or "").lower().strip()
             for c in ranked if c.get("matrix", {}).get("fails", 0) == 0 and _has_real_maker(c, pos_hint)
         }) if ranked else 0
-        need_round2 = (best is None) or (best["matrix"]["fails"] > 0) or (best["matrix"]["coverage"] < 0.5) or (clean_brand_count < 2)
+        best_is_strong = bool(
+            best is not None
+            and best["matrix"]["fails"] == 0
+            and best["matrix"]["coverage"] >= 0.85
+        )
+        has_hint_analogs = bool(pos_hint and pos_hint.get("analogs") and clean_brand_count >= 1)
+        need_round2 = (
+            (best is None)
+            or (best["matrix"]["fails"] > 0)
+            or (best["matrix"]["coverage"] < 0.5)
+            or (clean_brand_count < 2 and not (best_is_strong and has_hint_analogs))
+        )
         if need_round2:
             if progress_callback:
                 await progress_callback(72, f"Позиция {pos_idx}: дополнительный поиск карточек из каталогов и паспортов...")
@@ -2852,7 +2881,12 @@ async def detect_exact_products_characteristic_first(
                 for ed in extra_docs:
                     _seen.add(ed.get("url"))
 
-            round2_queries = await _second_round_queries_ai(best, pos_requirements, pos_name)
+            # Если основной кандидат уже подтверждён с высоким покрытием (>= 85%) без расхождений,
+            # не тратим LLM-вызов и запросы на повторный поиск его характеристик — ищем только аналоги (до 2 запросов)
+            if best_is_strong:
+                round2_queries = []
+            else:
+                round2_queries = await _second_round_queries_ai(best, pos_requirements, pos_name)
             if clean_brand_count < 2 and best:
                 b_val = str(best.get("brand") or "").strip()
                 if b_val and _is_clean_maker_or_brand(b_val):
@@ -2871,6 +2905,15 @@ async def detect_exact_products_characteristic_first(
                         am = a.get("model") or ""
                         if ab and _is_clean_maker_or_brand(ab):
                             round2_queries.append(f"{pos_name} {ab} {am}".strip())
+            seen_r1 = {" ".join(str(q).lower().split()) for q in queries}
+            dedup_round2: List[str] = []
+            for rq in round2_queries:
+                rq_norm = " ".join(str(rq or "").lower().split())
+                if rq_norm and rq_norm not in seen_r1:
+                    seen_r1.add(rq_norm)
+                    dedup_round2.append(str(rq).strip())
+            max_r2 = 2 if best_is_strong else 4
+            round2_queries = dedup_round2[:max_r2]
             _, docs2, _ = await search_and_fetch(round2_queries, max_docs=6)
             docs2 = [d for d in docs2 if d.get("url") not in _seen]
             for d2 in docs2:
@@ -2923,13 +2966,20 @@ async def detect_exact_products_characteristic_first(
             if progress_callback:
                 await progress_callback(85, f"Позиция {pos_idx}: сбор независимых источников и кросс-сверка (консенсус)...")
             consensus_checked = set()
-            for top_c in ranked[:3]:
+            top_to_expand = []
+            for top_c in ranked[:2]:
                 c_key = f"{top_c.get('brand')} {top_c.get('model')}".lower().strip()
                 consensus_checked.add(c_key)
                 if not top_c.get("is_tender_evidence"):
-                    await expand_candidate_sources_ai(top_c, pos_name, _seen, pos_requirements, max_sources=4)
-                    if len(top_c.get("fused_docs", [])) >= 2:
-                        top_c["matrix"] = await enrich_candidate_multi_source_consensus_ai(top_c, pos_requirements, pos_name)
+                    top_to_expand.append(top_c)
+            if top_to_expand:
+                await asyncio.gather(
+                    *(expand_candidate_sources_ai(tc, pos_name, _seen, pos_requirements, max_sources=3) for tc in top_to_expand),
+                    return_exceptions=True,
+                )
+                for tc in top_to_expand:
+                    if len(tc.get("fused_docs", [])) >= 2:
+                        tc["matrix"] = await enrich_candidate_multi_source_consensus_ai(tc, pos_requirements, pos_name)
             ranked = rank_candidates(candidates, hint_brand=hint_b, hint_model=eff_model, minprom_required=is_minprom_req, minprom_manufacturers=minprom_mfrs)
             best = ranked[0] if ranked else None
             # Если после консенсуса в топ вышел новый кандидат, дообогащаем его тоже

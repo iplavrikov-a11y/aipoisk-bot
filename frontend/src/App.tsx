@@ -1,5 +1,5 @@
 import { SeoTrafficView } from './SeoTrafficView'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
 import {
   X,
   AlertTriangle,
@@ -42,6 +42,7 @@ import {
   Users,
   XCircle,
   Mail,
+  MessageSquare,
   MessageSquarePlus,
   Send,
   TrendingUp,
@@ -56,8 +57,10 @@ import { OutreachView } from './OutreachView'
 import { McpApiView } from './McpApiView'
 import { PriceMonitoringView } from './PriceMonitoringView'
 import { CookiesView } from './CookiesView'
+import { InvoicesView } from './InvoicesView'
+import { DialogsView } from './DialogsView'
 
-type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring' | 'cookies'
+type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'dialogs' | 'billing' | 'invoices' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring' | 'cookies'
 
 type Dashboard = {
   clients: number
@@ -77,6 +80,7 @@ type Client = {
   source: 'telegram' | 'web' | string
   name: string
   username: string
+  phone?: string
   is_active: boolean
   is_trial: boolean
   allowed_supplier_search: boolean
@@ -211,6 +215,8 @@ type WebUser = {
   client_id: string
   email: string
   name: string
+  phone?: string
+  telegram_username?: string
   is_active: boolean
   is_email_verified: boolean
   created_at: string | null
@@ -243,6 +249,19 @@ type GrantDraft = {
   debit_amount_rub?: string
 }
 
+type ExactSelection = {
+  mode?: string
+  pricing_mode?: string
+  revision: string
+  max_positions: number
+  price_kopeks: number
+  selected_ids: string[]
+  confirmed: boolean
+  items: Array<{ id: string; position_no: number; name: string; name_in_tz?: string }>
+}
+
+type MultiItemSelection = Pick<ExactSelection, 'items' | 'selected_ids' | 'confirmed'> & { mode?: string; revision?: string }
+
 type Job = {
   id: string
   job_number?: number | null
@@ -259,6 +278,10 @@ type Job = {
   supplier_search_policy: string
   supplier_search_run_type: string
   multi_item_mode?: string
+  delivery_city?: string
+  geo_radius_km?: number | null
+  geo_scope?: string
+  confirmation_expires_at?: string | null
   confirmation_kind?: string
   confirmation_outcome?: string
   offer_delivery_outcome?: string
@@ -281,6 +304,8 @@ type Job = {
   admin_comment?: string
   admin_supplement_name?: string
   admin_supplement_at?: string | null
+  chat_messages_count?: number
+  unread_client_messages_count?: number
   error: string
   ai_provider?: string
   ai_provider_name?: string
@@ -296,11 +321,20 @@ type Job = {
   sources?: JobSource[]
   parent_job_id?: string
   is_admin_rerun?: boolean
+  position_selection?: ExactSelection | null
+  multi_item_selection?: MultiItemSelection | null
+  exact_product_selection?: ExactSelection | null
   admin_rerun?: JobAdminRerunInfo | null
   admin_reruns?: JobAdminRerunInfo[]
 }
 
 type JobAdminRerunInfo = {
+  mode?: string
+  confirmation_kind?: string
+  multi_item_mode?: string
+  position_selection?: ExactSelection | null
+  multi_item_selection?: MultiItemSelection | null
+  exact_product_selection?: ExactSelection | null
   id: string
   job_number?: number | null
   status: string
@@ -431,6 +465,7 @@ type SettingsPayload = {
   yookassa_secret_key_set: boolean
   yookassa_secret_key?: string
   yookassa_return_url: string
+  yookassa_send_receipt?: boolean
   supplier_search_ui: SupplierSearchUi
 }
 
@@ -439,6 +474,7 @@ type SettingsPatchPayload = Partial<SettingsPayload> & {
   yandex_search_api_key?: string
   google_search_api_key?: string
   yookassa_secret_key?: string
+  yookassa_send_receipt?: boolean
 }
 
 type TariffPackage = {
@@ -687,9 +723,17 @@ const viewCopy: Record<View, { title: string; description: string }> = {
     title: 'Задачи',
     description: 'Последние запуски бота, статусы обработки и готовые файлы для скачивания.',
   },
+  dialogs: {
+    title: 'Диалоги с клиентами',
+    description: 'Двусторонняя переписка по задачам, ответы клиентов и отправка экспертных материалов.',
+  },
   billing: {
     title: 'Тарифы',
     description: 'Глобальные цены услуг и тарифные пакеты для клиентского кабинета.',
+  },
+  invoices: {
+    title: 'Счета и оплаты',
+    description: 'Выставленные счета, платёжные поручения клиентов и ручное подтверждение зачисления.',
   },
   settings: {
     title: 'Настройки',
@@ -743,6 +787,9 @@ const statusLabels: Record<string, string> = {
   failed: 'ошибка',
   cancelled: 'отменено',
   awaiting_customer_confirmation: 'ожидает клиента',
+  awaiting_exact_selection: 'ожидает выбора товаров',
+  awaiting_position_selection: 'ожидает выбора позиций',
+  settling: 'сохраняется результат',
   customer_declined: 'отклонено',
   confirmation_expired: 'истёк срок',
   delivery_expired: 'срок выдачи истёк',
@@ -1162,7 +1209,7 @@ function ToastContainer({
   )
 }
 
-const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'settings', 'ai', 'mcp', 'price_monitoring', 'cookies'] as const
+const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'invoices', 'settings', 'ai', 'mcp', 'price_monitoring', 'cookies'] as const
 
 function getInitialView(): View {
   if (typeof window === 'undefined') return 'dashboard'
@@ -1173,6 +1220,67 @@ function getInitialView(): View {
     if (VALID_VIEWS.includes(saved)) return saved
   } catch {}
   return 'dashboard'
+}
+
+interface ErrorBoundaryProps {
+  children: ReactNode
+  sectionName?: string
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean
+  error: Error | null
+}
+
+class AdminErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('AdminErrorBoundary caught error:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 24, margin: '20px auto', maxWidth: 640, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, color: '#991b1b' }}>
+          <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Ошибка отображения раздела {this.props.sectionName ? `«${this.props.sectionName}»` : ''}</h3>
+          <p style={{ margin: '0 0 12px 0', fontSize: 13, color: '#7f1d1d' }}>
+            {this.state.error?.message || 'Произошла непредвиденная ошибка при отображении данных.'}
+          </p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="ghost small-text"
+              style={{ background: '#fff', border: '1px solid #fca5a5', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
+              onClick={() => {
+                this.setState({ hasError: false, error: null })
+              }}
+            >
+              Попробовать снова
+            </button>
+            <button
+              type="button"
+              className="ghost small-text"
+              style={{ background: '#0f766e', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
+              onClick={() => {
+                window.location.reload()
+              }}
+            >
+              Перезагрузить страницу
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
 }
 
 export function App() {
@@ -1616,13 +1724,20 @@ export function App() {
     activeItem?.scrollIntoView({ block: 'nearest', inline: 'center' })
   }, [view])
 
+  const totalUnreadDialogs = useMemo(
+    () => jobs.reduce((sum, j) => sum + (j.unread_client_messages_count || 0), 0),
+    [jobs]
+  )
+
   const nav = [
     { id: 'dashboard' as const, label: 'Сводка', icon: ShieldCheck },
     { id: 'seo' as const, label: 'SEO и Трафик', icon: Globe },
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
+    { id: 'dialogs' as const, label: 'Диалоги', icon: MessageSquare, badge: totalUnreadDialogs },
     { id: 'outreach' as const, label: 'Лиды и Рассылка', icon: Mail },
     { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
+    { id: 'invoices' as const, label: 'Счета и оплаты', icon: FileCheck },
     { id: 'settings' as const, label: 'Настройки', icon: SlidersHorizontal },
     { id: 'price_monitoring' as const, label: 'Мониторинг цен', icon: Coins },
     { id: 'cookies' as const, label: 'Куки площадок', icon: ShieldCheck },
@@ -1673,6 +1788,20 @@ export function App() {
               >
                 <Icon size={17} />
                 <span>{item.label}</span>
+                {Boolean((item as any).badge) && (
+                  <span style={{
+                    marginLeft: 'auto',
+                    background: '#ef4444',
+                    color: '#fff',
+                    borderRadius: 10,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    padding: '1px 6px',
+                    lineHeight: '14px',
+                  }}>
+                    +{(item as any).badge}
+                  </span>
+                )}
               </a>
             )
           })}
@@ -1735,32 +1864,52 @@ export function App() {
         )}
         {isReady && view === 'seo' && <SeoTrafficView />}
         {isReady && view === 'clients' && (
-          <ClientsView
-            clients={clients}
-            passwordResets={passwordResets}
-            onChange={loadAll}
-            onNavigateToClientJobs={handleNavigateToClientJobs}
-            onNavigateToMcp={() => setView('mcp')}
-            isSyncing={isClientsSyncing}
-            lastSyncAt={lastClientsSyncAt}
-            onManualSync={handleManualClientsSync}
-            recentNewClientIds={recentNewClientIds}
-            selectedClientIdFromParent={selectedClientIdForView}
-            onClearSelectedClientFromParent={() => setSelectedClientIdForView('')}
-          />
+          <AdminErrorBoundary sectionName="Клиенты">
+            <ClientsView
+              clients={clients}
+              passwordResets={passwordResets}
+              onChange={loadAll}
+              onNavigateToClientJobs={handleNavigateToClientJobs}
+              onNavigateToMcp={() => setView('mcp')}
+              isSyncing={isClientsSyncing}
+              lastSyncAt={lastClientsSyncAt}
+              onManualSync={handleManualClientsSync}
+              recentNewClientIds={recentNewClientIds}
+              selectedClientIdFromParent={selectedClientIdForView}
+              onClearSelectedClientFromParent={() => setSelectedClientIdForView('')}
+            />
+          </AdminErrorBoundary>
         )}
         {isReady && view === 'jobs' && (
-          <JobsView
-            jobs={jobs}
-            clients={clients}
-            selectedClientId={selectedClientForJobs}
-            onClearSelectedClient={() => setSelectedClientForJobs('')}
-            onChange={loadAll}
-            loading={jobsLoading}
-          />
+          <AdminErrorBoundary sectionName="Задачи">
+            <JobsView
+              jobs={jobs}
+              clients={clients}
+              selectedClientId={selectedClientForJobs}
+              onClearSelectedClient={() => setSelectedClientForJobs('')}
+              onChange={async jobId => {
+                if (jobId) {
+                  const updated = await api<Job>(`/api/jobs/${jobId}`)
+                  setJobs(current => current.map(job => job.id === jobId ? updated : job))
+                }
+                await loadAll()
+              }}
+              loading={jobsLoading}
+            />
+          </AdminErrorBoundary>
+        )}
+        {isReady && view === 'dialogs' && (
+          <AdminErrorBoundary sectionName="Диалоги">
+            <DialogsView
+              onOpenJob={jobId => {
+                setView('jobs')
+              }}
+            />
+          </AdminErrorBoundary>
         )}
         {isReady && view === 'outreach' && <OutreachView />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
+        {isReady && view === 'invoices' && <InvoicesView />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} onSettingsUpdated={setSettings} />}
         {isReady && view === 'mcp' && <McpApiView clients={clients} />}
@@ -3499,7 +3648,7 @@ function ClientsView({
                     <details className="compact-form-details price-settings-details">
                       <summary>Индивидуальные цены</summary>
                       <div className="price-settings-panel">
-                        {(['supplier_search', 'procurement_report', 'supplier_search_extra', 'exact_product'] as const).map(kind => {
+                        {(['supplier_search', 'exact_product', 'procurement_report', 'supplier_search_extra', 'price_monitoring'] as const).map(kind => {
                           const price = client.usage?.effective_prices?.[kind]
                           const fallbackKopeks = price?.price_kopeks || 0
                           return (
@@ -3606,7 +3755,13 @@ function isSyntheticWebTelegramAccount(account: TelegramAccount) {
 
 function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
   if (client.web_users?.[0]?.email) {
-    return client.web_users[0].email
+    const email = client.web_users[0].email
+    const phone = client.phone || client.web_users[0].phone
+    const tg = client.web_users[0].telegram_username || (client.username ? `@${client.username}` : '')
+    const extra: string[] = []
+    if (phone) extra.push(`📞 ${phone}`)
+    if (tg) extra.push(`💬 ${tg.startsWith('@') ? tg : `@${tg}`}`)
+    return extra.length ? `${email} · ${extra.join(' · ')}` : email
   }
   const realAccounts = accounts.filter(account => !isSyntheticWebTelegramAccount(account))
   const connected = realAccounts.filter(account => !account.is_pending)
@@ -3634,13 +3789,15 @@ function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
 
 function humanBillingKind(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор поставщиков'
-  if (kind === 'exact_product') return 'Точный товар и аналоги'
-  return kind === 'procurement_report' ? 'Анализ документации' : 'Поставщики'
+  if (kind === 'exact_product') return 'Подбор товара и аналогов'
+  if (kind === 'price_monitoring') return 'Мониторинг цен'
+  return kind === 'procurement_report' ? 'Анализ документации' : 'Поиск поставщиков'
 }
 
 function priceBillingLabel(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор'
-  if (kind === 'exact_product') return 'Точный товар'
+  if (kind === 'exact_product') return 'Подбор товара'
+  if (kind === 'price_monitoring') return 'Мониторинг цен'
   return kind === 'procurement_report' ? 'Анализ' : 'Поиск'
 }
 
@@ -3721,6 +3878,64 @@ function getPrimaryReport(job: Job): { file: JobResultFile; isAdmin: boolean; jo
   return null
 }
 
+const selectionWaitingStatuses = ['awaiting_exact_selection', 'awaiting_position_selection']
+const activeExpertStatuses = ['pending', 'running', 'settling', ...selectionWaitingStatuses, 'awaiting_customer_confirmation']
+
+function jobSelection(job?: Pick<Job, 'position_selection' | 'exact_product_selection' | 'multi_item_selection'> | null): ExactSelection | null {
+  if (!job) return null
+  const ps = job.position_selection
+  if (ps && Array.isArray(ps.items) && ps.items.length > 0) {
+    return {
+      ...ps,
+      items: ps.items,
+      selected_ids: Array.isArray(ps.selected_ids) ? ps.selected_ids : [],
+    }
+  }
+  const eps = job.exact_product_selection
+  if (eps && Array.isArray(eps.items) && eps.items.length > 0) {
+    return {
+      ...eps,
+      items: eps.items,
+      selected_ids: Array.isArray(eps.selected_ids) ? eps.selected_ids : [],
+    }
+  }
+  const strategy = job.multi_item_selection
+  if (!strategy || !Array.isArray(strategy.items) || strategy.items.length === 0) return null
+  const items = strategy.items.map((row, index) => ({
+    ...row,
+    id: String(row.id || `item-${index}`),
+    position_no: row.position_no || index + 1,
+    name: row.name || row.name_in_tz || `Позиция ${index + 1}`,
+  }))
+  return {
+    ...strategy,
+    items,
+    selected_ids: Array.isArray(strategy.selected_ids) ? strategy.selected_ids : [],
+    mode: 'supplier_search',
+    revision: strategy.revision || '',
+    max_positions: items.length,
+    price_kopeks: 0,
+  }
+}
+
+function needsAdminSelection(job: Pick<Job, 'status' | 'confirmation_kind' | 'position_selection' | 'exact_product_selection' | 'multi_item_selection'>) {
+  return selectionWaitingStatuses.includes(job.status) ||
+    (job.status === 'awaiting_customer_confirmation' && job.confirmation_kind === 'multi_item_strategy') ||
+    Boolean(jobSelection(job)?.items?.length && !jobSelection(job)?.confirmed)
+}
+
+function expertScope(job: Job) {
+  const selection = jobSelection(job)
+  const rows = selection?.confirmed ? `Подтверждённые позиции: ${selection.selected_ids?.length || 0}. ` : ''
+  const geoScopeLabel = job.geo_scope === 'cis' ? 'РФ и СНГ (ЕАЭС)' : job.geo_scope === 'world' ? 'Весь мир' : 'Только РФ'
+  const geography = job.delivery_city
+    ? `География: ${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''} (${geoScopeLabel}). `
+    : (job.geo_scope && job.geo_scope !== 'ru' ? `География: ${geoScopeLabel}. ` : '')
+  const strategy = ['supplier_search', 'analysis_and_suppliers'].includes(job.mode)
+    ? `Стратегия: ${job.multi_item_mode === 'per_item' ? 'попозиционный поиск' : 'сбалансированный поиск'}. ` : ''
+  return `${humanMode(job.mode)}. ${rows}${strategy}${geography}`
+}
+
 function JobsView({
   jobs,
   clients = [],
@@ -3733,7 +3948,7 @@ function JobsView({
   clients?: Client[]
   selectedClientId?: string
   onClearSelectedClient?: () => void
-  onChange: () => Promise<void>
+  onChange: (jobId?: string) => Promise<void>
   loading?: boolean
 }) {
   const [nowTs, setNowTs] = useState(() => Date.now())
@@ -3877,12 +4092,16 @@ function JobsView({
     { id: 'completed', label: 'Готово' },
     { id: 'partial', label: 'Частично готово' },
     { id: 'awaiting_customer_confirmation', label: 'Ожидает клиента' },
+    { id: 'awaiting_exact_selection', label: 'Ожидает выбора товаров' },
+    { id: 'awaiting_position_selection', label: 'Ожидает выбора позиций' },
+    { id: 'confirmation_expired', label: 'Срок выбора истёк' },
     { id: 'failed', label: 'Ошибка' },
     { id: 'cancelled', label: 'Отменено' },
   ], [])
   const modeOptions = useMemo(() => [
     { id: 'supplier_search', label: 'Поиск поставщиков' },
     { id: 'exact_product', label: 'Подбор товара и аналогов' },
+    { id: 'price_monitoring', label: 'Мониторинг цен' },
     { id: 'procurement_report', label: 'Анализ документации' },
     { id: 'analysis_and_suppliers', label: 'Анализ + поиск' },
   ], [])
@@ -3913,31 +4132,25 @@ function JobsView({
   }, [showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery])
 
   async function adminRerun(job: Job) {
-    if (job.admin_rerun && (job.admin_rerun.status === 'pending' || job.admin_rerun.status === 'running')) {
-      alert(`По задаче #${job.job_number || job.id} уже выполняется экспертный перерасчет (${job.admin_rerun.progress}%). Дождитесь завершения.`)
-      return
-    }
-    if (job.admin_rerun && job.admin_rerun.status === 'completed') {
-      const ok = window.confirm(
-        `По задаче #${job.job_number || job.id} уже есть готовый админ-итог (${job.admin_rerun.verified_count || 0} пост.).\n\nЗапустить новый перерасчет? В карточке отобразится самый свежий результат.`
-      )
-      if (!ok) return
-    }
+    if (needsAdminSelection(job) || (job.admin_rerun && activeExpertStatuses.includes(job.admin_rerun.status))) return
+    if (!window.confirm(
+      `Создать новый экспертный поиск по задаче #${job.job_number || job.id}?\n\n${expertScope(job)}\nСостав позиций и условия сохраняются. Баланс клиента не списывается. Результат не отправляется автоматически — используйте «Дополнить отчёт».`
+    )) return
     try {
       await api(`/api/jobs/${job.id}/admin-rerun`, { method: 'POST' })
-      await onChange()
+      await onChange(job.id)
     } catch (err: any) {
       alert(err.message || 'Ошибка перезапуска задачи')
     }
   }
   async function resolveJob(job: Job) {
     await api(`/api/jobs/${job.id}/resolve`, { method: 'POST' })
-    await onChange()
+    await onChange(job.id)
   }
   async function cancelJob(job: Job) {
     if (!window.confirm('Отменить задачу?')) return
     await api(`/api/jobs/${job.id}/cancel`, { method: 'POST' })
-    await onChange()
+    await onChange(job.id)
   }
   async function toggleJobDetails(job: Job) {
     const nextExpanded = !expandedJobs[job.id]
@@ -4122,6 +4335,11 @@ function JobsView({
           const supplierRunLabel = supplierRunTypeLabel(job)
           const fallbackOffer = registryFallbackOffer(job)
           const fallbackStatusLabel = registryFallbackStatusLabel(job)
+          const selection = jobSelection(job)
+          const awaitingSelection = selectionWaitingStatuses.includes(job.status) || (job.status === 'awaiting_customer_confirmation' && job.confirmation_kind === 'multi_item_strategy')
+          const expiredSelection = job.status === 'confirmation_expired' && Boolean(selection && !selection.confirmed)
+          const reruns = job.admin_reruns?.length ? job.admin_reruns : job.admin_rerun ? [job.admin_rerun] : []
+          const expertActive = reruns.some(rerun => activeExpertStatuses.includes(rerun.status))
           const isFinished = job.status === 'completed' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled'
           const showProgress = !isFinished || (job.status === 'running' || job.status === 'pending')
           const hasResult = job.has_result || (job.result_files && job.result_files.length > 0)
@@ -4236,7 +4454,7 @@ function JobsView({
                         className="meta-item"
                         title={job.multi_item_mode === 'per_item' ? 'Глубокий независимый поиск под каждую позицию спецификации' : 'Единая квота распределяется по всем позициям со вкладками в Excel'}
                       >
-                        {job.multi_item_mode === 'per_item' ? '🔍 Попозиционный' : '⚖️ Сбалансированный'}
+                        {awaitingSelection ? 'Стратегия ещё не подтверждена' : job.multi_item_mode === 'per_item' ? '🔍 Попозиционный' : '⚖️ Сбалансированный'}
                       </span>
                     </>
                   )}
@@ -4250,14 +4468,30 @@ function JobsView({
 
                   <span className="meta-sep">·</span>
                   <span className="meta-item count">
-                    {job.mode === 'procurement_report'
+                    {awaitingSelection ? 'Ожидает выбора позиций'
+                      : expiredSelection ? 'Срок выбора истёк · поиск не запущен'
+                      : !hasResult && ['pending', 'running', 'settling'].includes(job.status) ? 'Поиск ещё выполняется'
+                      : job.mode === 'procurement_report'
                       ? 'Анализ ТЗ'
                       : job.mode === 'exact_product'
-                      ? `${job.verified_count || 1} тов.`
+                      ? `${job.verified_count || 0} тов.`
                       : job.mode === 'price_monitoring'
                       ? `${job.verified_count || 0} поз.`
                       : `${supplierCountLabel(job)} пост.`}
                   </span>
+
+                  {selection && Boolean(selection.items?.length) && (
+                    <span className="meta-item">
+                      Распознано: {selection.items?.length || 0} · Подтверждено: {selection.confirmed ? (selection.selected_ids?.length || 0) : 0}
+                    </span>
+                  )}
+                  {awaitingSelection && job.confirmation_expires_at && <span className="meta-item">Подтвердить до: {formatDate(job.confirmation_expires_at)}</span>}
+                  {job.delivery_city && <span className="meta-item">📍 {job.delivery_city}{job.geo_radius_km ? ` · ${job.geo_radius_km} км` : ''}</span>}
+                  {job.geo_scope && job.geo_scope !== 'ru' && (
+                    <span className="meta-item" style={{ color: '#4f46e5', fontWeight: 600 }}>
+                      {job.geo_scope === 'cis' ? 'СНГ' : 'Весь мир'}
+                    </span>
+                  )}
 
                   {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) ? (
                     <>
@@ -4529,12 +4763,48 @@ function JobsView({
                 {/* Supplement button */}
                 <button
                   type="button"
-                  className={`icon-button small ${job.has_admin_supplement ? 'accent-active' : ''}`}
-                  style={job.has_admin_supplement ? { color: '#0d9488', borderColor: '#99f6e4', background: '#f0fdfa' } : undefined}
+                  className={`icon-button small ${job.unread_client_messages_count ? 'danger-badge' : job.has_admin_supplement ? 'accent-active' : ''}`}
+                  style={{
+                    position: 'relative',
+                    ...(job.unread_client_messages_count
+                      ? { color: '#dc2626', borderColor: '#fca5a5', background: '#fef2f2' }
+                      : job.has_admin_supplement
+                      ? { color: '#0d9488', borderColor: '#99f6e4', background: '#f0fdfa' }
+                      : undefined),
+                  }}
                   onClick={() => setSupplementModalJob(job)}
-                  title={job.has_admin_supplement ? 'Редактировать дополнение эксперта' : 'Дополнить отчет / отправить клиенту'}
+                  title={
+                    job.unread_client_messages_count
+                      ? `Новые сообщения от клиента (${job.unread_client_messages_count})`
+                      : job.has_admin_supplement
+                      ? 'Чат и дополнение эксперта'
+                      : 'Дополнить отчет / написать клиенту'
+                  }
                 >
                   <MessageSquarePlus size={13} />
+                  {Boolean(job.unread_client_messages_count) && (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        top: -5,
+                        right: -5,
+                        background: '#ef4444',
+                        color: '#fff',
+                        borderRadius: '50%',
+                        fontSize: 9,
+                        fontWeight: 700,
+                        width: 15,
+                        height: 15,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        lineHeight: 1,
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+                      }}
+                    >
+                      {job.unread_client_messages_count}
+                    </span>
+                  )}
                 </button>
 
                 {/* Admin Rerun button */}
@@ -4542,15 +4812,11 @@ function JobsView({
                   type="button"
                   className={`icon-button small ${job.admin_rerun?.status === 'completed' ? 'has-rerun' : ''}`}
                   style={job.admin_rerun?.status === 'completed' ? { color: '#047857', borderColor: '#a7f3d0', background: '#ecfdf5' } : undefined}
-                  disabled={job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'}
+                  disabled={needsAdminSelection(job) || expertActive}
                   onClick={() => void adminRerun(job)}
-                  title={
-                    job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'
-                      ? `Идет экспертный перерасчет (${job.admin_rerun.progress}%)...`
-                      : job.admin_rerun?.status === 'completed'
-                      ? `Повторный экспертный перерасчет (уже есть итог: ${job.admin_rerun.verified_count || 0} пост.)`
-                      : 'Экспертный перезапуск администратора'
-                  }
+                  title={expertActive ? 'Экспертная задача уже активна; продолжите её в карточке'
+                    : needsAdminSelection(job) ? 'Сначала подтвердите позиции в карточке задачи'
+                    : 'Новый экспертный поиск без списания с клиента'}
                 >
                   {job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running' ? (
                     <Loader2 size={13} className="spin" />
@@ -4562,6 +4828,27 @@ function JobsView({
                 </button>
               </div>
             </div>
+
+            {(awaitingSelection || expiredSelection) && selection && Boolean(selection.items?.length) && !expertActive && (
+              <AdminExactSelection key={`${job.id}:${selection.revision}`} jobId={job.id} selection={selection}
+                mode={job.mode} multiItemMode={job.multi_item_mode} reissue={expiredSelection}
+                geography={job.delivery_city ? `${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''}` : ''} onChange={() => onChange(job.id)} />
+            )}
+            {job.admin_rerun && (selectionWaitingStatuses.includes(job.admin_rerun.status) ||
+              (job.admin_rerun.status === 'awaiting_customer_confirmation' && job.admin_rerun.confirmation_kind === 'multi_item_strategy')) &&
+              Boolean(jobSelection(job.admin_rerun)?.items?.length) && (
+              <AdminExactSelection key={`${job.admin_rerun.id}:${jobSelection(job.admin_rerun)!.revision}`} jobId={job.admin_rerun.id}
+                selection={jobSelection(job.admin_rerun)!} mode={job.admin_rerun.mode || job.mode} multiItemMode={job.admin_rerun.multi_item_mode}
+                internal onChange={() => onChange(job.id)} />
+            )}
+
+            {reruns.length > 0 && <details style={{ marginTop: 8, fontSize: 12 }}>
+              <summary>Экспертные поиски: {reruns.length} · последний: {humanStatus(reruns[0].status)}</summary>
+              {reruns.slice(0, 5).map(rerun => <div key={rerun.id} style={{ marginTop: 4 }}>
+                #{rerun.job_number || rerun.id} · {humanStatus(rerun.status)} · {rerun.message || 'Нет описания'}
+              </div>)}
+              {reruns.length > 5 && <div>Ещё: {reruns.length - 5}. Готовые файлы доступны в списке отчётов.</div>}
+            </details>}
 
             {job.admin_rerun && (job.admin_rerun.status === 'pending' || job.admin_rerun.status === 'running') && (
               <div className="job-progress-compact" style={{ marginTop: 6, padding: '6px 10px', background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}>
@@ -4608,11 +4895,74 @@ function JobsView({
         <AdminSupplementModal
           job={supplementModalJob}
           onClose={() => setSupplementModalJob(null)}
-          onSuccess={onChange}
+          onSuccess={() => onChange(supplementModalJob.id)}
         />
       )}
     </section>
   )
+}
+
+function AdminExactSelection({ jobId, selection, mode, multiItemMode, reissue = false, internal = false, geography = '', onChange }: {
+  jobId: string; selection: ExactSelection; mode?: string; multiItemMode?: string; reissue?: boolean; internal?: boolean; geography?: string; onChange: () => Promise<void>
+}) {
+  const [selected, setSelected] = useState<string[]>(selection.selected_ids || [])
+  const [strategy, setStrategy] = useState(multiItemMode || 'balanced')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const maximum = selection.max_positions || (selection.pricing_mode === 'per_position' ? (selection.items?.length || 100) : 5)
+  const monitoring = mode === 'price_monitoring' || selection.pricing_mode === 'per_found_position'
+  const supplier = ['supplier_search', 'analysis_and_suppliers'].includes(mode || selection.mode || '')
+  const balanced = supplier && strategy === 'balanced'
+  const effectiveIds = selected
+  const noCharge = reissue || internal
+  const billing = noCharge ? 'Экспертная задача без списания с клиента. Результат не отправляется автоматически.'
+    : supplier ? 'Продолжение исходной задачи по тарифу клиента. Попозиционный режим может потребовать дополнительный резерв за позиции.'
+    : monitoring ? `За найденную позицию: ${formatMoney(selection.price_kopeks)}. Максимальный резерв: ${formatMoney(selection.price_kopeks * selected.length)}.`
+    : selection.pricing_mode === 'per_position' ? `За выбранную позицию: ${formatMoney(selection.price_kopeks)}. Итого: ${formatMoney(selection.price_kopeks * selected.length)}.`
+    : `Стоимость исходной задачи: ${formatMoney(selection.price_kopeks)} за выбор до ${maximum} товаров.`
+  async function confirm() {
+    if (!effectiveIds.length || effectiveIds.length > maximum || busy) return
+    if (!window.confirm(`${reissue ? 'Создать новую экспертную задачу' : 'Подтвердить продолжение задачи'}?\n\nПозиций: ${effectiveIds.length}. ${supplier ? `Стратегия: ${balanced ? 'сбалансированная' : 'попозиционная'}. ` : ''}${geography ? `География: ${geography}. ` : ''}\n${billing}\n\n${selection.items.filter(row => effectiveIds.includes(row.id)).map(row => `${row.position_no}. ${row.name}`).join('\n')}`)) return
+    setBusy(true)
+    setError('')
+    try {
+      if (supplier && !reissue) {
+        const query = new URLSearchParams({ multi_item_mode: strategy, revision: selection.revision })
+        selected.forEach(id => query.append('selected_item_ids', id))
+        await api(`/api/jobs/${jobId}/choose-strategy?${query}`, { method: 'POST' })
+      } else {
+        await api(`/api/jobs/${jobId}/${reissue ? 'admin-rerun' : monitoring ? 'position-selection' : 'exact-selection'}${supplier ? `?multi_item_mode=${strategy}` : ''}`, {
+          method: 'POST', body: JSON.stringify({ revision: selection.revision, selected_item_ids: effectiveIds }),
+        })
+      }
+      await onChange()
+    } catch (err) {
+      setError(formatError(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <section aria-label={supplier ? 'Выбор позиций и стратегии поставщиков' : monitoring ? 'Выбор позиций для мониторинга' : 'Выбор товаров для подбора'} style={{ border: '1px solid #a7c9bd', borderRadius: 10, padding: 14, marginTop: 12, minWidth: 0 }}>
+    <strong>{reissue ? 'Срок подтверждения истёк. Выберите позиции для новой экспертной задачи' : supplier ? 'Подтвердите позиции и стратегию поиска поставщиков' : monitoring ? 'Выберите позиции для мониторинга цен' : selection.pricing_mode === 'per_position' ? 'Выберите позиции для подбора модели и аналогов' : `Выберите до ${maximum} товаров для подбора`}</strong>
+    <p>Выбрано: {effectiveIds.length} из {maximum}. {billing}</p>
+    {supplier && <label style={{ display: 'block', marginBottom: 10 }}>Стратегия поиска поставщиков{' '}
+      <select aria-label="Стратегия поиска поставщиков" value={strategy} disabled={busy} onChange={event => setStrategy(event.target.value)}>
+        <option value="balanced">Сбалансированный — единая квота по отмеченным позициям</option>
+        <option value="per_item">Попозиционный — независимый поиск по отмеченным позициям</option>
+      </select>
+    </label>}
+    <div style={{ maxHeight: 280, overflowY: 'auto', display: 'grid', gap: 10, marginBottom: 12 }}>
+      {selection.items.map(row => <label key={row.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', overflowWrap: 'anywhere' }}>
+        <input type="checkbox" checked={effectiveIds.includes(row.id)} disabled={busy || (!selected.includes(row.id) && selected.length >= maximum)}
+          onChange={() => setSelected(current => current.includes(row.id) ? current.filter(id => id !== row.id) : [...current, row.id])} />
+        <span>{row.position_no}. {row.name}</span>
+      </label>)}
+    </div>
+    {error && <p role="alert">{error}</p>}
+    <button type="button" disabled={busy || !effectiveIds.length || effectiveIds.length > maximum} onClick={() => void confirm()}>
+      {busy ? 'Подтверждаем…' : reissue ? 'Создать экспертный поиск с выбранными позициями' : supplier ? 'Подтвердить позиции и стратегию' : monitoring ? 'Подтвердить позиции для мониторинга' : 'Подтвердить выбор товаров'}
+    </button>
+  </section>
 }
 
 function cleanItemNameForComment(rawTitle: string): string {
@@ -4654,6 +5004,19 @@ type SupplementCandidate = {
   created_at?: string | null
 }
 
+type OfferPreview = {
+  client_id?: string
+  client_name?: string
+  client_balance_rub?: number
+  prior_verified_count?: number
+  new_verified_count?: number
+  delta_units?: number
+  unit_price_rub?: number
+  charge_amount_rub?: number
+  can_afford?: boolean
+  default_offer_comment?: string
+}
+
 function AdminSupplementModal({
   job,
   onClose,
@@ -4663,15 +5026,48 @@ function AdminSupplementModal({
   onClose: () => void
   onSuccess: () => Promise<void>
 }) {
+  const rawTg = String(job.created_by_telegram_id || '').trim()
+  const isWebClient = !rawTg || rawTg.startsWith('web:') || !/^-?\d+$/.test(rawTg)
   const [comment, setComment] = useState(() => defaultAdminComment(job))
   const [candidates, setCandidates] = useState<SupplementCandidate[]>([])
   const [loadingCandidates, setLoadingCandidates] = useState(true)
+  const [offerPreview, setOfferPreview] = useState<OfferPreview | null>(null)
+  const [asOffer, setAsOffer] = useState(true)
+  const [offerChargeRub, setOfferChargeRub] = useState<number | ''>('')
+  const [chatMessages, setChatMessages] = useState<any[]>([])
+  const [loadingChat, setLoadingChat] = useState(true)
   const [sourceMode, setSourceMode] = useState<'job_file' | 'upload'>('job_file')
   const [selectedJobFileKinds, setSelectedJobFileKinds] = useState<string[]>([])
   const [files, setFiles] = useState<File[]>([])
-  const [notifyTelegram, setNotifyTelegram] = useState(true)
+  const [notifyTelegram, setNotifyTelegram] = useState(() => !isWebClient)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    async function loadChat() {
+      try {
+        const token = localStorage.getItem('tenderlex_admin_token') || sessionStorage.getItem('tenderlex_admin_token') || ''
+        const res = await fetch(`/api/jobs/${job.id}/chat`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (active && Array.isArray(data.messages)) {
+            setChatMessages(data.messages)
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load job chat in modal:', err)
+      } finally {
+        if (active) setLoadingChat(false)
+      }
+    }
+    loadChat()
+    return () => {
+      active = false
+    }
+  }, [job.id])
 
   useEffect(() => {
     let active = true
@@ -4683,7 +5079,7 @@ function AdminSupplementModal({
         })
         if (res.ok) {
           const data = await res.json()
-          if (active && data.candidates && Array.isArray(data.candidates)) {
+          if (data && active && data.candidates && Array.isArray(data.candidates)) {
             const list: SupplementCandidate[] = data.candidates
             setCandidates(list)
             if (list.length > 0) {
@@ -4696,6 +5092,14 @@ function AdminSupplementModal({
               setSourceMode('job_file')
             } else {
               setSourceMode('upload')
+            }
+          }
+          if (data && active && data.offer_preview) {
+            const prev = data.offer_preview as OfferPreview
+            setOfferPreview(prev)
+            setOfferChargeRub(prev.charge_amount_rub ?? 0)
+            if (prev.default_offer_comment && !job.admin_comment) {
+              setComment(prev.default_offer_comment)
             }
           }
         }
@@ -4745,6 +5149,10 @@ function AdminSupplementModal({
       }
       formData.append('comment', comment.trim())
       formData.append('notify_telegram', String(notifyTelegram))
+      formData.append('as_offer', String(asOffer))
+      if (offerChargeRub !== '') {
+        formData.append('offer_charge_rub', String(offerChargeRub))
+      }
 
       const token = localStorage.getItem('tenderlex_admin_token') || sessionStorage.getItem('tenderlex_admin_token') || ''
       const res = await fetch(`/api/jobs/${job.id}/admin-supplement`, {
@@ -4769,7 +5177,7 @@ function AdminSupplementModal({
     <div className="server-modal-backdrop" onClick={onClose}>
       <div className="server-modal-card supplement-modal" style={{ maxWidth: 640 }} onClick={e => e.stopPropagation()}>
         <div className="server-modal-header">
-          <h3>ДОПОЛНИТЬ ОТЧЕТ ЭКСПЕРТОМ</h3>
+          <h3>ДОПОЛНИТЬ ОТЧЁТ: КОММЕНТАРИЙ И ФАЙЛЫ</h3>
           <button className="server-modal-close" onClick={onClose} title="Закрыть">
             <X size={16} />
           </button>
@@ -4777,16 +5185,143 @@ function AdminSupplementModal({
 
         <form onSubmit={handleSubmit} className="supplement-modal-form">
           <div className="supplement-modal-scroll-body">
+            <p style={{ fontSize: 12, margin: 0, color: '#475569' }}>
+              Прикрепите комментарий эксперта и готовые файлы. Они сразу станут доступны клиенту в его личном кабинете на сайте.
+            </p>
             <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', fontSize: 12 }}>
               <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: 2 }}>
                 {job.job_number ? `[#${job.job_number}] ` : ''}{job.human_title || job.title}
               </div>
-              <div style={{ color: '#64748b', fontSize: 11 }}>
-                Клиент: {job.client_name || 'Не указан'} {job.created_by_telegram_id ? `· TG ID: ${job.created_by_telegram_id}` : ''}
+              <div style={{ color: '#64748b', fontSize: 11, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span>Клиент: <strong>{job.client_name || 'Не указан'}</strong></span>
+                <span>·</span>
+                {isWebClient ? (
+                  <span style={{ color: '#0d9488', fontWeight: 600 }}>🌐 Личный кабинет на сайте</span>
+                ) : (
+                  <span style={{ color: '#0284c7' }}>✈️ Telegram ID: <code>{rawTg}</code></span>
+                )}
               </div>
               {job.admin_supplement_name && (
                 <div style={{ marginTop: 4, fontSize: 11, color: '#0f766e', fontWeight: 600 }}>
                   ✨ Текущий прикрепленный отчет: {job.admin_supplement_name}
+                </div>
+              )}
+            </div>
+
+            {offerPreview && (
+              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#166534', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span>💡</span>
+                    <span>Согласование и доплата за пересчитанный отчёт</span>
+                  </span>
+                  <span style={{ fontSize: 11, color: '#15803d', fontWeight: 600 }}>
+                    Баланс клиента: {offerPreview.client_balance_rub ?? 0} ₽
+                  </span>
+                </div>
+                <div style={{ fontSize: 11.5, color: '#166534', lineHeight: 1.5, marginBottom: 8 }}>
+                  Найдено позиций: <strong>{offerPreview.new_verified_count}</strong> (ранее оплачено {offerPreview.prior_verified_count}).
+                  {offerPreview.delta_units ? ` Дополнительно: +${offerPreview.delta_units} поз. × ${offerPreview.unit_price_rub} ₽ = ` : ' '}
+                  <strong style={{ fontSize: 13, color: '#0f766e' }}>{offerPreview.charge_amount_rub} ₽</strong>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6, borderTop: '1px solid #dcfce7' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="as_offer_toggle"
+                      checked={asOffer}
+                      onChange={() => setAsOffer(true)}
+                    />
+                    <span>Отправить клиенту как предложение на согласование (со списанием {offerPreview.charge_amount_rub} ₽ только после согласия)</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 500, color: '#475569', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="as_offer_toggle"
+                      checked={!asOffer}
+                      onChange={() => setAsOffer(false)}
+                    />
+                    <span>Опубликовать сразу (списать {offerPreview.charge_amount_rub} ₽ без согласования)</span>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {/* Chat History Thread */}
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <MessageSquare size={14} color="#0d9488" />
+                  <span>История переписки по задаче ({chatMessages.length})</span>
+                </span>
+                {loadingChat && <Loader2 size={12} className="spin" color="#64748b" />}
+              </div>
+
+              {loadingChat ? (
+                <div style={{ fontSize: 11, color: '#94a3b8', padding: '6px 0' }}>Загрузка истории переписки...</div>
+              ) : chatMessages.length === 0 ? (
+                <div style={{ fontSize: 11, color: '#64748b', fontStyle: 'italic' }}>
+                  Переписка по задаче ещё не велась. Ваше сообщение будет первым в истории.
+                </div>
+              ) : (
+                <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingRight: 4 }}>
+                  {chatMessages.map((m, idx) => {
+                    const isAdmin = m.sender_role === 'admin'
+                    return (
+                      <div
+                        key={m.id || idx}
+                        style={{
+                          background: isAdmin ? '#f0fdfa' : '#fff',
+                          border: isAdmin ? '1px solid #99f6e4' : '1px solid #e2e8f0',
+                          borderRadius: 6,
+                          padding: '6px 8px',
+                          fontSize: 11.5,
+                          maxWidth: '92%',
+                          alignSelf: isAdmin ? 'flex-end' : 'flex-start',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2, fontSize: 10, color: '#64748b' }}>
+                          <strong style={{ color: isAdmin ? '#0d9488' : '#1e293b' }}>
+                            {isAdmin ? 'Вы (Эксперт)' : 'Клиент'}
+                          </strong>
+                          <span>·</span>
+                          <span>{formatDate(m.created_at)}</span>
+                        </div>
+                        <div style={{ whiteSpace: 'pre-wrap', color: '#1e293b', lineHeight: 1.4 }}>
+                          {m.message}
+                        </div>
+                        {m.attachments && m.attachments.length > 0 && (
+                          <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                            {m.attachments.map((att: any) => (
+                              <a
+                                key={att.index}
+                                href={att.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                download
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  background: isAdmin ? '#ccfbf1' : '#f1f5f9',
+                                  color: isAdmin ? '#0f766e' : '#334155',
+                                  fontSize: 10.5,
+                                  padding: '2px 6px',
+                                  borderRadius: 4,
+                                  textDecoration: 'none',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                <Download size={10} />
+                                <span>{att.name}</span>
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -4965,14 +5500,21 @@ function AdminSupplementModal({
               </small>
             </div>
 
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={notifyTelegram}
-                onChange={e => setNotifyTelegram(e.target.checked)}
-              />
-              <span>Отправить уведомление и файл в Telegram бот клиенту</span>
-            </label>
+            {isWebClient ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#0f766e', background: '#f0fdfa', border: '1px solid #99f6e4', padding: '6px 10px', borderRadius: 6 }}>
+                <span>🌐</span>
+                <span>Клиент работает через <strong>веб-кабинет</strong>. Отчёт и комментарий сразу отобразятся на карточке задачи.</span>
+              </div>
+            ) : (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={notifyTelegram}
+                  onChange={e => setNotifyTelegram(e.target.checked)}
+                />
+                <span>Продублировать уведомление и файлы в Telegram-бот клиенту</span>
+              </label>
+            )}
 
             {error && (
               <div style={{ color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', padding: '6px 10px', borderRadius: 6, fontSize: 12 }}>
@@ -4987,7 +5529,17 @@ function AdminSupplementModal({
             </button>
             <button type="submit" className="primary" disabled={loading} style={{ background: '#0d9488', borderColor: '#0d9488', fontSize: 12, padding: '6px 16px' }}>
               {loading ? <Loader2 size={13} className="spin" /> : <Send size={13} />}
-              <span>{loading ? 'Отправка...' : 'Отправить клиенту'}</span>
+              <span>
+                {loading
+                  ? 'Сохранение...'
+                  : asOffer && (offerPreview?.charge_amount_rub ?? 0) > 0
+                  ? `Отправить предложение клиенту (${offerPreview?.charge_amount_rub} ₽)`
+                  : isWebClient
+                  ? 'Опубликовать в личном кабинете'
+                  : notifyTelegram
+                  ? 'Опубликовать в кабинете и отправить в Telegram'
+                  : 'Опубликовать в личном кабинете'}
+              </span>
             </button>
           </div>
         </form>
@@ -5532,19 +6084,29 @@ function SettingsView({
   const [adapterKey, setAdapterKey] = useState('')
   const [yandexKey, setYandexKey] = useState('')
   const [googleKey, setGoogleKey] = useState('')
+  const [yookassaSecretKey, setYookassaSecretKey] = useState('')
+  const [testingYookassa, setTestingYookassa] = useState(false)
+  const [yookassaTestResult, setYookassaTestResult] = useState('')
   const searchUi = draft.supplier_search_ui
   useEffect(() => setDraft(settings), [settings])
   useEffect(() => {
-    void api<{ supplier_search_adapter_api_key?: string; yandex_search_api_key?: string; google_search_api_key?: string }>('/api/settings/keys')
+    void api<{
+      supplier_search_adapter_api_key?: string
+      yandex_search_api_key?: string
+      google_search_api_key?: string
+      yookassa_secret_key?: string
+    }>('/api/settings/keys')
       .then(data => {
         setAdapterKey(data.supplier_search_adapter_api_key || '')
         setYandexKey(data.yandex_search_api_key || '')
         setGoogleKey(data.google_search_api_key || '')
+        setYookassaSecretKey(data.yookassa_secret_key || '')
       })
       .catch(() => {
         setAdapterKey('')
         setYandexKey('')
         setGoogleKey('')
+        setYookassaSecretKey('')
       })
   }, [])
   async function save() {
@@ -5553,6 +6115,7 @@ function SettingsView({
       supplier_search_adapter_api_key: adapterKey,
       yandex_search_api_key: yandexKey,
       google_search_api_key: googleKey,
+      yookassa_secret_key: yookassaSecretKey || undefined,
       supplier_search_provider_order: draft.supplier_search_provider_order || 'yandex',
     }
     await api('/api/settings', {
@@ -5575,6 +6138,80 @@ function SettingsView({
         </div>
         <p className="field-help">Telegram — основной контакт. MAX-кнопка работает только по ссылке.</p>
         <TextArea className="payment-textarea" label="Инструкция для пополнения" value={draft.payment_instructions} onChange={value => setDraft({ ...draft, payment_instructions: value })} />
+      </div>
+      <div className="form-panel full">
+        <h2>Приём онлайн-платежей (ЮKassa)</h2>
+        <div className="settings-grid compact-grid">
+          <label className="field">
+            <span>Провайдер платежей</span>
+            <select
+              value={draft.payment_provider || 'manual'}
+              onChange={e => setDraft({ ...draft, payment_provider: e.target.value })}
+            >
+              <option value="manual">Только ручной перевод (Telegram)</option>
+              <option value="yookassa">ЮKassa (Банковские карты, СБП, SberPay)</option>
+            </select>
+          </label>
+          <TextField
+            label="Shop ID ЮKassa"
+            value={draft.yookassa_shop_id || ''}
+            onChange={value => setDraft({ ...draft, yookassa_shop_id: value })}
+          />
+          <SecretField
+            label={`Секретный ключ API${draft.yookassa_secret_key_set ? ' (задан)' : ''}`}
+            value={yookassaSecretKey}
+            onChange={setYookassaSecretKey}
+          />
+          <TextField
+            label="URL возврата после оплаты"
+            value={draft.yookassa_return_url || ''}
+            onChange={value => setDraft({ ...draft, yookassa_return_url: value })}
+          />
+        </div>
+        <div style={{ marginTop: '0.75rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+          <label className="switch-row" style={{ margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={draft.yookassa_send_receipt || false}
+              onChange={e => setDraft({ ...draft, yookassa_send_receipt: e.target.checked })}
+            />
+            Передавать состав чека 54-ФЗ в ЮKassa (если подключена облачная касса/Чеки от ЮKassa)
+          </label>
+          <button
+            type="button"
+            className="secondary-btn"
+            style={{ padding: '0.4rem 0.8rem', fontSize: '12px' }}
+            onClick={async () => {
+              setTestingYookassa(true)
+              setYookassaTestResult('')
+              try {
+                const res = await api<{ success: boolean; message: string }>('/api/admin/yookassa/test', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    shop_id: draft.yookassa_shop_id,
+                    secret_key: yookassaSecretKey || undefined,
+                  }),
+                })
+                setYookassaTestResult(res.message)
+              } catch (err: any) {
+                setYookassaTestResult(err.message || 'Ошибка проверки')
+              } finally {
+                setTestingYookassa(false)
+              }
+            }}
+            disabled={testingYookassa}
+          >
+            {testingYookassa ? 'Проверка...' : 'Проверить подключение'}
+          </button>
+          {yookassaTestResult && (
+            <span style={{ fontSize: '12px', fontWeight: 600, color: yookassaTestResult.includes('успешно') ? '#059669' : '#dc2626' }}>
+              {yookassaTestResult}
+            </span>
+          )}
+        </div>
+        <p className="field-help" style={{ marginTop: '0.5rem' }}>
+          Webhook URL для ЮKassa: <code style={{ userSelect: 'all', fontWeight: 600 }}>https://tenderlex.ru/api/payments/yookassa/webhook</code>
+        </p>
       </div>
       <div className="form-panel">
         <h2>Бот и хранение</h2>

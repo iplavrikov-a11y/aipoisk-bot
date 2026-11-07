@@ -30,7 +30,9 @@ class DatabaseConfigTests(unittest.TestCase):
             db._sqlite_connect_args("sqlite:////tmp/app.db"),
             {"check_same_thread": False, "timeout": 30.0},
         )
-        self.assertEqual(db._sqlite_connect_args("postgresql://example"), {})
+        pg_args = db._sqlite_connect_args("postgresql://example")
+        self.assertEqual(pg_args.get("keepalives"), 1)
+        self.assertEqual(pg_args.get("connect_timeout"), 10)
 
     def test_job_number_assigned_and_incremented(self) -> None:
         from app.models import Job

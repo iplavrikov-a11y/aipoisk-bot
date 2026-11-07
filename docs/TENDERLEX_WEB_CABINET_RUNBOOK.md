@@ -114,27 +114,32 @@ Operational notes:
 
 ## Password Recovery
 
-Customer path:
+Customer path (Self-Service via Email):
 
 1. Customer opens `/cabinet`.
 2. Clicks `Не помню пароль`.
-3. Enters the cabinet email.
-4. The request appears in the admin panel.
+3. Enters their registered cabinet email and clicks `Отправить ссылку для сброса`.
+4. The system sends an email with a secure single-use link: `https://tenderlex.ru/cabinet?reset_token=<token>`.
+5. Customer clicks the link in their email (valid for 2 hours).
+6. The cabinet automatically opens the `Установка нового пароля` screen.
+7. Customer enters and confirms a new password (min. 8 characters).
+8. On submission, the backend consumes the token, updates the password, terminates old sessions, creates a new authenticated session, and automatically logs the customer into their cabinet.
 
-Admin path:
+Admin fallback path (Manual Support):
 
 1. Open `Клиенты`.
 2. Check the `Восстановление доступа` block.
 3. Click `Сбросить пароль`.
 4. Copy the temporary password shown in the admin panel.
 5. Send the temporary password to the customer through the verified support channel.
-6. Ask the customer to sign in and change access later when self-service password change is added.
+6. Ask the customer to sign in and change password or use self-service recovery.
 
 Security notes:
 
-- The public reset request does not say whether an email exists.
-- Old website sessions are revoked after admin password reset.
-- Temporary password is shown only in the admin response and should not be stored in notes.
+- The public reset request endpoint does not leak whether an email exists.
+- Reset tokens are cryptographically random (`secrets.token_urlsafe(32)`), stored as SHA-256 hashes in the database, valid for 2 hours, and single-use (`is_used=True`).
+- All prior website sessions for the user are immediately revoked upon password update.
+- Temporary passwords generated from the admin panel are shown only once in the admin response and are not stored in logs.
 
 ## Product Scenario Check
 

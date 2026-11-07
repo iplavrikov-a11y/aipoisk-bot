@@ -28,9 +28,9 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: { absolute: "B2B API TenderLex: поиск поставщиков, подбор аналогов и анализ закупок" },
+  title: { absolute: "B2B API TenderLex: поставщики и аналоги" },
   description:
-    "Программный REST API и MCP-протокол TenderLex для интеграции с 1С:Предприятие, ERP и CRM. Автоматический поиск прямых поставщиков, подбор аналогов по ТЗ и аудит контрактов по 44-ФЗ и 223-ФЗ.",
+    "REST API и MCP-интеграция TenderLex для 1С:Предприятие, ERP и CRM: запуск поиска поставщиков, подбора товара и аналогов и анализа закупочной документации.",
   keywords: [
     "api поиска поставщиков",
     "api закупки 44 фз",
@@ -50,7 +50,7 @@ export const metadata: Metadata = {
     url: "/api-integracii",
     title: "B2B API TenderLex: интеграция с 1C, ERP и CRM",
     description:
-      "Программный доступ к алгоритмам поиска производителей, подбора аналогов по ТЗ и проверки документации. Единый баланс без абонентской платы.",
+      "Программный доступ к функциям поиска поставщиков, подбора аналогов и анализа закупочной документации. Условия и баланс доступны в личном кабинете.",
     siteName: "TenderLex",
     images: [
       {
@@ -74,14 +74,18 @@ const pagePath = "/api-integracii";
 
 const faqItems: FaqItem[] = [
   {
+    question: "Можно ли передать файл и выбрать позиции перед запуском?",
+    answer: "Да. Очередь задач API принимает файлы и текст для поиска поставщиков, подбора товара, анализа документации и мониторинга цен. После разбора ТЗ можно проверить и выбрать позиции, запросить состояние, отменить задачу и скачать отчёт. Перед запуском ознакомьтесь с тарифами. Используйте Idempotency-Key, чтобы повтор запроса после потери связи не создавал новую задачу.",
+  },
+  {
     question: "Как начать работу с TenderLex API?",
     answer:
-      "Зарегистрируйтесь в личном кабинете tenderlex.ru и откройте раздел «API». Сгенерируйте персональный ключ доступа (формата tl_live_...). Сразу после создания ключ готов к использованию в REST-запросах или интеграциях с 1С.",
+      "Зарегистрируйтесь в личном кабинете tenderlex.ru, откройте раздел «API» и создайте персональный ключ. Перед использованием проверьте доступные методы, баланс и актуальные условия в кабинете.",
   },
   {
     question: "Как тарифицируются запросы к API?",
     answer:
-      "Оплата списывается с единого баланса вашего аккаунта за фактически выполненные задачи. Если по запросу поставщики не найдены или произошел сетевой сбой, средства не удерживаются. Для новых клиентов при регистрации начисляется приветственный баланс 495 ₽, достаточный для полноценного тестирования всех методов.",
+      "Задачи API учитываются по балансу аккаунта. Перед запуском проверьте актуальные тарифы и правила списания в личном кабинете: стоимость зависит от выбранной задачи и её результата.",
   },
   {
     question: "Можно ли встроить TenderLex напрямую в 1С:Предприятие?",
@@ -114,12 +118,6 @@ export default function ApiIntegrationsPage() {
     name: "TenderLex B2B API",
     applicationCategory: "BusinessApplication",
     operatingSystem: "All",
-    offers: {
-      "@type": "Offer",
-      price: "99.00",
-      priceCurrency: "RUB",
-      description: "Оплата за выполненный успешный запрос к платформе",
-    },
     description:
       "Программный REST API и протокол MCP для поиска производителей, сопоставления номенклатуры и аудита документации госзакупок.",
     provider: {
@@ -179,8 +177,8 @@ export default function ApiIntegrationsPage() {
 
               <p className="text-base sm:text-lg text-slate-300 leading-relaxed font-normal">
                 Встройте алгоритмы TenderLex в <strong>1С:Предприятие</strong>, корпоративную ERP или CRM.
-                Автоматический поиск прямых производителей, подбор аналогов по ТЗ и аудит контрактов
-                через быстрый REST API с оплатой за результат.
+                Поиск поставщиков, подбор товара и аналогов и анализ закупочной документации
+                через REST API. Для файлов и длительных проверок используйте очередь задач: загрузите ТЗ, проверьте распознанные позиции, выберите нужные и получите результат. Мониторинг цен и приоритет в радиусе доставки доступны с учётом прав аккаунта. Методы и условия показаны в личном кабинете.
               </p>
 
               <div className="flex flex-wrap items-center gap-3.5 pt-3">
@@ -191,6 +189,14 @@ export default function ApiIntegrationsPage() {
                   <Key size={16} />
                   <span>Получить API-ключ в кабинете</span>
                 </Link>
+
+                <a
+                  href="/api-client-guide.md"
+                  className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-200 text-sm font-bold border border-slate-700 transition-colors"
+                >
+                  <FileText size={15} />
+                  <span>Полное руководство API</span>
+                </a>
 
                 <a
                   href="#methods"
@@ -213,11 +219,11 @@ export default function ApiIntegrationsPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 size={15} className="text-teal-400 shrink-0" />
-                  <span>Списание только за результат</span>
+                  <span>Условия списания — в кабинете</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 size={15} className="text-teal-400 shrink-0" />
-                  <span>495 ₽ стартовый баланс</span>
+                  <span>Баланс и тарифы в аккаунте</span>
                 </div>
               </div>
             </div>
@@ -255,31 +261,31 @@ export default function ApiIntegrationsPage() {
                   </h3>
 
                   <p className="text-xs text-slate-600 leading-relaxed">
-                    Подбор проверенных производителей, заводов и оптовых поставщиков по тексту технического задания или номеру закупки.
+                    Поиск потенциальных производителей, заводов и поставщиков по тексту технического задания или номеру закупки.
                   </p>
 
                   <ul className="space-y-2 text-xs text-slate-600 pt-2 border-t border-slate-200">
                     <li className="flex items-start gap-1.5">
                       <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
-                      <span>Прямые контакты отделов сбыта (email, телефон, сайт)</span>
+                      <span>Доступные контакты компаний: email, телефон, сайт</span>
                     </li>
                     <li className="flex items-start gap-1.5">
                       <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
-                      <span>ИНН, регион и статус (завод, дилер, поставщик)</span>
+                      <span>ИНН, регион и заявленная роль компании для проверки</span>
                     </li>
                     <li className="flex items-start gap-1.5">
                       <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
-                      <span>Фильтрация по Реестру Минпромторга (ПП 616/719)</span>
+                      <span>Сведения для проверки по реестрам и условиям закупки</span>
                     </li>
                     <li className="flex items-start gap-1.5">
                       <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
-                      <span>Готовый текст официального запроса КП</span>
+                      <span>Проект запроса КП для проверки перед отправкой</span>
                     </li>
                   </ul>
                 </div>
 
                 <div className="pt-3 border-t border-slate-200 text-xs text-slate-500 flex items-center justify-between">
-                  <span>Тариф за запрос: <strong>от 75.80 до 99 ₽</strong></span>
+                  <span>Актуальные тарифы — в личном кабинете</span>
                 </div>
               </div>
 
@@ -300,7 +306,7 @@ export default function ApiIntegrationsPage() {
                   </h3>
 
                   <p className="text-xs text-slate-600 leading-relaxed">
-                    Глубокий анализ спецификации, определение скрытого оригинала производителя и сопоставление с подтвержденными эквивалентами.
+                    Сопоставление требований спецификации с доступными сведениями о товарах и кандидатах на замену.
                   </p>
 
                   <ul className="space-y-2 text-xs text-slate-600 pt-2 border-t border-slate-200">
@@ -314,17 +320,17 @@ export default function ApiIntegrationsPage() {
                     </li>
                     <li className="flex items-start gap-1.5">
                       <CheckCircle2 size={14} className="text-emerald-600 shrink-0 mt-0.5" />
-                      <span>Подбор 2–4 отечественных эквивалентов</span>
+                      <span>Кандидаты на замену с параметрами для проверки</span>
                     </li>
                     <li className="flex items-start gap-1.5">
                       <CheckCircle2 size={14} className="text-emerald-600 shrink-0 mt-0.5" />
-                      <span>Прямая ссылка на официальный отчет в Word (.docx)</span>
+                      <span>Ссылка на рабочий отчёт в Word (DOCX)</span>
                     </li>
                   </ul>
                 </div>
 
                 <div className="pt-3 border-t border-slate-200 text-xs text-slate-500 flex items-center justify-between">
-                  <span>Тариф за запрос: <strong>от 75.80 до 99 ₽</strong></span>
+                  <span>Актуальные тарифы — в личном кабинете</span>
                 </div>
               </div>
 
@@ -345,21 +351,21 @@ export default function ApiIntegrationsPage() {
                   </h3>
 
                   <p className="text-xs text-slate-600 leading-relaxed">
-                    Экспертный аудит проекта контракта и извещения по 44-ФЗ и 223-ФЗ. Оценка скрытых штрафов, асимметрии ответственности и рисков приемки.
+                    Структурирование условий извещения и проекта контракта, чтобы выделить сроки, обеспечение, штрафы и вопросы для проверки.
                   </p>
 
                   <ul className="space-y-2 text-xs text-slate-600 pt-2 border-t border-slate-200">
                     <li className="flex items-start gap-1.5">
                       <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
-                      <span>Проверка кабальных условий и завышенных штрафов</span>
+                      <span>Условия и штрафы, требующие отдельной проверки</span>
                     </li>
                     <li className="flex items-start gap-1.5">
                       <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
-                      <span>Аудит требований национального режима (ПП РФ № 1875)</span>
+                      <span>Вопросы по национальному режиму для сверки с извещением</span>
                     </li>
                     <li className="flex items-start gap-1.5">
                       <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
-                      <span>Оценка условий обеспечения и возврата гарантий</span>
+                      <span>Условия обеспечения и возврата гарантий для проверки</span>
                     </li>
                     <li className="flex items-start gap-1.5">
                       <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
@@ -369,7 +375,7 @@ export default function ApiIntegrationsPage() {
                 </div>
 
                 <div className="pt-3 border-t border-slate-200 text-xs text-slate-500 flex items-center justify-between">
-                  <span>Тариф за запрос: <strong>от 75.80 до 99 ₽</strong></span>
+                  <span>Актуальные тарифы — в личном кабинете</span>
                 </div>
               </div>
             </div>
@@ -475,8 +481,8 @@ export default function ApiIntegrationsPage() {
                 Прозрачные условия тарификации
               </h2>
               <p className="text-sm text-slate-600">
-                Никаких скрытых платежей, подписок или сгорающих пакетов.
-                Единый баланс для веб-кабинета, Telegram-бота и API.
+                Актуальные цены, баланс и правила списания доступны в личном кабинете перед запуском задачи.
+                Проверяйте их там перед подключением API.
               </p>
             </div>
 
@@ -486,10 +492,10 @@ export default function ApiIntegrationsPage() {
                   <ShieldCheck size={20} />
                 </div>
                 <h3 className="text-base font-bold text-slate-900">
-                  Двухфазный биллинг
+                  Учёт по балансу аккаунта
                 </h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Средства резервируются в начале запроса и окончательно списываются только после возврата проверенных результатов. Если поставщики не найдены или произошел сетевой сбой — резерв возвращается полностью.
+                  Перед запуском задача проверяет доступный баланс аккаунта. Правила списания зависят от типа задачи и доступны в личном кабинете.
                 </p>
               </div>
 
@@ -498,10 +504,10 @@ export default function ApiIntegrationsPage() {
                   <Key size={20} />
                 </div>
                 <h3 className="text-base font-bold text-slate-900">
-                  495 ₽ стартовый баланс
+                  Актуальные условия доступа
                 </h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  При регистрации каждый пользователь получает приветственный баланс 495 ₽ в личном кабинете. Этого достаточно, чтобы полноценно протестировать до 5 реальных запросов через API до оплаты.
+                  Условия регистрации, доступные методы и баланс отображаются в личном кабинете. Они могут меняться, поэтому не фиксируются на этой странице.
                 </p>
               </div>
 
@@ -510,10 +516,10 @@ export default function ApiIntegrationsPage() {
                   <Zap size={20} />
                 </div>
                 <h3 className="text-base font-bold text-slate-900">
-                  Без абонентской платы
+                  Единый доступ к каналам
                 </h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Пополняйте баланс на любую сумму. Средства на балансе не сгорают в конце месяца. Если вы временно не отправляете запросы к API, баланс сохраняется без каких-либо комиссий.
+                  Кабинет, Telegram-бот и API используют один аккаунт. Перед использованием каждого канала проверьте актуальные правила и доступность функции в кабинете.
                 </p>
               </div>
             </div>
@@ -560,7 +566,7 @@ export default function ApiIntegrationsPage() {
               Готовы автоматизировать поиск поставщиков и анализ ТЗ?
             </h2>
             <p className="text-sm sm:text-base text-slate-300 max-w-2xl mx-auto leading-relaxed">
-              Получите персональный API-ключ в личном кабинете TenderLex, используйте 495 ₽ приветственного баланса и подключите алгоритмы к вашей системе уже сегодня.
+              Создайте персональный API-ключ в личном кабинете, проверьте доступные методы и условия, затем подключите API к вашей системе.
             </p>
             <div className="pt-2">
               <Link

@@ -45,12 +45,15 @@ type ApiKeyItem = {
   allowed_supplier_search: boolean
   allowed_exact_product: boolean
   allowed_procurement_report: boolean
+  allowed_price_monitoring: boolean
   quota_supplier_search: number
   quota_exact_product: number
   quota_procurement_report: number
+  quota_price_monitoring: number
   spent_supplier_search: number
   spent_exact_product: number
   spent_procurement_report: number
+  spent_price_monitoring: number
   rate_limit_per_minute: number
   notes: string
   created_at: string
@@ -80,9 +83,11 @@ export function McpApiView({ clients }: { clients: Client[] }) {
     allowed_supplier_search: true,
     allowed_exact_product: true,
     allowed_procurement_report: true,
+    allowed_price_monitoring: false,
     quota_supplier_search: 20,
     quota_exact_product: 10,
     quota_procurement_report: 10,
+    quota_price_monitoring: 0,
     rate_limit_per_minute: 30,
     notes: '',
     expires_days: '',
@@ -152,9 +157,11 @@ export function McpApiView({ clients }: { clients: Client[] }) {
         allowed_supplier_search: createForm.allowed_supplier_search,
         allowed_exact_product: createForm.allowed_exact_product,
         allowed_procurement_report: createForm.allowed_procurement_report,
-        quota_supplier_search: 999999,
-        quota_exact_product: 999999,
-        quota_procurement_report: 999999,
+        allowed_price_monitoring: createForm.allowed_price_monitoring,
+        quota_supplier_search: Number(createForm.quota_supplier_search),
+        quota_exact_product: Number(createForm.quota_exact_product),
+        quota_procurement_report: Number(createForm.quota_procurement_report),
+        quota_price_monitoring: Number(createForm.quota_price_monitoring),
         rate_limit_per_minute: Number(createForm.rate_limit_per_minute) || 30,
         notes: createForm.notes.trim(),
         expires_days: createForm.expires_days ? Number(createForm.expires_days) : null,
@@ -172,9 +179,11 @@ export function McpApiView({ clients }: { clients: Client[] }) {
         allowed_supplier_search: true,
         allowed_exact_product: true,
         allowed_procurement_report: true,
-        quota_supplier_search: 999999,
-        quota_exact_product: 999999,
-        quota_procurement_report: 999999,
+        allowed_price_monitoring: false,
+        quota_supplier_search: 20,
+        quota_exact_product: 10,
+        quota_procurement_report: 10,
+        quota_price_monitoring: 0,
         rate_limit_per_minute: 30,
         notes: '',
         expires_days: '',
@@ -199,6 +208,17 @@ export function McpApiView({ clients }: { clients: Client[] }) {
       setShowRawKeyModal({ token: res.raw_api_key, name: keyItem.name })
     } catch (err: any) {
       alert(`Ошибка перегенерации: ${err.message}`)
+    }
+  }
+
+  async function handleCreateMasterKey() {
+    if (!window.confirm('Создать новый мастер-ключ? Его секрет будет показан только один раз.')) return
+    try {
+      const res = await fetchApi<{ ok: boolean; raw_api_key: string; item: ApiKeyItem }>('/api/admin/api-keys/master', { method: 'POST' })
+      await loadData()
+      setShowRawKeyModal({ token: res.raw_api_key, name: res.item.name })
+    } catch (err: any) {
+      alert(`Ошибка создания master-ключа: ${err.message}`)
     }
   }
 
@@ -237,9 +257,7 @@ export function McpApiView({ clients }: { clients: Client[] }) {
           allowed_supplier_search: editingKey.allowed_supplier_search,
           allowed_exact_product: editingKey.allowed_exact_product,
           allowed_procurement_report: editingKey.allowed_procurement_report,
-          quota_supplier_search: Number(editingKey.quota_supplier_search),
-          quota_exact_product: Number(editingKey.quota_exact_product),
-          quota_procurement_report: Number(editingKey.quota_procurement_report),
+          allowed_price_monitoring: editingKey.allowed_price_monitoring,
           rate_limit_per_minute: Number(editingKey.rate_limit_per_minute),
           notes: editingKey.notes,
         }),
@@ -323,6 +341,7 @@ Headers: Authorization: Bearer ${effectiveMasterToken}
   - specification: текст ТЗ или номенклатура
   - target_count: количество (от 1 до 50)
   - city: город/регион поставки (опционально)
+  - geo_radius_km: радиус приоритета поставщиков, 10–5000 км (требует city)
   - search_policy: 'normal' (рынок РФ) | 'minprom_registry_priority' (приоритет реестра Минпромторга / ГИСП) | 'minprom_registry_only' (строго только реестр Минпромторга РФ)
 - POST /api/v1/mcp/products/exact-analogs (Подбор товара и эквивалентных аналогов по Форме 2)
 - POST /api/v1/mcp/procurements/analyze (Экспресс-аудит проекта контракта и рисков 44-ФЗ/223-ФЗ)
@@ -338,6 +357,8 @@ headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/js
 resp = requests.post(f"{API_URL}/suppliers/search", headers=headers, json={
     "specification": "Насос центробежный К 80-50-200",
     "target_count": 5,
+    "city": "Казань",
+    "geo_radius_km": 300,
     "search_policy": "minprom_registry_priority"  # или 'minprom_registry_only' / 'normal'
 })
 print(resp.json())`
@@ -356,7 +377,7 @@ print(resp.json())`
                 <small>Полный безлимитный доступ ко всем модулям TenderLex</small>
               </div>
             </div>
-            {masterKeyInfo.item && (
+            {masterKeyInfo.item ? (
               <button
                 type="button"
                 className="mcp-mini-action-btn"
@@ -365,6 +386,11 @@ print(resp.json())`
               >
                 <RefreshCw size={13} />
                 <span>Обновить</span>
+              </button>
+            ) : (
+              <button type="button" className="mcp-mini-action-btn" onClick={handleCreateMasterKey}>
+                <Plus size={13} />
+                <span>Создать</span>
               </button>
             )}
           </div>
@@ -389,7 +415,7 @@ print(resp.json())`
                   {showTokenText ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
               )}
-              <button
+              {masterKeyInfo.raw_api_key && <button
                 type="button"
                 className="mcp-copy-btn"
                 onClick={() =>
@@ -408,7 +434,7 @@ print(resp.json())`
                     <Copy size={13} /> <span>Копировать</span>
                   </>
                 )}
-              </button>
+              </button>}
             </div>
           </div>
 
@@ -583,6 +609,11 @@ print(resp.json())`
                           {k.allowed_procurement_report && (
                             <span className="mcp-quota-badge audit">
                               📑 Анализ {k.spent_procurement_report > 0 ? `(${k.spent_procurement_report})` : ''}
+                            </span>
+                          )}
+                          {k.allowed_price_monitoring && (
+                            <span className="mcp-quota-badge audit">
+                              📈 Мониторинг {k.spent_price_monitoring > 0 ? `(${k.spent_price_monitoring})` : ''}
                             </span>
                           )}
                         </div>
@@ -843,7 +874,38 @@ print(resp.json())`
                   />
                   <span style={{ fontSize: 13, fontWeight: 500 }}>📑 Анализ документации</span>
                 </label>
+
+                <label className="mcp-checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={createForm.allowed_price_monitoring}
+                    onChange={e => setCreateForm({ ...createForm, allowed_price_monitoring: e.target.checked })}
+                  />
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>📈 Мониторинг цен</span>
+                </label>
               </div>
+
+              {!createForm.client_id && (
+                <div className="mcp-modal-2col">
+                  <label className="mcp-form-label">
+                    <span>Лимит поиска поставщиков:</span>
+                    <input type="number" min={0} max={1000} value={createForm.quota_supplier_search} onChange={e => setCreateForm({ ...createForm, quota_supplier_search: Number(e.target.value) })} />
+                  </label>
+                  <label className="mcp-form-label">
+                    <span>Лимит подбора аналогов:</span>
+                    <input type="number" min={0} max={1000} value={createForm.quota_exact_product} onChange={e => setCreateForm({ ...createForm, quota_exact_product: Number(e.target.value) })} />
+                  </label>
+                  <label className="mcp-form-label">
+                    <span>Лимит анализа документации:</span>
+                    <input type="number" min={0} max={1000} value={createForm.quota_procurement_report} onChange={e => setCreateForm({ ...createForm, quota_procurement_report: Number(e.target.value) })} />
+                  </label>
+                  <label className="mcp-form-label">
+                    <span>Лимит мониторинга цен:</span>
+                    <input type="number" min={0} max={1000} value={createForm.quota_price_monitoring} onChange={e => setCreateForm({ ...createForm, quota_price_monitoring: Number(e.target.value) })} />
+                  </label>
+                  <small style={{ gridColumn: '1 / -1', color: '#7c2d12' }}>Автономный ключ не списывает баланс клиента. Укажите ограниченный тестовый лимит и срок действия.</small>
+                </div>
+              )}
 
               <div className="mcp-modal-2col">
                 <label className="mcp-form-label">
@@ -860,7 +922,7 @@ print(resp.json())`
                   <span>Срок действия (дней):</span>
                   <input
                     type="number"
-                    placeholder="Бессрочно"
+                    placeholder={createForm.client_id ? "Бессрочно" : "30 дней по умолчанию"}
                     value={createForm.expires_days}
                     onChange={e => setCreateForm({ ...createForm, expires_days: e.target.value })}
                   />
@@ -983,6 +1045,18 @@ print(resp.json())`
                     <span style={{ fontSize: 13, fontWeight: 500 }}>📑 Анализ документации</span>
                   </div>
                   <small style={{ color: '#64748b' }}>Вызовов: <strong>{editingKey.spent_procurement_report}</strong></small>
+                </label>
+
+                <label className="mcp-checkbox-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 0', cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <input
+                      type="checkbox"
+                      checked={editingKey.allowed_price_monitoring}
+                      onChange={e => setEditingKey({ ...editingKey, allowed_price_monitoring: e.target.checked })}
+                    />
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>📈 Мониторинг цен</span>
+                  </div>
+                  <small style={{ color: '#64748b' }}>Вызовов: <strong>{editingKey.spent_price_monitoring}</strong></small>
                 </label>
               </div>
 

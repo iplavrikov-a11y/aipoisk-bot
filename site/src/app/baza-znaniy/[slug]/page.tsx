@@ -99,7 +99,7 @@ export default async function KnowledgeArticleDynamicPage({ params }: Props) {
     title: article.title,
     description: article.description,
     path: `/baza-znaniy/${article.slug}`,
-    datePublished: article.publishedDate,
+    datePublished: article.publishedDate || article.updatedDate || "2026-10-01",
     dateModified: article.updatedDate,
     category: article.categoryLabel,
   });

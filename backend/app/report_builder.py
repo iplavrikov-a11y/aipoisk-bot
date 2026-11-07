@@ -75,6 +75,7 @@ SUPPLIER_HEADERS = [
     "Телефоны",
     "Email",
     "Комментарий",
+    "Город и расстояние",
     "Реестр Минпромторга",
 ]
 SPREADSHEETML_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -415,8 +416,9 @@ def _populate_supplier_sheet(
         phone = clean_xml_compatible(str(row.get("phone") or "").strip())
         email = clean_xml_compatible(str(row.get("email") or "").strip())
         comment = clean_xml_compatible(_client_supplier_comment(row, is_multi_item=is_multi_item))
+        location_display = clean_xml_compatible(_format_supplier_location(row))
 
-        ws.append([company, site_display, phone, email, comment, reg_text])
+        ws.append([company, site_display, phone, email, comment, location_display, reg_text])
 
         # Col 1: Компания
         c1 = ws.cell(row=row_idx, column=1)
@@ -457,14 +459,22 @@ def _populate_supplier_sheet(
         c5.border = thin_border
         c5.alignment = Alignment(wrap_text=True, vertical="top")
 
-        # Col 6: Реестр Минпромторга
+        # Col 6: Город и расстояние
         c6 = ws.cell(row=row_idx, column=6)
-        c6.font = reg_font
-        c6.fill = reg_fill
+        loc_color = "065F46" if row.get("supplier_distance_within_radius") is True else ("991B1B" if row.get("supplier_distance_within_radius") is False else "475569")
+        c6.font = Font(name="Calibri", size=10, color=loc_color)
+        c6.fill = base_bg
         c6.border = thin_border
-        c6.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+        c6.alignment = Alignment(wrap_text=True, vertical="top")
 
-        ws.row_dimensions[row_idx].height = _calc_supplier_row_h([(company, 32), (comment, 60)], min_h=24)
+        # Col 7: Реестр Минпромторга
+        c7 = ws.cell(row=row_idx, column=7)
+        c7.font = reg_font
+        c7.fill = reg_fill
+        c7.border = thin_border
+        c7.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+
+        ws.row_dimensions[row_idx].height = _calc_supplier_row_h([(company, 32), (comment, 52), (location_display, 26)], min_h=24)
 
     if is_multi_item and sections:
         ws.sheet_properties.outlinePr.summaryBelow = False
@@ -509,7 +519,7 @@ def _populate_supplier_sheet(
         for row_idx, row in enumerate(rows, start=data_start_row):
             _render_row(row_idx, row, is_even=(row_idx % 2 == 0))
 
-    widths = [32, 35, 22, 26, 60, 26]
+    widths = [32, 35, 22, 26, 52, 26, 24]
     for column, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(column)].width = width
 
@@ -678,10 +688,13 @@ def write_supplier_xlsx(
         geo_subtitle = f"Локация / доставка: г. {clean_city} ({rad_info})"
         within_cnt = sum(1 for r in rows if r.get("supplier_distance_within_radius") is True)
         outside_cnt = sum(1 for r in rows if r.get("supplier_distance_within_radius") is False)
-        if geo_radius_km and outside_cnt > 0:
-            geo_summary = f" Логистический фильтр: приоритет поставщиков в радиусе до {geo_radius_km} км от г. {clean_city} (в радиусе: {within_cnt}, добор по РФ: {outside_cnt})."
-        elif geo_radius_km:
-            geo_summary = f" Логистический фильтр: отбор поставщиков в радиусе до {geo_radius_km} км от г. {clean_city}."
+        unknown_cnt = sum(1 for r in rows if r.get("supplier_distance_within_radius") is None)
+        if geo_radius_km:
+            geo_summary = (
+                f" Логистический фильтр: приоритет поставщиков в радиусе до {geo_radius_km} км от г. {clean_city} "
+                f"(в радиусе: {within_cnt}, расстояние не подтверждено: {unknown_cnt}, добор по РФ: {outside_cnt}). "
+                "Ближайшие поставщики идут первыми; варианты вне радиуса и с неизвестным расстоянием показаны отдельно."
+            )
         else:
             geo_summary = f" Логистический фильтр: г. {clean_city}."
 
@@ -788,21 +801,31 @@ def _is_registry_fallback_report(rows: list[dict]) -> bool:
     )
 
 
+def _format_supplier_location(row: dict) -> str:
+    city = str(row.get("supplier_city") or row.get("city") or "").strip()
+    if city:
+        city = city[0].upper() + city[1:]
+    country = str(row.get("supplier_country") or row.get("country") or "").strip()
+    dist = row.get("supplier_distance_km")
+    within = row.get("supplier_distance_within_radius")
+    country_note = f" [{country}]" if country and "россия" not in country.lower() else ""
+    if city and dist is not None:
+        note = " (вне радиуса)" if within is False else ""
+        return f"{city}{country_note} (~{dist} км){note}"
+    if city:
+        return f"{city}{country_note}"
+    if country and "россия" not in country.lower():
+        return f"[{country}]" if not country.startswith("[") else country
+    return "—"
+
+
+
 def _client_supplier_comment(row: dict, *, is_multi_item: bool = False) -> str:
     product_fit = str(row.get("product_fit") or "").strip().lower()
     item_name = _clean_comment_text(row.get("procurement_item") or "")
     product = _clean_comment_text(row.get("product") or item_name or "")
     raw_comment = _clean_comment_text(row.get("comments") or "").replace("ИИ", "Проверка").replace("AI", "Проверка")
     detail = _short_product_or_comment(product, raw_comment)
-    loc_part = ""
-    city = str(row.get("supplier_city") or row.get("city") or "").strip()
-    dist = row.get("supplier_distance_km")
-    if city and dist is not None:
-        loc_part = f"Локация: {city} (~{dist} км)."
-    elif city:
-        loc_part = f"Локация: {city}."
-    if loc_part:
-        detail = f"{detail} {loc_part}" if detail else loc_part
     if is_multi_item and item_name:
         detail = f"Позиция: {item_name} | {detail}" if detail else f"Позиция: {item_name}"
     registry_note = _supplier_registry_note(row)

@@ -23,7 +23,7 @@ export const metadata: Metadata = {
     type: "website",
     url: "/regiony/kazan",
     title: "Поиск заводов и поставщиков в Казани и Татарстане | TenderLex",
-    description: "Автоматизированный подбор контрагентов под спецификации закупки в Республике Татарстан и ПФО.",
+    description: "Поиск потенциальных поставщиков по спецификациям закупки в Республике Татарстан и ПФО.",
     siteName: "TenderLex",
     images: ["/tenderlex-product-preview.png"],
   },

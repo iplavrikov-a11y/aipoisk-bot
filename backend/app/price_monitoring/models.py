@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -19,6 +19,16 @@ class SupplierQuote:
     conversion_comment: str = ""        # Пояснение перерасчета (например, "2400 ₽ за баллон 50л -> 114.29 ₽/кг")
     comment: str = ""
     is_outlier: bool = False           # Флаг сильного расхождения цены
+    evidence_level: str = "unknown"   # "page_content", "search_snippet", "unknown"
+    retrieved_at: str = ""
+    source_excerpt: str = ""
+    supplier_city: str = ""
+    supplier_distance_km: Optional[int] = None
+    supplier_distance_radius_km: Optional[int] = None
+    supplier_distance_radius_status: str = ""
+    supplier_distance_within_radius: Optional[bool] = None
+    supplier_location_source: str = ""
+    supplier_location_confidence: str = "unknown"
 
 
 @dataclass
@@ -29,6 +39,17 @@ class ItemPriceResult:
     unit: str
     quotes: List[SupplierQuote] = field(default_factory=list)
     status: str = "pending"  # "found", "not_found", "error"
+    not_found_reason: str = ""
+    ai_reason: str = ""
+    search_diagnostics: Dict[str, Any] = field(default_factory=dict)
+    position_id: str = ""
+    source_position_no: Optional[int] = None
+    source_file: str = ""
+    source_sheet: str = ""
+    source_row: Optional[int] = None
+    source_excerpt: str = ""
+    quantity: str = ""
+    requirements: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def has_prices(self) -> bool:

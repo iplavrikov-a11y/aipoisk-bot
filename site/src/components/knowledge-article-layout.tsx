@@ -88,7 +88,7 @@ export async function KnowledgeArticleLayout({
         />
       )}
 
-      <main className="bg-[#f6f8f7] text-[#172120] min-h-screen font-sans">
+      <main className="tl-public tl-article-page bg-[#f6f8f7] text-[#172120] min-h-screen font-sans">
         <SiteHeader />
 
         {/* BREADCRUMB & HERO */}
@@ -453,6 +453,25 @@ export async function KnowledgeArticleLayout({
                     >
                       Или в Telegram
                     </a>
+                  </div>
+
+                  {/* SERVICE LINKS */}
+                  <div className="p-6 rounded-3xl bg-white border border-[#d8e3e1] shadow-2xs space-y-3">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-[#075b63]">
+                      Сервисы по теме
+                    </h4>
+                    <Link href="/poisk-postavshchikov-po-tz" className="block text-xs font-bold text-[#2f3f3d] hover:text-[#075b63] transition-colors">
+                      Поиск поставщиков по ТЗ
+                    </Link>
+                    <Link href="/podbor-tovara-i-analogov-po-tz" className="block text-xs font-bold text-[#2f3f3d] hover:text-[#075b63] transition-colors">
+                      Подбор товара и аналогов
+                    </Link>
+                    <Link href="/analiz-zakupochnoi-dokumentacii" className="block text-xs font-bold text-[#2f3f3d] hover:text-[#075b63] transition-colors">
+                      Анализ документации
+                    </Link>
+                    <Link href="/zapros-kp-po-tz" className="block text-xs font-bold text-[#2f3f3d] hover:text-[#075b63] transition-colors">
+                      Запрос КП по ТЗ
+                    </Link>
                   </div>
 
                   {/* RELATED ARTICLES */}

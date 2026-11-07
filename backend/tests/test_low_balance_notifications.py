@@ -51,24 +51,24 @@ class LowBalanceNotificationTests(unittest.IsolatedAsyncioTestCase):
         client = Client(id="client123", client_number=10)
 
         kb = low_balance_inline_keyboard(settings, client)
-        self.assertEqual(len(kb.inline_keyboard), 2)
-        top_btn = kb.inline_keyboard[0][0]
-        self.assertIn("Написать в Telegram", top_btn.text)
-        self.assertTrue(top_btn.url.startswith("https://t.me/lexelence?text="))
+        self.assertEqual(len(kb.inline_keyboard), 4)
+        contact_btn = kb.inline_keyboard[2][0]
+        self.assertIn("Написать в Telegram", contact_btn.text)
+        self.assertTrue(contact_btn.url.startswith("https://t.me/lexelence?text="))
 
     def test_cabinet_inline_keyboard_with_and_without_contact(self) -> None:
         kb_without = cabinet_inline_keyboard("https://tenderlex.ru/cabinet", has_web_user=True)
-        self.assertEqual(len(kb_without.inline_keyboard), 2)
-        self.assertEqual(kb_without.inline_keyboard[0][0].text, "🌐 Открыть веб-кабинет")
+        self.assertEqual(len(kb_without.inline_keyboard), 4)
+        self.assertEqual(kb_without.inline_keyboard[2][0].text, "🌐 Открыть веб-кабинет")
 
         kb_with = cabinet_inline_keyboard(
             "https://tenderlex.ru/cabinet",
             has_web_user=True,
             contact_url="https://t.me/lexelence",
         )
-        self.assertEqual(len(kb_with.inline_keyboard), 3)
-        self.assertEqual(kb_with.inline_keyboard[0][0].text, "💬 Пополнить баланс в Telegram")
-        self.assertEqual(kb_with.inline_keyboard[0][0].url, "https://t.me/lexelence")
+        self.assertEqual(len(kb_with.inline_keyboard), 5)
+        self.assertEqual(kb_with.inline_keyboard[3][0].text, "💬 Написать в Telegram")
+        self.assertEqual(kb_with.inline_keyboard[3][0].url, "https://t.me/lexelence")
 
     def test_money_balance_warning(self) -> None:
         settings = SystemSettings(contact_telegram="@lexelence")

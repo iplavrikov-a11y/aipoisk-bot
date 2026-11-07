@@ -23,7 +23,7 @@ export const metadata: Metadata = {
     type: "website",
     url: "/regiony/novosibirsk",
     title: "Поиск поставщиков и заводов в Новосибирске и Сибири | TenderLex",
-    description: "Автоматизированный подбор контрагентов под спецификации закупки в Сибирском федеральном округе.",
+    description: "Поиск потенциальных поставщиков по спецификациям закупки в Сибирском федеральном округе.",
     siteName: "TenderLex",
     images: ["/tenderlex-product-preview.png"],
   },

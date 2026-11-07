@@ -33,6 +33,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .ai import call_llm, parse_json_object
+from .admin_alerts import notify_yandex_search_error
 from .config import config
 from .dadata_client import enrich_company_by_inn
 from .models import SystemSettings
@@ -153,6 +154,11 @@ BLOCKED_DOMAINS = {
     "b2b-project.ru", "comreport.ru", "check-pro.ru", "vsem-podryad.ru", "licexpert.ru",
     "trudvsem.ru", "star-pro.ru", "rospravosudie.com", "kartoteka.ru",
     "reestr-doverennostey.ru", "fedresurs.ru", "mebeloptovik.ru", "100best.ru",
+    # Сметно-нормативные базы, классификаторы, реестры и файловые хранилища тендеров
+    "smetnoedelo.ru", "cs.smetnoedelo.ru", "classinform.ru", "fgisrf.ru", "fgiscs.minstroyrf.ru",
+    "fixedassets.ru", "tz-lab.ru", "normacs.ru", "meganorm.ru", "fsnb2022.ru", "fsnb.ru",
+    "all-smety.ru", "smetaplus.ru", "defsmeta.com", "szbi.ru", "smeta.szbi.ru", "smetamarket.ru",
+    "snip-info.ru", "gosthelp.ru", "files.stroyinf.ru", "selcdn.ru", "kapremontkbr.ru", "fkr-moscow.ru",
     "focus.kontur.ru", "vbankcenter.ru", "zakupki.kontur.ru", "audit-it.ru",
     # Banks & Financial Brokers
     "sberbank.ru", "sber.ru", "vtb.ru", "alfabank.ru", "tbank.ru", "tinkoff.ru", "gazprombank.ru",
@@ -305,6 +311,10 @@ class MinpromRegistryContext:
     error: str = ""
 
 
+class EmptyProcurementProfileError(RuntimeError):
+    pass
+
+
 SUPPLIER_POLICY_NORMAL = "normal"
 SUPPLIER_POLICY_MINPROM_ONLY = "minprom_registry_only"
 SUPPLIER_POLICY_MINPROM_PRIORITY = "minprom_registry_priority"
@@ -371,6 +381,48 @@ def is_blocked(url_or_domain: str) -> bool:
         or domain in BLOCKED_DOMAINS
         or any(host.endswith(suffix) for suffix in BLOCKED_HOST_SUFFIXES)
     )
+
+
+FOREIGN_NATIONAL_CCTLDS = {
+    ".cn", ".by", ".kz", ".am", ".kg", ".ua", ".de", ".us", ".uk", ".pl", ".fr",
+    ".it", ".es", ".jp", ".kr", ".in", ".tr", ".cz", ".nl", ".se", ".fi",
+    ".ro", ".bg", ".hu", ".gr", ".at", ".ch", ".ca", ".au", ".br", ".mx", ".ar"
+}
+CIS_CCTLDS = {".by", ".kz", ".am", ".kg"}
+FOREIGN_B2B_PORTALS = {
+    "made-in-china.com", "alibaba.com", "globalsources.com", "1688.com",
+    "taiwantrade.com", "indiamart.com", "ec21.com", "tradekey.com", "dhgate.com",
+    "sino-fire.com", "pandapipe.com", "flowex-pipe.com", "aliexpress.com", "aliexpress.ru"
+}
+
+
+def is_domain_allowed_for_geo(domain_or_url: str, geo_scope: str = "ru") -> bool:
+    if not domain_or_url:
+        return True
+    dom = base_domain(domain_or_url).lower().strip()
+    scope = str(geo_scope or "ru").strip().lower()
+    for portal in FOREIGN_B2B_PORTALS:
+        if dom == portal or dom.endswith("." + portal):
+            return False
+
+    if scope == "world":
+        return True
+
+    parts = dom.split(".")
+    tld = f".{parts[-1]}" if len(parts) > 1 else ""
+
+    if scope == "ru":
+        if tld in FOREIGN_NATIONAL_CCTLDS:
+            return False
+        return True
+
+    if scope == "cis":
+        if tld in FOREIGN_NATIONAL_CCTLDS and tld not in CIS_CCTLDS:
+            return False
+        return True
+
+    return True
+
 
 
 def hostname(url_or_domain: str) -> str:
@@ -853,7 +905,7 @@ def _minprom_registry_sqlite_meta(sqlite_path: Path | None = None) -> dict[str, 
             fresh = (
                 rows.get("source_jsonl_mtime_ns") == str(stat.st_mtime_ns)
                 and rows.get("source_jsonl_size") == str(stat.st_size)
-                and rows.get("schema_version") == MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION
+                and rows.get("schema_version") in {MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION, "3"}
             )
         return {
             "sqlite_ready": bool(entry_count and entry_count == fts_count and fresh),
@@ -924,7 +976,7 @@ def _minprom_registry_sqlite_is_fresh(index_path: Path, sqlite_path: Path) -> bo
         return (
             rows.get("source_jsonl_mtime_ns") == str(stat.st_mtime_ns)
             and rows.get("source_jsonl_size") == str(stat.st_size)
-            and rows.get("schema_version") == MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION
+            and rows.get("schema_version") in {MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION, "3"}
         )
     except Exception:
         return False
@@ -1592,7 +1644,14 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
             )
             profile = _normalize_procurement_profile(parse_json_object(raw))
             return profile
+        except EmptyProcurementProfileError:
+            raise
         except Exception as exc:
+            if isinstance(exc, EmptyProcurementProfileError) or "0 items" in str(exc) or "не найдены" in str(exc):
+                raise EmptyProcurementProfileError(
+                    "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+                    "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров текстом."
+                ) from exc
             last_error = exc
             continue
     raise RuntimeError(f"AI procurement profile extraction failed: {last_error}") from last_error
@@ -1712,19 +1771,26 @@ async def build_supplier_queries(
                     queries = revised
             if delivery_city:
                 nearby = get_cities_within_radius(delivery_city, geo_radius_km or 300)
-                target_items = [it.name for it in profile.items[:3]] if (profile and profile.items) else [_clean_query_item(context[:100])]
+                if profile and profile.items:
+                    items_limit = len(profile.items) if multi_item_mode == 'per_item' else min(6, len(profile.items))
+                    target_items = [it.name for it in profile.items[:items_limit]]
+                else:
+                    target_items = [_clean_query_item(context[:100])]
                 geo_injections = []
                 for item_name in target_items:
-                    clean_it = " ".join(item_name.split()[:4])
-                    geo_injections.append(f"{clean_it} {delivery_city} официальный дилер")
-                    geo_injections.append(f"{clean_it} {delivery_city} купить оптом склад")
+                    clean_it = ' '.join(item_name.split()[:4])
+                    geo_injections.append(f'{clean_it} {delivery_city} официальный дилер')
+                    geo_injections.append(f'{clean_it} {delivery_city} купить оптом склад')
                     for n_city in nearby[:2]:
                         if n_city != delivery_city.lower():
-                            geo_injections.append(f"{clean_it} {n_city} поставщик опт")
+                            geo_injections.append(f'{clean_it} {n_city} поставщик опт')
                 queries = _clean_supplier_queries(geo_injections + queries)
-            max_queries = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == "per_item") else 28
+            base_cap = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == 'per_item') else 28
             if delivery_city:
-                max_queries += 6
+                geo_extra = min(24, 4 * len(target_items)) if (profile and profile.items) else 6
+                max_queries = base_cap + geo_extra
+            else:
+                max_queries = base_cap
             return queries[:max_queries]
         except Exception as exc:
             last_error = exc
@@ -1753,6 +1819,7 @@ async def discover_suppliers(
     multi_item_mode: str = "balanced",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[dict], dict]:
     async with _browser_pool_session():
         return await _discover_suppliers_impl(
@@ -1771,6 +1838,7 @@ async def discover_suppliers(
             multi_item_mode=multi_item_mode,
             delivery_city=delivery_city,
             geo_radius_km=geo_radius_km,
+            geo_scope=geo_scope,
         )
 
 
@@ -1791,6 +1859,7 @@ async def _discover_suppliers_impl(
     multi_item_mode: str = "balanced",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[dict], dict]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search")
@@ -2161,12 +2230,19 @@ async def _discover_suppliers_impl(
         accepted = _filter_minprom_verified_suppliers(accepted, minprom_context)
     elif minprom_context.status == "ok" and minprom_context.entries:
         await _emit_progress(progress_callback, 90, "Обогащаю контакты и реквизиты реестра через DaData и поиск")
+        enrich_metrics: dict[str, int] = {"yandex_requests_count": 0}
         accepted = await _enrich_unmatched_registry_suppliers(
             settings,
             accepted,
             minprom_context,
             limit=effective_delivery_target,
+            metrics_out=enrich_metrics,
         )
+        if enrich_metrics.get("yandex_requests_count", 0) > 0 and isinstance(search_meta, dict):
+            extra_reqs = int(enrich_metrics["yandex_requests_count"])
+            search_meta["yandex_requests_count"] = int(search_meta.get("yandex_requests_count") or 0) + extra_reqs
+            unit_p = float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305)
+            search_meta["yandex_cost_rub"] = round(int(search_meta["yandex_requests_count"]) * unit_p, 2)
 
     # Enrich general accepted suppliers with missing region/director
     accepted = await _enrich_accepted_suppliers_with_dadata(accepted)
@@ -2175,7 +2251,7 @@ async def _discover_suppliers_impl(
         annotate_contacts_radius_status(accepted, delivery_city, geo_radius_km)
         def _final_geo_sort(item: dict):
             within = item.get("supplier_distance_within_radius")
-            rad_rank = 0 if within is True else (1 if within is False else 2)
+            rad_rank = 0 if within is True else (1 if within is None else 2)
             dist = item.get("supplier_distance_km")
             effective_dist = dist if (dist is not None and dist > 0) else 999999
             base_key = _supplier_result_sort_key(item)
@@ -2276,6 +2352,7 @@ async def _enrich_unmatched_registry_suppliers(
     accepted: list[dict],
     registry_context: MinpromRegistryContext,
     limit: int = 15,
+    metrics_out: dict[str, int] | None = None,
 ) -> list[dict]:
     """Ensures ALL GISP registry entries appear in results and enriches them via DaData + targeted search."""
     if registry_context.status != "ok" or not registry_context.entries:
@@ -2320,15 +2397,17 @@ async def _enrich_unmatched_registry_suppliers(
         unmatched_entries = unmatched_entries[:limit]
 
     semaphore = asyncio.Semaphore(3)
+    search_budget_remaining = 6
 
     async def _enrich_single_entry(entry: dict) -> dict:
+        nonlocal search_budget_remaining
         async with semaphore:
             inn = re.sub(r"\D+", "", str(entry.get("inn") or ""))
             mfr = str(entry.get("manufacturer") or "").strip()
             product = str(entry.get("product") or "").strip()
             registry_number = str(entry.get("registry_number") or "").strip()
 
-            # Step 1: DaData enrichment
+            # Step 1: DaData enrichment (Free)
             dadata: dict[str, Any] = {}
             if inn:
                 try:
@@ -2344,35 +2423,48 @@ async def _enrich_unmatched_registry_suppliers(
             dadata_emails = dadata.get("emails") or []
             dadata_sites = dadata.get("sites") or []
 
-            # Step 2: Targeted web search for website & contacts
-            site = ""
-            evidence_url = ""
-            contact_url = ""
+            # Step 2: Use free DaData site first; only run paid web search if site is still missing
+            site = dadata_sites[0] if dadata_sites else ""
+            evidence_url = site
+            contact_url = site
             phone = dadata_phones[0] if dadata_phones else ""
             email = dadata_emails[0] if dadata_emails else ""
 
             queries = []
-            if inn:
-                queries.append(f'"{inn}" официальный сайт')
-            if mfr:
-                clean_name = re.sub(
-                    r'(?:ООО|АО|ЗАО|ПАО|ОАО|НАО|НПК|НМФ|ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ|АКЦИОНЕРНОЕ ОБЩЕСТВО)\s*',
-                    "",
-                    mfr,
-                    flags=re.I,
-                ).strip(' "«»')
-                if clean_name and len(clean_name) >= 3:
+            if not site and search_budget_remaining > 0:
+                clean_name = ""
+                if mfr:
+                    clean_name = re.sub(
+                        r'(?:ООО|АО|ЗАО|ПАО|ОАО|НАО|НПК|НМФ|ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ|АКЦИОНЕРНОЕ ОБЩЕСТВО)\s*',
+                        "",
+                        mfr,
+                        flags=re.I,
+                    ).strip(' "«»')
+                if inn and clean_name and len(clean_name) >= 3:
+                    queries.append(f'"{inn}" "{clean_name}" официальный сайт контакты')
+                elif inn:
+                    queries.append(f'"{inn}" официальный сайт')
+                elif clean_name and len(clean_name) >= 3:
                     queries.append(f'"{clean_name}" официальный сайт контакты')
 
-            if queries:
+            if queries and not site and search_budget_remaining > 0:
+                search_budget_remaining -= 1
                 try:
                     candidates: list[Candidate] = []
                     if settings.yandex_search_folder_id and settings.yandex_search_api_key:
-                        candidates, _ = await _search_with_yandex(settings, queries, max_results=6)
+                        candidates, enrich_reqs = await _search_with_yandex(
+                            settings,
+                            queries[:1],
+                            max_results=6,
+                            expand_queries=False,
+                            max_pages_per_query=1,
+                        )
+                        if metrics_out is not None:
+                            metrics_out["yandex_requests_count"] = int(metrics_out.get("yandex_requests_count") or 0) + int(enrich_reqs or 0)
                     elif settings.google_search_api_key and settings.google_search_cse_id:
-                        candidates = await _search_with_google(settings, queries, max_results=6)
+                        candidates = await _search_with_google(settings, queries[:1], max_results=6)
                     else:
-                        candidates = await _search_with_ddgs(queries, max_results=6)
+                        candidates = await _search_with_ddgs(queries[:1], max_results=6)
 
                     valid_candidates = []
                     for c in candidates:
@@ -2386,29 +2478,26 @@ async def _enrich_unmatched_registry_suppliers(
                         site = chosen_candidate.url
                         evidence_url = chosen_candidate.url
                         contact_url = chosen_candidate.url
-                        try:
-                            pages = await collect_pages(chosen_candidate.url)
-                            if pages:
-                                comb_text = "\n".join(p.get("text", "") for p in pages)
-                                phones = sorted(set(PHONE_RE.findall(comb_text)))
-                                emails = sorted(set(EMAIL_RE.findall(comb_text)))
-                                verified_p = _verified_phone("", phones)
-                                verified_e = _verified_email("", emails)
-                                if verified_p:
-                                    phone = verified_p
-                                if verified_e:
-                                    email = verified_e
-                                contact_url = contact_page_url(pages, emails, phones) or chosen_candidate.url
-                                evidence_url = pages[0].get("url") or chosen_candidate.url
-                        except Exception as crawl_exc:
-                            logger.warning("Targeted crawl failed for %s: %s", chosen_candidate.url, crawl_exc)
                 except Exception as search_exc:
                     logger.warning("Targeted search failed for entry %s: %s", inn or mfr, search_exc)
 
-            if not site and dadata_sites:
-                site = dadata_sites[0]
-                evidence_url = site
-                contact_url = site
+            if site and (not phone or not email):
+                try:
+                    pages = await collect_pages(site)
+                    if pages:
+                        comb_text = "\n".join(p.get("text", "") for p in pages)
+                        phones = sorted(set(PHONE_RE.findall(comb_text)))
+                        emails = sorted(set(EMAIL_RE.findall(comb_text)))
+                        verified_p = _verified_phone("", phones)
+                        verified_e = _verified_email("", emails)
+                        if verified_p and not phone:
+                            phone = verified_p
+                        if verified_e and not email:
+                            email = verified_e
+                        contact_url = contact_page_url(pages, emails, phones) or site
+                        evidence_url = pages[0].get("url") or site
+                except Exception as crawl_exc:
+                    logger.warning("Targeted crawl failed for %s: %s", site, crawl_exc)
 
             # Step 3: Build clean comment
             comment_parts = [
@@ -2696,10 +2785,18 @@ def _supplier_exclusion_sets(excluded_suppliers: list[dict] | None) -> tuple[set
     return domains, company_keys
 
 
-def _exclude_candidates(candidates: list[Candidate], excluded_domains: set[str]) -> list[Candidate]:
-    if not excluded_domains:
-        return candidates
-    return [candidate for candidate in candidates if candidate.domain and candidate.domain not in excluded_domains]
+def _exclude_candidates(candidates: list[Candidate], excluded_domains: set[str], geo_scope: str = "ru") -> list[Candidate]:
+    filtered: list[Candidate] = []
+    for candidate in candidates:
+        if not candidate.domain:
+            continue
+        if excluded_domains and candidate.domain in excluded_domains:
+            continue
+        if not is_domain_allowed_for_geo(candidate.domain, geo_scope):
+            continue
+        filtered.append(candidate)
+    return filtered
+
 
 
 def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
@@ -2961,7 +3058,10 @@ normalize_procurement_profile = _normalize_procurement_profile
 def _validate_procurement_profile_response(raw: str) -> None:
     profile = _normalize_procurement_profile(parse_json_object(raw))
     if not profile.items:
-        raise RuntimeError(f"AI returned profile with 0 items (raw keys: {list(parse_json_object(raw).keys())})")
+        raise EmptyProcurementProfileError(
+            "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+            "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров текстом."
+        )
 
 
 def _validate_minprom_requirement_response(raw: str) -> None:
@@ -3849,6 +3949,27 @@ async def _review_candidates_until_target(
         )
         if result:
             result["_source_rank"] = index
+            cand_url = str(candidate.url or result.get("site") or "").lower()
+            dom = base_domain(cand_url)
+            if dom.endswith(".by"):
+                result["supplier_country"] = "Беларусь 🇧🇾"
+            elif dom.endswith(".kz"):
+                result["supplier_country"] = "Казахстан 🇰🇿"
+            elif dom.endswith(".am"):
+                result["supplier_country"] = "Армения 🇦🇲"
+            elif dom.endswith(".kg"):
+                result["supplier_country"] = "Кыргызстан 🇰🇬"
+            elif dom.endswith(".cn") or any(p in dom for p in ("made-in-china", "alibaba", "globalsources", "1688", "sino-")):
+                result["supplier_country"] = "Китай 🇨🇳"
+            elif dom.endswith(".tr"):
+                result["supplier_country"] = "Турция 🇹🇷"
+            elif dom.endswith(".de"):
+                result["supplier_country"] = "Германия 🇩🇪"
+            elif result.get("inn") or dom.endswith((".ru", ".рф", ".su", ".xn--p1ai")):
+                result["supplier_country"] = "Россия 🇷🇺"
+            else:
+                result["supplier_country"] = "Россия 🇷🇺"
+
             raw_city = str(result.get("region") or result.get("supplier_city") or result.get("city") or "").strip()
             detected = extract_city_from_text(f"{raw_city} {result.get('company_name', '')} {result.get('comments', '')} {candidate.snippet} {result.get('contact_evidence_snippet', '')}")
             supplier_city = detected or raw_city
@@ -4115,6 +4236,7 @@ async def discover_candidates(
     primary_candidate_floor: int | None = None,
     fallback_candidate_limit: int | None = None,
     reserve_only: bool = False,
+    geo_scope: str = "ru",
 ) -> tuple[list[Candidate], dict]:
     candidates: list[Candidate] = []
     reports: list[dict] = []
@@ -4187,19 +4309,25 @@ async def discover_candidates(
         try:
             existing_domains = base_excluded_domains | {candidate.domain for candidate in candidates}
             if provider == "yandex":
-                y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
+                try:
+                    y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
+                except TypeError as t_err:
+                    if "geo_scope" in str(t_err):
+                        y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
+                    else:
+                        raise
                 if isinstance(y_res, tuple) and len(y_res) == 2:
                     provider_candidates, y_reqs = y_res
                 else:
                     provider_candidates, y_reqs = y_res, len(queries)
                 yandex_total_requests += y_reqs
             elif provider == "google":
-                provider_candidates = await _search_with_google(settings, queries, request_limit, existing_domains=existing_domains)
+                provider_candidates = await _search_with_google(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
             elif provider == "tavily":
-                provider_candidates = await _search_with_tavily(settings, queries, request_limit, existing_domains=existing_domains)
+                provider_candidates = await _search_with_tavily(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
             elif provider == "ddgs":
-                provider_candidates = await _search_with_ddgs(queries, request_limit, existing_domains=existing_domains)
-            provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains)[:request_limit]
+                provider_candidates = await _search_with_ddgs(queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
+            provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains, geo_scope=geo_scope)[:request_limit]
             status = "ok" if provider_candidates else "empty"
         except Exception as exc:
             status = "error"
@@ -4237,7 +4365,7 @@ async def discover_candidates(
             "reserve_only": reserve_only,
         },
         "yandex_requests_count": yandex_total_requests,
-        "yandex_cost_rub": round(yandex_total_requests * float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04), 2),
+        "yandex_cost_rub": round(yandex_total_requests * float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305), 2),
         "reports": reports,
     }
 
@@ -4350,23 +4478,25 @@ async def _search_with_yandex(
     existing_domains: set[str] | None = None,
     expand_queries: bool = True,
     max_pages_per_query: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[Candidate], int]:
     folder_id, api_key = _yandex_credentials(settings)
     if not folder_id or not api_key:
         return [], 0
     if expand_queries:
-        search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "yandex"))
+        search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "yandex"), geo_scope=geo_scope)
     else:
         search_queries = [q.strip() for q in queries if str(q).strip()]
     max_pages = max_pages_per_query if max_pages_per_query is not None else _yandex_max_pages_per_query(settings)
     semaphore = asyncio.Semaphore(3)
     requests_count = 0
 
-    async def _poll_yandex_operation(client: httpx.AsyncClient, operation_id: str) -> str:
+    async def _poll_yandex_operation(client: httpx.AsyncClient, operation_id: str) -> str | None:
         poll_delays = [
             0.5, 0.8, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0,
             2.0, 2.0, 2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 2.5, 2.5,
-            2.5, 2.5, 3.0, 3.0, 3.0, 3.0, 3.0
+            2.5, 2.5, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0,
+            3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0
         ]
         consecutive_429 = 0
         for _poll_idx in range(len(poll_delays)):
@@ -4387,18 +4517,19 @@ async def _search_with_yandex(
                     continue
                 if data.get("error"):
                     logger.warning("Yandex search async operation finished with error: id=%s error=%s", operation_id, data.get("error"))
-                    return ""
+                    return None
                 return str((data.get("response") or {}).get("rawData") or "")
             except Exception as poll_exc:
                 logger.debug("Yandex operation poll error: id=%s exc=%s", operation_id, poll_exc)
                 continue
         logger.warning("Yandex search async operation timed out after %d attempts: operation_id=%s", len(poll_delays), operation_id)
-        return ""
+        return None
 
     groups_on_page = _yandex_groups_on_page(settings)
+    async_supported = True
 
     async def search_one_page(client: httpx.AsyncClient, query: str, page: int) -> list[Candidate]:
-        nonlocal requests_count, headers
+        nonlocal requests_count, headers, async_supported
         async with semaphore:
             body = {
                 "query": {"searchType": "SEARCH_TYPE_RU", "queryText": query, "page": str(page)},
@@ -4406,38 +4537,53 @@ async def _search_with_yandex(
                 "responseFormat": "FORMAT_XML",
                 "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
             }
-            requests_count += 1
-            # Primary: Fast synchronous endpoint (returns rawData XML immediately <1s)
-            try:
-                response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
-                if response.status_code == 429:
-                    await asyncio.sleep(2.0)
-                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
-                if response.status_code == 200:
-                    data = response.json()
-                    raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
-                    if raw_data:
-                        return _parse_yandex_xml(raw_data, query=query)
-            except Exception as sync_exc:
-                logger.debug("Yandex sync search call failed, trying async fallback: %s", sync_exc)
+            # Primary: Cost-effective asynchronous search (30.50 ₽ / 1k reqs vs 488 ₽ / 1k reqs sync)
+            if async_supported:
+                try:
+                    from .exact_product.yandex_search import _paced_async_post
+                    response = await _paced_async_post(
+                        client,
+                        "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync",
+                        headers=headers,
+                        json=body,
+                    )
+                    if response.status_code == 200:
+                        requests_count += 1
+                        operation_id = str(response.json().get("id") or "")
+                        if operation_id:
+                            raw_data = await _poll_yandex_operation(client, operation_id)
+                            if raw_data is not None:
+                                return _parse_yandex_xml(raw_data, query=query) if raw_data else []
+                    elif response.status_code in (404, 501):
+                        async_supported = False
+                    elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
+                        notify_yandex_search_error(response.status_code, response.text, query=query)
+                except Exception as async_exc:
+                    logger.debug("Yandex async search call failed: %s", async_exc)
 
-            # Fallback: Async search operation
-            try:
-                response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-                if response.status_code == 429:
-                    await asyncio.sleep(2.0)
-                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-                if response.status_code != 200:
-                    logger.warning("Yandex search POST failed: status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
+            # Fallback: Synchronous endpoint ONLY if explicitly enabled via AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK=1
+            if os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK") == "1" or not async_supported:
+                try:
+                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
+                    if response.status_code == 429:
+                        await asyncio.sleep(1.5)
+                        response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
+                    if response.status_code == 200:
+                        requests_count += 1
+                        data = response.json()
+                        raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
+                        if raw_data:
+                            return _parse_yandex_xml(raw_data, query=query)
+                    elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
+                        logger.warning("Yandex search auth/billing error: status=%s error=%s", response.status_code, response.text[:200])
+                        notify_yandex_search_error(response.status_code, response.text, query=query)
+                        return []
+                    else:
+                        logger.warning("Yandex sync search status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
+                except Exception as sync_exc:
+                    logger.debug("Yandex sync search call failed: %s", sync_exc)
                     return []
-                operation_id = str(response.json().get("id") or "")
-                if not operation_id:
-                    return []
-                raw_data = await _poll_yandex_operation(client, operation_id)
-                return _parse_yandex_xml(raw_data, query=query) if raw_data else []
-            except Exception as async_exc:
-                logger.warning("Yandex async search call failed for query=%s: %s", query[:80], async_exc)
-                return []
+            return []
 
     headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
     candidates: list[Candidate] = []
@@ -4456,12 +4602,13 @@ async def _search_with_yandex(
                 new_added = 0
                 for c in page_candidates:
                     cand_domain = c.domain or base_domain(c.url)
-                    if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS:
+                    if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(cand_domain, geo_scope):
                         for entity in extract_supplier_entities_from_aggregator_snippet(c.title, c.snippet):
                             ent_key = entity.lower().strip()
                             if ent_key not in seen_mined_entities:
                                 seen_mined_entities.add(ent_key)
                                 mined_company_names.append(entity)
+                        continue
                     if c.domain not in seen_domains:
                         seen_domains.add(c.domain)
                         all_candidates.append(c)
@@ -4473,7 +4620,11 @@ async def _search_with_yandex(
         return all_candidates
 
     chunk_size = 4
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=60,
+        follow_redirects=True,
+        transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
+    ) as client:
         for start in range(0, len(search_queries), chunk_size):
             chunk = search_queries[start : start + chunk_size]
             tasks = [asyncio.create_task(search_one(client, query)) for query in chunk]
@@ -4508,7 +4659,7 @@ async def _search_with_yandex(
                 mined_page_candidates = await search_one_page(client, target_q, 0)
                 for mc in mined_page_candidates:
                     m_dom = mc.domain or base_domain(mc.url)
-                    if not m_dom or m_dom in seen or is_blocked(m_dom) or m_dom in BLOCKED_DOMAINS or m_dom in EXTRA_AGGREGATOR_DOMAINS:
+                    if not m_dom or m_dom in seen or is_blocked(m_dom) or m_dom in BLOCKED_DOMAINS or m_dom in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(m_dom, geo_scope):
                         continue
                     seen.add(m_dom)
                     candidates.append(
@@ -4569,27 +4720,31 @@ async def _search_with_google(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     api_key, cse_id = _google_credentials(settings)
     if not api_key or not cse_id:
         return []
-    search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "google"))
+    search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "google"), geo_scope=geo_scope)
     semaphore = asyncio.Semaphore(4)
+    scope = str(geo_scope or "ru").strip().lower()
 
     async def search_one(client: httpx.AsyncClient, query: str) -> list[Candidate]:
         async with semaphore:
+            params = {
+                "key": api_key,
+                "cx": cse_id,
+                "q": query,
+                "num": 10,
+                "safe": "off",
+            }
+            if scope == "ru":
+                params.update({"gl": "ru", "cr": "countryRU", "lr": "lang_ru"})
+            elif scope == "cis":
+                params.update({"lr": "lang_ru"})
             response = await client.get(
                 "https://www.googleapis.com/customsearch/v1",
-                params={
-                    "key": api_key,
-                    "cx": cse_id,
-                    "q": query,
-                    "num": 10,
-                    "gl": "ru",
-                    "cr": "countryRU",
-                    "lr": "lang_ru",
-                    "safe": "off",
-                },
+                params=params,
             )
             if response.status_code != 200:
                 return []
@@ -4642,13 +4797,14 @@ async def _search_with_tavily(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     key_candidates = _tavily_key_candidates(settings)
     if not key_candidates:
         return []
 
     base_url = _tavily_base_url(settings)
-    search_queries = _expand_search_queries(queries, max_queries=max(32, min(48, len(queries) * 3)))
+    search_queries = _expand_search_queries(queries, max_queries=max(32, min(48, len(queries) * 3)), geo_scope=geo_scope)
 
     async with httpx.AsyncClient(timeout=28, follow_redirects=True) as client:
         candidates, followups = await _run_tavily_queries(
@@ -4742,6 +4898,7 @@ async def _search_with_ddgs(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     try:
         from ddgs import DDGS  # type: ignore
@@ -4749,6 +4906,7 @@ async def _search_with_ddgs(
         return []
 
     search_queries = _ddgs_search_queries(queries)
+    region = "wt-wt" if str(geo_scope or "ru").strip().lower() == "world" else "ru-ru"
 
     def search_all_sync() -> list[Candidate]:
         candidates: list[Candidate] = []
@@ -4758,7 +4916,7 @@ async def _search_with_ddgs(
                 if len(candidates) >= max_results:
                     break
                 try:
-                    items = list(client.text(query, region="ru-ru", backend="auto", max_results=10))
+                    items = list(client.text(query, region=region, backend="auto", max_results=10))
                 except Exception:
                     continue
                 for item in items:
@@ -4823,9 +4981,10 @@ def _tavily_key_candidates(settings: SystemSettings) -> list[str]:
     return [key for key in dict.fromkeys(keys) if key]
 
 
-def _expand_search_queries(queries: list[str], *, max_queries: int) -> list[str]:
+def _expand_search_queries(queries: list[str], *, max_queries: int, geo_scope: str = "ru") -> list[str]:
     base_queries: list[str] = []
     secondary_variants: list[str] = []
+    scope = str(geo_scope or "ru").strip().lower()
     for query in queries:
         clean = re.sub(r"\s+", " ", str(query or "")).strip(" .,:;")
         if not clean:
@@ -4836,6 +4995,17 @@ def _expand_search_queries(queries: list[str], *, max_queries: int) -> list[str]
             f"{clean} производитель завод",
             f"{clean} каталог продукция",
         ]
+        if scope == "cis":
+            variants.extend([
+                f"{clean} завод Беларусь Казахстан",
+                f"{clean} производитель СНГ",
+            ])
+        elif scope == "world":
+            variants.extend([
+                f"{clean} manufacturer factory",
+                f"{clean} global supplier",
+                f"{clean} производитель фабрика импорт",
+            ])
         for item in variants:
             secondary_variants.append(item)
 
@@ -5158,8 +5328,21 @@ def _sanitize_minprom_comment_claims(comment: str, registry_context: MinpromRegi
 
 async def collect_pages(url: str) -> list[dict]:
     pages: list[dict] = []
-    async with httpx.AsyncClient(timeout=18, follow_redirects=True, headers={"User-Agent": "TenderLex supplier verifier"}) as client:
+    connect_failed = False
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    }
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(10.0, connect=4.5),
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
         first = await fetch_page(client, url)
+        connect_failed = bool(getattr(client, "_last_connect_failed", False))
         if first:
             pages.append(first)
             links = extract_internal_links(first["html"], first["url"])
@@ -5181,7 +5364,7 @@ async def collect_pages(url: str) -> list[dict]:
                         break
     if pages and _pages_have_contact(pages):
         return pages
-    if _is_non_html_url(url):
+    if _is_non_html_url(url) or (not pages and connect_failed):
         return pages
     browser_page = await fetch_page_with_browser(url)
     if browser_page:
@@ -5195,6 +5378,10 @@ async def collect_pages(url: str) -> list[dict]:
 
 
 async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
+    try:
+        setattr(client, "_last_connect_failed", False)
+    except Exception:
+        pass
     try:
         response = await client.get(url)
         if response.status_code >= 400:
@@ -5220,6 +5407,12 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
         if "text/html" not in ctype and "text/plain" not in ctype:
             return None
         html_text = response.text[:300000]
+    except (httpx.ConnectTimeout, httpx.ConnectError):
+        try:
+            setattr(client, "_last_connect_failed", True)
+        except Exception:
+            pass
+        return None
     except Exception:
         return None
     return html_text_to_page(html_text, str(response.url))
@@ -6018,15 +6211,6 @@ def _deterministic_queries(context: str) -> list[str]:
     phrase_text = " ".join(product_phrases).lower()
     product_has_mine_context = not product_phrases or any(word in phrase_text for word in ("шахт", "горно", "горн", "вгсч"))
     product_has_fire_context = not product_phrases or any(word in phrase_text for word in ("пожар", "рукав", "гм 70", "гм-70"))
-    if "сверло шахтное" in lowered or "сшу" in lowered:
-        queries.extend(
-            [
-                '"Сверло шахтное универсальное" поставщик',
-                '"СШУ-22" "сверло шахтное"',
-                '"СШУ-22" купить',
-                '"сверло шахтное" "пожарных рукавов"',
-            ]
-        )
     if product_has_mine_context and any(word in lowered for word in ("шахт", "горно", "горн")):
         queries.extend(
             [
@@ -6262,56 +6446,16 @@ def _is_strong_product_phrase(phrase: str) -> bool:
         )
     ):
         return False
-    if lowered.startswith("работы") or "швеллер" in lowered:
+    if lowered.startswith("работы"):
         return False
     if len(lowered) > 100 and re.search(r"\bшт\b|кол-во|количество", lowered):
+        return False
+    if re.search(r"\b(?:ооо|пао|зао|ао|ип)\b", lowered):
         return False
     meaningful = [word for word in re.findall(r"[а-яёa-z0-9\-]{5,}", lowered) if word not in _supplier_anchor_stopwords()]
     if len(meaningful) < 2:
         return False
-    return any(
-        marker in lowered
-        for marker in (
-            "система",
-            "контрол",
-            "кабель",
-            "жгут",
-            "измер",
-            "испыт",
-            "приспособ",
-            "рукав",
-            "шахт",
-            "пожар",
-            "трубопровод",
-            "арматур",
-            "датчик",
-            "станок",
-            "установка",
-            "комплекс",
-            "поликарбон",
-            "вермикулит",
-            "оргстекл",
-            "панел",
-            "профил",
-            "свар",
-            "полуавтомат",
-            "скрайб",
-            "скалыв",
-            "холодильн",
-            "камера",
-            "камер",
-            "кладов",
-            "пенообраз",
-            "преобраз",
-            "электролиз",
-            "толкател",
-            "вагонет",
-            "газорегулятор",
-            "гидро",
-            "кальматрон",
-            "ультрабанд",
-        )
-    )
+    return True
 
 
 def _is_generic_supplier_anchor(value: str) -> bool:
@@ -6515,16 +6659,6 @@ def _exact_match_terms(context: str) -> list[str]:
         for code in _exact_codes(context)
         if not re.fullmatch(r"ГМ-\d+", code)
     )
-    lowered_context = context.lower()
-    if "сверло шахтное универсальное" in lowered_context:
-        result.extend(["сверло шахтное универсальное", "сверло шахтное", "сшу-22", "сшу 22"])
-    if "промежуточного подсоединения пожарных рукавов" in lowered_context:
-        result.extend(
-            [
-                "приспособление для промежуточного подсоединения",
-                "промежуточного подсоединения пожарных рукавов",
-            ]
-        )
     return [item for item in dict.fromkeys(re.sub(r"\s+", " ", term).strip(" .,:;") for term in result) if len(item) >= 5]
 
 
