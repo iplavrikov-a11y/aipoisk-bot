@@ -1,6 +1,31 @@
 # TenderLex: Project Status
 
-## Актуальное состояние — 8 ноября 2026 (Москва) — Мульти-репозиторный SEO-аудит, восстановление счётчика Яндекс.Метрики (109753178), расширение SEO-панели (GSC Top Pages & Click Anomalies), CTR/GEO-оптимизация базы знаний и нормализация редиректов
+## Актуальное состояние — 8 ноября 2026 (Москва) — Оптимизация админ-панели в 15 раз (пакетный префетч биллинга), защита выпуска API-ключей по подтверждению email и антиспам-защита чата
+
+**Ликвидация лавины из ~1 500 SQL-запросов при загрузке клиентов (`502 Bad Gateway`), закрытие обхода верификации email через API-ключи и защита чатов/Telegram-уведомлений от автоматизированного фаззинга**:
+
+1. **Пакетная предзагрузка балансов, тарифов и задач в `GET /api/clients` (`backend/app/billing.py`, `backend/app/main.py`)**:
+   - В `backend/app/billing.py` внедрены функции `preload_clients_billing_cache(db, client_ids)` и `clear_clients_billing_cache(db)`, предзагружающие `SystemSettings`, активные `TariffPackage`, агрегаты `BillingTransaction` (`GROUP BY client_id, kind, operation`), помесячное использование `Job` и историю последних транзакций за **4 пакетных SQL-запроса** вместо ~1 400 индивидуальных запросов по сетевому туннелю до московской БД.
+   - В `list_clients` (`GET /api/clients`) и `client_recent_usage` предзагружаются счётчики задач и топ-5 коммерческих задач каждого клиента без чтения тяжёлых `evidence.json` с диска при наличии готового заголовка. Общее число SQL-запросов `GET /api/clients` сокращено с **~1 500 до 11**, что полностью устранило таймауты `502 Bad Gateway` / `504`.
+   - В `dashboard` (`GET /api/dashboard`), `clients_sync_check` (`GET /api/clients/sync-check`) и `build_system_status` (`GET /api/ops/system-status`) разрозненные `COUNT(*)`-запросы объединены в одиночные агрегирующие запросы (`CASE WHEN ...`), ускорив `dashboard` до **0.24 с**.
+
+2. **Оптимизация фронтенда админ-панели (`frontend/src/App.tsx`)**:
+   - В `formatError` добавлена фильтрация сырого HTML-ответа `nginx` (`502 Bad Gateway` / `504` / `503`) с выводом понятного сервисного уведомления на русском языке.
+   - В `loadAll()` диагностические запросы `/api/ops/system-status` и `/api/analytics/bot` вынесены в неблокирующий фоновый поток, а дублирующий вызов `/api/clients` при открытии вкладки «Клиенты» во время первичной загрузки отключён.
+
+3. **Защита выпуска и использования API-ключей без подтверждения email (`backend/app/main.py`, `backend/app/mcp_api.py`, `backend/tests/test_mcp_api_keys.py`)**:
+   - В `customer_create_api_key` (`POST /api/customer/api-keys`) добавлена обязательная проверка `context.user.is_email_verified` (`403 Forbidden`) и лимит не более 5 активных API-ключей на клиента.
+   - В `consume_quota` и `start_api_job_with_reservation` (`backend/app/mcp_api.py`) блокируется запуск задач по API-ключу для веб-аккаунтов с неподтверждённой почтой, а при нехватке баланса (`402 Payment Required`) черновая запись `Job` и рабочая директория удаляются сразу без засорения истории задач.
+   - Добавлен автотест `test_unverified_web_user_cannot_create_api_key` в `backend/tests/test_mcp_api_keys.py`.
+
+4. **Антиспам-защита чата, валидация вложений и дедупликация Telegram-алертов (`backend/app/main.py`, `backend/app/jobs.py`)**:
+   - В `customer_chat_post_route` (`POST /api/customer/chat`) и `customer_job_chat_route` (`POST /api/customer/jobs/{job_id}/chat`) введён лимит частоты сообщений (**не более 8 сообщений за 60 секунд** с одного клиента, `429 Too Many Requests`), проверка разрешённых расширений (`ALLOWED_UPLOAD_EXTENSIONS`) и лимит размера файла (`10 МБ`, до 10 файлов).
+   - Уведомления владельцу в Telegram о новых сообщениях из чата переведены на `deduplicate_key=f"chat_client_{client_id}"` с окном `throttle_seconds=60` (не более 1 уведомления в минуту по одному клиенту).
+   - В `cleanup_expired_jobs` (`backend/app/jobs.py`) исправлена ошибка `ObjectDeletedError` при очистке истёкших задач, а в `_force_delete_client` (`backend/app/main.py`) добавлено каскадное удаление `ApiKey`, `ApiOperation`, `ApiRateLimitEvent`, `JobChatMessage`, `WebPasswordResetToken`, `Invoice` и `YooKassaPayment`.
+
+---
+
+## Состояние — 8 ноября 2026 (Москва) — Мульти-репозиторный SEO-аудит, восстановление счётчика Яндекс.Метрики (109753178), расширение SEO-панели (GSC Top Pages & Click Anomalies), CTR/GEO-оптимизация базы знаний и нормализация редиректов
 
 **Полный цикл SEO-диагностики и внедрения рекомендаций 5 независимых экспертов по 8 специализированным репозиториям (`claude-seo`, `open-seo`, `seomachine`, `geo-seo-claude`, `next-seo`, `ethercreative/seo`, `marketingskills`, `marketing-skill`), восстановление телеметрии Яндекс.Метрики, расширение аналитики админ-панели и ускорение переиндексации 93 URL**:
 

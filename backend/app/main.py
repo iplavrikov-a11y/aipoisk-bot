@@ -75,6 +75,8 @@ from .billing import (
     grant_package_units,
     invalidate_tariff_packages_cache,
     operation_label,
+    preload_clients_billing_cache,
+    clear_clients_billing_cache,
     release_job_reservation,
     list_tariffs,
     recent_billing_transactions,
@@ -1098,7 +1100,23 @@ def customer_create_api_key(
     db: Session = Depends(db_session),
 ) -> dict:
     require_customer_csrf(request, context)
+    if not context.user.is_email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Подтвердите email в личном кабинете, чтобы выпустить API-ключ.",
+        )
     client = context.user.client
+    active_count = (
+        db.query(func.count(ApiKey.id))
+        .filter(ApiKey.client_id == client.id, ApiKey.is_active == True)
+        .scalar()
+        or 0
+    )
+    if active_count >= 5:
+        raise HTTPException(
+            status_code=400,
+            detail="Достигнут лимит активных API-ключей (максимум 5). Отзовите неиспользуемый ключ перед выпуском нового.",
+        )
     raw_key, key_hash, key_prefix = generate_api_key(is_admin=False)
     api_key = ApiKey(
         key_hash=key_hash,
@@ -1805,17 +1823,36 @@ async def customer_job_chat_route(
     if not clean_message and not all_uploads:
         raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
 
+    recent_chat_count = (
+        db.query(func.count(JobChatMessage.id))
+        .filter(
+            JobChatMessage.client_id == (job.client_id or context.user.client_id),
+            JobChatMessage.sender_role == "client",
+            JobChatMessage.created_at >= now_utc() - timedelta(seconds=60),
+        )
+        .scalar()
+        or 0
+    )
+    if recent_chat_count >= 8:
+        raise HTTPException(status_code=429, detail="Слишком много сообщений подряд. Подождите минуту.")
+
     get_job_chat_messages(db, job, auto_seed=True)
 
     target_dir = job_dir(root_id) / "chat"
     target_dir.mkdir(parents=True, exist_ok=True)
     attachments: list[dict] = []
-    for uf in all_uploads:
+    max_chat_bytes = 10 * 1024 * 1024
+    for uf in all_uploads[:10]:
         if not uf.filename:
             continue
-        content = await uf.read()
+        safe_name = Path(uf.filename).name
+        ext = Path(safe_name).suffix.lower()
+        if not ext or ext not in ALLOWED_UPLOAD_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Неподдерживаемый формат файла: {safe_name}")
+        content = await uf.read(max_chat_bytes + 1)
+        if len(content) > max_chat_bytes:
+            raise HTTPException(status_code=413, detail=f"Файл {safe_name} превышает 10 МБ")
         if content:
-            safe_name = Path(uf.filename).name
             dest = target_dir / f"client_{int(time.time())}_{safe_name}"
             dest.write_bytes(content)
             attachments.append({
@@ -2020,6 +2057,19 @@ async def customer_chat_post_route(
     if not clean_message and not all_uploads:
         raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
 
+    recent_chat_count = (
+        db.query(func.count(JobChatMessage.id))
+        .filter(
+            JobChatMessage.client_id == client_id,
+            JobChatMessage.sender_role == "client",
+            JobChatMessage.created_at >= now_utc() - timedelta(seconds=60),
+        )
+        .scalar()
+        or 0
+    )
+    if recent_chat_count >= 8:
+        raise HTTPException(status_code=429, detail="Слишком много сообщений подряд. Подождите минуту.")
+
     target_job = None
     root_job_id = ""
     if clean_job_id:
@@ -2036,12 +2086,18 @@ async def customer_chat_post_route(
 
     target_dir.mkdir(parents=True, exist_ok=True)
     attachments: list[dict] = []
-    for uf in all_uploads:
+    max_chat_bytes = 10 * 1024 * 1024
+    for uf in all_uploads[:10]:
         if not uf.filename:
             continue
-        content = await uf.read()
+        safe_name = Path(uf.filename).name
+        ext = Path(safe_name).suffix.lower()
+        if not ext or ext not in ALLOWED_UPLOAD_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Неподдерживаемый формат файла: {safe_name}")
+        content = await uf.read(max_chat_bytes + 1)
+        if len(content) > max_chat_bytes:
+            raise HTTPException(status_code=413, detail=f"Файл {safe_name} превышает 10 МБ")
         if content:
-            safe_name = Path(uf.filename).name
             dest = target_dir / f"client_{int(time.time())}_{safe_name}"
             dest.write_bytes(content)
             attachments.append({
@@ -2098,7 +2154,7 @@ async def customer_chat_post_route(
             tg_text += f"📞 <b>Телефон:</b> {html_escape(phone_val)}\n"
         tg_text += f"💬 <b>Сообщение:</b> {html_escape(clean_message or '📎 Прикреплен файл')}\n\n"
         tg_text += "👉 Ответить можно в панели администратора в разделе «Диалоги»."
-        await send_telegram_admin_alert(tg_text, deduplicate_key=f"chat_{new_msg.id}", throttle_seconds=0)
+        await send_telegram_admin_alert(tg_text, deduplicate_key=f"chat_client_{client_id}", throttle_seconds=60)
     except Exception as exc:
         logger.warning("Error notifying admin about customer chat message: %s", exc)
 
@@ -2979,15 +3035,30 @@ def auth_me() -> dict:
 def dashboard(db: Session = Depends(db_session)) -> dict:
     now = now_utc()
     week_ago = now - timedelta(days=7)
+    clients_total, active_clients = (
+        db.query(
+            func.count(Client.id),
+            func.coalesce(func.sum(case((Client.is_active.is_(True), 1), else_=0)), 0),
+        ).one()
+    )
+    jobs_total, running_jobs, completed_jobs, failed_jobs_week, failed_jobs_total = (
+        db.query(
+            func.count(Job.id),
+            func.coalesce(func.sum(case((Job.status.in_(["pending", "running"]), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Job.status.in_(["completed", "partial"]), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((and_(Job.status == "failed", Job.created_at >= week_ago), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Job.status == "failed", 1), else_=0)), 0),
+        ).one()
+    )
     return {
-        "clients": db.query(Client).count(),
-        "active_clients": db.query(Client).filter(Client.is_active.is_(True)).count(),
-        "jobs": db.query(Job).count(),
-        "running_jobs": db.query(Job).filter(Job.status.in_(["pending", "running"])).count(),
-        "completed_jobs": db.query(Job).filter(Job.status.in_(["completed", "partial"])).count(),
-        "failed_jobs": db.query(Job).filter(Job.status == "failed", Job.created_at >= week_ago).count(),
-        "failed_jobs_total": db.query(Job).filter(Job.status == "failed").count(),
-        "suppliers": db.query(SupplierResult).count(),
+        "clients": int(clients_total or 0),
+        "active_clients": int(active_clients or 0),
+        "jobs": int(jobs_total or 0),
+        "running_jobs": int(running_jobs or 0),
+        "completed_jobs": int(completed_jobs or 0),
+        "failed_jobs": int(failed_jobs_week or 0),
+        "failed_jobs_total": int(failed_jobs_total or 0),
+        "suppliers": db.query(func.count(SupplierResult.id)).scalar() or 0,
     }
 
 
@@ -3510,26 +3581,79 @@ def list_clients(db: Session = Depends(db_session)) -> list[dict]:
         .order_by(Client.created_at.desc())
         .all()
     )
-    job_counts = dict(
-        db.query(Job.client_id, func.count(Job.id))
-        .filter(Job.client_id.isnot(None))
-        .group_by(Job.client_id)
-        .all()
-    )
+    client_ids = [client.id for client in clients]
+    client_by_id = {client.id: client for client in clients}
+    job_counts: dict[str, int] = {}
+    recent_usage_map: dict[str, list[dict]] = {}
+    if client_ids:
+        all_client_jobs = (
+            db.query(Job)
+            .filter(Job.client_id.in_(client_ids))
+            .order_by(Job.created_at.desc())
+            .all()
+        )
+        for job in all_client_jobs:
+            cid = str(job.client_id or "")
+            job_counts[cid] = job_counts.get(cid, 0) + 1
+            bucket = recent_usage_map.setdefault(cid, [])
+            if len(bucket) >= 5 or is_internal_job(job):
+                continue
+            supplier_units, report_units = requested_function_units(str(job.mode or ""))
+            if supplier_units <= 0 and report_units <= 0 and str(job.mode or "") != MODE_EXACT_PRODUCT:
+                continue
+            owner = client_by_id.get(cid)
+            raw_title = str(job.title or "").strip()
+            cleaned_title = _clean_customer_job_subject(raw_title) if raw_title else ""
+            if cleaned_title and not _looks_like_hash(cleaned_title):
+                is_admin = bool(getattr(job, "is_admin_rerun", False) or raw_title.startswith("[Админ]"))
+                fast_title = _customer_job_title_for_subject(str(job.mode or ""), cleaned_title)
+                fast_title = f"[Админ] {fast_title}" if is_admin else fast_title
+            else:
+                fast_title = human_job_title(job)
+            bucket.append(
+                {
+                    "id": job.id,
+                    "mode": job.mode,
+                    "mode_label": mode_label(job.mode),
+                    "human_title": fast_title,
+                    "created_by_telegram_id": job.created_by_telegram_id or (owner.telegram_id if owner else ""),
+                    "supplier_units": supplier_units,
+                    "procurement_report_units": report_units,
+                    "status": job.status,
+                    "created_at": job.created_at.isoformat() if job.created_at else None,
+                    "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+                    "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                }
+            )
     for client in clients:
         setattr(client, "_jobs_count", job_counts.get(client.id, 0))
-    return [client_to_dict(client, db=db) for client in clients]
+    try:
+        preload_clients_billing_cache(db, client_ids)
+        if hasattr(db, "info"):
+            db.info["client_recent_usage_map"] = recent_usage_map
+        return [client_to_dict(client, db=db) for client in clients]
+    finally:
+        if hasattr(db, "info"):
+            db.info.pop("client_recent_usage_map", None)
+        clear_clients_billing_cache(db)
 
 
 @app.get("/api/clients/sync-check", dependencies=[Depends(require_admin)])
 def clients_sync_check(db: Session = Depends(db_session)) -> dict:
-    clients_count = db.query(func.count(Client.id)).scalar() or 0
-    max_client_updated = db.query(func.max(Client.updated_at)).scalar()
-    max_client_created = db.query(func.max(Client.created_at)).scalar()
+    clients_count, max_client_updated, max_client_created = (
+        db.query(
+            func.count(Client.id),
+            func.max(Client.updated_at),
+            func.max(Client.created_at),
+        ).one()
+    )
+    clients_count = int(clients_count or 0)
     max_web_user_updated = db.query(func.max(WebUser.updated_at)).scalar()
     max_billing_created = db.query(func.max(BillingTransaction.created_at)).scalar()
-    jobs_count = db.query(func.count(Job.id)).scalar() or 0
-    max_job_updated = db.query(func.max(Job.updated_at)).scalar()
+    jobs_count, max_job_updated = (
+        db.query(func.count(Job.id), func.max(Job.updated_at)).one()
+    )
+    jobs_count = int(jobs_count or 0)
 
     latest_client = (
         db.query(Client)
@@ -3556,8 +3680,7 @@ def clients_sync_check(db: Session = Depends(db_session)) -> dict:
     c_cr = max_client_created.isoformat() if max_client_created else ""
     w_up = max_web_user_updated.isoformat() if max_web_user_updated else ""
     b_cr = max_billing_created.isoformat() if max_billing_created else ""
-    j_up = max_job_updated.isoformat() if max_job_updated else ""
-    version_key = f"{clients_count}:{c_up}:{c_cr}:{w_up}:{b_cr}:{jobs_count}:{j_up}"
+    version_key = f"{clients_count}:{c_up}:{c_cr}:{w_up}:{b_cr}:{jobs_count}"
 
     return {
         "version_key": version_key,
@@ -3634,19 +3757,46 @@ def update_client(client_id: str, data: ClientPatch, db: Session = Depends(db_se
 
 
 def _force_delete_client(db: Session, client: Client) -> None:
+    from .models import (
+        ApiOperation,
+        ApiRateLimitEvent,
+        Invoice,
+        PartnerPayoutRequest,
+        WebPasswordResetToken,
+        YooKassaPayment,
+    )
+
     jobs = db.query(Job).filter(Job.client_id == client.id).all()
     job_ids = [job.id for job in jobs]
     if job_ids:
         db.query(SupplierResult).filter(SupplierResult.job_id.in_(job_ids)).delete(synchronize_session=False)
         db.query(JobFile).filter(JobFile.job_id.in_(job_ids)).delete(synchronize_session=False)
         db.query(JobSource).filter(JobSource.job_id.in_(job_ids)).delete(synchronize_session=False)
+        db.query(JobChatMessage).filter(JobChatMessage.job_id.in_(job_ids)).delete(synchronize_session=False)
         db.query(BillingTransaction).filter(BillingTransaction.job_id.in_(job_ids)).delete(synchronize_session=False)
+        db.query(ApiOperation).filter(ApiOperation.job_id.in_(job_ids)).delete(synchronize_session=False)
+
+    db.query(JobChatMessage).filter(JobChatMessage.client_id == client.id).delete(synchronize_session=False)
+
+    api_keys = db.query(ApiKey).filter(ApiKey.client_id == client.id).all()
+    api_key_ids = [k.id for k in api_keys]
+    if api_key_ids:
+        db.query(ApiOperation).filter(ApiOperation.api_key_id.in_(api_key_ids)).delete(synchronize_session=False)
+        db.query(ApiRateLimitEvent).filter(ApiRateLimitEvent.api_key_id.in_(api_key_ids)).delete(synchronize_session=False)
+        db.query(ApiKey).filter(ApiKey.client_id == client.id).delete(synchronize_session=False)
+
+    db.query(YooKassaPayment).filter(YooKassaPayment.client_id == client.id).delete(synchronize_session=False)
+    db.query(Invoice).filter(Invoice.client_id == client.id).delete(synchronize_session=False)
+    db.query(PartnerPayoutRequest).filter(PartnerPayoutRequest.client_id == client.id).delete(synchronize_session=False)
+    db.query(Client).filter(Client.referrer_id == client.id).update({Client.referrer_id: None}, synchronize_session=False)
 
     web_users = db.query(WebUser).filter(WebUser.client_id == client.id).all()
     web_user_ids = [wu.id for wu in web_users]
     if web_user_ids:
+        db.query(YooKassaPayment).filter(YooKassaPayment.user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(WebSession).filter(WebSession.user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(WebPasswordResetRequest).filter(WebPasswordResetRequest.user_id.in_(web_user_ids)).delete(synchronize_session=False)
+        db.query(WebPasswordResetToken).filter(WebPasswordResetToken.user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(WebEmailVerificationToken).filter(WebEmailVerificationToken.user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(AccountLinkToken).filter(AccountLinkToken.web_user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(WebUser).filter(WebUser.client_id == client.id).delete(synchronize_session=False)
@@ -3663,6 +3813,7 @@ def _force_delete_client(db: Session, client: Client) -> None:
     for job in jobs:
         shutil.rmtree(config.storage_path / "jobs" / job.id, ignore_errors=True)
         db.delete(job)
+    shutil.rmtree(config.storage_path / "clients" / client.id, ignore_errors=True)
     db.delete(client)
 
 
@@ -8049,6 +8200,8 @@ def usage_counter(*, label: str, used: int, limit: int) -> dict:
 
 
 def client_recent_usage(db: Session, client: Client, *, limit: int = 5) -> list[dict]:
+    if limit == 5 and hasattr(db, "info") and "client_recent_usage_map" in db.info:
+        return db.info["client_recent_usage_map"].get(str(client.id), [])
     jobs = (
         commercial_jobs_query(db, client)
         .order_by(Job.created_at.desc())
@@ -8150,12 +8303,21 @@ def build_system_status(settings: SystemSettings, db: Session, yandex_balance: f
     }
     now = now_utc()
     week_ago = now - timedelta(days=7)
+    q_pending, q_running, q_failed_week, q_failed_total, q_completed = (
+        db.query(
+            func.coalesce(func.sum(case((Job.status == "pending", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Job.status == "running", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((and_(Job.status == "failed", Job.created_at >= week_ago), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Job.status == "failed", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Job.status.in_(["completed", "partial"]), 1), else_=0)), 0),
+        ).one()
+    )
     queue = {
-        "pending": db.query(Job).filter(Job.status == "pending").count(),
-        "running": db.query(Job).filter(Job.status == "running").count(),
-        "failed": db.query(Job).filter(Job.status == "failed", Job.created_at >= week_ago).count(),
-        "failed_total": db.query(Job).filter(Job.status == "failed").count(),
-        "completed": db.query(Job).filter(Job.status.in_(["completed", "partial"])).count(),
+        "pending": int(q_pending or 0),
+        "running": int(q_running or 0),
+        "failed": int(q_failed_week or 0),
+        "failed_total": int(q_failed_total or 0),
+        "completed": int(q_completed or 0),
     }
     services = api_service_statuses(settings, yandex_balance=yandex_balance)
     warnings = []

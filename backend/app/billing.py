@@ -306,7 +306,11 @@ def effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int
     if kind == KIND_EXACT_PRODUCT:
         return DEFAULT_EXACT_PRODUCT_PRICE_KOPEKS
     if kind == KIND_PRICE_MONITORING:
-        settings = db.query(SystemSettings).first()
+        settings = (
+            db.info.get("system_settings")
+            if hasattr(db, "info") and "system_settings" in db.info
+            else db.query(SystemSettings).first()
+        )
         return max(0, int(getattr(settings, "price_monitoring_default_price_kopeks", DEFAULT_PRICE_MONITORING_PRICE_KOPEKS) or DEFAULT_PRICE_MONITORING_PRICE_KOPEKS))
     return 0
 
@@ -471,15 +475,90 @@ def _lowest_active_function_price(db: Session, client: Client) -> int:
     return min(active) if active else 1
 
 
-def _ledger_counter(db: Session, client_id: str, kind: str) -> dict:
-    rows = (
-        db.query(BillingTransaction.operation, func.coalesce(func.sum(BillingTransaction.units), 0))
-        .filter(BillingTransaction.client_id == client_id)
-        .filter(BillingTransaction.kind == kind)
-        .group_by(BillingTransaction.operation)
+def preload_clients_billing_cache(db: Session, client_ids: list[str], *, recent_limit: int = 8) -> None:
+    if not hasattr(db, "info"):
+        return
+    db.info["system_settings"] = db.query(SystemSettings).first()
+    _active_tariff_packages(db)
+    if not client_ids:
+        db.info["billing_ledger_map"] = {}
+        db.info["legacy_month_usage_map"] = {}
+        db.info["recent_billing_map"] = {}
+        return
+
+    ledger_rows = (
+        db.query(
+            BillingTransaction.client_id,
+            BillingTransaction.kind,
+            BillingTransaction.operation,
+            func.count(BillingTransaction.id),
+            func.coalesce(func.sum(BillingTransaction.units), 0),
+        )
+        .filter(BillingTransaction.client_id.in_(client_ids))
+        .group_by(BillingTransaction.client_id, BillingTransaction.kind, BillingTransaction.operation)
         .all()
     )
-    totals = {operation: int(total or 0) for operation, total in rows}
+    ledger_map: dict[tuple[str, str], dict[str, tuple[int, int]]] = {}
+    for cid, kind, op, cnt, total_units in ledger_rows:
+        ledger_map.setdefault((str(cid), str(kind)), {})[str(op)] = (int(cnt or 0), int(total_units or 0))
+    db.info["billing_ledger_map"] = ledger_map
+
+    now = now_utc()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_rows = (
+        db.query(Job.client_id, Job.mode, func.count(Job.id))
+        .filter(Job.client_id.in_(client_ids))
+        .filter(Job.created_at >= month_start)
+        .filter(not_(or_(*_internal_job_filters())))
+        .group_by(Job.client_id, Job.mode)
+        .all()
+    )
+    month_map: dict[str, tuple[int, int]] = {}
+    by_client_modes: dict[str, dict[str, int]] = {}
+    for cid, mode, cnt in month_rows:
+        by_client_modes.setdefault(str(cid), {})[str(mode or "")] = int(cnt or 0)
+    for cid in client_ids:
+        m = by_client_modes.get(str(cid), {})
+        s_used = m.get(MODE_SUPPLIER_SEARCH, 0) + m.get(MODE_ANALYSIS_AND_SUPPLIERS, 0)
+        r_used = m.get(MODE_PROCUREMENT_REPORT, 0) + m.get(MODE_ANALYSIS_AND_SUPPLIERS, 0)
+        month_map[str(cid)] = (s_used, r_used)
+    db.info["legacy_month_usage_map"] = month_map
+
+    tx_rows = (
+        db.query(BillingTransaction)
+        .filter(BillingTransaction.client_id.in_(client_ids))
+        .order_by(BillingTransaction.created_at.desc())
+        .all()
+    )
+    recent_map: dict[str, list[dict]] = {}
+    for row in tx_rows:
+        cid = str(row.client_id or "")
+        bucket = recent_map.setdefault(cid, [])
+        if len(bucket) < recent_limit:
+            bucket.append(transaction_to_dict(row))
+    db.info["recent_billing_map"] = recent_map
+
+
+def clear_clients_billing_cache(db: Session) -> None:
+    if not hasattr(db, "info"):
+        return
+    for key in ("system_settings", "billing_ledger_map", "legacy_month_usage_map", "recent_billing_map"):
+        db.info.pop(key, None)
+
+
+def _ledger_counter(db: Session, client_id: str, kind: str) -> dict:
+    if hasattr(db, "info") and "billing_ledger_map" in db.info:
+        op_map = db.info["billing_ledger_map"].get((str(client_id), str(kind)), {})
+        totals = {op: int(units or 0) for op, (_cnt, units) in op_map.items()}
+    else:
+        rows = (
+            db.query(BillingTransaction.operation, func.coalesce(func.sum(BillingTransaction.units), 0))
+            .filter(BillingTransaction.client_id == client_id)
+            .filter(BillingTransaction.kind == kind)
+            .group_by(BillingTransaction.operation)
+            .all()
+        )
+        totals = {operation: int(total or 0) for operation, total in rows}
     granted = totals.get(OP_GRANT, 0)
     manual_debited = totals.get(OP_MANUAL_DEBIT, 0)
     reserved_total = totals.get(OP_RESERVE, 0)
@@ -523,6 +602,8 @@ def _legacy_counter(db: Session, client: Client, kind: str, *, exclude_job_id: s
 
 
 def _legacy_current_month_usage(db: Session, client_id: str, *, exclude_job_id: str = "") -> tuple[int, int]:
+    if not exclude_job_id and hasattr(db, "info") and "legacy_month_usage_map" in db.info:
+        return db.info["legacy_month_usage_map"].get(str(client_id), (0, 0))
     now = now_utc()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     base = (
@@ -561,6 +642,9 @@ def _internal_job_filters() -> list:
 
 
 def _has_billing_transactions(db: Session, client_id: str, kind: str) -> bool:
+    if hasattr(db, "info") and "billing_ledger_map" in db.info:
+        op_map = db.info["billing_ledger_map"].get((str(client_id), str(kind)), {})
+        return any(cnt > 0 for cnt, _units in op_map.values())
     return bool(
         db.query(BillingTransaction.id)
         .filter(BillingTransaction.client_id == client_id)
@@ -570,6 +654,10 @@ def _has_billing_transactions(db: Session, client_id: str, kind: str) -> bool:
 
 
 def _has_billing_grants(db: Session, client_id: str, kind: str) -> bool:
+    if hasattr(db, "info") and "billing_ledger_map" in db.info:
+        op_map = db.info["billing_ledger_map"].get((str(client_id), str(kind)), {})
+        cnt, _units = op_map.get(OP_GRANT, (0, 0))
+        return cnt > 0
     return bool(
         db.query(BillingTransaction.id)
         .filter(BillingTransaction.client_id == client_id)
@@ -1510,6 +1598,8 @@ def operation_label(operation: str) -> str:
 
 
 def recent_billing_transactions(db: Session, client: Client, *, limit: int = 8) -> list[dict]:
+    if limit == 8 and hasattr(db, "info") and "recent_billing_map" in db.info:
+        return db.info["recent_billing_map"].get(str(client.id), [])
     rows = (
         db.query(BillingTransaction)
         .filter(BillingTransaction.client_id == client.id)

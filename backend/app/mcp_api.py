@@ -332,6 +332,15 @@ def consume_quota(db: Session, api_key: ApiKey, service: str, count: int = 1) ->
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Аккаунт клиента заблокирован или не найден",
             )
+        if (
+            getattr(client, "web_users", None)
+            and not any(getattr(u, "is_email_verified", False) for u in client.web_users)
+            and not getattr(client, "telegram_accounts", None)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Подтвердите email в личном кабинете, чтобы запускать задачи по API",
+            )
 
         price_kopeks = effective_price_kopeks(db, client, service)
         if price_kopeks is None or price_kopeks < 0:
@@ -543,6 +552,15 @@ def start_api_job_with_reservation(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Аккаунт клиента заблокирован или не найден",
             )
+        if (
+            getattr(client, "web_users", None)
+            and not any(getattr(u, "is_email_verified", False) for u in client.web_users)
+            and not getattr(client, "telegram_accounts", None)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Подтвердите email в личном кабинете, чтобы запускать задачи по API",
+            )
 
         job = Job(
             job_number=next_job_number(db),
@@ -565,9 +583,15 @@ def start_api_job_with_reservation(
         try:
             reserve_job_units(db, client, job, supplier_search_count=1)
         except BillingError as be:
-            job.status = "failed"
-            job.error = str(be)
-            db.commit()
+            try:
+                import shutil
+                from .jobs import job_dir
+                shutil.rmtree(job_dir(job.id), ignore_errors=True)
+                db.query(JobFile).filter(JobFile.job_id == job.id).delete(synchronize_session=False)
+                db.delete(job)
+                db.commit()
+            except Exception:
+                db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=str(be),

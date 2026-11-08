@@ -843,6 +843,14 @@ function formatError(err: unknown) {
   if (message.includes('Too many login attempts') || message.includes('429')) {
     return 'Слишком много попыток входа. Подождите несколько минут и попробуйте снова.'
   }
+  if (
+    message.includes('502 Bad Gateway') ||
+    message.includes('504 Gateway Time-out') ||
+    message.includes('503 Service Temporarily Unavailable') ||
+    /<html[\s>]/i.test(message)
+  ) {
+    return 'Сервер временно обновляется или перезагружается. Пожалуйста, подождите пару секунд и обновите страницу.'
+  }
   return message || 'Ошибка загрузки'
 }
 
@@ -1369,7 +1377,7 @@ export function App() {
   }, [authenticated, view])
 
   useEffect(() => {
-    if (authenticated && view === 'clients') {
+    if (authenticated && view === 'clients' && !loading) {
       void api<Client[]>('/api/clients')
         .then(data => { if (data) setClients(data) })
         .catch(() => {})
@@ -1387,24 +1395,26 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, opsStatusData, settingsData, tariffData, passwordResetData, analyticsData] = await Promise.all([
+      const [dashboardData, clientsData, settingsData, tariffData, passwordResetData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
-        api<OpsStatus>('/api/ops/system-status'),
         api<SettingsPayload>('/api/settings'),
         api<TariffPackage[]>('/api/tariffs'),
         api<PasswordResetRequest[]>('/api/web-password-resets?status=open'),
-        api<BotAnalytics>('/api/analytics/bot?period_days=30').catch(() => null),
       ])
       setDashboard(dashboardData)
       setClients(clientsData)
-      setOpsStatus(opsStatusData)
       setSettings(settingsData)
       setTariffs(tariffData)
       setPasswordResets(passwordResetData)
-      if (analyticsData) setAnalytics(analyticsData)
 
       // Fetch background / secondary data without delaying core view rendering
+      void api<OpsStatus>('/api/ops/system-status')
+        .then(opsStatusData => { if (opsStatusData) setOpsStatus(opsStatusData) })
+        .catch(() => {})
+      void api<BotAnalytics>('/api/analytics/bot?period_days=30')
+        .then(analyticsData => { if (analyticsData) setAnalytics(analyticsData) })
+        .catch(() => {})
       void api<Job[]>('/api/jobs?include_internal=true&limit=100')
         .then(jobsData => { if (jobsData && viewRef.current !== 'jobs') setJobs(jobsData) })
         .catch(() => {})

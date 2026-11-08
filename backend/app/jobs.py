@@ -2611,13 +2611,16 @@ def cleanup_expired_jobs(db: Session, settings=None) -> int:
         .all()
     )
     for job in expired:
+        jid = job.id
         release_job_reservation(db, job, note="Резерв возвращён: истёк срок хранения задачи")
-        db.query(BillingTransaction).filter(BillingTransaction.job_id == job.id).update(
+        db.query(BillingTransaction).filter(BillingTransaction.job_id == jid).update(
             {BillingTransaction.job_id: None},
             synchronize_session=False,
         )
-        shutil.rmtree(job_dir(job.id), ignore_errors=True)
-        db.delete(job)
+        shutil.rmtree(job_dir(jid), ignore_errors=True)
+        existing_job = db.get(Job, jid)
+        if existing_job is not None:
+            db.delete(existing_job)
     if expired:
         db.commit()
     return len(expired)
