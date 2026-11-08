@@ -186,13 +186,20 @@ export function buildOrganizationJsonLd({
         availableLanguage: ["Russian"],
       },
     } : {}),
-    sameAs: [...(botUrl ? [botUrl] : []), "https://productradar.ru/product/tenderlex"],
+    sameAs: [
+      ...(botUrl ? [botUrl] : []),
+      ...(contacts?.telegram ? [contacts.telegram] : []),
+      ...(contacts?.max ? [contacts.max] : []),
+      "https://productradar.ru/product/tenderlex",
+    ].filter((v, i, a) => Boolean(v) && a.indexOf(v) === i),
     knowsAbout: [
       "Поиск поставщиков по ТЗ",
+      "Подбор товара и аналогов по ТЗ",
       "Анализ закупочной документации",
-      "Реестр Минпромторга",
-      "Подготовка запросов КП",
-      "Оценка рисков закупок",
+      "Мониторинг цен поставщиков по ТЗ",
+      "Реестр Минпромторга (ПП РФ № 1875)",
+      "Подготовка запросов КП и расчет НМЦК",
+      "Оценка рисков закупок по 44-ФЗ и 223-ФЗ",
     ],
   };
 }
@@ -297,12 +304,14 @@ export function buildSoftwareApplicationJsonLd({ trialEnabled = false }: { trial
     name: "TenderLex",
     operatingSystem: "Web, Telegram, iOS, Android, Windows, macOS, Linux",
     applicationCategory: "BusinessApplication",
-    ...(trialEnabled ? { offers: {
-      "@type": "Offer",
-      price: "0",
-      priceCurrency: "RUB",
-      description: "Бесплатный пробный доступ при регистрации.",
-    } } : {}),
+    ...(trialEnabled ? {
+      offers: {
+        "@type": "Offer",
+        price: "0",
+        priceCurrency: "RUB",
+        description: "Бесплатный пробный доступ при регистрации.",
+      }
+    } : {}),
     description:
       "TenderLex — веб-сервис и Telegram-бот для смыслового анализа технического задания, выявления рисков контрактов и поиска прямых контактов поставщиков.",
     url: siteUrl,

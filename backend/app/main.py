@@ -1916,9 +1916,14 @@ def customer_job_chat_attachment_route(
 
 @app.get("/api/customer/chat/messages")
 def customer_chat_messages_route(
-    context: WebAuthContext = Depends(require_web_context),
+    context: WebAuthContext | None = Depends(optional_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    # The public chat widget probes this endpoint on every public page. Guests get
+    # a 200 {"authenticated": false} instead of a 401 so that crawlers and
+    # anonymous visitors do not see console errors on SEO landing pages.
+    if not context:
+        return {"authenticated": False}
     client_id = context.user.client_id
     client = context.user.client or db.get(Client, client_id)
     if not client:

@@ -60,6 +60,8 @@ def test_google_analytics_uses_closed_property_total_and_labels_query_coverage()
             return {"rows": [{"clicks": 13, "impressions": 961, "ctr": 13 / 961, "position": 24.33}]}
         if dimensions == ["query"]:
             return {"rows": [{"keys": ["visible query"], "clicks": 0, "impressions": 234, "ctr": 0, "position": 20.0}]}
+        if dimensions == ["page"]:
+            return {"rows": [{"keys": ["https://tenderlex.ru/analiz-rynka-44-fz"], "clicks": 8, "impressions": 20, "ctr": 0.4, "position": 11.7}]}
         if dimensions == ["date"]:
             return {"rows": []}
         if dimensions == ["date", "query"]:

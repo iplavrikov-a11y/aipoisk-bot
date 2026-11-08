@@ -237,6 +237,9 @@ def handle_recommendation_action(rec_id: str, action: str) -> dict:
     return {"ok": True, "rec_id": rec_id, "status": action}
 
 
+WEBMASTER_GROWTH_MIN_SHOWS = 3
+
+
 def generate_ai_recommendations(growth_points: list, metrika: dict, sample_size_ready: bool, google_data: dict = None) -> list:
     states = load_recommendation_states()
     if not sample_size_ready or metrika.get("primary_conversion", {}).get("status") != "available":
@@ -699,13 +702,16 @@ def fetch_fresh_snapshot() -> dict:
         }
         queries_clean.append(item)
         
-        if avg_pos is not None and shows is not None and 4.0 <= avg_pos <= 15.0 and shows >= 20:
+        # Webmaster popular queries cover a 7-day window (top query ~10 shows), so a
+        # 20-show floor left Yandex growth points permanently empty.
+        if avg_pos is not None and shows is not None and 3.0 <= avg_pos <= 20.0 and shows >= WEBMASTER_GROWTH_MIN_SHOWS:
             growth_points.append({
                 **item,
                 "potential": "Гипотеза: запрос близок к первой странице Яндекса",
                 "action": "Проверить интент, посадочную страницу и CTR на закрытом периоде"
             })
             
+    growth_points = sorted(growth_points, key=lambda g: g.get("shows") or 0, reverse=True)[:15]
     # Enrich growth points with Yandex Wordstat monthly demand & TOP-3 click potential
     try:
         from app.yandex_wordstat import enrich_growth_points

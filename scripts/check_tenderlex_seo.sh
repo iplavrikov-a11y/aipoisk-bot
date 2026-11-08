@@ -94,6 +94,11 @@ check_noindex_page() {
     fail "$label"
   fi
 }
+check_removed_page() {
+  local path="$1" label="$2" page_file
+  page_file="$tmp_dir/$(printf '%s' "$path" | tr '/' '_').html"
+  [[ "$(fetch_to_file "$BASE_URL$path" "$page_file")" == "404" ]] && pass "$label" || fail "$label"
+}
 check_redirect() {
   local source="$1" expected="$2" label="$3" result status target
   result="$(curl -sS --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}|%{redirect_url}' "$source" || true)"
@@ -120,8 +125,9 @@ cabinet="$tmp_dir/cabinet.html"
 grep -q '<meta name="robots" content="noindex, nofollow"' "$cabinet" && pass "cabinet is noindex, nofollow" || fail "cabinet is noindex, nofollow"
 check_header "/demo-design" "X-Robots-Tag: noindex, nofollow" "demo-design has an X-Robots-Tag"
 check_header "/demo-buttons" "X-Robots-Tag: noindex, nofollow" "demo-buttons has an X-Robots-Tag"
-check_noindex_page "/demo-design" "demo-design has a noindex meta tag"
-check_noindex_page "/demo-buttons" "demo-buttons has a noindex meta tag"
+# Demo routes were removed on 2026-11-03 (7a6a950); they must stay gone (404).
+check_removed_page "/demo-design" "demo-design is removed (404)"
+check_removed_page "/demo-buttons" "demo-buttons is removed (404)"
 rg -q 'aggregateRating|ratingValue|ratingCount' site/src && fail "public schema has no unverified aggregate rating" || pass "public schema has no unverified aggregate rating"
 check_redirect "http://tenderlex.ru/privacy?seo-check=1" "$CANONICAL_URL/privacy?seo-check=1" "HTTP apex redirects to HTTPS"
 check_redirect "https://www.tenderlex.ru/privacy?seo-check=1" "$CANONICAL_URL/privacy?seo-check=1" "HTTPS www redirects to apex"

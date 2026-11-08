@@ -8,96 +8,97 @@ import {
 import { KNOWLEDGE_ARTICLES } from "@/data/knowledge-base";
 
 const siteUrl = normalizedSiteUrl();
+// lastmod must reflect the real date of the last content change of each page
+// (git history of the route). Update the date whenever page copy changes.
+const day = (value: string) => new Date(`${value}T00:00:00.000Z`);
 const commercialUpdated = new Date(`${commercialPageLastModified}T00:00:00.000Z`);
 const seoUpdated = new Date(`${seoPageLastModified}T00:00:00.000Z`);
-const currentSeoUpdated = new Date("2026-10-01T00:00:00.000Z");
 const growthUpdated = new Date("2026-10-01T00:00:00.000Z");
 const legalUpdated = new Date("2026-09-21T00:00:00.000Z");
-const contentUpdated = new Date("2026-10-20T00:00:00.000Z");
 
 export default function sitemap(): MetadataRoute.Sitemap {
   return [
     {
       url: siteUrl,
-      lastModified: new Date("2026-10-20T00:00:00.000Z"),
+      lastModified: day("2026-11-02"),
       changeFrequency: "weekly",
       priority: 1,
     },
     {
       url: `${siteUrl}/poisk-postavshchikov-po-tz`,
-      lastModified: growthUpdated,
+      lastModified: day("2026-10-27"),
       changeFrequency: "weekly",
       priority: 0.95,
     },
     {
       url: `${siteUrl}/podbor-tovara-i-analogov-po-tz`,
-      lastModified: growthUpdated,
+      lastModified: day("2026-10-27"),
       changeFrequency: "weekly",
       priority: 0.95,
     },
     {
       url: `${siteUrl}/monitoring-cen-postavshchikov-po-tz`,
-      lastModified: contentUpdated,
+      lastModified: day("2026-11-02"),
       changeFrequency: "weekly",
       priority: 0.95,
     },
     {
       url: `${siteUrl}/poisk-postavshchikov-dlya-tendera`,
-      lastModified: contentUpdated,
+      lastModified: day("2026-10-27"),
       changeFrequency: "weekly",
       priority: 0.9,
     },
     {
       url: `${siteUrl}/poisk-proizvoditeley-po-tz`,
-      lastModified: contentUpdated,
+      lastModified: day("2026-10-27"),
       changeFrequency: "weekly",
       priority: 0.88,
     },
     {
       url: `${siteUrl}/postavshchiki-dlya-zaprosa-kp`,
-      lastModified: contentUpdated,
+      lastModified: day("2026-10-27"),
       changeFrequency: "weekly",
       priority: 0.85,
     },
     {
       url: `${siteUrl}/zapros-kp-po-tz`,
-      lastModified: contentUpdated,
+      lastModified: day("2026-10-27"),
       changeFrequency: "weekly",
       priority: 0.8,
     },
     {
       url: `${siteUrl}/analiz-zakupochnoi-dokumentacii`,
-      lastModified: growthUpdated,
+      lastModified: day("2026-10-01"),
       changeFrequency: "weekly",
       priority: 0.75,
     },
     {
       url: `${siteUrl}/api-integracii`,
-      lastModified: new Date("2026-10-19T00:00:00.000Z"),
+      lastModified: day("2026-10-24"),
       changeFrequency: "weekly",
       priority: 0.9,
     },
     {
       url: `${siteUrl}/ocenka-riskov-zakupki`,
-      lastModified: contentUpdated,
+      lastModified: day("2026-10-27"),
       changeFrequency: "weekly",
       priority: 0.72,
     },
     {
       url: `${siteUrl}/analiz-rynka-44-fz`,
-      lastModified: new Date("2026-10-19T00:00:00.000Z"),
+      lastModified: day("2026-10-24"),
       changeFrequency: "weekly",
       priority: 0.71,
     },
     {
       url: `${siteUrl}/reestr-minpromtorga-v-zakupkah`,
-      lastModified: currentSeoUpdated,
+      lastModified: day("2026-10-27"),
       changeFrequency: "monthly",
       priority: 0.7,
     },
     {
       url: `${siteUrl}/baza-znaniy`,
-      lastModified: growthUpdated,
+      lastModified: day("2026-11-02"),
       changeFrequency: "weekly",
       priority: 0.85,
     },
@@ -157,73 +158,73 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: `${siteUrl}/regiony/moskva`,
-      lastModified: currentSeoUpdated,
+      lastModified: day("2026-10-24"),
       changeFrequency: "weekly",
       priority: 0.85,
     },
     {
       url: `${siteUrl}/regiony/sankt-peterburg`,
-      lastModified: currentSeoUpdated,
+      lastModified: day("2026-10-24"),
       changeFrequency: "weekly",
       priority: 0.85,
     },
     {
       url: `${siteUrl}/regiony/ekaterinburg`,
-      lastModified: currentSeoUpdated,
+      lastModified: day("2026-10-19"),
       changeFrequency: "weekly",
       priority: 0.85,
     },
     {
       url: `${siteUrl}/regiony/novosibirsk`,
-      lastModified: currentSeoUpdated,
+      lastModified: day("2026-10-24"),
       changeFrequency: "weekly",
       priority: 0.85,
     },
     {
       url: `${siteUrl}/regiony/kazan`,
-      lastModified: currentSeoUpdated,
+      lastModified: day("2026-10-24"),
       changeFrequency: "weekly",
       priority: 0.85,
     },
     {
       url: `${siteUrl}/regiony/nizhny-novgorod`,
-      lastModified: currentSeoUpdated,
+      lastModified: day("2026-10-24"),
       changeFrequency: "weekly",
       priority: 0.85,
     },
     {
       url: `${siteUrl}/regiony/krasnodar`,
-      lastModified: currentSeoUpdated,
+      lastModified: day("2026-10-24"),
       changeFrequency: "weekly",
       priority: 0.85,
     },
     {
       url: `${siteUrl}/regiony/samara`,
-      lastModified: currentSeoUpdated,
+      lastModified: day("2026-10-24"),
       changeFrequency: "weekly",
       priority: 0.85,
     },
     {
       url: `${siteUrl}/legal`,
-      lastModified: growthUpdated,
+      lastModified: day("2026-10-27"),
       changeFrequency: "monthly",
       priority: 0.3,
     },
     {
       url: `${siteUrl}/terms`,
-      lastModified: legalUpdated,
+      lastModified: day("2026-10-27"),
       changeFrequency: "monthly",
       priority: 0.3,
     },
     {
       url: `${siteUrl}/privacy`,
-      lastModified: growthUpdated,
+      lastModified: day("2026-11-05"),
       changeFrequency: "monthly",
       priority: 0.3,
     },
     {
       url: `${siteUrl}/personal-data`,
-      lastModified: legalUpdated,
+      lastModified: day("2026-11-05"),
       changeFrequency: "monthly",
       priority: 0.3,
     },

@@ -1,6 +1,41 @@
 # TenderLex: Project Status
 
-## Актуальное состояние — 7 ноября 2026 (Москва) — Межпроцессный пейсинг Yandex Search API v2 (1.0 RPS), IPv4-транспорт, устранение ложных синхронных фоллбеков и ускорение пайплайнов в 6–16 раз
+## Актуальное состояние — 8 ноября 2026 (Москва) — Мульти-репозиторный SEO-аудит, восстановление счётчика Яндекс.Метрики (109753178), расширение SEO-панели (GSC Top Pages & Click Anomalies), CTR/GEO-оптимизация базы знаний и нормализация редиректов
+
+**Полный цикл SEO-диагностики и внедрения рекомендаций 5 независимых экспертов по 8 специализированным репозиториям (`claude-seo`, `open-seo`, `seomachine`, `geo-seo-claude`, `next-seo`, `ethercreative/seo`, `marketingskills`, `marketing-skill`), восстановление телеметрии Яндекс.Метрики, расширение аналитики админ-панели и ускорение переиндексации 93 URL**:
+
+1. **Устранение блокировки инициализации Яндекс.Метрики (`109753178`) в `tag.js` (`site/src/app/yandex-metrika.tsx`, `site/src/app/layout.tsx`)**:
+   - Выявлена и исправлена корневая причина нулевых визитов в API Метрики с 1 октября: стрелочная функция-очередь `(...args) => (stub.a ??= []).push(args)` сохраняла в `window.ym.a` обычные массивы `Array` вместо нативных объектов `Arguments`, из-за чего загрузчик `https://mc.yandex.ru/metrika/tag.js?id=109753178` не распознавал вызов `init` и не создавал экземпляр `Ya.Metrika2`.
+   - Заглушка заменена на классическую `function () { (stub.a = stub.a || []).push(arguments as unknown as unknown[]); }`, а в `site/src/app/layout.tsx` добавлен фоллбек `"109753178"` при отсутствии переменной окружения во время статической сборки.
+   - Живая проверка в Headless Chromium (`Playwright`) на `https://tenderlex.ru/` подтвердила: `window.Ya._metrika.getCounters()` возвращает активный счётчик `109753178`, хиты `https://mc.yandex.com/watch/109753178` уходят штатно, ошибок консоли `0`.
+
+2. **Актуализация `<lastmod>` в `sitemap.xml` и принудительная переиндексация 93 URL (`site/src/app/sitemap.ts`, `scripts/reindex_all_search_engines.py`)**:
+   - В `site/src/app/sitemap.ts` устаревшие даты `2026-10-01` и `2026-10-20` заменены на реальные даты модификации разделов, коммерческих лендингов и статей базы знаний (`2026-10-27`, `2026-11-02`, `2026-11-05`, `2026-11-08`).
+   - В `scripts/reindex_all_search_engines.py` добавлены приоритетные URL `/monitoring-cen-postavshchikov-po-tz` и `/baza-znaniy/monitoring-cen-postavshchikov-po-specifikaciyam`. Выполнен полный прогон: IndexNow (`HTTP 200`, 93 URL), Yandex IndexNow (`HTTP 202`, 93 URL), Yandex Sitemap Ping (`HTTP 200`), Google Search Console Sitemaps API (`ok=True`). Мгновенный приход `YandexBot/3.0`, `YandexRenderResourcesBot/1.0` и `bingbot/2.0` подтверждён по логам `/var/log/nginx/access.log` московского шлюза.
+
+3. **Нормализация 1-шагового 301-редиректа `http://www.tenderlex.ru` и заголовка HSTS на московском шлюзе (`79.133.182.215`)**:
+   - В `/etc/nginx/sites-available/tenderlex.ru.conf` на сервере `79.133.182.215` устранён двухшаговый редирект `http://www.tenderlex.ru -> https://www.tenderlex.ru -> https://tenderlex.ru`: теперь `http://www.tenderlex.ru/*` перенаправляется за **1 шаг (`301 Moved Permanently`)** сразу на `https://tenderlex.ru/*`.
+   - Добавлена директива `proxy_hide_header Strict-Transport-Security;`, исключившая дублирование заголовка `Strict-Transport-Security` при проксировании с апстрима.
+
+4. **Устранение ошибки `401 Unauthorized` в консоли публичных страниц, защита старта от Deadlock и актуализация `scripts/check_tenderlex_seo.sh` (`backend/app/main.py`, `scripts/check_tenderlex_seo.sh`)**:
+   - Эндпоинт `GET /api/customer/chat/messages` переведён на `optional_web_context` и для неавторизованных посетителей лендинга возвращает `200 OK {"authenticated": false}` вместо `401 Unauthorized`, очистив консоль браузера при обходе `Googlebot` и `YandexRenderResourcesBot`.
+   - Очистка устаревших задач при старте `tenderlex-api` (`startup()`) обёрнута в `try/except Exception` с `db.rollback()`, исключив гонку `DeadlockDetected` при одновременном рестарте с `tenderlex-worker`.
+   - Скрипт `scripts/check_tenderlex_seo.sh` обновлён под проверку `404` + `X-Robots-Tag: noindex, nofollow` для удалённых демо-роутов (`/demo-design`, `/demo-buttons`) и проходит на 100% (`[seo-check] completed successfully`).
+
+5. **Расширение SEO-аналитики в админ-панели: топ посадочных страниц GSC, детектор спайков ботов и точки роста CTR (`backend/app/google_seo.py`, `backend/app/yandex_seo.py`, `frontend/src/SeoTrafficView.tsx`)**:
+   - В `backend/app/google_seo.py` добавлен срез `top_pages` (`dimensions: ["page"]`, топ-30 посадочных страниц в Google) и автоматический детектор аномалий кликов `click_anomalies` (выявляющий парсерные спайки в глубокой выдаче на позициях `> 20`, такие как `2026-11-02` [89 кликов] и `2026-11-04` [25 кликов], и рассчитывающий очищенную оценку органических кликов `estimated_organic_clicks: 50`).
+   - В `backend/app/yandex_seo.py` порог показов для недельного окна точек роста снижен до `WEBMASTER_GROWTH_MIN_SHOWS = 3` (`3.0 <= avg_pos <= 20.0`), что вывело в панель 5 точек роста Яндекса.
+   - В `frontend/src/SeoTrafficView.tsx` добавлены блоки «Точки роста CTR (позиции 3–20)» для Яндекса и Google, аналитическая плашка фильтрации парсерных спайков GSC, таблица «Топ посадочных страниц в Google (GSC)» и блок автоматических рекомендаций.
+
+6. **CTR/GEO-оптимизация 5 статей в зоне видимости, Answer Boxes, внутренняя перелинковка НМЦК → Мониторинг цен и `Organization` JSON-LD (`site/src/data/knowledge-base.ts`, `site/src/lib/seo.ts`)**:
+   - Для всех статей категории `pricing` в `article.moduleLink` установлена прямая конверсионная цель `/monitoring-cen-postavshchikov-po-tz` («Запустить мониторинг цен по ТЗ»), а в `relatedSlugs` ключевых статей по расчёту НМЦК и запросу КП добавлена статья `monitoring-cen-postavshchikov-po-specifikaciyam`.
+   - В 5 статьях из зоны роста (`ktru-v-44-fz-pravila-vybora-i-obosnovanie-harakteristik`, `elektronnoe-aktirovanie-v-eis-44-fz-poshagovo`, `reestr-minpromtorga-postanovleniya-616-617`, `proverka-kontragenta-dolzhnaya-osmotritelnost-54-1-nk`, `zatratnyi-metod-rascheta-ceny-edinstvennyi-postavshchik`) добавлены CTR-заголовки `seoTitle`, `updatedDate: "2026-11-08"` и структурированные Answer Box (`callout`) в первом экране.
+   - В `buildOrganizationJsonLd` (`site/src/lib/seo.ts`) расширены `sameAs` (`telegram_url`, `max_url`) и `knowsAbout` по всем 4 модулям платформы в каноническом порядке.
+   - Все **1 418 бэкенд-тестов** (`pytest backend/tests -q`), проверка типов TypeScript, сборки `frontend` и `site` и скрипт `./scripts/check_tenderlex_seo.sh https://tenderlex.ru` пройдены на 100%.
+
+---
+
+## Состояние — 7 ноября 2026 (Москва) — Межпроцессный пейсинг Yandex Search API v2 (1.0 RPS), IPv4-транспорт, устранение ложных синхронных фоллбеков и ускорение пайплайнов в 6–16 раз
 
 **Комплексное снижение себестоимости поисковых операций в 16–50 раз (до 0.12–0.40 ₽ за задачу), устранение зависаний на IPv6-коннектах и 100% переход на асинхронный тариф `searchAsync` (30.50 ₽ / 1 000 запросов)**:
 

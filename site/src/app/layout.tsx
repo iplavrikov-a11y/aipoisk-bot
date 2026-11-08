@@ -30,7 +30,7 @@ const defaultTitle = "TenderLex — поиск поставщиков, подб�
 const defaultDescription =
   "ИИ-поиск поставщиков по ТЗ, подбор аналогов и анализ закупок 44-ФЗ, 223-ФЗ. Кандидаты для запроса КП и рабочие отчеты с источниками для проверки.";
 const defaultOgImage = "/tenderlex-og-1200x630.png";
-const yandexMetrikaId = (process.env.TENDERLEX_YANDEX_METRIKA_ID || process.env.YANDEX_METRIKA_COUNTER_ID || "").trim();
+const yandexMetrikaId = (process.env.TENDERLEX_YANDEX_METRIKA_ID || process.env.YANDEX_METRIKA_COUNTER_ID || "109753178").trim();
 const googleSiteVerification = process.env.TENDERLEX_GOOGLE_SITE_VERIFICATION?.trim();
 const yandexVerification = process.env.TENDERLEX_YANDEX_VERIFICATION?.trim();
 const verification = {

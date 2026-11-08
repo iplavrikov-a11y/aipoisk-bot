@@ -79,7 +79,13 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
       return;
     }
     if (!window.ym) {
-      const stub: NonNullable<Window["ym"]> = (...args: unknown[]) => { (stub.a ??= []).push(args); };
+      // tag.js replays only genuine `arguments` objects from the queue (official
+      // snippet form). An arrow function with rest args pushes plain arrays,
+      // which tag.js ignores: no counter is created and no hits are sent.
+      const stub = function () {
+        // eslint-disable-next-line prefer-rest-params
+        (stub.a = stub.a || []).push(arguments as unknown as unknown[]);
+      } as unknown as NonNullable<Window["ym"]>;
       stub.l = Date.now();
       window.ym = stub;
     }
@@ -134,7 +140,7 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
         </div>
       </aside>
     ) : null}
-    {consent === "granted" ? <Script id="tenderlex-metrika-sdk" src="https://mc.yandex.ru/metrika/tag.js" strategy="afterInteractive" /> : null}
+    {consent === "granted" ? <Script id="tenderlex-metrika-sdk" src={`https://mc.yandex.ru/metrika/tag.js?id=${counterId}`} strategy="afterInteractive" /> : null}
     {consent !== "unknown" ? <button type="button" className="cookie-settings" onClick={() => { configureAnalytics(counterId, false); setConsent("unknown"); }}>Настройки аналитики</button> : null}
   </>;
 }
