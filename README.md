@@ -1,12 +1,18 @@
 # TenderLex Bot
 
-Актуальный выпуск 8 ноября 2026: [восстановление счётчика Яндекс.Метрики (109753178), расширение SEO-панели (GSC Top Pages, детектор спайков и точки роста CTR), CTR/GEO-оптимизация базы знаний и переиндексация 93 URL](docs/PROJECT_STATUS.md), [интерактивные кнопки пополнения и живой проверки баланса Яндекс.Облака в Telegram-алертах](docs/PROJECT_STATUS.md), [межпроцессный пейсинг Yandex Search API v2 (1.0 RPS), привязка к IPv4 и снижение стоимости задач в 16–50 раз](docs/PROJECT_STATUS.md).
+Актуальный выпуск 9 ноября 2026: [замена ложного статуса «ошибка» на «не найдено в Минпромторге» в админ-панели и кабинете, доработка таймлайнов задач, кнопка закрытия глобальных алертов и повышение отказоустойчивости PostgreSQL-пула](docs/PROJECT_STATUS.md), [восстановление счётчика Яндекс.Метрики (109753178), расширение SEO-панели (GSC Top Pages, детектор спайков и точки роста CTR), CTR/GEO-оптимизация базы знаний и переиндексация 93 URL](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 8 ноября: все бэкенд-тесты (1 418 тестов, 100% pass), `check_tenderlex_seo.sh` (93 URL в `sitemap.xml`, 0 ошибок); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
+Серверный прогон выпуска 9 ноября: все бэкенд-тесты (1 419 тестов, 100% pass), `check_tenderlex_seo.sh` (93 URL в `sitemap.xml`, 0 ошибок); деплой проверен на проде (службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- False Error Elimination on Empty Registry Search, Task Timelines & DB Pool Resilience (2026-11-09):
+  - Minpromtorg Not Found Status Badge (`backend/app/main.py`, `frontend/src/App.tsx`, `site/src/app/cabinet/cabinet-client.tsx`): replaced misleading red `ошибка` (system error) badge with informative slate badge `не найдено в Минпромторге` for jobs executed with `minprom_registry_only` policy when no compliant manufacturers are confirmed. Added `is_minprom_empty` flag and `status_label` in both `job_to_dict` (admin) and `customer_job_to_dict` (cabinet).
+  - Clean Task Card & Timeline UX (`frontend/src/App.tsx`, `frontend/src/styles.css`): removed alarming red `#dc2626` left border from non-error registry exit cards in favor of neutral slate `#94a3b8`. Preserved green status on "Создана", "Входные", and "ИИ" timeline dots, marking "Результат" with neutral empty dot. Added explicit card note informing the operator that the reservation was refunded to customer balance.
+  - PostgreSQL Tunnel Resilience (`backend/app/db.py`): increased SQLAlchemy/psycopg2 connection timeout from 10s to 30s (`connect_timeout=30`), pool queue timeout from 30s to 45s (`pool_timeout=45`), and expanded max overflow to 15 to eliminate transient connection drops during background job expiration cleanups.
+  - Dismissible Admin Alerts (`frontend/src/App.tsx`): added interactive close button `(X)` to top-level admin error banner, allowing operators to dismiss transient notifications without full page reloads.
 
 - Multi-Repo SEO Audit Implementation, Yandex.Metrika `tag.js` Queue Fix, Admin SEO Analytics Expansion & KB CTR/GEO Optimization (2026-11-08):
   - Yandex.Metrika (`109753178`) Initialization Fix (`site/src/app/yandex-metrika.tsx`, `site/src/app/layout.tsx`): replaced arrow rest-array stub `(...args) => (stub.a ??= []).push(args)` with standard `function () { (stub.a = stub.a || []).push(arguments); }` so `mc.yandex.ru/metrika/tag.js` properly consumes queued `Arguments` objects and initializes `Ya.Metrika2`. Added fallback counter ID `"109753178"` in `layout.tsx`. Verified in headless Chromium (`Playwright`) on `https://tenderlex.ru/` (`getCounters()` active, `mc.yandex.com/watch/109753178` hits firing, `0` console errors).
