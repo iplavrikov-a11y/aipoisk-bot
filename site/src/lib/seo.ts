@@ -118,7 +118,7 @@ export function buildOrganizationJsonLd({
   contacts,
 }: {
   botUrl?: string;
-  contacts?: { email?: string; phone?: string; phone_url?: string };
+  contacts?: { email?: string; phone?: string; phone_url?: string; telegram?: string; max?: string };
 } = {}) {
   const siteUrl = normalizedSiteUrl();
   return {

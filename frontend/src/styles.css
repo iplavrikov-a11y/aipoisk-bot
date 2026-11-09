@@ -941,6 +941,12 @@ a.api-service-row.configured:hover {
   border-image: none !important;
 }
 
+/* Исход "не найдено в Минпромторге" - бизнес-результат поиска, не системная ошибка */
+.job-card.compact.minprom-not-found {
+  border-left: 4px solid #94a3b8 !important;
+  border-image: none !important;
+}
+
 .job-card.service { background: #f8fafc; }
 .job-card-top {
   display: flex;
@@ -1601,6 +1607,12 @@ a.api-service-row.configured:hover {
 .job-timeline-step.error .timeline-dot {
   background: #dc2626;
 }
+.job-timeline-step.empty {
+  color: #64748b;
+}
+.job-timeline-step.empty .timeline-dot {
+  background: #94a3b8;
+}
 .job-inline-downloads {
   display: flex;
   align-items: center;
@@ -2249,6 +2261,7 @@ a.api-service-row.configured:hover {
 .status.partial, .status.needs_review { background: #fef3c7; color: #92400e; }
 .status.warning { background: #fef3c7; color: #92400e; }
 .status.failed, .status.disabled { background: #fee2e2; color: #991b1b; }
+.status.minprom_not_found, .status.minprom-not-found { background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; }
 .status.cancelled { background: #f3f4f6; color: #6b7280; }
 .status.running, .status.pending { background: #dbeafe; color: #1e40af; }
 .progress-wrap { min-width: 180px; }

@@ -194,6 +194,8 @@ type UsageEntry = {
   supplier_units: number
   procurement_report_units: number
   status: string
+  status_label?: string
+  is_minprom_empty?: boolean
   created_at: string | null
 }
 
@@ -230,6 +232,8 @@ type PasswordResetRequest = {
   client_name: string
   email: string
   status: string
+  status_label?: string
+  is_minprom_empty?: boolean
   admin_note: string
   requested_ip: string
   created_at: string | null
@@ -287,6 +291,8 @@ type Job = {
   offer_delivery_outcome?: string
   result_offer?: JobResultOffer | null
   status: string
+  status_label?: string
+  is_minprom_empty?: boolean
   progress: number
   message: string
   title: string
@@ -338,6 +344,8 @@ type JobAdminRerunInfo = {
   id: string
   job_number?: number | null
   status: string
+  status_label?: string
+  is_minprom_empty?: boolean
   progress: number
   message: string
   verified_count?: number
@@ -604,6 +612,8 @@ type SupplierSearchUi = {
 
 type OpsStatus = {
   status: string
+  status_label?: string
+  is_minprom_empty?: boolean
   updated_at: string
   server: {
     disk_total_gb: number
@@ -1051,6 +1061,21 @@ function ensureModelProviders(providers: CustomProvider[], models: SavedModel[])
 
 function humanStatus(status: string) {
   return statusLabels[status] || status || 'неизвестно'
+}
+
+function isMinpromNotFound(job: { status?: string; message?: string; error?: string; supplier_search_policy?: string; status_label?: string; is_minprom_empty?: boolean }): boolean {
+  if (job.is_minprom_empty) return true
+  if (job.status_label === 'не найдено в Минпромторге' || job.status_label === 'нет в реестре') return true
+  if (job.status !== 'failed') return false
+  const msg = (job.message || '').toLowerCase()
+  const err = (job.error || '').toLowerCase()
+  const isRegistryPolicy = job.supplier_search_policy === 'minprom_registry_only'
+  return (
+    (isRegistryPolicy && (msg.includes('реестр') || msg.includes('минпром') || err.includes('реестр') || err.includes('минпром'))) ||
+    msg.includes('в реестре минпромторга подходящие производители не найдены') ||
+    msg.includes('по реестру подходящие поставщики не подтверждены') ||
+    (msg.includes('в реестре минпромторга') && msg.includes('не найден'))
+  )
 }
 
 function humanMode(mode: string) {
@@ -1861,7 +1886,23 @@ export function App() {
           </div>
         </header>
 
-        {error && <div className="alert error"><XCircle size={18} />{error}</div>}
+        {error && (
+          <div className="alert error" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <XCircle size={18} />
+              <span>{error}</span>
+            </div>
+            <button
+              type="button"
+              className="icon-button small"
+              onClick={() => setError('')}
+              title="Закрыть уведомление"
+              style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', padding: '2px', display: 'inline-flex', alignItems: 'center' }}
+            >
+              <X size={15} />
+            </button>
+          </div>
+        )}
         {isReady && view === 'dashboard' && (
           <DashboardView
             dashboard={dashboard}
@@ -4366,10 +4407,11 @@ function JobsView({
           const clientResultFiles = job.result_files || []
           const totalFileCount = inputFiles.length + inputSources.length + clientResultFiles.length + allAdminFilesCount
           const isFilesDropdownOpen = activeFilesDropdownJobId === job.id
+          const minpromNotFound = isMinpromNotFound(job)
 
           return (
           <article
-            className={`job-card compact mode-${job.mode} status-${job.status} ${job.is_internal ? 'service' : ''}`}
+            className={`job-card compact mode-${job.mode} status-${job.status} ${minpromNotFound ? 'minprom-not-found' : ''} ${job.is_internal ? 'service' : ''}`}
             key={job.id}
             style={{ zIndex: isFilesDropdownOpen ? 50 : undefined, position: 'relative' }}
           >
@@ -4382,7 +4424,13 @@ function JobsView({
                     </span>
                   ) : null}
                   <h2 title={job.title}>{job.human_title || humanMode(job.mode)}</h2>
-                  <StatusBadge status={job.status} />
+                  {minpromNotFound ? (
+                    <span className="status minprom-not-found" title="По спецификации в реестре Минпромторга не найдено подходящих производителей">
+                      не найдено в Минпромторге
+                    </span>
+                  ) : (
+                    <StatusBadge status={job.status} />
+                  )}
                 </div>
                 <p className="job-subline">
                   {formatDate(job.created_at)}
@@ -4422,7 +4470,7 @@ function JobsView({
                 {(job.status === 'running' || job.status === 'pending') && (
                   <button className="icon-button small danger" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={13} /></button>
                 )}
-                {job.status === 'failed' && (
+                {job.status === 'failed' && !minpromNotFound && (
                   <button className="icon-button small" style={{ color: '#059669', borderColor: '#a7f3d0', background: '#ecfdf5' }} onClick={() => void resolveJob(job)} title="Отметить решённым (устранено)"><CheckCircle2 size={13} /></button>
                 )}
               </div>
@@ -4879,8 +4927,13 @@ function JobsView({
               </div>
             )}
 
-            {job.status === 'failed' && Boolean(job.error) && !showProgress && (
+            {job.status === 'failed' && Boolean(job.error) && !showProgress && !minpromNotFound && (
               <div className="alert error compact">{job.error}</div>
+            )}
+            {minpromNotFound && !showProgress && (
+              <div className="alert compact" style={{ background: '#f8fafc', borderColor: '#cbd5e1', color: '#475569', fontSize: '11.5px', padding: '5px 9px', marginTop: '6px', borderRadius: '4px' }}>
+                ℹ️ {job.message || 'В реестре Минпромторга подходящие производители не найдены'} · <em>резерв средств возвращён клиенту</em>
+              </div>
             )}
           </article>
           )
@@ -5559,18 +5612,19 @@ function AdminSupplementModal({
 }
 
 function JobTimeline({ job, hasInput }: { job: Job; hasInput: boolean }) {
-  const failed = job.status === 'failed' || Boolean(job.error)
+  const minpromNotFound = isMinpromNotFound(job)
+  const failed = !minpromNotFound && (job.status === 'failed' || Boolean(job.error))
   const completed = job.status === 'completed' || job.has_result || (job.result_files?.length || 0) > 0
   const steps = [
     { label: 'Создана', state: 'done' },
     { label: 'Входные', state: hasInput ? 'done' : job.status === 'pending' ? 'current' : 'waiting' },
-    { label: 'ИИ', state: failed ? 'error' : completed || job.progress >= 70 ? 'done' : job.status === 'running' ? 'current' : 'waiting' },
-    { label: 'Результат', state: failed ? 'error' : completed ? 'done' : job.status === 'running' || job.status === 'pending' ? 'current' : 'waiting' },
+    { label: 'ИИ', state: failed ? 'error' : completed || job.progress >= 70 || minpromNotFound ? 'done' : job.status === 'running' ? 'current' : 'waiting' },
+    { label: 'Результат', state: failed ? 'error' : minpromNotFound ? 'empty' : completed ? 'done' : job.status === 'running' || job.status === 'pending' ? 'current' : 'waiting' },
   ]
   return (
     <div className="job-timeline" aria-label="Этапы обработки задачи">
       {steps.map(step => (
-        <div className={`job-timeline-step ${step.state}`} key={step.label} title={`Этап: ${step.label} (${step.state})`}>
+        <div className={`job-timeline-step ${step.state}`} key={step.label} title={`Этап: ${step.label} (${step.state === 'empty' ? 'в реестре не найдено' : step.state})`}>
           <span className="timeline-dot" />
           <span className="timeline-text">{step.label}</span>
         </div>

@@ -6813,8 +6813,23 @@ def customer_job_to_dict(
             "multi_item_mode": getattr(job, "multi_item_mode", "balanced"),
         }
     status_lbl = human_status_label(job.status)
-    if job.status == "failed" and getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY and ("реестр" in (job.error or "").lower() or "реестр" in (job.message or "").lower()):
-        status_lbl = "нет в реестре"
+    is_cabinet_minprom_empty = (
+        job.status == "failed"
+        and (
+            getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY
+            or "реестр" in (job.error or "").lower()
+            or "реестр" in (job.message or "").lower()
+            or "минпром" in (job.message or "").lower()
+        )
+        and (
+            "не найден" in (job.message or "").lower()
+            or "не найден" in (job.error or "").lower()
+            or "реестр" in (job.message or "").lower()
+            or not getattr(job, "verified_count", 0)
+        )
+    )
+    if is_cabinet_minprom_empty:
+        status_lbl = "не найдено в Минпромторге"
 
     chat_list: list[dict] = []
     unread_admin_cnt = 0
@@ -6855,6 +6870,7 @@ def customer_job_to_dict(
         "exact_product_positions": _customer_exact_product_positions(job),
         "status": job.status,
         "status_label": status_lbl,
+        "is_minprom_empty": is_cabinet_minprom_empty,
         "progress": job.progress,
         "message": job.message,
         "title": job.title,
@@ -8672,6 +8688,25 @@ def job_to_dict(
         tg_id = job.client.telegram_id
         created_by_label = f"TG: {tg_id}" if tg_id.startswith("@") else f"TG ID: {tg_id}"
 
+    status_lbl = human_status_label(job.status)
+    is_minprom_empty = (
+        job.status == "failed"
+        and (
+            getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY
+            or "реестр" in (job.error or "").lower()
+            or "реестр" in (job.message or "").lower()
+            or "минпром" in (job.message or "").lower()
+        )
+        and (
+            "не найден" in (job.message or "").lower()
+            or "не найден" in (job.error or "").lower()
+            or "реестр" in (job.message or "").lower()
+            or not getattr(job, "verified_count", 0)
+        )
+    )
+    if is_minprom_empty:
+        status_lbl = "не найдено в Минпромторге"
+
     data = {
         "id": job.id,
         "job_number": getattr(job, "job_number", None),
@@ -8707,6 +8742,8 @@ def job_to_dict(
         "offer_delivery_outcome": offer_delivery_outcome,
         "result_offer": result_offer,
         "status": job.status,
+        "status_label": status_lbl,
+        "is_minprom_empty": is_minprom_empty,
         "progress": job.progress,
         "message": job.message,
         "title": job.title,

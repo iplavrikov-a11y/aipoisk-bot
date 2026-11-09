@@ -37,14 +37,14 @@ def _sqlite_connect_args(database_url: str) -> dict:
             "keepalives_idle": 15,
             "keepalives_interval": 5,
             "keepalives_count": 3,
-            "connect_timeout": 10,
+            "connect_timeout": 30,
         }
     return {}
 
 
 def _engine_pool_kwargs(database_url: str) -> dict:
     if database_url.startswith("postgresql"):
-        return {"pool_size": 8, "max_overflow": 8, "pool_recycle": 180, "pool_timeout": 30}
+        return {"pool_size": 10, "max_overflow": 15, "pool_recycle": 180, "pool_timeout": 45}
     return {}
 
 
