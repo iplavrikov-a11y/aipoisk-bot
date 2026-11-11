@@ -4570,8 +4570,8 @@ async def _search_with_yandex(
                 except Exception as async_exc:
                     logger.debug("Yandex async search call failed: %s", async_exc)
 
-            # Fallback: Synchronous endpoint ONLY if explicitly enabled via AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK=1
-            if os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK") == "1" or not async_supported:
+            # Fallback: Synchronous endpoint if async is unsupported, in 429 cooldown, or explicitly enabled
+            if (not async_supported or not is_yandex_async_available() or os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK") == "1") and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK") != "0":
                 try:
                     response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
                     if response.status_code == 429:
