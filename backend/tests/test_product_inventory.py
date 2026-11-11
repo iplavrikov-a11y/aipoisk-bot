@@ -126,3 +126,23 @@ def test_repeated_page_header_does_not_pollute_previous_product():
     rows = extract_structured_product_inventory([], context=text)
     assert [row["name"] for row in rows] == ["Болт М6", "Болт М8"]
     assert rows[0]["unit"] == "шт"
+
+
+def test_ktru_unified_specification_table_parses_single_product_with_characteristics():
+    text = """
+| | Код КТРУ | Наименование товара, работы, услуги | Тип характеристики | Наименование характеристики | Значение характеристики | Единица измерения характеристики | Инструкция | Обоснование | Кол-во к поставке / Ед. изм. |
+|1| 22.19.60.119-00000008 | Перчатки смотровые нитриловые | Качественная | Внешняя отделка | Текстурный рисунок | | Значение не меняется | захват | Пара (2 шт.) |
+|1| 22.19.60.119-00000008 | Перчатки смотровые нитриловые | Количественная | Длина | ≥ 220 | мм | Значение не меняется | ГОСТ | Пара (2 шт.) |
+|1| 22.19.60.119-00000008 | Перчатки смотровые нитриловые | Количественная | Усилие при разрыве | ≥ 7,0 | Н | Значение не меняется | ГОСТ | Пара (2 шт.) |
+|1| 22.19.60.119-00000008 | Перчатки смотровые нитриловые | Качественная | Размер | M, L | | Значение не меняется | | Пара (2 шт.) |
+"""
+    rows = extract_structured_product_inventory([], context=text)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Перчатки смотровые нитриловые"
+    assert rows[0]["quantity"] == "Пара (2 шт.)"
+    assert len(rows[0]["requirements"]) == 4
+    assert rows[0]["requirements"][0] == {"param_name": "Внешняя отделка", "tz_requirement": "Текстурный рисунок"}
+    assert rows[0]["requirements"][1] == {"param_name": "Длина", "tz_requirement": "≥ 220 мм"}
+    assert rows[0]["requirements"][2] == {"param_name": "Усилие при разрыве", "tz_requirement": "≥ 7,0 Н"}
+    assert rows[0]["requirements"][3] == {"param_name": "Размер", "tz_requirement": "M, L"}
+

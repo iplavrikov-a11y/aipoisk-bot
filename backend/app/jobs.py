@@ -1833,14 +1833,22 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
 
 
 async def prepare_job_product_positions(settings: SystemSettings, context: str, input_files=None) -> list[dict]:
-    """Shared source inventory before any market search, for products and monitoring."""
+    """Semantic AI product extraction for selection and monitoring workflows (Rule 14).
+    Understands arbitrary documents (Word, Excel, PDF, text, tables, or unstructured text)
+    without rigid column constraints, exactly like supplier_search.
+    """
+    # 1. Primary: Semantic AI extraction (understands any document structure, tables, KTRU, smetas)
+    positions = await prepare_exact_product_positions(settings, context, input_files=input_files)
+    if positions:
+        return positions
+
+    # 2. Secondary fallback only if AI produced nothing (offline / test mocks / provider outage):
     from .product_inventory import extract_structured_product_inventory
     structured = extract_structured_product_inventory(input_files or [], context=context)
-    if structured is not None:
+    if structured:
         return structured
-    # Unstructured documents require semantic product extraction; legal lines are
-    # never converted to products by the monitoring line-by-line heuristic.
-    return await prepare_exact_product_positions(settings, context, input_files=input_files)
+
+    return []
 
 
 def _process_exact_product(db: Session, job: Job, settings: SystemSettings, context: str) -> None:

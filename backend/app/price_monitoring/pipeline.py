@@ -167,11 +167,15 @@ def parse_input_excel(file_bytes: bytes) -> List[tuple[str, str]]:
     for r in range(1, min(15, ws.max_row + 1)):
         for c in range(1, min(15, ws.max_column + 1)):
             val = str(ws.cell(row=r, column=c).value or "").strip().lower()
-            if "номенклатур" in val or "наименован" in val or "товар" in val:
-                nom_col = c
-                start_row = r + 1
-            elif any(k in val for k in ("модель", "марка", "артикул", "характеристик")):
+            if any(k in val for k in ("характеристик", "показател", "параметр")):
                 model_col = c
+            elif any(k in val for k in ("модель", "марка", "артикул")):
+                model_col = c
+            elif "номенклатур" in val or "товар" in val or "наименован" in val:
+                # Не перезаписываем колонку товара колонками характеристик или параметров
+                if nom_col == 1 or any(k in val for k in ("товар", "номенклатур", "продукц")):
+                    nom_col = c
+                    start_row = r + 1
             elif "ед." in val or "ед.изм" in val or "единиц" in val:
                 unit_col = c
 

@@ -85,7 +85,7 @@ async def prepare_exact_product_positions(
     text_sources = []
     for file in input_files or []:
         path = Path(file)
-        if path.suffix.lower() == ".xlsx":
+        if rows and path.suffix.lower() == ".xlsx":
             continue
         from ..document_parser import extract_text
         text, _status = extract_text(path)
@@ -93,7 +93,7 @@ async def prepare_exact_product_positions(
             text_sources.append((path.name, text))
     if not input_files:
         text_sources.append(("", context))
-    elif not rows and not text_sources:
+    elif not text_sources and context:
         text_sources.append(("", context))
     for source_file, source_text in text_sources:
         chunks, current = [], ""
@@ -343,7 +343,22 @@ async def _analyze_exact_product(
 
     raw_count = max(len(positions_raw), max((int(p.get("total_tz_positions") or 0) for p in positions_raw if isinstance(p, dict)), default=0))
     found_count = sum(p.status == "found" for p in typed_positions)
-    summary_text = f"Обработано позиций: {len(typed_positions)}. Найдены модели: {found_count}. Остальные позиции требуют уточнения или повторного поиска."
+    clarification_count = sum(p.status == "needs_clarification" for p in typed_positions)
+    if found_count > 0 and clarification_count > 0:
+        summary_text = (
+            f"Обработано позиций: {len(typed_positions)}. "
+            f"Точно подтверждено: {found_count}, подобрано вариантов с необходимостью сверки по паспорту: {clarification_count}."
+        )
+    elif found_count == 0 and clarification_count > 0:
+        summary_text = (
+            f"Обработано позиций: {len(typed_positions)}. "
+            f"Подобраны модели и аналоги по {clarification_count} из {len(typed_positions)} позиций "
+            f"(по отдельным характеристикам требуется контрольная сверка с паспортом завода)."
+        )
+    elif found_count > 0 and clarification_count == 0:
+        summary_text = f"Обработано позиций: {len(typed_positions)}. Все {found_count} позиций успешно подобраны и подтверждены документацией."
+    else:
+        summary_text = f"Обработано позиций: {len(typed_positions)}. Модели в открытых источниках не найдены, требуется уточнение исходного ТЗ."
     if raw_count > len(typed_positions) and len(typed_positions) < raw_count:
         limit_note = (
             f"В исходном ТЗ обнаружено {raw_count} позиций. "

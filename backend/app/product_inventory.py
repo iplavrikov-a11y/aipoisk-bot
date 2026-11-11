@@ -25,15 +25,19 @@ def _number(value: str) -> int | None:
 def _header_columns(headers: list[str]) -> tuple[int | None, int | None, int | None, int | None]:
     name = unit = quantity = number = None
     for column, header in enumerate(headers):
-        low = header.lower()
-        if "наименован" in low or "номенклатур" in low or "название товара" in low:
-            name = column
-        elif "единиц" in low or low.strip().startswith("ед.") or low.strip() == "ед":
-            unit = column
-        elif "кол" in low or "количество" in low:
-            quantity = column
-        elif "№" in low or low.strip() in {"номер", "п/п"}:
+        low = header.strip().lower()
+        if any(w in low for w in ("№", "п/п", "номер")) or (column == 0 and low in {"", "№", "п/п"}):
             number = column
+        elif any(w in low for w in ("характеристик", "показател", "параметр")):
+            # Characteristic and parameter columns are never product names or product units
+            continue
+        elif any(w in low for w in ("наименован", "номенклатур", "название товара", "предмет")):
+            if any(w in low for w in ("товар", "продукц", "объект", "работ", "услуг", "номенклатур")) or name is None:
+                name = column
+        elif any(w in low for w in ("кол-во", "количество", "объем")):
+            quantity = column
+        elif any(w in low for w in ("единиц", "ед.", "ед")) and unit is None:
+            unit = column
     return name, unit, quantity, number
 
 
@@ -83,7 +87,10 @@ def _table_rows(text: str, source_file: str) -> list[dict] | None:
 
         if name_col is None:
             continue
-        authoritative = unit_col is not None and quantity_col is not None
+        authoritative = unit_col is not None or quantity_col is not None
+        has_inline_chars = any(w in h.lower() for w in ("характеристик", "показател", "параметр") for h in headers[2:]) and (unit_col is not None or quantity_col is not None)
+        if has_inline_chars:
+            authoritative = True
         characteristic = any("показател" in header.lower() or "характеристик" in header.lower() for header in headers[2:])
         if not authoritative and not characteristic:
             continue
@@ -102,38 +109,58 @@ def _table_rows(text: str, source_file: str) -> list[dict] | None:
                 continue
             num_val = cells[number_col] if number_col is not None and number_col < len(cells) else ""
             number = _number(num_val) if number_col is not None else None
-            if number is None and number_col is None and len(cells) > name_col and cells[name_col].strip():
-                flush()
-                current = {"position_no": len(inventory) + 1, "name": "", "unit": "", "quantity": "", "requirements": [],
-                           "source_file": source_file, "source_row": line_no, "source_excerpt": ""}
+            get = lambda column: cells[column].strip() if column is not None and column < len(cells) else ""
+            name_val = get(name_col)
+
+            is_new = False
+            if current is None:
+                is_new = True
             elif number is not None:
+                if current.get("position_no") != number:
+                    is_new = True
+            elif name_val and number_col is None:
+                is_new = True
+
+            if is_new:
                 flush()
-                current = {"position_no": number, "name": "", "unit": "", "quantity": "", "requirements": [],
+                pos_no = number if number is not None else len(inventory) + 1
+                current = {"position_no": pos_no, "name": "", "unit": "", "quantity": "", "requirements": [],
                            "source_file": source_file, "source_row": line_no, "source_excerpt": ""}
             if current is None:
                 continue
-            get = lambda column: cells[column] if column is not None and column < len(cells) else ""
             name_part = get(name_col)
-            if name_part:
+            if name_part and (not current["name"] or not has_inline_chars):
                 current["name"] = (current["name"] + " " + name_part).strip()
             current["source_excerpt"] += ("\n" if current["source_excerpt"] else "") + " | ".join(cells)
             if authoritative:
                 for key, column in (("unit", unit_col), ("quantity", quantity_col)):
-                    if get(column):
-                        current[key] = (current[key] + " " + get(column)).strip()
-            elif len(cells) == 4:
-                description = cells[2]
-                if description:
-                    if current["requirements"] and current["requirements"][-1]["param_name"] == "Описание товара":
-                        current["requirements"][-1]["tz_requirement"] += " " + description
-                    else:
-                        current["requirements"].append({"param_name": "Описание товара", "tz_requirement": description})
-            elif len(cells) >= 5:
-                param, value = cells[2], cells[3]
-                if param:
-                    current["requirements"].append({"param_name": param, "tz_requirement": value})
-                elif value and current["requirements"]:
-                    current["requirements"][-1]["tz_requirement"] += " " + value
+                    if get(column) and not current[key]:
+                        current[key] = get(column)
+            # Check for inline characteristics in the same authoritative table
+            char_col = next((c for c, h in enumerate(headers) if any(w in h.lower() for w in ("характеристик", "показател", "параметр")) and any(w in h.lower() for w in ("наименован", "название"))), None)
+            val_col = next((c for c, h in enumerate(headers) if any(w in h.lower() for w in ("характеристик", "показател", "параметр")) and any(w in h.lower() for w in ("значен", "требован"))), None)
+            unit_val_col = next((c for c, h in enumerate(headers) if any(w in h.lower() for w in ("характеристик", "показател", "параметр")) and any(w in h.lower() for w in ("единиц", "ед."))), None)
+            if char_col is not None and val_col is not None:
+                p_name = get(char_col)
+                p_val = get(val_col)
+                p_u = get(unit_val_col) if unit_val_col is not None else ""
+                if p_name and p_val:
+                    req_str = f"{p_val} {p_u}".strip() if p_u else p_val
+                    current["requirements"].append({"param_name": p_name, "tz_requirement": req_str})
+            elif not authoritative:
+                if len(cells) == 4:
+                    description = cells[2]
+                    if description:
+                        if current["requirements"] and current["requirements"][-1]["param_name"] == "Описание товара":
+                            current["requirements"][-1]["tz_requirement"] += " " + description
+                        else:
+                            current["requirements"].append({"param_name": "Описание товара", "tz_requirement": description})
+                elif len(cells) >= 5:
+                    param, value = cells[2], cells[3]
+                    if param:
+                        current["requirements"].append({"param_name": param, "tz_requirement": value})
+                    elif value and current["requirements"]:
+                        current["requirements"][-1]["tz_requirement"] += " " + value
         flush()
     if not inventory:
         return None

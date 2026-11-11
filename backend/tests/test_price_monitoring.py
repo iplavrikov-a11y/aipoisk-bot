@@ -843,5 +843,27 @@ def test_price_monitoring_access_modes_global_and_granular(db_session, admin_cli
         db_session.commit()
 
 
+def test_parse_input_excel_with_characteristic_column_does_not_overwrite_product_name():
+    import io
+    import openpyxl
+    from app.price_monitoring.pipeline import parse_input_excel
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["№", "Наименование товара, работы, услуги", "Код", "Наименование характеристики", "Ед. изм."])
+    ws.append([1, "Перчатки нитриловые смотровые", "22.19.60", "Длина", "пара"])
+    ws.append([2, "Маска медицинская трехслойная", "32.50.50", "Цвет", "шт"])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    file_bytes = buf.getvalue()
+
+    items = parse_input_excel(file_bytes)
+    assert len(items) == 2
+    assert items[0][0].startswith("Перчатки нитриловые")
+    assert items[1][0].startswith("Маска медицинская")
+
+
+
 
 

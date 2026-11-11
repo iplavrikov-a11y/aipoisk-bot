@@ -4538,7 +4538,12 @@ async def _search_with_yandex(
                 "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
             }
             # Primary: Cost-effective asynchronous search (30.50 ₽ / 1k reqs vs 488 ₽ / 1k reqs sync)
-            if async_supported:
+            from .exact_product.yandex_search import (
+                is_yandex_async_available,
+                record_yandex_async_failure_429,
+                record_yandex_async_success,
+            )
+            if async_supported and is_yandex_async_available():
                 try:
                     from .exact_product.yandex_search import _paced_async_post
                     response = await _paced_async_post(
@@ -4548,6 +4553,7 @@ async def _search_with_yandex(
                         json=body,
                     )
                     if response.status_code == 200:
+                        record_yandex_async_success()
                         requests_count += 1
                         operation_id = str(response.json().get("id") or "")
                         if operation_id:
@@ -4555,6 +4561,9 @@ async def _search_with_yandex(
                             if raw_data is not None:
                                 return _parse_yandex_xml(raw_data, query=query) if raw_data else []
                     elif response.status_code in (404, 501):
+                        async_supported = False
+                    elif response.status_code == 429:
+                        record_yandex_async_failure_429(180.0)
                         async_supported = False
                     elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
                         notify_yandex_search_error(response.status_code, response.text, query=query)
