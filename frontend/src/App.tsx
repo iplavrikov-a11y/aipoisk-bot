@@ -5054,8 +5054,12 @@ function generateDefaultComment(job: Job): string {
   return `Эксперты TenderLex провели расширенную доработку по позиции «${item}».`
 }
 
+function isZeroOfferComment(text?: string | null): boolean {
+  return Boolean(text && /стоимость\s+доплаты\s+составит\s*0(?:[.,]0+)?\s*₽/i.test(text))
+}
+
 function defaultAdminComment(job: Job): string {
-  if (job.admin_comment) return job.admin_comment
+  if (job.admin_comment && !isZeroOfferComment(job.admin_comment)) return job.admin_comment
   return generateDefaultComment(job)
 }
 
@@ -5065,7 +5069,12 @@ type SupplementCandidate = {
   label: string
   filename: string
   job_id: string
+  job_number?: number | null
+  job_status?: string
+  verified_count?: number
   is_admin_rerun: boolean
+  is_empty_result?: boolean
+  is_recommended?: boolean
   created_at?: string | null
 }
 
@@ -5073,6 +5082,8 @@ type OfferPreview = {
   client_id?: string
   client_name?: string
   client_balance_rub?: number
+  already_charged_rub?: number
+  requires_payment_approval?: boolean
   prior_verified_count?: number
   new_verified_count?: number
   delta_units?: number
@@ -5097,7 +5108,7 @@ function AdminSupplementModal({
   const [candidates, setCandidates] = useState<SupplementCandidate[]>([])
   const [loadingCandidates, setLoadingCandidates] = useState(true)
   const [offerPreview, setOfferPreview] = useState<OfferPreview | null>(null)
-  const [asOffer, setAsOffer] = useState(true)
+  const [asOffer, setAsOffer] = useState(false)
   const [offerChargeRub, setOfferChargeRub] = useState<number | ''>('')
   const [chatMessages, setChatMessages] = useState<any[]>([])
   const [loadingChat, setLoadingChat] = useState(true)
@@ -5148,11 +5159,22 @@ function AdminSupplementModal({
             const list: SupplementCandidate[] = data.candidates
             setCandidates(list)
             if (list.length > 0) {
-              const rerunIds = list.filter(c => c.is_admin_rerun).map(c => c.composite_id)
-              if (rerunIds.length > 0) {
-                setSelectedJobFileKinds(rerunIds)
+              const recommendedIds = list.filter(c => c.is_recommended).map(c => c.composite_id)
+              if (recommendedIds.length > 0) {
+                setSelectedJobFileKinds(recommendedIds)
               } else {
-                setSelectedJobFileKinds(list.map(c => c.composite_id))
+                const fallbackCand =
+                  list.find(c => c.is_admin_rerun && !c.is_empty_result) ||
+                  list.find(c => !c.is_empty_result)
+                if (fallbackCand) {
+                  setSelectedJobFileKinds(
+                    list
+                      .filter(c => c.job_id === fallbackCand.job_id && !c.is_empty_result)
+                      .map(c => c.composite_id)
+                  )
+                } else {
+                  setSelectedJobFileKinds([])
+                }
               }
               setSourceMode('job_file')
             } else {
@@ -5161,10 +5183,14 @@ function AdminSupplementModal({
           }
           if (data && active && data.offer_preview) {
             const prev = data.offer_preview as OfferPreview
+            const requiresApproval = Boolean(prev.requires_payment_approval ?? ((prev.charge_amount_rub ?? 0) > 0))
             setOfferPreview(prev)
             setOfferChargeRub(prev.charge_amount_rub ?? 0)
-            if (prev.default_offer_comment && !job.admin_comment) {
+            setAsOffer(requiresApproval)
+            if (requiresApproval && prev.default_offer_comment && (!job.admin_comment || isZeroOfferComment(job.admin_comment))) {
               setComment(prev.default_offer_comment)
+            } else if (!requiresApproval && isZeroOfferComment(job.admin_comment)) {
+              setComment(generateDefaultComment(job))
             }
           }
         }
@@ -5274,43 +5300,63 @@ function AdminSupplementModal({
             </div>
 
             {offerPreview && (
-              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#166534', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span>💡</span>
-                    <span>Согласование и доплата за пересчитанный отчёт</span>
-                  </span>
-                  <span style={{ fontSize: 11, color: '#15803d', fontWeight: 600 }}>
-                    Баланс клиента: {offerPreview.client_balance_rub ?? 0} ₽
-                  </span>
-                </div>
-                <div style={{ fontSize: 11.5, color: '#166534', lineHeight: 1.5, marginBottom: 8 }}>
-                  Найдено позиций: <strong>{offerPreview.new_verified_count}</strong> (ранее оплачено {offerPreview.prior_verified_count}).
-                  {offerPreview.delta_units ? ` Дополнительно: +${offerPreview.delta_units} поз. × ${offerPreview.unit_price_rub} ₽ = ` : ' '}
-                  <strong style={{ fontSize: 13, color: '#0f766e' }}>{offerPreview.charge_amount_rub} ₽</strong>
-                </div>
+              (offerPreview.charge_amount_rub ?? 0) > 0 ? (
+                <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#166534', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span>💡</span>
+                      <span>Согласование и доплата за пересчитанный отчёт</span>
+                    </span>
+                    <span style={{ fontSize: 11, color: '#15803d', fontWeight: 600 }}>
+                      Баланс клиента: {offerPreview.client_balance_rub ?? 0} ₽
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: '#166534', lineHeight: 1.5, marginBottom: 8 }}>
+                    Найдено позиций: <strong>{offerPreview.new_verified_count}</strong> (ранее оплачено {offerPreview.prior_verified_count}).
+                    {offerPreview.delta_units ? ` Дополнительно: +${offerPreview.delta_units} поз. × ${offerPreview.unit_price_rub} ₽ = ` : ' '}
+                    <strong style={{ fontSize: 13, color: '#0f766e' }}>{offerPreview.charge_amount_rub} ₽</strong>
+                  </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6, borderTop: '1px solid #dcfce7' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="as_offer_toggle"
-                      checked={asOffer}
-                      onChange={() => setAsOffer(true)}
-                    />
-                    <span>Отправить клиенту как предложение на согласование (со списанием {offerPreview.charge_amount_rub} ₽ только после согласия)</span>
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 500, color: '#475569', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="as_offer_toggle"
-                      checked={!asOffer}
-                      onChange={() => setAsOffer(false)}
-                    />
-                    <span>Опубликовать сразу (списать {offerPreview.charge_amount_rub} ₽ без согласования)</span>
-                  </label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6, borderTop: '1px solid #dcfce7' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="as_offer_toggle"
+                        checked={asOffer}
+                        onChange={() => setAsOffer(true)}
+                      />
+                      <span>Отправить клиенту как предложение на согласование (со списанием {offerPreview.charge_amount_rub} ₽ только после согласия)</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 500, color: '#475569', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="as_offer_toggle"
+                        checked={!asOffer}
+                        onChange={() => setAsOffer(false)}
+                      />
+                      <span>Опубликовать сразу (списать {offerPreview.charge_amount_rub} ₽ без согласования)</span>
+                    </label>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div style={{ background: '#f0fdfa', border: '1px solid #99f6e4', borderRadius: 8, padding: '10px 12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#0f766e', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span>✨</span>
+                      <span>Публикация без доплаты (0 ₽)</span>
+                    </span>
+                    <span style={{ fontSize: 11, color: '#0f766e', fontWeight: 600 }}>
+                      Баланс клиента: {offerPreview.client_balance_rub ?? 0} ₽
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: '#115e59', lineHeight: 1.5 }}>
+                    Найдено позиций: <strong>{offerPreview.new_verified_count ?? 0}</strong>{' '}
+                    (ранее оплачено {offerPreview.prior_verified_count ?? 0}
+                    {(offerPreview.already_charged_rub ?? 0) > 0 ? ` — ${offerPreview.already_charged_rub} ₽ уже списано по задаче` : ''}).
+                    {' '}Дополнительное списание не требуется — отчёт сразу откроется клиенту.
+                  </div>
+                </div>
+              )
             )}
 
             {/* Chat History Thread */}
@@ -5459,11 +5505,28 @@ function AdminSupplementModal({
                                     <div className="candidate-details">
                                       <div className="candidate-header-row">
                                         <strong className="candidate-name">{cand.label}</strong>
-                                        {cand.is_admin_rerun && (
-                                          <span className="candidate-badge">
-                                            👑 Доработка
+                                        {cand.job_number ? (
+                                          <span className="candidate-time">#{cand.job_number}</span>
+                                        ) : null}
+                                        {cand.is_recommended ? (
+                                          <span
+                                            className="candidate-badge"
+                                            style={{ background: '#dcfce7', color: '#166534', borderColor: '#86efac' }}
+                                          >
+                                            ✅ Последний подбор{typeof cand.verified_count === 'number' && cand.verified_count > 0 ? ` (${cand.verified_count} поз.)` : ''}
                                           </span>
-                                        )}
+                                        ) : cand.is_empty_result ? (
+                                          <span
+                                            className="candidate-badge"
+                                            style={{ background: '#fef2f2', color: '#b91c1c', borderColor: '#fecaca' }}
+                                          >
+                                            ⚠️ Пустой / {cand.job_status === 'failed' ? 'ошибка' : '0 поз.'}
+                                          </span>
+                                        ) : cand.is_admin_rerun ? (
+                                          <span className="candidate-badge">
+                                            👑 Доработка{typeof cand.verified_count === 'number' && cand.verified_count > 0 ? ` (${cand.verified_count} поз.)` : ''}
+                                          </span>
+                                        ) : null}
                                         {cand.created_at && (
                                           <span className="candidate-time">
                                             · {formatDate(cand.created_at)}

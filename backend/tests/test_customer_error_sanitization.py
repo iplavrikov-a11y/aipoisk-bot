@@ -48,3 +48,13 @@ def test_validate_procurement_profile_raises_clean_error():
     with pytest.raises(EmptyProcurementProfileError) as exc_info:
         _validate_procurement_profile_response(empty_json)
     assert "В загруженных документах не найдены товары или спецификация" in str(exc_info.value)
+
+
+def test_empty_template_profile_message_and_sanitization():
+    from app.supplier_search import _empty_procurement_profile_message
+
+    msg = _empty_procurement_profile_message("Инструкция по заполнению формы технического предложения")
+    assert "В загруженных документах не найдены товары или спецификация" in msg
+    assert "пустой бланк" in msg
+    sanitized = sanitize_customer_error(msg)
+    assert "В загруженных документах не найдены товары или спецификация" in sanitized

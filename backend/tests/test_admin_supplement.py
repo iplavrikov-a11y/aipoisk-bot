@@ -428,6 +428,123 @@ def test_admin_rerun_embedded_in_parent_job_to_dict(db, tmp_path):
     assert d2["admin_rerun"]["yandex_cost_rub"] == 0.48
 
 
+@pytest.mark.asyncio
+async def test_supplement_candidates_recommend_only_latest_healthy_rerun_and_zero_charge_suppresses_offer(db, tmp_path):
+    from datetime import datetime, timedelta
+    from app.models import BillingTransaction
+
+    client = Client(name="Ольга Тест", telegram_id="web:olga-test", money_balance_kopeks=39600)
+    db.add(client)
+    db.flush()
+
+    t0 = datetime(2026, 11, 11, 12, 6, 0)
+    orig_job = Job(
+        client_id=client.id,
+        created_by_telegram_id="web:olga-test",
+        mode="exact_product",
+        status="completed",
+        verified_count=1,
+        job_number=1074,
+        title="Подбор товаров: перчатки нитрил",
+        admin_comment=(
+            "Здравствуйте! Специалисты TenderLex пересчитали спецификацию: найдено 1 поз. (ранее было 1 поз.). "
+            "Готовы выдать дополненный экспертный отчёт. Стоимость доплаты составит 0.0 ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи."
+        ),
+        created_at=t0,
+    )
+    db.add(orig_job)
+    db.flush()
+
+    db.add(
+        BillingTransaction(
+            client_id=client.id,
+            job_id=orig_job.id,
+            kind="exact_product",
+            operation="charge",
+            units=1,
+            amount_kopeks=9900,
+            note="Подбор товаров: подобрано 1 из 5 поз. по 99.00 ₽",
+        )
+    )
+
+    broken_rerun = Job(
+        client_id=client.id,
+        parent_job_id=orig_job.id,
+        is_admin_rerun=True,
+        created_by_telegram_id="web:olga-test",
+        mode="exact_product",
+        status="completed",
+        verified_count=0,
+        job_number=1078,
+        title="[Админ] Подбор товаров: перчатки нитрил",
+        created_at=t0 + timedelta(hours=1),
+    )
+    good_rerun = Job(
+        client_id=client.id,
+        parent_job_id=orig_job.id,
+        is_admin_rerun=True,
+        created_by_telegram_id="web:olga-test",
+        mode="exact_product",
+        status="completed",
+        verified_count=1,
+        job_number=1079,
+        title="[Админ] Подбор товаров: перчатки нитрил",
+        created_at=t0 + timedelta(hours=9),
+    )
+    db.add_all([broken_rerun, good_rerun])
+    db.commit()
+
+    f_orig = tmp_path / "orig.docx"
+    f_broken = tmp_path / "broken_admin.docx"
+    f_good = tmp_path / "good_admin.docx"
+    f_orig.write_bytes(b"orig")
+    f_broken.write_bytes(b"broken")
+    f_good.write_bytes(b"good")
+
+    def fake_pkg(j):
+        if j.id == good_rerun.id:
+            return [{"kind": "exact_product", "label": "Подбор товара и аналоги", "path": str(f_good)}]
+        if j.id == broken_rerun.id:
+            return [{"kind": "exact_product", "label": "Подбор товара и аналоги", "path": str(f_broken)}]
+        return [{"kind": "exact_product", "label": "Подбор товара и аналоги", "path": str(f_orig)}]
+
+    with patch("app.main.package_job_output_items", side_effect=fake_pkg):
+        res = get_job_supplement_candidates(orig_job.id, db=db)
+
+    cands_by_jid = {c["job_id"]: c for c in res["candidates"]}
+    assert cands_by_jid[good_rerun.id]["is_recommended"] is True
+    assert cands_by_jid[good_rerun.id]["is_empty_result"] is False
+    assert cands_by_jid[broken_rerun.id]["is_recommended"] is False
+    assert cands_by_jid[broken_rerun.id]["is_empty_result"] is True
+    assert cands_by_jid[orig_job.id]["is_recommended"] is False
+
+    prev = res["offer_preview"]
+    assert prev["charge_amount_rub"] == 0.0
+    assert prev["already_charged_rub"] == 99.0
+    assert prev["requires_payment_approval"] is False
+    assert prev["default_offer_comment"] == ""
+
+    # Even if a stale caller submits as_offer=True with a 0.0 ₽ comment, publish cleanly without awaiting payment confirmation
+    with patch("app.main.package_job_output_items", side_effect=fake_pkg):
+        pub_res = await upload_admin_supplement(
+            job_id=orig_job.id,
+            comment=(
+                "Здравствуйте! Специалисты TenderLex пересчитали спецификацию: найдено 1 поз. (ранее было 1 поз.). "
+                "Готовы выдать дополненный экспертный отчёт. Стоимость доплаты составит 0.0 ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи."
+            ),
+            notify_telegram=False,
+            source_mode="job_file",
+            file_kinds=f"{good_rerun.id}:exact_product",
+            as_offer=True,
+            offer_charge_rub=0.0,
+            db=db,
+        )
+    assert pub_res["success"] is True
+    db.refresh(orig_job)
+    assert orig_job.status == "completed"
+    assert "0.0 ₽" not in (orig_job.admin_comment or "")
+
+
 
 
 

@@ -4945,6 +4945,28 @@ def admin_rerun_job(
         }
 
 
+def _is_supplement_job_empty(rj: Job) -> bool:
+    st = str(getattr(rj, "status", "") or "").lower()
+    if st in ("failed", "cancelled"):
+        return True
+    if st == "completed" and getattr(rj, "mode", "") != MODE_PROCUREMENT_REPORT:
+        return int(getattr(rj, "verified_count", 0) or 0) == 0
+    return False
+
+
+def _is_supplement_job_healthy(rj: Job) -> bool:
+    st = str(getattr(rj, "status", "") or "").lower()
+    if st != "completed":
+        return False
+    if getattr(rj, "mode", "") == MODE_PROCUREMENT_REPORT:
+        return True
+    return int(getattr(rj, "verified_count", 0) or 0) > 0
+
+
+def _is_zero_rub_offer_comment(text: str) -> bool:
+    return bool(re.search(r"стоимость\s+доплаты\s+составит\s*0(?:[.,]0+)?\s*₽", str(text or ""), re.I))
+
+
 @app.get("/api/jobs/{job_id}/supplement-candidates", dependencies=[Depends(require_admin)])
 def get_job_supplement_candidates(job_id: str, db: Session = Depends(db_session)) -> dict:
     job = resolve_admin_job(job_id, db)
@@ -4961,27 +4983,53 @@ def get_job_supplement_candidates(job_id: str, db: Session = Depends(db_session)
         )
     ).order_by(Job.created_at.desc()).all()
 
-    candidates: list[dict] = []
+    job_entries: list[tuple[Job, bool, list[tuple[dict, Path, str]]]] = []
     seen_paths = set()
 
     for rj in related_jobs:
         is_rerun = bool(getattr(rj, "is_admin_rerun", False) or getattr(rj, "parent_job_id", "") or "[Админ]" in (rj.title or ""))
+        valid_items: list[tuple[dict, Path, str]] = []
         for item in package_job_output_items(rj):
             p = Path(str(item.get("path") or ""))
             if p.is_file() and str(p) not in seen_paths:
                 seen_paths.add(str(p))
                 k = str(item.get("kind") or p.stem).strip()
-                prefix = "👑 " if is_rerun else "📄 "
-                suffix = " (экспертный перезапуск)" if is_rerun else " (исходный отчет)"
-                candidates.append({
-                    "kind": k,
-                    "composite_id": f"{rj.id}:{k}",
-                    "label": f"{prefix}{item.get('label') or k}{suffix}",
-                    "filename": p.name,
-                    "job_id": rj.id,
-                    "is_admin_rerun": is_rerun,
-                    "created_at": rj.created_at.isoformat() if rj.created_at else None,
-                })
+                valid_items.append((item, p, k))
+        job_entries.append((rj, is_rerun, valid_items))
+
+    recommended_job_id: str | None = None
+    for pred in (
+        lambda rj, is_rerun: is_rerun and _is_supplement_job_healthy(rj),
+        lambda rj, is_rerun: is_rerun and not _is_supplement_job_empty(rj),
+        lambda rj, is_rerun: (not is_rerun) and _is_supplement_job_healthy(rj),
+        lambda rj, is_rerun: (not is_rerun) and not _is_supplement_job_empty(rj),
+    ):
+        match_id = next((rj.id for rj, is_rerun, valid in job_entries if valid and pred(rj, is_rerun)), None)
+        if match_id:
+            recommended_job_id = match_id
+            break
+
+    candidates: list[dict] = []
+    for rj, is_rerun, valid_items in job_entries:
+        is_empty_result = _is_supplement_job_empty(rj)
+        is_rec = bool(recommended_job_id and rj.id == recommended_job_id)
+        for item, p, k in valid_items:
+            prefix = "👑 " if is_rerun else "📄 "
+            suffix = " (экспертный перезапуск)" if is_rerun else " (исходный отчет)"
+            candidates.append({
+                "kind": k,
+                "composite_id": f"{rj.id}:{k}",
+                "label": f"{prefix}{item.get('label') or k}{suffix}",
+                "filename": p.name,
+                "job_id": rj.id,
+                "job_number": getattr(rj, "job_number", None),
+                "job_status": getattr(rj, "status", "") or "",
+                "verified_count": int(getattr(rj, "verified_count", 0) or 0),
+                "is_admin_rerun": is_rerun,
+                "is_empty_result": is_empty_result,
+                "is_recommended": is_rec,
+                "created_at": rj.created_at.isoformat() if rj.created_at else None,
+            })
 
     # Calculate offer preview
     max_verified = max(
@@ -5026,17 +5074,25 @@ def get_job_supplement_candidates(job_id: str, db: Session = Depends(db_session)
         needed_kopeks = unit_price_kopeks if delta_units > 0 else 0
 
     charge_rub = round(needed_kopeks / 100, 2)
+    already_charged_rub = round(already_charged_kopeks / 100, 2)
+    requires_payment_approval = needed_kopeks > 0
     prior_c = already_charged_units or int(job.verified_count or 0)
     default_offer_comment = (
-        f"Здравствуйте! Специалисты TenderLex пересчитали спецификацию: найдено {max_verified} поз. "
-        f"(ранее было {prior_c} поз.). Готовы выдать дополненный экспертный отчёт. "
-        f"Стоимость доплаты составит {charge_rub} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи."
+        (
+            f"Здравствуйте! Специалисты TenderLex пересчитали спецификацию: найдено {max_verified} поз. "
+            f"(ранее было {prior_c} поз.). Готовы выдать дополненный экспертный отчёт. "
+            f"Стоимость доплаты составит {charge_rub} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи."
+        )
+        if requires_payment_approval
+        else ""
     )
 
     offer_preview = {
         "client_id": job.client_id or "",
         "client_name": client_obj.name if client_obj else "",
         "client_balance_rub": round(avail_kopeks / 100, 2),
+        "already_charged_rub": already_charged_rub,
+        "requires_payment_approval": requires_payment_approval,
         "prior_verified_count": prior_c,
         "new_verified_count": max_verified,
         "delta_units": delta_units,
@@ -5211,6 +5267,7 @@ async def upload_admin_supplement(
                 )
             ).all()
         }
+        used_dest_names: set[str] = set()
         for raw_k in raw_kinds:
             if ":" in raw_k:
                 target_jid, _, target_kind = raw_k.partition(":")
@@ -5223,7 +5280,16 @@ async def upload_admin_supplement(
                 p = Path(str(item.get("path") or ""))
                 if k == target_kind or p.name == target_kind or k == raw_k or p.name == raw_k:
                     if p.is_file():
-                        dest = target_dir / f"supplement_{p.name}"
+                        dest_name = f"supplement_{p.name}"
+                        if dest_name.lower() in used_dest_names:
+                            short_jid = (src_job.id or "")[:6]
+                            dest_name = f"supplement_{p.stem}_{short_jid}{p.suffix}"
+                            idx = 2
+                            while dest_name.lower() in used_dest_names:
+                                dest_name = f"supplement_{p.stem}_{short_jid}_{idx}{p.suffix}"
+                                idx += 1
+                        used_dest_names.add(dest_name.lower())
+                        dest = target_dir / dest_name
                         shutil.copy2(p, dest)
                         supplement_items.append({
                             "path": str(dest),
@@ -5337,6 +5403,13 @@ async def upload_admin_supplement(
     charge_rub = round(needed_kopeks / 100, 2)
     prior_c = already_charged_units or int(job.verified_count or 0)
 
+    if needed_kopeks <= 0:
+        if _is_zero_rub_offer_comment(clean_comment):
+            clean_comment = "Экспертный отчёт TenderLex дополнен новыми материалами."
+            job.admin_comment = clean_comment
+        elif not clean_comment and _is_zero_rub_offer_comment(getattr(job, "admin_comment", "")):
+            job.admin_comment = "Экспертный отчёт TenderLex дополнен новыми материалами."
+
     # Если отправляется как предложение клиенту на согласование (деньги спишутся только после согласия)
     if is_offer and needed_kopeks > 0:
         offer_payload = {
@@ -5437,7 +5510,7 @@ async def upload_admin_supplement(
         target_tg_id = job.created_by_telegram_id or (job.client.telegram_id if job.client else "")
         if target_tg_id:
             try:
-                if as_offer and needed_kopeks > 0:
+                if is_offer and needed_kopeks > 0:
                     from .bot import bot
                     tg_text = (
                         f"📋 *Предложение по задаче «{human_job_title(job) or job.title}»*\n\n"

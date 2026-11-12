@@ -170,7 +170,9 @@ BLOCKED_DOMAINS = {
     "1-ofd.ru", "astral.ru", "tensor.ru", "taxcom.ru", "platformaofd.ru",
     "taxnet.ru", "e-dis.ru", "ecplegko.ru", "ed-sro.ru",
     # Additional Aggregators & Brokers
-    "klerk.ru", "leboard.ru", "profi.ru", "kwork.ru", "youla.ru", "hh.ru", "superjob.ru",
+    "klerk.ru", "leboard.ru", "profi.ru", "youdo.com", "uslugi.yandex.ru",
+    "zoon.ru", "flamp.ru", "yell.ru", "kwork.ru", "youla.ru",
+    "hh.ru", "superjob.ru", "rabota.ru", "zarplata.ru",
     "zakon.guru", "garant.ru", "vc.ru", "journal.tinkoff.ru",
     "seldon-pro.ru", "seldon.ru", "sberbank-ast.ru", "roseltorg.ru", "etp-ets.ru",
     "gz-spb.ru", "zakazrf.ru", "lot-online.ru", "etp-gpb.ru",
@@ -275,6 +277,7 @@ class ProcurementItem:
     is_auxiliary: bool = False
     included_sub_items: tuple[str, ...] = ()
     cost_tier: str = "medium"
+    item_kind: str = "goods"
 
 
 @dataclass(frozen=True)
@@ -283,6 +286,8 @@ class ProcurementProfile:
     items: tuple[ProcurementItem, ...]
     excluded_terms: tuple[str, ...] = ()
     raw: dict | None = None
+    subject_kind: str = "goods"
+    empty_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -448,12 +453,17 @@ def normalize_url(value: str) -> str:
     return value
 
 
-def build_universal_negative_keywords(clean_context: str) -> list[str]:
+def build_universal_negative_keywords(clean_context: str, *, subject_kind: str = "goods") -> list[str]:
     """
-    Системно строит список отрицательных ключевых слов для любого типа товара:
-    1. Общезакупочные исключения (ст. 33 44-ФЗ — запрет на б/у, восстановленный товар, уценку).
-    2. Бинарные отраслевые антитезы (автоматический/ручной, электрический/дизельный, стационарный/мобильный).
+    Системно строит список отрицательных ключевых слов по типу предмета закупки:
+    - Для товаров: общезакупочные исключения (ст. 33 44-ФЗ — запрет на б/у, восстановленный товар, уценку, аренду, демонтаж)
+      и бинарные отраслевые антитезы.
+    - Для чистых услуг/работ (subject_kind='services'): не исключает 'аренда'/'демонтаж'/'после ремонта',
+      чтобы не сломать поиск профильных подрядчиков, если это сама услуга.
     """
+    if str(subject_kind or "goods").strip().lower() == "services":
+        return []
+
     universal_disallowed = [
         "б/у", "б.у.", "бывший в употреблении", "бывшие в употреблении",
         "восстановленный", "восстановленные", "с хранения", "неликвид",
@@ -1568,55 +1578,59 @@ def _fts_match_expression(terms: tuple[str, ...]) -> str:
 async def build_procurement_profile(settings: SystemSettings, context: str) -> ProcurementProfile:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for procurement profile extraction")
-    prompt = f"""Извлеки из технического задания профиль закупки для поиска поставщиков.
+    prompt = f"""Извлеки из технического задания профиль закупки для поиска поставщиков или профильных компаний-исполнителей (ПРАВИЛО 14 — 100% СЕМАНТИЧЕСКИЙ АНАЛИЗ БЕЗ ЖЁСТКИХ ШАБЛОНОВ).
 
-ПРАВИЛА КЛАСТЕРИЗАЦИИ И ВЫДЕЛЕНИЯ ПОЗИЦИЙ ДЛЯ СНАБЖЕНИЯ (ПРАВИЛО 14 — СТРОГО СЕМАНТИЧЕСКИЙ АНАЛИЗ БЕЗ ЖЕСТКИХ СЛОВ И ШАБЛОНОВ):
-1. ОБЪЕДИНЕНИЕ В СИСТЕМЫ И ПУЛЫ ПОСТАВЩИКОВ:
-   - Если несколько позиций ТЗ технологически, функционально или конструктивно относятся к одной системе, сборочной единице или комплекту — объединяй их в ЕДИНУЮ категорию для поиска поставщиков.
-   - Производители и профильные дистрибьюторы поставляют комплексные системы согласованно. Не разделяй составные элементы единого технического узла на изолированные микрокатегории.
-   - Для каждой объединенной группы ОБЯЗАТЕЛЬНО заполни "included_sub_items" — точные исходные формулировки строк ТЗ, вошедших в эту категорию.
+КРИТИЧЕСКАЯ ИЕРАРХИЯ ПРИОРИТЕТОВ (соблюдай строго по смыслу документа):
 
-2. РАЗДЕЛЕНИЕ НА ОСНОВНЫЕ И СОПУТСТВУЮЩИЕ:
-   - is_core: true — основные бюджетообразующие материальные ресурсы и целевое оборудование, определяющие профильный рынок производителей.
-   - is_auxiliary: true — сопутствующие монтажные, соединительные, крепежные элементы и расходные материалы. Если они функционально привязаны к основному узлу или оборудованию, включай их в included_sub_items соответствующей группы, не создавая под них отдельные категории поиска.
-   - cost_tier: "high" (основной объем/бюджет), "medium" (стандартная номенклатура), "low" (сопутствующие комплектующие и вспомогательные элементы).
+ПРИОРИТЕТ 1 — В ДОКУМЕНТЕ ЕСТЬ ФИЗИЧЕСКИЕ ТОВАРЫ, ОБОРУДОВАНИЕ, МАТЕРИАЛЫ (в том числе в смешанном ТЗ вместе с работами/услугами):
+- Установи "subject_kind": "goods".
+- Если в закупке указаны и товары/оборудование, и сопутствующие работы/услуги (доставка, погрузка, разгрузка, такелаж, сборка, монтаж, шеф-монтаж, пусконаладка/ПНР, обучение персонала, вывоз мусора, гарантийный сервис, настройка), ИЗВЛЕКАЙ В "items" ТОЛЬКО ФИЗИЧЕСКИЕ ТОВАРЫ с "item_kind": "goods".
+- СТРОГО ИСКЛЮЧАЙ сопутствующие работы и услуги из "items" (переноси их в "excluded_terms"), чтобы не подменить поиск поставщиков товара поиском грузчиков, перевозчиков или монтажников.
+- Даже если товар описан кратко одной строкой с единицей «усл. ед.» и/или пометкой «отечественного производства» (например: «1. Серверы, 1 усл. ед, ОКПД2 26.20.14.100» для модернизации ЦОД), это конкретный физический товар ("subject_kind": "goods", "item_kind": "goods"). Называй позицию предметно («Серверы», «Серверное оборудование»), не сводя к общим словам «Оборудование» или «Отечественное оборудование».
 
-3. РАЗНОРОДНЫЕ ОТРАСЛЕВЫЕ ГРУППЫ:
-   - Выделяй в самостоятельные категории с is_core=true только те товарные группы, которые обращаются на принципиально независимых отраслевых рынках производителей и дистрибьюторов.
+ПРИОРИТЕТ 2 — В ДОКУМЕНТЕ НЕТ НИ ОДНОГО ФИЗИЧЕСКОГО ТОВАРА, НО УКАЗАНА КОНКРЕТНАЯ УСЛУГА ИЛИ РАБОТА:
+- Если документ целиком посвящён оказанию услуг или выполнению работ (например: комплексная уборка помещений / клининг, охрана объектов, техническое обслуживание инженерных систем, ремонтные или сервисные работы под ключ без спецификации товаров к поставке, вывоз ТКО, логистические, медицинские, ИТ-услуги и т.п.) и самостоятельных товаров к поставке в нём нет — установи "subject_kind": "services".
+- Извлеки в "items" целевую услугу или работу с "item_kind": "service".
+- Название позиции ("name") должно отражать конкретный рыночный профиль исполнителя (например: «Комплексная уборка помещений», «Охрана объектов», «Техническое обслуживание систем вентиляции»), а НЕ пустое слово «Услуги» или «Работы».
+- В "category_terms" укажи профильные B2B-направления деятельности компаний-подрядчиков для поиска.
+- В "exact_terms" и "required_terms" укажи существенные параметры объекта, объёма, типа помещения/площадки, периодичности, локации или специальных лицензий/допусков из ТЗ.
+- НИКОГДА не смешивай в "items" goods и service одновременно: при наличии хотя бы одного физического товара выбирается Приоритет 1 (только товары).
 
-4. РАЗГРАНИЧЕНИЕ МАТЕРИАЛЬНЫХ РЕСУРСОВ И РАБОТ (СМЕТЫ, ВОР, КС-2):
-   - Поиск поставщиков направлен исключительно на поставку физических материальных ресурсов (товаров, оборудования, конструкций, сырья и материалов).
-   - Если исходный документ описывает сметные расценки или перечень строительно-монтажных, ремонтных, земляных, демонтажных, погрузочных или пусконаладочных процессов — ИСКЛЮЧАЙ наименования работ и технологических операций из категорий снабжения.
-   - Формируй категории исключительно по наименованиям физических материальных ресурсов, подлежащих закупке и поставке.
+ПРИОРИТЕТ 3 — ПУСТОЙ БЛАНК, ШАБЛОН ИЛИ ИНСТРУКЦИЯ БЕЗ ПРЕДМЕТА ЗАКУПКИ:
+- Если в документе нет ни конкретных товаров, ни конкретных услуг/работ (пустая форма предложения, инструкция участнику, реквизиты, штамп ЭП без позиций) — верни СТРОГО: "subject_kind": "goods", "items": [], "summary": "", "empty_reason": "empty_template".
+- СТРОГО ЗАПРЕЩЕНО выдумывать фиктивные позиции («Товары по техническому заданию», «Услуги по ТЗ», «Материальные ресурсы»).
 
-5. СЛУЖЕБНАЯ ИНФОРМАЦИЯ:
-   - Условия поставки, сроки, адреса, реквизиты, гарантийные обязательства, общие нормативные стандарты выноси в excluded_terms.
+ПРАВИЛА СТРУКТУРИРОВАНИЯ ПОЗИЦИЙ ВНУТРИ РЕЖИМА:
+1. ОБЪЕДИНЕНИЕ В СИСТЕМЫ И ПУЛЫ:
+   - Если несколько строк ТЗ технологически, функционально или конструктивно относятся к одной системе, сборочной единице или комплексу услуг одного профиля — объединяй их в единую категорию и перечисли исходные строки в "included_sub_items".
+   - Не более 25-35 укрупнённых категорий для объёмных спецификаций и смет.
+2. ОСНОВНЫЕ И СОПУТСТВУЮЩИЕ ПОЗИЦИИ (для товаров):
+   - is_core: true — основные бюджетообразующие товары/оборудование или основные виды услуг.
+   - is_auxiliary: true — вспомогательные комплектующие, расходники и крепёж; если привязаны к основному узлу, включай их в included_sub_items.
+   - cost_tier: "high" | "medium" | "low" | "auxiliary".
+3. СЛУЖЕБНАЯ ИНФОРМАЦИЯ И ОКПД2:
+   - Условия договора, сроки, штрафы, адреса заказчика и общие регламенты выноси в excluded_terms (важный город/регион исполнения или тип объекта оставь в required_terms, если это влияет на подбор исполнителя).
    - В okpd2_codes указывай только коды ОКПД2/ОКПД, явно присутствующие в исходном тексте ТЗ.
-
-6. МАКСИМАЛЬНОЕ КОЛИЧЕСТВО СИСТЕМ (ДЛЯ ОБЪЕМНЫХ СПЕЦИФИКАЦИЙ):
-   - Для объемных спецификаций и смет выдели не более 25-35 укрупненных отраслевых категорий для поиска поставщиков.
-   - Сопутствующие и вспомогательные строки ТЗ обязательно агрегируй в массив "included_sub_items" соответствующей профильной группы.
-
-7. ЕСЛИ В ДОКУМЕНТЕ НЕТ КОНКРЕТНЫХ ТОВАРОВ ИЛИ СПЕЦИФИКАЦИИ:
-   - Если загружен пустой шаблон, форма предложения, инструкция по заполнению, общие правила без конкретной номенклатуры/оборудования — верни СТРОГО пустой массив: "items": [], "summary": "".
-   - СТРОГО ЗАПРЕЩЕНО выдумывать фиктивные товары («Товары по техническому заданию», «Оборудование по спецификации», «Материальные ресурсы», слова из инструкций вроде «марка», «модель», «артикул»).
 
 Ответ строго JSON:
 {{
-  "summary": "краткое описание предмета закупки",
+  "subject_kind": "goods|services",
+  "summary": "краткое предметное описание закупки",
+  "empty_reason": "",
   "items": [
     {{
       "id": "item-1",
-      "name": "название укрупненной товарной категории для поиска поставщиков",
+      "item_kind": "goods|service",
+      "name": "предметное название товара или услуги для поиска компаний",
       "is_core": true,
       "is_auxiliary": false,
       "cost_tier": "high",
-      "included_sub_items": ["названия исходных строк ТЗ, объединенных в эту категорию"],
-      "aliases": ["марки, модели, русские/английские варианты, аналоги"],
-      "okpd2_codes": ["ОКПД2 коды из ТЗ/карточки, если есть"],
-      "category_terms": ["широкая товарная группа для поиска производителей и поставщиков"],
-      "exact_terms": ["точные размеры, ГОСТ, тип, марка, артикул"],
-      "required_terms": ["термины, которые помогают подтвердить соответствие сайта поставщика"],
+      "included_sub_items": ["исходные формулировки строк ТЗ, вошедших в эту категорию"],
+      "aliases": ["синонимы, альтернативные формулировки, марки, аналоги"],
+      "okpd2_codes": ["ОКПД2 коды из ТЗ, если есть"],
+      "category_terms": ["рыночная отраслевая группа компаний (поставщиков товара или исполнителей услуги)"],
+      "exact_terms": ["точные характеристики, ГОСТ, размеры, марка или ключевые параметры услуги"],
+      "required_terms": ["термины, подтверждающие профильность сайта компании"],
       "excluded_terms": ["что исключить"]
     }}
   ],
@@ -1632,8 +1646,10 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
                 settings,
                 prompt,
                 system_prompt=(
-                    "Ты закупочный аналитик. Строишь профиль закупки для поиска поставщиков, не подменяешь товар условиями и комплектующими. "
-                    "Если конкретных товаров в документе нет (пустая форма или инструкция), возвращаешь строго пустой массив items: []."
+                    "Ты закупочный аналитик. Строишь семантический профиль закупки: "
+                    "если в ТЗ есть физические товары (даже вместе со смежными услугами монтажа/доставки) — извлекаешь только товары (subject_kind='goods'); "
+                    "если товаров нет вовсе, но заказана конкретная услуга или работа — извлекаешь предмет услуги для подбора профильных компаний-исполнителей (subject_kind='services'); "
+                    "если документ пустой бланк или инструкция — возвращаешь items: []."
                 ),
                 tier="primary",
                 routing_key="supplier_procurement_profile",
@@ -1644,14 +1660,11 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
             )
             profile = _normalize_procurement_profile(parse_json_object(raw))
             return profile
-        except EmptyProcurementProfileError:
-            raise
+        except EmptyProcurementProfileError as exc:
+            raise EmptyProcurementProfileError(_empty_procurement_profile_message(context)) from exc
         except Exception as exc:
             if isinstance(exc, EmptyProcurementProfileError) or "0 items" in str(exc) or "не найдены" in str(exc):
-                raise EmptyProcurementProfileError(
-                    "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
-                    "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров текстом."
-                ) from exc
+                raise EmptyProcurementProfileError(_empty_procurement_profile_message(context)) from exc
             last_error = exc
             continue
     raise RuntimeError(f"AI procurement profile extraction failed: {last_error}") from last_error
@@ -1674,24 +1687,52 @@ async def build_supplier_queries(
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search query generation")
     profile = profile or await build_procurement_profile(settings, context)
-    
+    subject_kind = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower()
+    is_services = subject_kind == "services"
+
     geo_prompt = ""
     if delivery_city:
         rad_str = f" в радиусе {geo_radius_km} км" if geo_radius_km else ""
-        geo_prompt = (
-            f"\n- КРИТИЧНО ДЛЯ РЕГИОНАЛЬНОЙ ЛОГИСТИКИ: объект/поставка в городе {delivery_city}{rad_str}."
-            f" Обязательно добавь запросы с указанием города '{delivery_city}', официальных дилеров, дистрибьюторов, региональных оптовых складов и производителей в этом регионе!"
-        )
+        if is_services:
+            geo_prompt = (
+                f"\n- КРИТИЧНО ДЛЯ РЕГИОНАЛЬНОГО ПОДРЯДА: место оказания услуг — город {delivery_city}{rad_str}."
+                f" Обязательно добавь запросы с указанием города '{delivery_city}' для поиска профильных компаний-исполнителей и подрядчиков в этом регионе!"
+            )
+        else:
+            geo_prompt = (
+                f"\n- КРИТИЧНО ДЛЯ РЕГИОНАЛЬНОЙ ЛОГИСТИКИ: объект/поставка в городе {delivery_city}{rad_str}."
+                f" Обязательно добавь запросы с указанием города '{delivery_city}', официальных дилеров, дистрибьюторов, региональных оптовых складов и производителей в этом регионе!"
+            )
 
     if is_extend or wave_index > 1:
         refine_extra = f"\nДополнительные критерии добора: {additional_prompt.strip()}" if additional_prompt else ""
-        system_prompt = (
-            f"Ты ведущий эксперт по B2B поиску коммерческих поставщиков, региональных дистрибьюторов, торговых домов и оптовых складов. "
-            f"ЭТО РЕЖИМ ДОБОРА (ВОЛНА №{wave_index}). Базовые поставщики уже найдены. "
-            "Твоя задача — составить разнообразные поисковые запросы для нахождения альтернативных поставщиков, региональных центров сбыта, оптовых складов, торговых домов и комплектовщиков. "
-            "Используй отрицательные операторы Яндекса: -\"банковская гарантия\" -\"обучение\" -\"семинар\" -\"эцп\" -\"агрегатор\" -\"курсы\"."
-        )
-        prompt = f"""На основе профиля закупки сформируй поисковые запросы для ДОБОРА поставщиков (Волна #{wave_index}).
+        if is_services:
+            system_prompt = (
+                f"Ты ведущий эксперт по B2B поиску профильных сервисных компаний, подрядчиков и исполнителей услуг. "
+                f"ЭТО РЕЖИМ ДОБОРА (ВОЛНА №{wave_index}). Базовые исполнители уже найдены. "
+                "Твоя задача — составить разнообразные поисковые запросы для нахождения альтернативных профильных компаний-исполнителей и подрядных организаций. "
+                "Используй отрицательные операторы Яндекса: -\"банковская гарантия\" -\"вакансия\" -\"резюме\" -\"hh.ru\" -\"avito\" -\"profi.ru\" -\"агрегатор\"."
+            )
+            prompt = f"""На основе профиля закупки сформируй поисковые запросы для ДОБОРА компаний-исполнителей услуг/работ (Волна #{wave_index}).
+Нужно искать альтернативных B2B-подрядчиков, специализированные сервисные фирмы и исполнителей для организаций и учреждений.{refine_extra}{geo_prompt}
+Сформируй 18-28 поисковых запросов. НЕ ищи магазины инвентаря, доски вакансий, объявления частных мастеров и агрегаторы.
+Включай в запросы минус-слова (-вакансия -работа -резюме -агрегатор -форум -отзывы).
+Ответ строго JSON:
+{{"queries": ["..."]}}
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Фрагмент ТЗ для контекста:
+{context[:6000]}"""
+        else:
+            system_prompt = (
+                f"Ты ведущий эксперт по B2B поиску коммерческих поставщиков, региональных дистрибьюторов, торговых домов и оптовых складов. "
+                f"ЭТО РЕЖИМ ДОБОРА (ВОЛНА №{wave_index}). Базовые поставщики уже найдены. "
+                "Твоя задача — составить разнообразные поисковые запросы для нахождения альтернативных поставщиков, региональных центров сбыта, оптовых складов, торговых домов и комплектовщиков. "
+                "Используй отрицательные операторы Яндекса: -\"банковская гарантия\" -\"обучение\" -\"семинар\" -\"эцп\" -\"агрегатор\" -\"курсы\"."
+            )
+            prompt = f"""На основе профиля закупки сформируй поисковые запросы для ДОБОРА поставщиков (Волна #{wave_index}).
 Нужно искать альтернативных поставщиков: региональные торговые дома, склады, дистрибьюторы, дилеры по номенклатуре закупки.{refine_extra}{geo_prompt}
 Сформируй 18-28 поисковых запросов для поиска по регионам РФ и специализированным каналам сбыта.
 Включай в запросы минус-слова (-"банковская гарантия" -"обучение" -семинар -эцп -агрегатор -курсы).
@@ -1706,18 +1747,43 @@ async def build_supplier_queries(
 {context[:6000]}"""
     else:
         system_prompt = "Ты закупочный исследователь. Формируешь только поисковые запросы."
-        universal_negatives = build_universal_negative_keywords(context)
+        universal_negatives = build_universal_negative_keywords(context, subject_kind=subject_kind)
         neg_line = f"\n- СТРОГО исключай слова: {', '.join(universal_negatives[:8])}" if universal_negatives else ""
         if profile and len(profile.items) > 1 and multi_item_mode == "per_item":
             item_list_md = "\n".join(f"- {it.name}" for it in profile.items)
-            prompt = f"""На основе профиля закупки сформируй поисковые запросы для ПОПОЗИЦИОННОГО глубокого поиска поставщиков.
+            role_hint = (
+                "профильные сервисные компании, подрядчики и B2B-исполнители услуг"
+                if is_services
+                else "производитель, завод, дилер, дистрибьютор, оптовые поставки, точные параметры из ТЗ"
+            )
+            prompt = f"""На основе профиля закупки сформируй поисковые запросы для ПОПОЗИЦИОННОГО глубокого поиска {'исполнителей услуг' if is_services else 'поставщиков'}.
 В закупке выделены следующие независимые позиции:
 {item_list_md}
 
-КРИТИЧНО: Для КАЖДОЙ из перечисленных позиций составь от 8 до 12 самостоятельных, качественных поисковых запросов (производитель, завод, дилер, дистрибьютор, оптовые поставки, точные параметры из ТЗ).
+КРИТИЧНО: Для КАЖДОЙ из перечисленных позиций составь от 8 до 12 самостоятельных, качественных поисковых запросов ({role_hint}).
 Не смешивай разные позиции в один запрос!
 Всего сформируй от {8 * len(profile.items)} до {12 * len(profile.items)} запросов с равномерным охватом всех позиций.{neg_line}{geo_prompt}
-Не добавляй агрегаторы, маркетплейсы, реестры, тендерные площадки, справочники, статьи, видео и учебные страницы.
+Не добавляй агрегаторы, маркетплейсы, реестры, тендерные площадки, доски вакансий, справочники, статьи, видео и учебные страницы.
+Ответ строго JSON:
+{{"queries": ["..."]}}
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Фрагмент ТЗ для контекста:
+{context[:6000]}"""
+        elif is_services:
+            prompt = f"""На основе профиля закупки сформируй поисковые запросы для поиска профильных компаний-исполнителей и подрядчиков по услугам/работам.
+
+Нужно найти реальные коммерческие компании (B2B-исполнителей, подрядные и сервисные организации), которые оказывают указанную услугу или выполняют работы для организаций/учреждений и могут подготовить коммерческое предложение.
+Сформируй 18-28 коротких запросов для поиска официальных сайтов профильных компаний-исполнителей.
+Обязательная структура:
+- 40-60% запросов широкие по профилю услуги/работы для организаций (B2B, юридические лица, коммерческое предложение, подрядчик, сервисная компания);
+- 20-40% запросов с уточнением объекта/специфики из ТЗ (например: тип помещений/учреждений, локация, требования, режим выполнения);
+- используй коммерческие маркеры поиска исполнителя: "компания", "подрядчик", "услуги для организаций", "заказать", "коммерческое предложение", "официальный сайт";
+- НЕ добавляй слова "завод", "производитель оборудования", "купить инвентарь", "оптом", чтобы не находить магазины расходников вместо исполнителей услуг.{neg_line}{geo_prompt}
+Не добавляй агрегаторы услуг (Avito, Профи.ру, YouDo, Яндекс.Услуги, Zoon, 2ГИС), доски вакансий (hh.ru, работа, резюме), тендерные площадки, реестры, справочники, статьи, видео и учебные страницы.
+Если позиций несколько, обязательно распредели запросы пропорционально между всеми позициями.
 Ответ строго JSON:
 {{"queries": ["..."]}}
 
@@ -1779,11 +1845,18 @@ async def build_supplier_queries(
                 geo_injections = []
                 for item_name in target_items:
                     clean_it = ' '.join(item_name.split()[:4])
-                    geo_injections.append(f'{clean_it} {delivery_city} официальный дилер')
-                    geo_injections.append(f'{clean_it} {delivery_city} купить оптом склад')
-                    for n_city in nearby[:2]:
-                        if n_city != delivery_city.lower():
-                            geo_injections.append(f'{clean_it} {n_city} поставщик опт')
+                    if is_services:
+                        geo_injections.append(f'{clean_it} {delivery_city} компания исполнитель')
+                        geo_injections.append(f'{clean_it} {delivery_city} для организаций официальный сайт')
+                        for n_city in nearby[:2]:
+                            if n_city != delivery_city.lower():
+                                geo_injections.append(f'{clean_it} {n_city} услуги для организаций')
+                    else:
+                        geo_injections.append(f'{clean_it} {delivery_city} официальный дилер')
+                        geo_injections.append(f'{clean_it} {delivery_city} купить оптом склад')
+                        for n_city in nearby[:2]:
+                            if n_city != delivery_city.lower():
+                                geo_injections.append(f'{clean_it} {n_city} поставщик опт')
                 queries = _clean_supplier_queries(geo_injections + queries)
             base_cap = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == 'per_item') else 28
             if delivery_city:
@@ -1881,8 +1954,10 @@ async def _discover_suppliers_impl(
     await _emit_progress(progress_callback, 36, f"Определил закупаемые позиции: {len(profile.items)}")
     
     if not profile or not profile.items:
-        raise ValueError("В прикреплённом файле не найдено закупаемых товаров или спецификации (обнаружена пустая форма или инструкция по заполнению). Для поиска поставщиков прикрепите файл с перечнем конкретных товаров, оборудования или материалов.")
+        raise ValueError("В прикреплённом файле не найдено закупаемых позиций (обнаружена пустая форма или инструкция по заполнению). Для поиска прикрепите файл с перечнем конкретных товаров или описанием требуемых услуг.")
 
+    subject_kind = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower()
+    is_services = subject_kind == "services"
     item_count = len(profile.items) if (profile and len(profile.items) > 1) else 1
     is_per_item = profile is not None and item_count > 1 and multi_item_mode == "per_item"
 
@@ -1894,10 +1969,19 @@ async def _discover_suppliers_impl(
         effective_delivery_target = delivery_target
 
     policy = normalize_supplier_search_policy(supplier_search_policy)
-    await _emit_progress(progress_callback, 39, "Проверяю требования к реестру Минпромторга")
-    if policy == SUPPLIER_POLICY_NORMAL:
+    if policy == SUPPLIER_POLICY_NORMAL and is_services:
+        minprom_requirement = MinpromRegistryRequirement(
+            required=False,
+            measure_type="not_applied",
+            evidence="",
+            reason="Реестр промышленной продукции Минпромторга не применяется при поиске исполнителей услуг.",
+            raw={"skipped_for_subject_kind": "services"},
+        )
+    elif policy == SUPPLIER_POLICY_NORMAL:
+        await _emit_progress(progress_callback, 39, "Проверяю требования к реестру Минпромторга")
         minprom_requirement = await assess_minprom_registry_requirement(settings, context)
     else:
+        await _emit_progress(progress_callback, 39, "Проверяю требования к реестру Минпромторга")
         minprom_requirement = MinpromRegistryRequirement(
             required=True,
             measure_type="prohibition" if policy == SUPPLIER_POLICY_MINPROM_ONLY else "restriction",
@@ -2039,7 +2123,7 @@ async def _discover_suppliers_impl(
         candidates = preloaded_objs + [c for c in discovered if c.domain not in preloaded_domains]
 
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
-    candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(effective_delivery_target * 5, 60 * item_count)]
+    candidates = _exclude_candidates(_rank_candidates(candidates, context, subject_kind=subject_kind), excluded_domains)[: max(effective_delivery_target * 5, 60 * item_count)]
     initial_candidate_pool = list(candidates)
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
     rerank = await ai_rerank_candidates(settings, profile, candidates, effective_delivery_target, registry_context=minprom_context)
@@ -2166,7 +2250,7 @@ async def _discover_suppliers_impl(
                     for candidate in recovery_candidates
                     if candidate.domain and candidate.domain not in seen_domains
                 ]
-                recovery_candidates = _rank_candidates(recovery_candidates, context)[: max(needed_gap * 4, 40)]
+                recovery_candidates = _rank_candidates(recovery_candidates, context, subject_kind=subject_kind)[: max(needed_gap * 4, 40)]
                 recovery_rerank = await ai_rerank_candidates(
                     settings,
                     profile,
@@ -2720,33 +2804,50 @@ def _supplier_minprom_registry_match(item: dict, registry_context: MinpromRegist
 async def extract_supplier_search_context(settings: SystemSettings, context: str) -> str:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search context extraction")
-    prompt = f"""Из полного комплекта закупочной документации выдели контекст, который нужен именно для поиска поставщиков.
+    cleaned_input = re.sub(r"[ \t]+", " ", str(context or "")).strip()
+    cleaned_input = re.sub(r"\n{3,}", "\n\n", cleaned_input).strip()
+    if (
+        50 <= len(cleaned_input) <= 1200
+        and "=== FILE:" not in cleaned_input
+        and "=== TABLE" not in cleaned_input
+        and not any(
+            marker in cleaned_input.lower()
+            for marker in (
+                "инструкция по заполнению",
+                "порядок подачи заявки",
+                "ответственность сторон",
+                "проект контракта",
+            )
+        )
+    ):
+        return cleaned_input
+    prompt = f"""Из полного комплекта закупочной документации выдели контекст, который нужен именно для поиска поставщиков или профильных компаний-исполнителей.
 
 Нужно найти и сохранить:
-- техническое задание, описание объекта закупки, спецификацию или товарную таблицу;
-- наименования закупаемых товаров/номенклатуры;
-- характеристики, размеры, ГОСТ/ТУ/марки/модели/бренды, если они важны для проверки;
+- техническое задание, описание объекта закупки, спецификацию, перечень товаров или описание требуемых услуг/работ;
+- наименования закупаемых товаров, оборудования, материалов ИЛИ конкретных услуг/работ;
+- характеристики, размеры, ГОСТ/ТУ/марки/модели/бренды или параметры объекта оказания услуг (площадь, адреса/город, периодичность, требования);
 - ОКПД2, КТРУ, реестровые номера, сведения о баллах Минпромторга и сроке действия записи как внутренние признаки для поиска;
-- единицы измерения и количества;
-- требования к Минпромторгу/ГИСП/реестровым записям, если они есть;
-- краткий предмет закупки.
+- единицы измерения и количества (в том числе «усл. ед.»);
+- требования к Минпромторгу/ГИСП/реестровым записям или специальным лицензиям, если они есть;
+- краткий предмет закупки и регион/город поставки или оказания услуг.
 
 Нужно убрать или сильно сократить:
-- общие условия договора;
-- реквизиты, адреса, штрафы, обеспечение, инструкции подачи заявки;
-- формы документов и служебные таблицы, которые не описывают товар.
+- общие юридические условия договора;
+- реквизиты сторон, штрафы, обеспечение, инструкции подачи заявки;
+- пустые формы документов.
 
-Не придумывай товары и характеристики. Если в комплекте есть несколько разных ТЗ/ООЗ, сохрани каждую самостоятельную товарную позицию.
+Не придумывай товары и характеристики и не добавляй своих оценок об отсутствии детального ТЗ. Если в комплекте есть несколько разных ТЗ/ООЗ, сохрани каждую самостоятельную позицию дословно.
 
 Ответ строго JSON:
-{{"supplier_context": "самодостаточный текст ТЗ/ООЗ для поиска поставщиков"}}
+{{"supplier_context": "самодостаточный текст ТЗ/ООЗ для поиска поставщиков или исполнителей"}}
 
 Документация:
 {context[:180000]}"""
     raw = await call_llm(
         settings,
         prompt,
-        system_prompt="Ты закупочный аналитик. Выделяешь из документации только ТЗ/ООЗ и товарные требования для последующего поиска поставщиков.",
+        system_prompt="Ты закупочный аналитик. Выделяешь из документации только ТЗ/ООЗ и предметные требования (товары или услуги) для последующего поиска поставщиков/исполнителей.",
         tier="primary",
         routing_key="supplier_tz_context_extraction",
         json_mode=True,
@@ -2799,8 +2900,28 @@ def _exclude_candidates(candidates: list[Candidate], excluded_domains: set[str],
 
 
 
+def _empty_procurement_profile_message(context: str = "", empty_reason: str = "") -> str:
+    return (
+        "В загруженных документах не найдены товары или спецификация "
+        "(обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+        "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров или требуемых услуг текстом."
+    )
+
+
+def _normalize_item_kind(raw_kind: object, *, default_kind: str = "goods") -> str:
+    kind = str(raw_kind or "").strip().lower()
+    if kind in {"service", "services", "work", "works", "услуга", "услуги", "работа", "работы"}:
+        return "service"
+    if kind in {"good", "goods", "product", "products", "товар", "товары"}:
+        return "goods"
+    return "service" if default_kind == "services" else "goods"
+
+
 def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
     raw_items = data.get("items") if isinstance(data, dict) else []
+    raw_subject_kind = str((data or {}).get("subject_kind") or "").strip().lower() if isinstance(data, dict) else ""
+    inferred_default_kind = "services" if raw_subject_kind in {"service", "services"} else "goods"
+    empty_reason = re.sub(r"\s+", " ", str((data or {}).get("empty_reason") or "")).strip()[:200] if isinstance(data, dict) else ""
     items: list[ProcurementItem] = []
     for index, item in enumerate(raw_items if isinstance(raw_items, list) else [], start=1):
         if not isinstance(item, dict):
@@ -2828,6 +2949,10 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
             "оборудование по техническому заданию",
             "материальные ресурсы",
             "материальные ресурсы по тз",
+            "услуги по тз",
+            "услуги по техническому заданию",
+            "работы по тз",
+            "работы по техническому заданию",
             "техническое предложение",
             "форма технического предложения",
             "наименование товара",
@@ -2837,6 +2962,7 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
         }
         if not name or name.lower().strip() in GENERIC_UNDEFINED_NAMES or _is_placeholder_profile_term(name):
             continue
+        item_kind = _normalize_item_kind(item.get("item_kind"), default_kind=inferred_default_kind)
         item_context = f"{name} {' '.join(str(value) for value in item.values())}"
         item_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(item.get("id") or f"item-{index}")).strip("-").lower() or f"item-{index}"
         is_core = bool(item.get("is_core", True))
@@ -2870,8 +2996,21 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
                 is_auxiliary=is_auxiliary,
                 included_sub_items=included_sub_items,
                 cost_tier=cost_tier,
+                item_kind=item_kind,
             )
         )
+    # Mixed-TZ deterministic guard (Rule 14 structural invariant, zero keyword lists):
+    # Whenever physical goods exist alongside ancillary services, search ONLY for the goods.
+    has_goods = any(it.item_kind == "goods" for it in items)
+    has_services = any(it.item_kind == "service" for it in items)
+    if has_goods and has_services:
+        items = [it for it in items if it.item_kind == "goods"]
+        subject_kind = "goods"
+    elif has_services and not has_goods:
+        subject_kind = "services"
+    else:
+        subject_kind = "goods"
+
     MAX_PROFILE_ITEMS = 50
     if len(items) > MAX_PROFILE_ITEMS:
         core_items = [it for it in items if it.is_core]
@@ -2895,6 +3034,7 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
                 is_auxiliary=last.is_auxiliary,
                 included_sub_items=tuple(list(last.included_sub_items) + extra_sub_items[:50]),
                 cost_tier=last.cost_tier,
+                item_kind=last.item_kind,
             )
         items = kept_items
     summary = re.sub(r"\s+", " ", str(data.get("summary") or "")).strip() if isinstance(data, dict) else ""
@@ -2905,6 +3045,8 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
         items=tuple(items),
         excluded_terms=_clean_profile_terms(data.get("excluded_terms") if isinstance(data, dict) else None),
         raw=data if isinstance(data, dict) else {},
+        subject_kind=subject_kind,
+        empty_reason=empty_reason,
     )
 
 
@@ -2929,8 +3071,9 @@ _PLACEHOLDER_PROFILE_TERMS_EXACT = {
 _PLACEHOLDER_PROFILE_SUBSTRINGS = (
     "не указан", "не определен", "паспорт завода", "по спецификаци", "согласно тз",
     "в соответствии с тз", "согласно техническ", "в открытой документаци",
-    "отечественн", "по согласованию с заказчик", "страна происхожден",
-    "по требовани", "согласно документаци",
+    "отечественный производитель", "отечественного производител", "отечественного происхожден",
+    "по согласованию с заказчик", "страна происхожден",
+    "по требованию тз", "по требованию заказчик", "согласно документаци",
     "товары по техническому заданию", "товар по техническому заданию", "товары по тз", "товар по тз",
     "продукция по техническому заданию", "оборудование по техническому заданию",
     "по техническому заданию заказчика", "техническое предложение", "форма технического предложения",
@@ -3029,11 +3172,14 @@ def _profile_okpd2_hierarchy_codes(profile: ProcurementProfile) -> list[str]:
 
 def _profile_to_dict(profile: ProcurementProfile) -> dict:
     return {
+        "subject_kind": str(getattr(profile, "subject_kind", "goods") or "goods"),
         "summary": profile.summary,
+        "empty_reason": str(getattr(profile, "empty_reason", "") or ""),
         "items": [
             {
                 "id": item.id,
                 "name": item.name,
+                "item_kind": str(getattr(item, "item_kind", "goods") or "goods"),
                 "aliases": list(item.aliases),
                 "okpd2_codes": list(item.okpd2_codes),
                 "category_terms": list(item.category_terms),
@@ -3393,7 +3539,30 @@ async def _revise_supplier_queries_with_ai(
     initial_queries: list[str],
     target: int,
 ) -> list[str]:
-    prompt = f"""Первый набор поисковых запросов получился слишком узко привязанным к точным характеристикам ТЗ.
+    is_services = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services"
+    if is_services:
+        prompt = f"""Первый набор поисковых запросов получился слишком узко привязанным к частным формулировкам ТЗ.
+
+Сформируй новый набор 18-28 запросов для поиска профильных B2B компаний-исполнителей и подрядчиков.
+Ищи коммерческие компании, сервисные организации и подрядчиков по направлению услуги, которые работают с организациями и учреждениями.
+Не повторяй ошибку: не делай каждый запрос с длинными цитатами контракта или узкими второстепенными деталями; оставь ключевые условия (тип объекта/регион) только в части запросов.
+НЕ добавляй маркетплейсы/агрегаторы услуг (Авито, Профи.ру, YouDo), доски вакансий (hh.ru) и магазины инвентаря.
+
+Цель отчёта: найти до {target} проверенных компаний-исполнителей.
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Слишком узкие запросы:
+{json.dumps(initial_queries, ensure_ascii=False)}
+
+Фрагмент ТЗ:
+{context[:5000]}
+
+Ответ строго JSON:
+{{"queries": ["..."]}}"""
+    else:
+        prompt = f"""Первый набор поисковых запросов получился слишком узко привязанным к точным характеристикам ТЗ.
 
 Сформируй новый набор 18-28 запросов для закупочного поиска поставщиков.
 Ищи производителей, заводы, дилеров, дистрибьюторов и B2B-поставщиков всей товарной группы/номенклатуры.
@@ -3458,7 +3627,38 @@ async def _build_supplier_recovery_queries_with_ai(
         }
         for item in accepted
     ][:20]
-    prompt = f"""Первый поисковый проход дал меньше подтверждённых поставщиков, чем нужно для качественного закупочного отчёта.
+    is_services = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services"
+    if is_services:
+        prompt = f"""Первый поисковый проход дал меньше подтверждённых компаний-исполнителей, чем нужно для качественного закупочного отчёта.
+
+Сформируй дополнительный набор 8-16 поисковых запросов для второго прохода.
+Это должно быть расширение поиска по рынку профильных сервисных компаний и подрядных организаций.
+
+Правила:
+- ищи специализированные B2B-компании, подрядчиков, сервисные фирмы и исполнителей услуг для организаций;
+- используй широкие category_terms и синонимы из профиля закупки, добавляя коммерческие маркеры ("для организаций", "юридическим лицам", "подрядчик", "официальный сайт", "заказать", "коммерческое предложение");
+- не ищи заводы/производителей инвентаря, доски вакансий (hh.ru), агрегаторы услуг (Avito, Профи, YouDo), тендерные площадки, реестры и статьи;
+- не повторяй исходные запросы без новой формулировки.
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Исходные запросы:
+{json.dumps(initial_queries, ensure_ascii=False)}
+
+Уже принятые компании:
+{json.dumps(accepted_samples, ensure_ascii=False)}
+
+Отклоненные/слабые кандидаты:
+{json.dumps(rejected_samples, ensure_ascii=False)}
+
+Фрагмент ТЗ:
+{context[:5000]}
+
+Ответ строго JSON:
+{{"queries": ["..."]}}"""
+    else:
+        prompt = f"""Первый поисковый проход дал меньше подтверждённых поставщиков, чем нужно для качественного закупочного отчёта.
 
 Сформируй дополнительный набор 8-16 поисковых запросов для второго прохода.
 Это должен быть не повтор точной позиции, а расширение поиска по товарной группе/номенклатуре.
@@ -3538,7 +3738,37 @@ async def ai_rerank_candidates(
     desired_review_count = _desired_candidate_review_count(target, len(payload_candidates))
     by_id = {str(index): candidate for index, candidate in enumerate(candidates[:limit])}
     minprom_guidance, minprom_payload = _minprom_rerank_context(registry_context)
-    prompt = f"""Отранжируй поисковых кандидатов перед открытием сайтов.
+    is_services = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services"
+    if is_services:
+        prompt = f"""Отранжируй поисковых кандидатов перед открытием сайтов.
+
+Нужно выбрать широкий пул профильных компаний-исполнителей и подрядчиков по услугам/работам для дальнейшей ИИ-проверки сайтов и контактов.
+Выбирай сайты специализированных сервисных компаний, подрядных организаций и B2B-исполнителей по профилю закупки.
+Если кандидат является профильной компанией нужного направления услуг, оставь его для детального ИИ-аудита.
+Для цели {target} компаний желательно оставить до {desired_review_count} кандидатов, если они похожи на официальные сайты компаний-исполнителей.
+Отклоняй маркетплейсы, агрегаторы услуг (Avito, Профи.ру, YouDo, Zoon, 2ГИС), доски вакансий (hh.ru, SuperJob), магазины расходников/инвентаря, тендерные площадки, реестры, справочники, статьи, видео и госресурсы.
+Для multi-item закупки сохрани покрытие разных позиций, если в выдаче есть подходящие кандидаты.
+
+Ответ строго JSON:
+{{
+  "ranked": [
+    {{
+      "id": "0",
+      "keep": true,
+      "confidence": 0,
+      "procurement_item_id": "item-1",
+      "reason": "кратко почему стоит открыть сайт"
+    }}
+  ]
+}}
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Кандидаты:
+{json.dumps(payload_candidates, ensure_ascii=False)}"""
+    else:
+        prompt = f"""Отранжируй поисковых кандидатов перед открытием сайтов.
 
 Нужно выбрать широкий пул кандидатов для дальнейшей ИИ-проверки сайтов и контактов, а не только точные товарные страницы.
 Выбирай производителей, заводы, дилеров, дистрибьюторов или B2B-поставщиков позиций из профиля закупки и релевантной товарной группы/номенклатуры.
@@ -3771,7 +4001,23 @@ async def _expand_candidate_rerank_with_ai(
         for item in remaining
     }
     minprom_guidance, minprom_payload = _minprom_rerank_context(registry_context)
-    prompt = f"""Первый ИИ-отбор оставил слишком мало кандидатов для отчёта на {target} поставщиков.
+    is_services = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services"
+    if is_services:
+        prompt = f"""Первый ИИ-отбор оставил слишком мало кандидатов для отчёта на {target} компаний-исполнителей.
+
+Выбери дополнительно до {needed} сайтов профильных сервисных компаний, подрядчиков и B2B-исполнителей для финального ИИ-аудита.
+Не выбирай агрегаторы услуг, доски вакансий, магазины расходников/инвентаря, маркетплейсы, тендеры, реестры, справочники, статьи и госстраницы.
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Кандидаты для дополнительного отбора:
+{json.dumps(remaining, ensure_ascii=False)}
+
+Ответ строго JSON:
+{{"ranked": [{{"id": "0", "keep": true, "confidence": 0, "procurement_item_id": "item-1", "reason": "почему стоит открыть сайт"}}]}}"""
+    else:
+        prompt = f"""Первый ИИ-отбор оставил слишком мало кандидатов для отчёта на {target} поставщиков.
 
 Выбери дополнительно до {needed} сайтов компаний для финального ИИ-аудита.
 Расширяй пул за счет производителей, заводов, дилеров, дистрибьюторов и B2B-поставщиков товарной группы/номенклатуры, даже если в сниппете нет точного размера, ГОСТ, артикула или модели.
@@ -5209,7 +5455,8 @@ async def verify_candidate(
     if not pages:
         return None
     combined_text = "\n\n".join(page["text"] for page in pages)
-    match = assess_candidate_match(candidate, context, pages)
+    subject_kind = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() if profile else "goods"
+    match = assess_candidate_match(candidate, context, pages, subject_kind=subject_kind)
     if not settings.has_active_ai_provider:
         return {
             "company_name": candidate.domain,
@@ -5285,7 +5532,7 @@ async def verify_candidate(
         "company_name": decision.get("company_name") or candidate.domain,
         "inn": re.sub(r"\D+", "", verified_inn)[:12],
         "region": decision.get("region") or "",
-        "status": decision.get("status") or "поставщик",
+        "status": decision.get("status") or ("исполнитель" if subject_kind == "services" else "поставщик"),
         "product": decision.get("product") or match.product,
         "contact_person": decision.get("contact_person") or "",
         "phone": phone,
@@ -5688,7 +5935,7 @@ def extract_internal_links(html_text: str, base_url_value: str) -> list[str]:
         score = 0
         if any(word in label for word in ["контакт", "contact", "отдел", "sales", "продаж", "связ", "requisite", "реквизит"]):
             score += 4
-        if any(word in label for word in ["каталог", "product", "produk", "товар", "оборуд", "shop", "catalog", "номенклатур", "прайс", "price", "datasheet", "паспорт", ".pdf"]):
+        if any(word in label for word in ["каталог", "product", "produk", "товар", "оборуд", "shop", "catalog", "номенклатур", "прайс", "price", "datasheet", "паспорт", ".pdf", "услуг", "service", "services"]):
             score += 4
         if any(word in label for word in ["о компании", "about", "производ", "завод", "company"]):
             score += 2
@@ -5742,7 +5989,54 @@ async def ai_verify(
         "inns": extracted_inn if 'extracted_inn' in locals() and extracted_inn else [],
         "pages": [{"url": page["url"], "text": page["text"][:2500]} for page in pages[:4]],
     }
-    prompt = f"""Проверь поставщика для закупочного ТЗ.
+    is_services = bool(profile and str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services")
+    if is_services:
+        prompt = f"""Проверь компанию-исполнителя (подрядчика) для закупочного ТЗ на оказание услуг / выполнение работ.
+Твоя задача — финальный закупочный аудит перед попаданием строки в отчёт.
+
+Принимай только если одновременно верно:
+- сайт принадлежит реальной коммерческой компании-исполнителю (подрядчику, сервисной организации), которая оказывает требуемую услугу или выполняет работы для организаций/учреждений (B2B);
+- на сайте подтверждается профильное направление услуг/работ, достаточное для запроса КП;
+- контакт (телефон и/или корпоративный email) опубликован на открытой странице этого же сайта;
+- сайт не является маркетплейсом, агрегатором услуг (Avito, Профи.ру, YouDo, Zoon, 2ГИС), доской вакансий (hh.ru, SuperJob), тендерной площадкой, реестром, справочником, статьей, видео, форумом или госресурсом.
+
+	Классификация product_fit:
+- exact: на сайте прямо подтверждается оказание именно требуемой услуги/работы с подходящим профилем (в том числе по типу объекта, комплексности или локации);
+- analog: компания оказывает близкие профильные услуги смежного типа, детали соответствия ТЗ нужно уточнить при запросе КП;
+- category: сайт подтверждает профильное направление услуг/подряда, но конкретный формат из ТЗ не расписан;
+- profile: многопрофильный подрядчик релевантного направления, готовность выполнить конкретное ТЗ нужно уточнить.
+
+	В comments запрещено писать "полностью соответствует" для analog, category и profile. Для них пиши, что компания релевантна для запроса КП и нужно уточнить детали выполнения ТЗ.
+
+- Отклоняй, если совпадение только по случайному упоминанию слова, условиям договора, новостной статье, резюме/вакансии или форме документа.
+- СТРОГО отклоняй (action: "reject", product_fit: "unrelated"), если сайт продает инвентарь, расходники или химию/оборудование вместо оказания самой услуги (например, магазин швабр и моющих средств вместо клининговой компании), либо является каталогом/агрегатором/биржей частных мастеров.
+Ответ строго JSON:
+{{
+  "action": "accept|reject",
+  "confidence": 0,
+  "site_type": "service_company|manufacturer|dealer|distributor|supplier|marketplace|aggregator|tender|registry|directory|article|video|education|government|unknown",
+  "product_fit": "exact|analog|category|profile|unrelated",
+  "procurement_item_id": "",
+  "procurement_item_name": "",
+  "company_name": "",
+  "inn": "10 или 12 цифр ИНН компании если найдено на сайте",
+  "region": "",
+  "status": "исполнитель|подрядчик|сервисная компания",
+  "product": "",
+  "email": "",
+  "phone": "",
+  "evidence_url": "",
+  "contact_url": "",
+  "evidence_snippet": "короткая цитата/фрагмент страницы, подтверждающий оказание услуги",
+  "contact_evidence_snippet": "короткая цитата/фрагмент страницы, подтверждающий телефон/email",
+  "comments": ""
+}}
+
+Данные:
+{json.dumps(payload, ensure_ascii=False)}"""
+        system_prompt_verify = "Ты закупочный аудитор. Отбираешь реальные компании-исполнители услуг и подрядчиков, отсекаешь агрегаторы, вакансии и магазины инвентаря, не выдумываешь компании и контакты."
+    else:
+        prompt = f"""Проверь поставщика для закупочного ТЗ.
 Твоя задача — финальный закупочный аудит перед попаданием строки в отчёт.
 
 Принимай только если одновременно верно:
@@ -5792,11 +6086,12 @@ async def ai_verify(
 
 Данные:
 {json.dumps(payload, ensure_ascii=False)}"""
+        system_prompt_verify = "Ты закупочный аудитор. Не выдумываешь компании и контакты, но не отбрасываешь реального профильного поставщика только из-за отсутствия точного артикула."
     try:
         raw = await call_llm(
             settings,
             prompt,
-            system_prompt="Ты закупочный аудитор. Не выдумываешь компании и контакты, но не отбрасываешь реального профильного поставщика только из-за отсутствия точного артикула.",
+            system_prompt=system_prompt_verify,
             tier="primary",
             routing_key="supplier_candidate_verifier",
             json_mode=True,
@@ -6506,11 +6801,11 @@ def _supplier_anchor_stopwords() -> set[str]:
     }
 
 
-def _rank_candidates(candidates: list[Candidate], context: str) -> list[Candidate]:
-    return sorted(candidates, key=lambda item: _candidate_score(item, context), reverse=True)
+def _rank_candidates(candidates: list[Candidate], context: str, *, subject_kind: str = "goods") -> list[Candidate]:
+    return sorted(candidates, key=lambda item: _candidate_score(item, context, subject_kind=subject_kind), reverse=True)
 
 
-def _candidate_score(candidate: Candidate, context: str) -> int:
+def _candidate_score(candidate: Candidate, context: str, *, subject_kind: str = "goods") -> int:
     text = f"{candidate.url} {candidate.title} {candidate.snippet}".lower()
     score = 0
     exact_terms = _exact_match_terms(context)
@@ -6521,14 +6816,20 @@ def _candidate_score(candidate: Candidate, context: str) -> int:
     for term in important_terms(context)[:16]:
         if term in text:
             score += 3 if len(term) >= 8 else 2
-    if any(word in text for word in ("производ", "завод", "изготов", "официаль")):
-        score += 4
-    if any(word in text for word in ("catalog", "product", "produkt", "товар", "каталог")):
-        score += 2
+    if subject_kind == "services":
+        if any(word in text for word in ("услуг", "подряд", "обслуживан", "выполнен", "компани", "официаль")):
+            score += 4
+        if any(word in text for word in ("uslug", "service", "services", "прайс", "price", "стоимост")):
+            score += 2
+    else:
+        if any(word in text for word in ("производ", "завод", "изготов", "официаль")):
+            score += 4
+        if any(word in text for word in ("catalog", "product", "produkt", "товар", "каталог")):
+            score += 2
     if any(word in text for word in ("контакт", "contact", "mail", "email")):
         score += 1
     # Отрицательные ключевые слова и отраслевые антитезы
-    negatives = build_universal_negative_keywords(context)
+    negatives = build_universal_negative_keywords(context, subject_kind=subject_kind)
     for nkw in negatives:
         clean_nkw = nkw.lower().strip()
         if clean_nkw and len(clean_nkw) >= 3 and clean_nkw in text:
@@ -6536,7 +6837,7 @@ def _candidate_score(candidate: Candidate, context: str) -> int:
     return score
 
 
-def assess_candidate_match(candidate: Candidate, context: str, pages: list[dict]) -> CandidateMatch:
+def assess_candidate_match(candidate: Candidate, context: str, pages: list[dict], *, subject_kind: str = "goods") -> CandidateMatch:
     text = f"{candidate.title} {candidate.snippet}\n" + "\n".join(page["text"][:20000] for page in pages)
     front_text = f"{candidate.url} {candidate.title} {candidate.snippet}".lower()
     lowered = text.lower()
@@ -6548,7 +6849,7 @@ def assess_candidate_match(candidate: Candidate, context: str, pages: list[dict]
             reason="Страница похожа на справочник, тендер, учебный/госресурс или нерелевантный источник, а не на сайт поставщика.",
         )
 
-    commercial = _has_commercial_supplier_signal(lowered)
+    commercial = _has_commercial_supplier_signal(lowered, subject_kind=subject_kind)
     exact_terms = _exact_match_terms(context)
     exact_matches = tuple(term for term in exact_terms if term in lowered)
     category_hits = _category_hits(lowered)
@@ -6751,8 +7052,8 @@ def _category_hits(text: str) -> set[str]:
     return hits
 
 
-def _has_commercial_supplier_signal(text: str) -> bool:
-    return any(
+def _has_commercial_supplier_signal(text: str, *, subject_kind: str = "goods") -> bool:
+    if any(
         word in text
         for word in (
             "производ",
@@ -6771,7 +7072,28 @@ def _has_commercial_supplier_signal(text: str) -> bool:
             "снабжен",
             "оборудован",
         )
-    )
+    ):
+        return True
+    if subject_kind == "services":
+        return any(
+            word in text
+            for word in (
+                "услуг",
+                "подряд",
+                "обслуживан",
+                "выполнен",
+                "сервис",
+                "прайс",
+                "стоимост",
+                "расчет",
+                "расчёт",
+                "договор",
+                "клиент",
+                "организац",
+                "коммерческ",
+            )
+        )
+    return False
 
 
 def _is_adjacent_category(category_hits: set[str], context: str) -> bool:
