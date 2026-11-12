@@ -182,3 +182,92 @@ async def test_mixed_spreadsheet_and_text_preserve_separate_source_inventories(t
     assert parse.await_count == 1
     assert "25 мм" not in parse.call_args.args[0]
     assert rows[2]["requirements"][0]["tz_requirement"] == "4 бара"
+
+
+@pytest.mark.asyncio
+async def test_ktru_xlsx_routes_to_ai_instead_of_splitting_characteristics(tmp_path):
+    import openpyxl
+    from app.exact_product.pipeline import prepare_exact_product_positions
+
+    workbook = openpyxl.Workbook()
+    ws = workbook.active
+    ws.append([
+        "№", "Код КТРУ", "Наименование товара, работы, услуги",
+        "Тип характеристики", "Наименование характеристики", "Значение характеристики",
+        "Единица измерения характеристики", "Кол-во к поставке / Ед. изм.",
+    ])
+    ws.append([1, "22.19.60.119-00000008", "Перчатки смотровые нитриловые", "Качественная", "Внешняя отделка", "Текстурный рисунок", "", "Пара (2 шт.)"])
+    # Merged/continuation rows: empty item name & position_no
+    ws.append(["", "", "", "Количественная", "Длина", ">= 220", "мм", ""])
+    ws.append(["", "", "", "Качественная", "Размер", "XS, S, M, L, XL", "", ""])
+    path = tmp_path / "ktru_gloves.xlsx"
+    workbook.save(path)
+
+    ai_result = {
+        "item_name": "Перчатки смотровые нитриловые",
+        "city": "",
+        "positions": [{
+            "name": "Перчатки смотровые нитриловые",
+            "unit": "Пара",
+            "quantity": "1",
+            "requirements": [
+                {"param_name": "Внешняя отделка", "tz_requirement": "Текстурный рисунок"},
+                {"param_name": "Длина", "tz_requirement": ">= 220 мм"},
+                {"param_name": "Размер", "tz_requirement": "XS, S, M, L, XL"},
+            ],
+        }],
+    }
+    with patch("app.exact_product.matcher.parse_tz_structure", new_callable=AsyncMock, return_value=ai_result) as parse:
+        rows = await prepare_exact_product_positions(SystemSettings(), "", [path])
+
+    parse.assert_awaited_once()
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Перчатки смотровые нитриловые"
+    assert len(rows[0]["requirements"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_char_header_first_xlsx_routes_to_ai_never_picks_char_column(tmp_path):
+    import openpyxl
+    from app.exact_product.pipeline import prepare_exact_product_positions
+
+    workbook = openpyxl.Workbook()
+    ws = workbook.active
+    ws.append(["№", "Наименование характеристики", "Значение характеристики", "Ед. изм."])
+    ws.append([1, "Внешняя отделка", "Текстурный рисунок", ""])
+    ws.append([2, "Длина", ">= 220", "мм"])
+    path = tmp_path / "vertical_specs.xlsx"
+    workbook.save(path)
+
+    with patch("app.exact_product.matcher.parse_tz_structure", new_callable=AsyncMock, return_value={"positions": [{"name": "Перчатки нитриловые", "requirements": [{"param_name": "Длина", "tz_requirement": ">= 220 мм"}]}]}) as parse:
+        rows = await prepare_exact_product_positions(SystemSettings(), "", [path])
+
+    parse.assert_awaited_once()
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Перчатки нитриловые"
+
+
+@pytest.mark.asyncio
+async def test_structured_table_does_not_fall_back_to_line_splitting_when_ai_returns_none(tmp_path):
+    from docx import Document
+    from app.jobs import prepare_job_product_positions
+
+    doc = Document()
+    tbl = doc.add_table(rows=4, cols=7)
+    headers = ["№", "Код КТРУ", "Наименование товара, работы, услуги", "Тип характеристики", "Наименование характеристики", "Значение характеристики", "Кол-во к поставке / Ед. изм."]
+    for c, h in enumerate(headers):
+        tbl.cell(0, c).text = h
+    for r_idx, (cname, cval) in enumerate([("Внешняя отделка", "Текстурный рисунок"), ("Длина", ">= 220 мм"), ("Размер", "M, L")], 1):
+        vals = ["1", "22.19.60.119-00000008", "Перчатки смотровые нитриловые", "Качественная", cname, cval, "Пара"]
+        for c, v in enumerate(vals):
+            tbl.cell(r_idx, c).text = v
+    docx_path = tmp_path / "gloves.docx"
+    doc.save(docx_path)
+
+    with patch("app.exact_product.matcher.parse_tz_structure", new_callable=AsyncMock, return_value=None):
+        rows = await prepare_job_product_positions(SystemSettings(), "", input_files=[docx_path])
+
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Перчатки смотровые нитриловые"
+    assert len(rows[0]["requirements"]) == 3
+

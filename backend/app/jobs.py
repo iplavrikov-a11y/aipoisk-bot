@@ -1865,10 +1865,27 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
                 raise ValueError("Не удалось выделить товары. Добавьте наименования и характеристики позиций.")
             reserve = db.query(BillingTransaction).filter_by(job_id=job.id, kind=KIND_EXACT_PRODUCT, operation="reserve").first()
             price = int(reserve.amount_kopeks or 0) if reserve else effective_job_unit_price_kopeks(db, job.client, KIND_EXACT_PRODUCT, job=job)
-            job.position_selection_json = build_selection_snapshot(items, price_kopeks=price)
-        _set_job(db, job, status=AWAITING_EXACT_SELECTION, progress=25,
-                 message="Выберите позиции для подбора модели и аналогов. Поиск начнётся после подтверждения.")
-        return
+            snapshot = json.loads(build_selection_snapshot(items, price_kopeks=price))
+            if getattr(job, "is_admin_rerun", False):
+                from .exact_product.models import MAX_EXACT_POSITIONS_PER_JOB
+                snapshot["selected_ids"] = [it["id"] for it in snapshot.get("items", [])[:MAX_EXACT_POSITIONS_PER_JOB]]
+                snapshot["confirmed"] = True
+                job.position_selection_json = json.dumps(snapshot, ensure_ascii=False)
+                selection = snapshot
+            else:
+                job.position_selection_json = json.dumps(snapshot, ensure_ascii=False)
+                _set_job(db, job, status=AWAITING_EXACT_SELECTION, progress=25,
+                         message="Выберите позиции для подбора модели и аналогов. Поиск начнётся после подтверждения.")
+                return
+        elif getattr(job, "is_admin_rerun", False):
+            from .exact_product.models import MAX_EXACT_POSITIONS_PER_JOB
+            selection["selected_ids"] = [it["id"] for it in selection.get("items", [])[:MAX_EXACT_POSITIONS_PER_JOB]]
+            selection["confirmed"] = True
+            job.position_selection_json = json.dumps(selection, ensure_ascii=False)
+        else:
+            _set_job(db, job, status=AWAITING_EXACT_SELECTION, progress=25,
+                     message="Выберите позиции для подбора модели и аналогов. Поиск начнётся после подтверждения.")
+            return
     chosen_positions = selected_positions(job)
     if not chosen_positions:
         raise ValueError("Выбранные позиции не найдены. Создайте новый подбор.")
@@ -1970,10 +1987,25 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
             snapshot = json.loads(build_selection_snapshot(positions, price_kopeks=price, mode=MODE_PRICE_MONITORING))
             limit = max(1, int(getattr(settings, "price_monitoring_max_positions", 1000) or 1000))
             snapshot["max_positions"] = min(len(positions), limit)
-            job.position_selection_json = json.dumps(snapshot, ensure_ascii=False)
-        _set_job(db, job, status=AWAITING_POSITION_SELECTION, progress=20,
-                 message="Проверьте распознанные товары и выберите позиции для мониторинга. Поиск и резервирование начнутся после подтверждения.")
-        return
+            if getattr(job, "is_admin_rerun", False):
+                snapshot["selected_ids"] = [it["id"] for it in snapshot.get("items", [])[:limit]]
+                snapshot["confirmed"] = True
+                job.position_selection_json = json.dumps(snapshot, ensure_ascii=False)
+                selection = snapshot
+            else:
+                job.position_selection_json = json.dumps(snapshot, ensure_ascii=False)
+                _set_job(db, job, status=AWAITING_POSITION_SELECTION, progress=20,
+                         message="Проверьте распознанные товары и выберите позиции для мониторинга. Поиск и резервирование начнутся после подтверждения.")
+                return
+        elif getattr(job, "is_admin_rerun", False):
+            limit = max(1, int(getattr(settings, "price_monitoring_max_positions", 1000) or 1000))
+            selection["selected_ids"] = [it["id"] for it in selection.get("items", [])[:limit]]
+            selection["confirmed"] = True
+            job.position_selection_json = json.dumps(selection, ensure_ascii=False)
+        else:
+            _set_job(db, job, status=AWAITING_POSITION_SELECTION, progress=20,
+                     message="Проверьте распознанные товары и выберите позиции для мониторинга. Поиск и резервирование начнутся после подтверждения.")
+            return
     chosen = selected_positions(job)
     items = [(str(row.get("name") or ""), extract_unit_and_quantity_from_position(row)[0] or "шт") for row in chosen]
 

@@ -373,7 +373,7 @@ if [[ "$deploy_scope" != "site" ]]; then
   verify_minprom_registry_runtime
 
   log "checking live API payload"
-  wait_for_url http://127.0.0.1:8088/api/health/ready 30 1
+  wait_for_url http://127.0.0.1:8088/api/health/ready 90 1
   curl_get http://127.0.0.1:8088/api/health/ready \
     | jq -e '.ok == true and .database.ok == true and .queue.ok == true and .queue.stale_running == 0 and .tender_source.ok == true' >/dev/null
   wait_for_url http://127.0.0.1:8088/api/public/site 30 1
@@ -382,8 +382,8 @@ if [[ "$deploy_scope" != "site" ]]; then
 fi
 
 log "checking live site routes"
-wait_for_url http://127.0.0.1:3093/ 30 1
-wait_for_url http://127.0.0.1:3093/cabinet 30 1
+wait_for_url http://127.0.0.1:3093/ 45 1
+wait_for_url http://127.0.0.1:3093/cabinet 45 1
 curl_head http://127.0.0.1:3093/ >/dev/null
 curl_head http://127.0.0.1:3093/cabinet >/dev/null
 

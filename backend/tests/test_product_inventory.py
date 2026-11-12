@@ -146,3 +146,23 @@ def test_ktru_unified_specification_table_parses_single_product_with_characteris
     assert rows[0]["requirements"][2] == {"param_name": "Усилие при разрыве", "tz_requirement": "≥ 7,0 Н"}
     assert rows[0]["requirements"][3] == {"param_name": "Размер", "tz_requirement": "M, L"}
 
+
+def test_ktru_xlsx_merged_and_repeated_rows_group_single_product(tmp_path):
+    import openpyxl
+    workbook = openpyxl.Workbook()
+    ws = workbook.active
+    ws.append(["", "Код КТРУ", "Наименование товара, работы, услуги", "Тип характеристики", "Наименование характеристики", "Значение характеристики", "Единица измерения характеристики"])
+    ws.append([1, "22.19.60.119-00000008", "Перчатки смотровые нитриловые", "Качественная", "Внешняя отделка", "Текстурный рисунок", ""])
+    ws.append(["", "", "", "Количественная", "Длина", ">= 220", "мм"])
+    ws.append(["", "", "", "Количественная", "Усилие при разрыве", ">= 7,0", "Н"])
+    path = tmp_path / "ktru_merged.xlsx"
+    workbook.save(path)
+
+    rows = extract_structured_product_inventory([path])
+    assert rows is not None
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Перчатки смотровые нитриловые"
+    assert [r["param_name"] for r in rows[0]["requirements"]] == ["Внешняя отделка", "Длина", "Усилие при разрыве"]
+    assert rows[0]["requirements"][1]["tz_requirement"] == ">= 220 мм"
+
+

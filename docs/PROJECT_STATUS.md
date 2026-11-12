@@ -1,26 +1,35 @@
 # TenderLex: Project Status
 
-## Актуальное состояние — 11 ноября 2026 (Москва) — Переход на 100% семантический ИИ-разбор любых входящих документов, устранение жестких привязок к колонкам в подборе товаров и мониторинге цен, внедрение Circuit Breaker для Yandex Search API 429
+## Актуальное состояние — 11–12 ноября 2026 (Москва) — Переход на 100% семантический ИИ-разбор любых входящих документов, устранение жестких привязок к колонкам в подборе товаров и мониторинге цен, исправление перезапуска в админке (`reparse=true`) и Circuit Breaker для Yandex Search API 429
 
-**Полная ликвидация жестких табличных шаблонов при выделении товаров, перевод всех модулей на семантический разбор ИИ (по эталону «Поиска поставщиков»), предотвращение ложных расщеплений характеристик на фиктивные товары и оптимизация сетевых ретраев поиска**:
+**Полная ликвидация жестких табличных шаблонов при выделении товаров, перевод всех модулей на семантический разбор ИИ (по эталону «Поиска поставщиков»), предотвращение ложных расщеплений характеристик на фиктивные товары, честный переразбор в админке и оптимизация сетевых ретраев поиска**:
 
-1. **Переход на 100% семантический ИИ-анализ документов без жестких колонок (`backend/app/jobs.py`, `backend/app/exact_product/pipeline.py`)**:
-   * В функции `prepare_job_product_positions` устранена архитектурная ошибка, из-за которой эвристический скрипт регулярных выражений перехватывал управление при наличии таблиц и отсекал вызов нейросети.
-   * Теперь при запуске подбора товара (`exact_product`) и мониторинга цен (`price_monitoring`) **любой входящий файл (Word, Excel, PDF, сметы или текст)** в первую очередь передаётся в семантический анализатор ТЗ на базе ИИ (`parse_tz_structure`).
-   * ИИ извлекает реальный товар и привязывает к нему все строки характеристик, диапазонов и ГОСТов независимо от порядка столбцов, объединенных ячеек или типа спецификации (КТРУ, Форма 2).
-   * Исключена проблема задачи #1074, где медицинские нитриловые перчатки из-за наложения заголовка «Наименование характеристики» распадались на 5 псевдо-товаров (включая «Внешнюю отделку», совпавшую со строительным сайдингом Grand Line). Сквозной тест на документе клиентки подтвердил точное выделение 1 позиции перчаток со всеми 5 характеристиками.
+1. **Переход на 100% семантический ИИ-анализ документов без жестких колонок и сложных `.xlsx`/КТРУ-таблиц (`backend/app/jobs.py`, `backend/app/exact_product/pipeline.py`, `backend/app/exact_product/matcher.py`, `backend/app/product_inventory.py`)**:
+   * В `prepare_job_product_positions` и `_extract_flat_xlsx_rows` убраны жёсткие эвристики по столбцам, перехватывавшие управление до нейросети: для таблиц КТРУ, вертикальных таблиц «Наименование характеристики / Значение / Единица измерения», объединённых ячеек и нетиповых Excel-листов документ полностью маршрутизируется через `extract_text` в семантический анализатор ИИ (`parse_tz_structure`).
+   * В `TZ_STRUCTURE_PROMPT` добавлен прямой запрет на расщепление строк параметров («Внешняя отделка», «Длина», «Усилие при разрыве», «Размер» и т. п.) на отдельные позиции `positions` — все характеристики объединяются в `requirements` одного товара.
+   * В `prepare_exact_product_positions` внедрена защита `_is_unstructured_short_prompt_text`: многострочные таблицы (`=== TABLE`, `=== SHEET`, Markdown-таблицы) и длинные ТЗ больше не расщепляются наивным построчным фолбэком в фейковые `is_short_prompt` позиции.
+   * В `product_inventory.py` (`_table_rows`, `_xlsx_rows`) поддержана группировка вертикальных таблиц КТРУ с повторяющимися/объединёнными строками характеристик при резервном разборе и мониторинге цен.
+   * Исключена проблема задачи #1074 (и контрольно проверена в боевом прогоне #1079): медицинские нитриловые перчатки распознаются строго как **1 позиция** со всеми **5 характеристиками** и корректным подбором отечественных/доступных аналогов по паспортам качества.
 
-2. **Защита колонок в парсере мониторинга цен (`backend/app/price_monitoring/pipeline.py`, `backend/tests/test_price_monitoring.py`)**:
+2. **Честный перезапуск экспертом (`reparse=true`) в админ-панели (`backend/app/main.py`, `backend/app/jobs.py`, `frontend/src/App.tsx`)**:
+   * В `POST /api/jobs/{job_id}/admin-rerun` добавлен параметр `reparse: bool` (в админ-панели включён `?reparse=true`), сбрасывающий унаследованный `position_selection_json` и прежнюю стратегию родительской задачи, чтобы экспертный перезапуск выполнял свежий ИИ-разбор документа вместо повторения старой ошибки.
+   * В `_process_exact_product` и `_process_price_monitoring` при `is_admin_rerun=True` свежий результат разбора автоматически подтверждается воркером без блокировки в `awaiting_exact_selection` и без списания средств с клиента.
+
+3. **Защита колонок в парсере мониторинга цен (`backend/app/price_monitoring/pipeline.py`, `backend/tests/test_price_monitoring.py`)**:
    * В функции `parse_input_excel` устранена аналогичная скрытая ошибка перезаписи: колонки со словами `характеристик`, `показател`, `параметр` теперь строго проверяются первыми и исключены из кандидатов на наименование товара (`nom_col`). Повторные заголовки не могут затереть уже найденный столбец номенклатуры.
    * Добавлен тест `test_parse_input_excel_with_characteristic_column_does_not_overwrite_product_name`.
 
-3. **Внедрение Circuit Breaker при лимитах Yandex Search API 429 (`backend/app/exact_product/yandex_search.py`, `backend/app/supplier_search.py`)**:
+4. **Внедрение Circuit Breaker при лимитах Yandex Search API 429 (`backend/app/exact_product/yandex_search.py`, `backend/app/supplier_search.py`)**:
    * По следам диагностики задачи #1073 (где из-за сбоя в платформе Яндекса асинхронный поиск блокировался ошибкой `HTTP 429: search rate limit exceeded`) внедрён предохранитель `Circuit Breaker`.
    * При получении 429 асинхронный поиск уходит в режим охлаждения на 180 секунд, а запросы мгновенно переключаются на синхронный поиск без холостых задержек (экспоненциальный бэкофф сокращён с 5 попыток до 2). Это сократило общее время обработки сложных задач с 1 ч 15 мин до 3-4 минут.
-   * Устранено блокирующее условие в `backend/app/supplier_search.py`: при нахождении асинхронного поиска в кулдауне (`is_yandex_async_available() is False`) синхронный поиск теперь активируется автоматически без требования переменной окружения (кейс задачи #1076 Марины по измерительным проекторам, где запросы ранее отбрасывались вхолостую).
+   * Устранено блокирующее условие в `backend/app/supplier_search.py`: при нахождении асинхронного поиска в кулдауне (`is_yandex_async_available() is False`) синхронный поиск теперь активируется автоматически без требования переменной окружения (кейс задачи #1076 по измерительным проекторам, где запросы ранее отбрасывались вхолостую).
 
-4. **Аудит биллинга и холдирования средств клиентов**:
-   * Детально подтверждён цикл холдирования триальных средств (задача #1074, клиент #94): при старте задачи резервировались 495 ₽ за 5 предполагаемых позиций; после завершения задачи с 1 подтверждённой позицией списано 99 ₽, а непотраченные 396 ₽ автоматически разморозились и вернулись на баланс.
+5. **Стабилизация сборки сайта и деплоя (`site/src/app/cabinet/cabinet-client.tsx`, `scripts/deploy_tenderlex_live.sh`)**:
+   * Исправлены 4 синтаксические артефакта в `cabinet-client.tsx`, восстановлена чистая компиляция `tsc --noEmit` и Next.js (`105/105` страниц).
+   * Таймаут ожидания готовности API в `deploy_tenderlex_live.sh` увеличен до 90 с (для инициализации схемы удалённой PostgreSQL), а в системной конфигурации `tender-source-service` прописан системный CA-bundle (`/etc/ssl/certs/ca-certificates.crt`) для корректной TLS-проверки `zakupki.gov.ru`.
+
+6. **Аудит биллинга и холдирования средств клиентов**:
+   * Детально подтверждён цикл холдирования триальных средств (задача #1074, клиент #94): при старте задачи резервировались 495 ₽ за 5 предполагаемых позиций; после завершения задачи с 1 подтверждённой позицией списано 99 ₽, а непотраченные 396 ₽ автоматически разморозились и вернулись на баланс (баланс клиента при экспертном перезапуске #1079 не затрагивался).
 
 ---
 
@@ -3246,5 +3255,18 @@ risks are narrower:
   - Automatically transitions failed parent jobs (`status = "failed"`) to `status = "completed"` with `message = "Дополнено экспертом TenderLex"` upon attaching expert deliverables, ensuring immediate unblocked access in customer cabinets.
   - Retains emerald badge `✨ Дополнено экспертом` and individual file download actions in customer web cabinets.
 
+## Semantic KTRU / Complex Spreadsheet Extraction & Admin Rerun Reparse (November 2026)
+
+- **Admin Rerun Reparse (`backend/app/main.py`, `backend/app/jobs.py`, `frontend/src/App.tsx`)**:
+  - Added `reparse: bool` flag on `POST /api/jobs/{job_id}/admin-rerun` and enabled `?reparse=true` from the admin rerun button in `frontend/src/App.tsx` so expert reruns discard corrupted/legacy `position_selection_json` / strategy snapshots and re-extract positions cleanly via AI.
+  - Updated `_process_exact_product` and `_process_price_monitoring` in `backend/app/jobs.py` to auto-confirm freshly reparsed admin rerun snapshots (without charging client balance) and proceed end-to-end automatically.
+- **Complex Spreadsheet / KTRU Semantic Routing (`backend/app/exact_product/pipeline.py`, `backend/app/exact_product/matcher.py`, `backend/app/product_inventory.py`)**:
+  - Replaced rigid `.xlsx` column heuristics with strict flat-SKU detection (`_extract_flat_xlsx_rows`); KTRU tables, vertical characteristic/value layouts, merged-cell continuation rows, and non-standard Excel sheets route cleanly through `extract_text` and AI `parse_tz_structure`.
+  - Guarded the zero-shot line fallback in `prepare_exact_product_positions` (`_is_unstructured_short_prompt_text`) so structured tables and long TZ documents never fall back to naive line-by-line splitting when AI parsing returns empty, preserving clean fallback to `extract_structured_product_inventory`.
+  - Updated `TZ_STRUCTURE_PROMPT` in `backend/app/exact_product/matcher.py` and `_xlsx_rows` / `_table_rows` in `backend/app/product_inventory.py` so vertical KTRU characteristic tables group into one product with complete requirements rather than splitting characteristics into separate fake positions.
+- **Live Build, Deploy & End-to-End Verification (`site/src/app/cabinet/cabinet-client.tsx`, `scripts/deploy_tenderlex_live.sh`)**:
+  - Repaired 4 syntax corruptions in `site/src/app/cabinet/cabinet-client.tsx` left by an earlier commit so Next.js typecheck and standalone build succeed cleanly.
+  - Increased API readiness wait in `scripts/deploy_tenderlex_live.sh` to 90s for remote PostgreSQL schema initialization and configured system CA bundle env (`/etc/ssl/certs/ca-certificates.crt`) on `tender-source-service.service` for EIS (`zakupki.gov.ru`) TLS verification.
+  - Verified live via full `deploy_tenderlex_live.sh` run (`100%` backend tests pass) and production admin rerun `#1079` (re-parsed into 1 nitrile glove position with 5 verified specifications and matched passport DOCX without charging client balance).
 
 

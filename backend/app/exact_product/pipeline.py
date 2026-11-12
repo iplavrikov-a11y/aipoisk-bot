@@ -29,6 +29,156 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+_NON_PRODUCT_NAME_HEADER_WORDS = (
+    "характеристик", "показател", "параметр", "требован",
+    "инструкц", "обоснован", "единиц", "ед.", "ед ",
+    "ктру", "окпд", "стоим", "сумм", "примеч", "комментар",
+)
+
+_VERTICAL_CHAR_COLUMN_WORDS = (
+    "характеристик", "показател", "параметр", "свойств", "атрибут",
+)
+
+_VERTICAL_VALUE_COLUMN_WORDS = (
+    "значен", "требован", "инструкц", "обоснован",
+)
+
+
+def _pick_flat_xlsx_name_column(headers: list[str]) -> Optional[int]:
+    preferred: Optional[int] = None
+    fallback: Optional[int] = None
+    for column, raw in enumerate(headers):
+        low = str(raw or "").strip().lower()
+        if not low:
+            continue
+        if any(bad in low for bad in _NON_PRODUCT_NAME_HEADER_WORDS):
+            continue
+        if any(word in low for word in ("наименован", "номенклатур", "название товара")):
+            if any(pref in low for pref in ("товар", "продукц", "объект", "материал", "оборудован", "номенклатур", "предмет")):
+                preferred = column
+                break
+            if fallback is None:
+                fallback = column
+    return preferred if preferred is not None else fallback
+
+
+def _is_complex_xlsx_sheet_headers(headers: list[str]) -> bool:
+    lows = [str(h or "").strip().lower() for h in headers if str(h or "").strip()]
+    has_char_label_col = any(
+        any(w in h for w in _VERTICAL_CHAR_COLUMN_WORDS)
+        and (
+            any(k in h for k in ("наименован", "название", "тип", "вид"))
+            or h in {"характеристика", "показатель", "параметр", "свойство", "атрибут"}
+        )
+        for h in lows
+    )
+    has_any_char_word = any(any(w in h for w in _VERTICAL_CHAR_COLUMN_WORDS) for h in lows)
+    has_val_col = any(any(w in h for w in _VERTICAL_VALUE_COLUMN_WORDS) for h in lows)
+    has_ktru = any("ктру" in h for h in lows)
+    return bool(has_ktru or has_char_label_col or (has_val_col and has_any_char_word))
+
+
+def _extract_flat_xlsx_rows(path: Any) -> Optional[List[Dict[str, Any]]]:
+    """Read an unambiguous flat SKU spreadsheet (1 row = 1 product).
+
+    Returns None for KTRU, vertical characteristic-value tables, merged multi-row
+    blocks, or non-standard layouts so they route through semantic AI parsing.
+    """
+    from pathlib import Path
+    import openpyxl
+
+    p = Path(path)
+    rows: List[Dict[str, Any]] = []
+    workbook = openpyxl.load_workbook(p, data_only=True, read_only=True)
+    try:
+        for sheet in workbook:
+            headers = None
+            name_column = None
+            number_column = None
+            sheet_rows: List[Dict[str, Any]] = []
+            prev_explicit_pos_no: Optional[int] = None
+            multi_cell_rows_before_header = 0
+            for source_row, cells in enumerate(sheet.iter_rows(values_only=True), 1):
+                values = [str(value or "").strip() for value in cells]
+                if not any(values):
+                    continue
+                if headers is None:
+                    picked = _pick_flat_xlsx_name_column(values)
+                    if picked is not None:
+                        if _is_complex_xlsx_sheet_headers(values):
+                            return None
+                        headers, name_column = values, picked
+                        for col, h in enumerate(values):
+                            if h.strip().lower() in {"№", "п/п", "№ п/п", "номер"}:
+                                number_column = col
+                                break
+                    else:
+                        if sum(1 for v in values if v) >= 2:
+                            multi_cell_rows_before_header += 1
+                    continue
+                if _is_complex_xlsx_sheet_headers(values):
+                    return None
+                name = values[name_column] if name_column is not None and name_column < len(values) else ""
+                if not name:
+                    non_empty = [v for v in values if v]
+                    if sheet_rows and len(non_empty) >= 2 and not all(v.isdigit() for v in non_empty):
+                        return None
+                    continue
+                if any(word in name.lower() for word in ("наименование", "номенклатура")):
+                    continue
+                if number_column is not None and number_column < len(values):
+                    num_raw = values[number_column]
+                    if num_raw.isdigit():
+                        pos_num = int(num_raw)
+                        if prev_explicit_pos_no is not None and pos_num == prev_explicit_pos_no:
+                            return None
+                        prev_explicit_pos_no = pos_num
+                row = {
+                    "position_no": len(rows) + len(sheet_rows) + 1,
+                    "name": name,
+                    "requirements": [],
+                    "source_file": p.name,
+                    "source_sheet": sheet.title,
+                    "source_row": source_row,
+                    "source_excerpt": " | ".join(values),
+                }
+                for column, value in enumerate(values):
+                    if not value or column == name_column:
+                        continue
+                    header = headers[column] if column < len(headers) else ""
+                    low = header.lower()
+                    if low in {"№", "п/п", "№ п/п", "номер"} and value.isdigit():
+                        row["position_no"] = int(value)
+                    elif any(word in low for word in ("колич", "кол-во")):
+                        row["quantity"] = value
+                    elif any(word in low for word in ("ед.", "единиц")):
+                        row["unit"] = value
+                    elif header and low not in {"№", "п/п", "№ п/п", "номер"}:
+                        row["requirements"].append({"param_name": header, "tz_requirement": value})
+                sheet_rows.append(row)
+            if headers is None and multi_cell_rows_before_header >= 2:
+                return None
+            rows.extend(sheet_rows)
+    finally:
+        workbook.close()
+    return rows or None
+
+
+def _is_unstructured_short_prompt_text(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return False
+    if "=== TABLE" in cleaned or "=== SHEET" in cleaned:
+        return False
+    lines = [l.strip() for l in cleaned.splitlines() if l.strip()]
+    pipe_lines = sum(1 for l in lines if "|" in l)
+    if pipe_lines >= 2:
+        return False
+    if len(cleaned) > 1500 or len(lines) > 20:
+        return False
+    return True
+
+
 async def prepare_exact_product_positions(
     settings: SystemSettings,
     context: str,
@@ -36,56 +186,26 @@ async def prepare_exact_product_positions(
 ) -> List[Dict[str, Any]]:
     """Extract the complete selection inventory, without market search or result reuse."""
     from pathlib import Path
-    import openpyxl
+
     rows: List[Dict[str, Any]] = []
+    flat_xlsx_files: set[Path] = set()
     for file in input_files or []:
         path = Path(file)
         if path.suffix.lower() != ".xlsx":
             continue
-        workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
-        try:
-            for sheet in workbook:
-                headers = None
-                name_column = None
-                for source_row, cells in enumerate(sheet.iter_rows(values_only=True), 1):
-                    values = [str(value or "").strip() for value in cells]
-                    if headers is None:
-                        for column, value in enumerate(values):
-                            if any(word in value.lower() for word in ("наименован", "номенклатур", "название товара")):
-                                headers, name_column = values, column
-                                break
-                        continue
-                    name = values[name_column] if name_column < len(values) else ""
-                    if not name or any(word in name.lower() for word in ("наименование", "номенклатура")):
-                        continue
-                    row = {"position_no": len(rows) + 1, "name": name, "requirements": [],
-                           "source_file": path.name, "source_sheet": sheet.title,
-                           "source_row": source_row, "source_excerpt": " | ".join(values)}
-                    for column, value in enumerate(values):
-                        if not value or column == name_column:
-                            continue
-                        header = headers[column] if column < len(headers) else ""
-                        low = header.lower()
-                        if low in {"№", "п/п", "№ п/п", "номер"} and value.isdigit():
-                            row["position_no"] = int(value)
-                        elif any(word in low for word in ("колич", "кол-во")):
-                            row["quantity"] = value
-                        elif any(word in low for word in ("ед.", "единиц")):
-                            row["unit"] = value
-                        elif header and low not in {"№", "п/п", "№ п/п", "номер"}:
-                            row["requirements"].append({"param_name": header, "tz_requirement": value})
-                    rows.append(row)
-        finally:
-            workbook.close()
-    if rows and not any(Path(file).suffix.lower() != ".xlsx" for file in input_files or []):
+        flat_rows = _extract_flat_xlsx_rows(path)
+        if flat_rows:
+            rows.extend(flat_rows)
+            flat_xlsx_files.add(path)
+    if rows and input_files and len(flat_xlsx_files) == len(list(input_files)):
         return rows
     from .matcher import parse_tz_structure
-    # Parse non-spreadsheet documents separately so their rows do not replace,
-    # or duplicate a text rendering of, the workbook inventory already extracted.
+    # Parse non-flat/complex documents semantically via AI so KTRU vertical tables,
+    # merged cells, arbitrary Word/PDF layouts and mixed archives never split specs into products.
     text_sources = []
     for file in input_files or []:
         path = Path(file)
-        if rows and path.suffix.lower() == ".xlsx":
+        if path in flat_xlsx_files:
             continue
         from ..document_parser import extract_text
         text, _status = extract_text(path)
@@ -93,8 +213,9 @@ async def prepare_exact_product_positions(
             text_sources.append((path.name, text))
     if not input_files:
         text_sources.append(("", context))
-    elif not text_sources and context:
+    elif not text_sources and context and not flat_xlsx_files:
         text_sources.append(("", context))
+    ai_extracted_any = False
     for source_file, source_text in text_sources:
         chunks, current = [], ""
         for line in source_text.splitlines(keepends=True):
@@ -113,10 +234,13 @@ async def prepare_exact_product_positions(
                 row.setdefault("position_no", len(rows) + 1)
                 row["source_file"] = source_file
                 rows.append(row)
-    if not rows and text_sources:
-        # Универсальный zero-shot фоллбек (Правило 14): для коротких запросов (напр. "Окна пластиковые ПВХ")
-        # или неструктурированного текста выделяем позиции напрямую из строк без жестких условий
+                ai_extracted_any = True
+    if not rows and not ai_extracted_any and text_sources:
+        # Универсальный zero-shot фоллбек (Правило 14): ТОЛЬКО для короткого неструктурированного текста
+        # (напр. "Окна пластиковые ПВХ"), но НЕ для табличных/длинных ТЗ (их разбирает структурный fallback).
         for source_file, source_text in text_sources:
+            if not _is_unstructured_short_prompt_text(source_text):
+                continue
             lines = [l.strip() for l in source_text.splitlines() if l.strip()]
             valid_lines = [
                 l for l in lines

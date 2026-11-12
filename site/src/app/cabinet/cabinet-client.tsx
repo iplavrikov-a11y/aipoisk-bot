@@ -4955,7 +4955,6 @@ export function CabinetClient() {
                   <div className="col-span-6 md:col-span-2 flex flex-col items-start gap-1 min-w-0">
                     <span
                       className={`inline-flex items-center justify-center text-center px-2.5 py-0.5 rounded-full text-[11px] font-bold border whitespace-nowrap leading-tight w-max max-w-full ${
-                        job.status_label === "нет в реестре"
                         job.status_label === "нет в реестре" || job.status_label === "не найдено в Минпромторге"
                           ? "bg-slate-100 text-slate-700 border-slate-300"
                           : isFailed
@@ -4973,7 +4972,6 @@ export function CabinetClient() {
                     >
                       {job.status_label}
                     </span>
-                    {job.error && job.status_label !== "нет в реестре" && job.error !== job.message ? (
                     {job.error && job.status_label !== "нет в реестре" && job.status_label !== "не найдено в Минпромторге" && job.error !== job.message ? (
                       <small className="text-rose-600 text-[10px] block mt-0.5 break-words">
                         {job.error}
@@ -4986,7 +4984,6 @@ export function CabinetClient() {
                     <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden mt-1.5" aria-label={`Прогресс ${job.progress}%`}>
                       <i
                         className={`block h-full transition-all rounded-full ${
-                          job.status_label === "нет в реестре" ? "bg-slate-400" : isFailed ? "bg-rose-500" : "bg-teal-600"
                           job.status_label === "нет в реестре" || job.status_label === "не найдено в Минпромторге" ? "bg-slate-400" : isFailed ? "bg-rose-500" : "bg-teal-600"
                         }`}
                         style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }}
@@ -9316,8 +9313,6 @@ ${webLink}`;
                   const startIndex = (customerInvoicesPage - 1) * CUSTOMER_INVOICES_PER_PAGE;
                   const currentInvoices = customerInvoices.slice(startIndex, startIndex + CUSTOMER_INVOICES_PER_PAGE);
                   return (
-                    <div className="rounded-2xl 
-... [truncated for diff preview]
                     <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3 space-y-2 mt-4">
                       <div className="flex items-center justify-between">
                         <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700">Мои счета ({customerInvoices.length})</div>

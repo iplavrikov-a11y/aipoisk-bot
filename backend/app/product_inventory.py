@@ -83,12 +83,26 @@ def _table_rows(text: str, source_file: str) -> list[dict] | None:
             name_col, unit_col, quantity_col, number_col = _header_columns(headers)
             start_row = first
         else:
-            continue
+            # Check if row 0 is a unified KTRU / vertical characteristic table header even without qty/unit columns
+            if table:
+                first_cells = table[0][1]
+                nc, uc, qc, numc = _header_columns(first_cells)
+                if nc is not None and any("характеристик" in c.lower() or "показател" in c.lower() for c in first_cells):
+                    name_col, unit_col, quantity_col, number_col = nc, uc, qc, numc
+                    headers = first_cells
+                    start_row = 1
+                else:
+                    continue
+            else:
+                continue
 
         if name_col is None:
             continue
-        authoritative = unit_col is not None or quantity_col is not None
-        has_inline_chars = any(w in h.lower() for w in ("характеристик", "показател", "параметр") for h in headers[2:]) and (unit_col is not None or quantity_col is not None)
+        char_col = next((c for c, h in enumerate(headers) if any(w in h.lower() for w in ("характеристик", "показател", "параметр")) and any(w in h.lower() for w in ("наименован", "название"))), None)
+        val_col = next((c for c, h in enumerate(headers) if any(w in h.lower() for w in ("характеристик", "показател", "параметр")) and any(w in h.lower() for w in ("значен", "требован"))), None)
+        unit_val_col = next((c for c, h in enumerate(headers) if any(w in h.lower() for w in ("характеристик", "показател", "параметр")) and any(w in h.lower() for w in ("единиц", "ед."))), None)
+        authoritative = unit_col is not None or quantity_col is not None or (char_col is not None and val_col is not None)
+        has_inline_chars = any(w in h.lower() for w in ("характеристик", "показател", "параметр") for h in headers[2:]) and authoritative
         if has_inline_chars:
             authoritative = True
         characteristic = any("показател" in header.lower() or "характеристик" in header.lower() for header in headers[2:])
@@ -119,7 +133,8 @@ def _table_rows(text: str, source_file: str) -> list[dict] | None:
                 if current.get("position_no") != number:
                     is_new = True
             elif name_val and number_col is None:
-                is_new = True
+                if not (char_col is not None and val_col is not None and current.get("name") and _identity(name_val) == _identity(current["name"])):
+                    is_new = True
 
             if is_new:
                 flush()
@@ -137,9 +152,6 @@ def _table_rows(text: str, source_file: str) -> list[dict] | None:
                     if get(column) and not current[key]:
                         current[key] = get(column)
             # Check for inline characteristics in the same authoritative table
-            char_col = next((c for c, h in enumerate(headers) if any(w in h.lower() for w in ("характеристик", "показател", "параметр")) and any(w in h.lower() for w in ("наименован", "название"))), None)
-            val_col = next((c for c, h in enumerate(headers) if any(w in h.lower() for w in ("характеристик", "показател", "параметр")) and any(w in h.lower() for w in ("значен", "требован"))), None)
-            unit_val_col = next((c for c, h in enumerate(headers) if any(w in h.lower() for w in ("характеристик", "показател", "параметр")) and any(w in h.lower() for w in ("единиц", "ед."))), None)
             if char_col is not None and val_col is not None:
                 p_name = get(char_col)
                 p_val = get(val_col)
@@ -184,25 +196,78 @@ def _xlsx_rows(path: Path) -> list[dict] | None:
     rows = []
     try:
         for sheet in workbook:
+            sheet_values = [
+                [str(value).strip() if value is not None else "" for value in cells]
+                for cells in sheet.iter_rows(values_only=True)
+            ]
             headers = None
-            for line_no, cells in enumerate(sheet.iter_rows(values_only=True), 1):
-                values = [str(value).strip() if value is not None else "" for value in cells]
+            columns = (None, None, None, None)
+            flat_rows = []
+            prev_explicit_no: int | None = None
+            is_complex = False
+            for line_no, values in enumerate(sheet_values, 1):
+                if not any(values):
+                    continue
                 if headers is None:
-                    columns = _header_columns(values)
-                    if columns[0] is not None:
+                    cols = _header_columns(values)
+                    if cols[0] is not None:
                         headers = values
+                        columns = cols
+                        lows = [h.lower() for h in headers]
+                        if any("ктру" in h for h in lows) or (
+                            any(any(w in h for w in ("характеристик", "показател", "параметр")) and any(k in h for k in ("наименован", "название", "тип")) for h in lows)
+                            and any(any(w in h for w in ("значен", "требован")) for h in lows)
+                        ):
+                            is_complex = True
+                            break
                     continue
                 name_col, unit_col, quantity_col, number_col = columns
                 get = lambda column: values[column] if column is not None and column < len(values) else ""
-                if not get(name_col) or _header_columns(values)[0] is not None:
+                name_val = get(name_col)
+                if not name_val:
+                    non_empty = [v for v in values if v]
+                    if flat_rows and len(non_empty) >= 2 and not all(_number(v) is not None for v in non_empty):
+                        is_complex = True
+                        break
                     continue
-                rows.append({"position_no": _number(get(number_col)) or len(rows) + 1, "name": get(name_col),
-                             "unit": get(unit_col), "quantity": get(quantity_col), "source_file": path.name,
-                             "source_sheet": sheet.title, "source_row": line_no, "source_excerpt": " | ".join(values),
-                             "requirements": [{"param_name": headers[column], "tz_requirement": value}
-                                              for column, value in enumerate(values)
-                                              if value and column not in {name_col, unit_col, quantity_col, number_col}
-                                              and column < len(headers) and headers[column]]})
+                if _header_columns(values)[0] is not None:
+                    continue
+                num_val = _number(get(number_col))
+                if num_val is not None:
+                    if prev_explicit_no is not None and num_val == prev_explicit_no:
+                        is_complex = True
+                        break
+                    prev_explicit_no = num_val
+                flat_rows.append({
+                    "position_no": num_val or len(rows) + len(flat_rows) + 1,
+                    "name": name_val,
+                    "unit": get(unit_col),
+                    "quantity": get(quantity_col),
+                    "source_file": path.name,
+                    "source_sheet": sheet.title,
+                    "source_row": line_no,
+                    "source_excerpt": " | ".join(values),
+                    "requirements": [
+                        {"param_name": headers[column], "tz_requirement": value}
+                        for column, value in enumerate(values)
+                        if value and column not in {name_col, unit_col, quantity_col, number_col}
+                        and column < len(headers) and headers[column]
+                    ],
+                })
+            if is_complex:
+                width = max((len(v) for v in sheet_values), default=0)
+                pipe_lines = [
+                    "| " + " | ".join((v[i] if i < len(v) else "").replace("|", "/") for i in range(width)) + " |"
+                    for v in sheet_values if any(v)
+                ]
+                grouped = _table_rows("\n".join(pipe_lines), path.name)
+                if grouped is None:
+                    return None
+                for item in grouped:
+                    item.setdefault("source_sheet", sheet.title)
+                rows.extend(grouped)
+            else:
+                rows.extend(flat_rows)
     finally:
         workbook.close()
     return rows or None

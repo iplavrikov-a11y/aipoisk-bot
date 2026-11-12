@@ -484,3 +484,31 @@ def test_supplier_serializer_distinguishes_confirmed_legacy_all_and_explicit_emp
     serialized = main.job_to_dict(parent, db=db)
     assert serialized["multi_item_selection"]["selected_ids"] == expected
     assert serialized["admin_reruns"][0]["multi_item_selection"]["selected_ids"] == expected
+
+
+def test_admin_rerun_with_reparse_clears_inherited_selection(admin_db, monkeypatch):
+    db, client = admin_db
+    snapshot = json.loads(build_selection_snapshot(
+        [{"position_no": 1, "name": "Внешняя отделка"}, {"position_no": 2, "name": "Длина"}],
+        price_kopeks=10_000,
+        mode="exact_product",
+    ))
+    snapshot.update(confirmed=True, selected_ids=[it["id"] for it in snapshot["items"]])
+    parent = Job(
+        client_id=client.id,
+        mode="exact_product",
+        status="completed",
+        position_selection_json=json.dumps(snapshot, ensure_ascii=False),
+    )
+    db.add(parent); db.commit()
+    queued = []
+    monkeypatch.setattr(main, "enqueue_job", queued.append)
+
+    response = main.admin_rerun_job(parent.id, policy=None, multi_item_mode=None, reparse=True, db=db)
+    child = db.get(Job, response["job"]["id"])
+    assert child is not None
+    assert child.is_admin_rerun is True
+    assert child.position_selection_json == ""
+    assert read_selection(child) == {}
+    assert queued == [child.id]
+

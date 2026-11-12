@@ -4184,11 +4184,13 @@ function JobsView({
 
   async function adminRerun(job: Job) {
     if (needsAdminSelection(job) || (job.admin_rerun && activeExpertStatuses.includes(job.admin_rerun.status))) return
-    if (!window.confirm(
-      `Создать новый экспертный поиск по задаче #${job.job_number || job.id}?\n\n${expertScope(job)}\nСостав позиций и условия сохраняются. Баланс клиента не списывается. Результат не отправляется автоматически — используйте «Дополнить отчёт».`
-    )) return
+    const isProductMode = ['exact_product', 'price_monitoring'].includes(job.mode)
+    const promptMsg = isProductMode
+      ? `Создать новый экспертный поиск по задаче #${job.job_number || job.id}?\n\n${expertScope(job)}\n\n• Нажмите «ОК» для запуска с распознаванием ТЗ заново через ИИ (рекомендуется, если позиции были определены неверно).\n• Баланс клиента не списывается.\n• Нажмите «Отмена» для отмены запуска.`
+      : `Создать новый экспертный поиск по задаче #${job.job_number || job.id}?\n\n${expertScope(job)}\n\nБаланс клиента не списывается. Результат не отправляется автоматически — используйте «Дополнить отчёт».`
+    if (!window.confirm(promptMsg)) return
     try {
-      await api(`/api/jobs/${job.id}/admin-rerun`, { method: 'POST' })
+      await api(`/api/jobs/${job.id}/admin-rerun?reparse=true`, { method: 'POST' })
       await onChange(job.id)
     } catch (err: any) {
       alert(err.message || 'Ошибка перезапуска задачи')

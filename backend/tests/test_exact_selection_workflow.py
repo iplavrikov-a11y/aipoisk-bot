@@ -148,3 +148,20 @@ def test_admin_rerun_reuses_waiting_child_and_clears_unsupported_legacy_geo(cont
     assert second["job"]["id"] == child.id
     assert queued == [child.id]
     assert child.delivery_city == "" and child.geo_radius_km is None
+
+
+def test_admin_rerun_worker_auto_confirms_reparsed_exact_product(context_db, monkeypatch):
+    from app.exact_product.models import ExactProductReport
+    context, db = context_db
+    job = Job(client_id=context.user.client_id, mode="exact_product", status="running", title="Перчатки", is_admin_rerun=True)
+    db.add(job); db.commit()
+    prepare = AsyncMock(return_value=[{"position_no": 1, "name": "Перчатки нитриловые", "requirements": [{"param_name": "Длина", "tz_requirement": ">= 220 мм"}]}])
+    match = AsyncMock(return_value=ExactProductReport(procurement_title="Перчатки нитриловые", total_positions=1, positions=[]))
+    monkeypatch.setattr(jobs, "prepare_exact_product_positions", prepare)
+    monkeypatch.setattr(jobs, "analyze_exact_product", match)
+    monkeypatch.setattr(jobs, "write_exact_product_docx", lambda path, *_, **__: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"ok") or path)
+    jobs._process_exact_product(db, job, db.query(SystemSettings).first(), "Перчатки нитриловые")
+    assert read_selection(job)["confirmed"] is True
+    assert len(read_selection(job)["selected_ids"]) == 1
+    match.assert_awaited_once()
+

@@ -4751,6 +4751,7 @@ def admin_rerun_job(
     revision: str | None = Query(default=None),
     selected_item_ids: list[str] | None = Query(default=None),
     selection_payload: dict | None = Body(default=None),
+    reparse: bool = Query(default=False),
     db: Session = Depends(db_session),
 ) -> dict:
     parent_job = resolve_admin_job(job_id, db)
@@ -4762,6 +4763,8 @@ def admin_rerun_job(
         revision = None
     if not isinstance(selected_item_ids, list):
         selected_item_ids = None
+    if not isinstance(reparse, bool):
+        reparse = False
     if isinstance(selection_payload, dict):
         revision = revision or selection_payload.get("revision")
         if selected_item_ids is None and isinstance(selection_payload.get("selected_item_ids"), list):
@@ -4776,60 +4779,66 @@ def admin_rerun_job(
 
     inherited_selection: dict | None = None
     if parent_job.mode in {MODE_EXACT_PRODUCT, MODE_PRICE_MONITORING}:
-        inherited_selection = read_selection(parent_job)
-        if explicit_selection_requested:
-            if revision is None or selected_item_ids is None:
-                raise HTTPException(status_code=400, detail="Передайте актуальный список и выбранные позиции для экспертного перезапуска.")
-            try:
-                chosen_source_ids = validate_selected_ids(inherited_selection, revision, selected_item_ids)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            inherited_selection = dict(inherited_selection, selected_ids=chosen_source_ids, confirmed=True)
-        elif not inherited_selection.get("confirmed"):
-            if parent_job.status in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION} or inherited_selection.get("items"):
-                raise HTTPException(status_code=409, detail="Для экспертного перезапуска требуется подтверждённый выбор позиций исходной задачи.")
-        if inherited_selection.get("confirmed") and inherited_selection.get("items"):
-            source_selected_ids = set(inherited_selection.get("selected_ids") or [])
-            reissued = json.loads(build_selection_snapshot(
-                inherited_selection["items"],
-                price_kopeks=int(inherited_selection.get("price_kopeks") or 0),
-                mode=parent_job.mode,
-            ))
-            old_indexes = [index for index, item in enumerate(inherited_selection["items"]) if item.get("id") in source_selected_ids]
-            reissued["selected_ids"] = [reissued["items"][index]["id"] for index in old_indexes]
-            reissued["confirmed"] = True
-            inherited_selection = reissued
-        if inherited_selection.get("items") and not inherited_selection.get("selected_ids"):
-            raise HTTPException(status_code=409, detail="Для экспертного перезапуска требуется хотя бы одна выбранная позиция.")
+        if not reparse or explicit_selection_requested:
+            inherited_selection = read_selection(parent_job)
+            if explicit_selection_requested:
+                if revision is None or selected_item_ids is None:
+                    raise HTTPException(status_code=400, detail="Передайте актуальный список и выбранные позиции для экспертного перезапуска.")
+                try:
+                    chosen_source_ids = validate_selected_ids(inherited_selection, revision, selected_item_ids)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                inherited_selection = dict(inherited_selection, selected_ids=chosen_source_ids, confirmed=True)
+            elif not inherited_selection.get("confirmed"):
+                if parent_job.status in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION} or inherited_selection.get("items"):
+                    raise HTTPException(status_code=409, detail="Для экспертного перезапуска требуется подтверждённый выбор позиций исходной задачи.")
+            if inherited_selection.get("confirmed") and inherited_selection.get("items"):
+                source_selected_ids = set(inherited_selection.get("selected_ids") or [])
+                reissued = json.loads(build_selection_snapshot(
+                    inherited_selection["items"],
+                    price_kopeks=int(inherited_selection.get("price_kopeks") or 0),
+                    mode=parent_job.mode,
+                ))
+                old_indexes = [index for index, item in enumerate(inherited_selection["items"]) if item.get("id") in source_selected_ids]
+                reissued["selected_ids"] = [reissued["items"][index]["id"] for index in old_indexes]
+                reissued["confirmed"] = True
+                inherited_selection = reissued
+            if inherited_selection.get("items") and not inherited_selection.get("selected_ids"):
+                raise HTTPException(status_code=409, detail="Для экспертного перезапуска требуется хотя бы одна выбранная позиция.")
+        else:
+            inherited_selection = None
 
     inherited_strategy: dict | None = None
     if parent_job.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
-        parent_context = read_dobor_context(parent_job)
-        profile = parent_context.get("procurement_profile")
-        source_items = profile.get("items") if isinstance(profile, dict) else None
-        if isinstance(source_items, list) and source_items:
-            explicit_selection = explicit_selection_requested
-            if explicit_selection:
-                if revision != _multi_item_selection_revision(parent_job, profile):
-                    raise HTTPException(status_code=400, detail="Список позиций изменился. Обновите задачу и повторите выбор.")
-                if selected_item_ids is None:
-                    raise HTTPException(status_code=400, detail="Выберите позиции для экспертного поиска.")
-                chosen_ids = _validated_multi_item_selection(source_items, "balanced", selected_item_ids)
-            elif parent_context.get("multi_item_confirmed"):
-                # A legacy None is a confirmed choice of all source rows. An
-                # explicit empty/invalid selection must never become all rows.
-                chosen_ids = _validated_multi_item_selection(source_items, "balanced", parent_context.get("selected_item_ids"))
-            else:
-                raise HTTPException(status_code=409, detail="Для экспертного перезапуска подтвердите выбор позиций исходной задачи.")
-            inherited_strategy = {
-                "multi_item_confirmed": True,
-                "selected_item_ids": chosen_ids,
-                "procurement_profile": profile,
-            }
-        elif revision is not None or selected_item_ids is not None:
-            raise HTTPException(status_code=400, detail="В исходной задаче нет списка позиций для подтверждения.")
-        elif isinstance(profile, dict):
-            raise HTTPException(status_code=409, detail="В исходной задаче нет подтверждённых позиций для экспертного поиска.")
+        if not reparse or explicit_selection_requested:
+            parent_context = read_dobor_context(parent_job)
+            profile = parent_context.get("procurement_profile")
+            source_items = profile.get("items") if isinstance(profile, dict) else None
+            if isinstance(source_items, list) and source_items:
+                explicit_selection = explicit_selection_requested
+                if explicit_selection:
+                    if revision != _multi_item_selection_revision(parent_job, profile):
+                        raise HTTPException(status_code=400, detail="Список позиций изменился. Обновите задачу и повторите выбор.")
+                    if selected_item_ids is None:
+                        raise HTTPException(status_code=400, detail="Выберите позиции для экспертного поиска.")
+                    chosen_ids = _validated_multi_item_selection(source_items, "balanced", selected_item_ids)
+                elif parent_context.get("multi_item_confirmed"):
+                    # A legacy None is a confirmed choice of all source rows. An
+                    # explicit empty/invalid selection must never become all rows.
+                    chosen_ids = _validated_multi_item_selection(source_items, "balanced", parent_context.get("selected_item_ids"))
+                else:
+                    raise HTTPException(status_code=409, detail="Для экспертного перезапуска подтвердите выбор позиций исходной задачи.")
+                inherited_strategy = {
+                    "multi_item_confirmed": True,
+                    "selected_item_ids": chosen_ids,
+                    "procurement_profile": profile,
+                }
+            elif revision is not None or selected_item_ids is not None:
+                raise HTTPException(status_code=400, detail="В исходной задаче нет списка позиций для подтверждения.")
+            elif isinstance(profile, dict):
+                raise HTTPException(status_code=409, detail="В исходной задаче нет подтверждённых позиций для экспертного поиска.")
+        else:
+            inherited_strategy = None
 
     root_parent_id = parent_job.parent_job_id if getattr(parent_job, "parent_job_id", "") else parent_job.id
     with processing_retry_lock(root_parent_id):
