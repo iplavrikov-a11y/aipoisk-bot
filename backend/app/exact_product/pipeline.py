@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from ..models import SystemSettings
@@ -164,6 +165,145 @@ def _extract_flat_xlsx_rows(path: Any) -> Optional[List[Dict[str, Any]]]:
     return rows or None
 
 
+_UNIT_ALIASES: Dict[str, str] = {
+    "миллиметр": "мм", "миллиметра": "мм", "миллиметров": "мм", "мм": "мм",
+    "сантиметр": "см", "сантиметра": "см", "сантиметров": "см", "см": "см",
+    "дециметр": "дм", "дециметра": "дм", "дециметров": "дм", "дм": "дм",
+    "метр": "м", "метра": "м", "метров": "м", "м": "м",
+    "килограмм": "кг", "килограмма": "кг", "килограммов": "кг", "кг": "кг",
+    "грамм": "г", "грамма": "г", "граммов": "г", "г": "г",
+    "тонна": "т", "тонны": "т", "тонн": "т", "т": "т", "метрическая": "",
+    "литр": "л", "литра": "л", "литров": "л", "л": "л",
+    "дм3": "дм3", "кубический": "куб", "куб": "куб", "см3": "см3", "м3": "м3",
+    "штука": "шт", "штуки": "шт", "штук": "шт", "шт": "шт",
+    "лошадиная": "лс", "лошадиных": "лс", "сила": "", "сил": "", "лс": "лс",
+    "ватт": "вт", "вт": "вт", "киловатт": "квт", "квт": "квт",
+    "вольт": "в", "вольта": "в", "в": "в", "ампер": "а", "а": "а",
+    "герц": "гц", "гц": "гц", "час": "ч", "ч": "ч",
+    "минута": "мин", "мин": "мин", "секунда": "с", "сек": "с",
+}
+
+
+def _normalize_req_tokens(val: str) -> tuple[list[str], list[str], set[str]]:
+    text = str(val or "").strip().lower()
+    text = text.replace("≥", " >= ").replace("≤", " <= ").replace("±", " +- ")
+    text = re.sub(r"больше или равно", " >= ", text)
+    text = re.sub(r"меньше или равно", " <= ", text)
+    text = re.sub(r"\bравно\b", " ", text)
+    text = re.sub(r"\bи\b", " ", text)
+    nums = [n.replace(",", ".") for n in re.findall(r"\d+(?:[.,]\d+)?", text)]
+    ops = re.findall(r">=|<=|\+-|[<>]", text)
+    unit_words: set[str] = set()
+    for w in re.findall(r"[а-яёa-z][а-яёa-z0-9]*", text):
+        if w in {"дм3", "см3", "м3"}:
+            unit_words.add(w)
+            continue
+        mapped = _UNIT_ALIASES.get(w, w)
+        if mapped:
+            unit_words.add(mapped)
+    return nums, ops, unit_words
+
+
+def _req_values_equivalent(val_a: str, val_b: str) -> bool:
+    a = re.sub(r"\s+", " ", str(val_a or "")).strip().lower()
+    b = re.sub(r"\s+", " ", str(val_b or "")).strip().lower()
+    if not a or not b:
+        return a == b
+    if a == b:
+        return True
+    if (";" in a or "," in a) and (";" in b or "," in b):
+        parts_a = {re.sub(r"\s+", " ", p).strip() for p in re.split(r"[;,]+", a) if p.strip()}
+        parts_b = {re.sub(r"\s+", " ", p).strip() for p in re.split(r"[;,]+", b) if p.strip()}
+        if len(parts_a) >= 2 and parts_a == parts_b:
+            return True
+    nums_a, ops_a, units_a = _normalize_req_tokens(a)
+    nums_b, ops_b, units_b = _normalize_req_tokens(b)
+    if nums_a or nums_b:
+        if nums_a != nums_b or ops_a != ops_b:
+            return False
+        if not units_a or not units_b:
+            return True
+        if units_a == units_b or (units_a & units_b):
+            return True
+        return False
+    return units_a == units_b and bool(units_a)
+
+
+def _name_stems(name: str) -> set[str]:
+    words = re.findall(r"[а-яёa-z0-9]+", str(name or "").lower())
+    return {w[:5] if len(w) >= 5 else w for w in words if len(w) >= 3}
+
+
+def _are_duplicate_structured_positions(pos_a: Dict[str, Any], pos_b: Dict[str, Any]) -> bool:
+    if pos_a.get("source_row") is not None or pos_b.get("source_row") is not None:
+        return False
+    reqs_a = [r for r in (pos_a.get("requirements") or []) if isinstance(r, dict) and r.get("param_name") and r.get("tz_requirement")]
+    reqs_b = [r for r in (pos_b.get("requirements") or []) if isinstance(r, dict) and r.get("param_name") and r.get("tz_requirement")]
+    if len(reqs_a) < 5 or len(reqs_b) < 5:
+        return False
+    for key in ("brand_hint", "model_hint"):
+        va = str(pos_a.get(key) or "").strip().lower()
+        vb = str(pos_b.get(key) or "").strip().lower()
+        if va and vb and va != vb:
+            return False
+    name_a = str(pos_a.get("name") or "").strip().lower()
+    name_b = str(pos_b.get("name") or "").strip().lower()
+    stems_a = _name_stems(name_a)
+    stems_b = _name_stems(name_b)
+    if name_a != name_b and not (stems_a & stems_b):
+        return False
+    map_a = {str(r["param_name"]).strip().lower(): str(r["tz_requirement"]).strip() for r in reqs_a}
+    map_b = {str(r["param_name"]).strip().lower(): str(r["tz_requirement"]).strip() for r in reqs_b}
+    shared_keys = set(map_a) & set(map_b)
+    union_count = len(set(map_a) | set(map_b))
+    if len(shared_keys) < 5 or union_count == 0 or (len(shared_keys) / union_count) < 0.75:
+        return False
+    matched = sum(1 for k in shared_keys if _req_values_equivalent(map_a[k], map_b[k]))
+    return (matched / len(shared_keys)) >= 0.80
+
+
+def _merge_duplicate_structured_positions(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
+    for row in rows:
+        target = next((existing for existing in merged if _are_duplicate_structured_positions(existing, row)), None)
+        if target is None:
+            merged.append(row)
+            continue
+        # Preserve richer metadata & analogs across split documents/chunks.
+        if len(row.get("analogs") or []) > len(target.get("analogs") or []):
+            target["analogs"] = list(row.get("analogs") or [])
+        else:
+            existing_alts = {(str(a.get("brand") or "").lower(), str(a.get("model") or "").lower()) for a in (target.get("analogs") or []) if isinstance(a, dict)}
+            for alt in row.get("analogs") or []:
+                if not isinstance(alt, dict):
+                    continue
+                alt_key = (str(alt.get("brand") or "").lower(), str(alt.get("model") or "").lower())
+                if alt_key not in existing_alts:
+                    target.setdefault("analogs", []).append(alt)
+                    existing_alts.add(alt_key)
+        for field in ("brand_hint", "model_hint", "manufacturer_hint", "unit", "quantity"):
+            if not str(target.get(field) or "").strip() and str(row.get(field) or "").strip():
+                target[field] = row[field]
+        seen_params = {str(r.get("param_name") or "").strip().lower() for r in (target.get("requirements") or []) if isinstance(r, dict)}
+        for req in row.get("requirements") or []:
+            if not isinstance(req, dict):
+                continue
+            pname = str(req.get("param_name") or "").strip().lower()
+            if pname and pname not in seen_params:
+                target.setdefault("requirements", []).append(req)
+                seen_params.add(pname)
+        seen_queries = {str(q).strip().lower() for q in (target.get("search_queries") or [])}
+        for q in row.get("search_queries") or []:
+            ql = str(q).strip().lower()
+            if ql and ql not in seen_queries:
+                target.setdefault("search_queries", []).append(q)
+                seen_queries.add(ql)
+    for idx, item in enumerate(merged, 1):
+        if item.get("source_row") is None:
+            item["position_no"] = idx
+    return merged
+
+
 def _is_unstructured_short_prompt_text(text: str) -> bool:
     cleaned = str(text or "").strip()
     if not cleaned:
@@ -235,6 +375,8 @@ async def prepare_exact_product_positions(
                 row["source_file"] = source_file
                 rows.append(row)
                 ai_extracted_any = True
+    if len(rows) > 1:
+        rows = _merge_duplicate_structured_positions(rows)
     if not rows and not ai_extracted_any and text_sources:
         # Универсальный zero-shot фоллбек (Правило 14): ТОЛЬКО для короткого неструктурированного текста
         # (напр. "Окна пластиковые ПВХ"), но НЕ для табличных/длинных ТЗ (их разбирает структурный fallback).

@@ -165,3 +165,27 @@ def test_admin_rerun_worker_auto_confirms_reparsed_exact_product(context_db, mon
     assert len(read_selection(job)["selected_ids"]) == 1
     match.assert_awaited_once()
 
+
+def test_admin_rerun_preserves_city_hint_without_radius_from_mcp_api(context_db, monkeypatch):
+    context, db = context_db
+    parent = Job(
+        client_id=context.user.client_id,
+        mode="supplier_search",
+        status="failed",
+        title="API: Поиск поставщиков — г. Москва Серверы",
+        delivery_city="г. Москва",
+        geo_radius_km=None,
+    )
+    db.add(parent)
+    db.commit()
+    queued = []
+    monkeypatch.setattr(main, "enqueue_job", queued.append)
+    result = main.admin_rerun_job(parent.id, reparse=True, db=db)
+    child = db.get(Job, result["job"]["id"])
+    assert child is not None
+    assert child.is_admin_rerun is True
+    assert child.delivery_city == "г. Москва"
+    assert child.geo_radius_km is None
+    assert queued == [child.id]
+
+

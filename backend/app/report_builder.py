@@ -688,19 +688,20 @@ def write_supplier_xlsx(
     geo_summary = ""
     if delivery_city:
         clean_city = str(delivery_city).strip()
+        city_label = clean_city if re.match(r"^(?:г\.?|город)\s+", clean_city, re.I) else f"г. {clean_city}"
         rad_info = f"в радиусе до {geo_radius_km} км" if geo_radius_km else "по городу поставки"
-        geo_subtitle = f"Локация / доставка: г. {clean_city} ({rad_info})"
+        geo_subtitle = f"Локация / доставка: {city_label} ({rad_info})"
         within_cnt = sum(1 for r in rows if r.get("supplier_distance_within_radius") is True)
         outside_cnt = sum(1 for r in rows if r.get("supplier_distance_within_radius") is False)
         unknown_cnt = sum(1 for r in rows if r.get("supplier_distance_within_radius") is None)
         if geo_radius_km:
             geo_summary = (
-                f" Логистический фильтр: приоритет поставщиков в радиусе до {geo_radius_km} км от г. {clean_city} "
+                f" Логистический фильтр: приоритет поставщиков в радиусе до {geo_radius_km} км от {city_label} "
                 f"(в радиусе: {within_cnt}, расстояние не подтверждено: {unknown_cnt}, добор по РФ: {outside_cnt}). "
                 "Ближайшие поставщики идут первыми; варианты вне радиуса и с неизвестным расстоянием показаны отдельно."
             )
         else:
-            geo_summary = f" Логистический фильтр: г. {clean_city}."
+            geo_summary = f" Логистический фильтр: {city_label}."
 
     if is_multi and item_sections:
         ws.title = "Сводный реестр"

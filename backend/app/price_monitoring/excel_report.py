@@ -360,8 +360,9 @@ def generate_price_monitoring_excel(
     cell_a.alignment = align_center
     if delivery_city:
         clean_city = str(delivery_city).strip()
+        city_label = clean_city if re.match(r"^(?:г\.?|город)\s+", clean_city, re.I) else f"г. {clean_city}"
         rad_info = f" (в радиусе до {geo_radius_km} км)" if geo_radius_km else ""
-        comm_loc = Comment(f"Локация / поставка: г. {clean_city}{rad_info}", "TenderLex")
+        comm_loc = Comment(f"Локация / поставка: {city_label}{rad_info}", "TenderLex")
         comm_loc.width = 280
         comm_loc.height = 60
         cell_a.comment = comm_loc

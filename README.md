@@ -1,12 +1,19 @@
 # TenderLex Bot
 
-Актуальный выпуск 12 ноября 2026: [Правило 14 — 100% семантический ИИ-профилинг ТЗ в поиске поставщиков и подборе B2B-исполнителей услуг («Товар как услуга»), защита смешанных ТЗ, а также исправление рекомендаций и нулевой доплаты в окне дополнения отчёта (#1074)](docs/PROJECT_STATUS.md).
+Актуальный выпуск 12 ноября 2026 (ч. 2): [Три режима выдачи админ-доработки с динамическими комментариями и статусом «пересчитано — готово к отправке», фикс дубля «г. г.», изоляция фоновых `504`-ошибок в веб-кабинете и универсальная дедупликация позиций в многофайловых ТЗ](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 12 ноября: все бэкенд-тесты (`1 433 passed, 54 subtests passed`), сборка админ-панели (`cd frontend && npm run build`), живой E2E-прогон на 5 реальных сценариях (#1080, #1081, смешанное ТЗ, охрана СПб, пустой бланк) и продакшн-деплой (`./scripts/deploy_tenderlex_live.sh`, службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
+Серверный прогон выпуска 12 ноября (ч. 2): все бэкенд-тесты (`1 438 passed, 54 subtests passed`), проверка типов сайта (`cd site && npm run typecheck`), сборка админ-панели (`cd frontend && npm run build`) и продакшн-деплой (`./scripts/deploy_tenderlex_live.sh`, службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Admin Supplement 3-Mode Delivery, Resolved Cards UX, City Prefix Normalization, Cabinet `504` Poll Isolation & Multi-Doc Deduplication (2026-11-12):
+  - **Admin Supplement Workflow & Resolved Task Cards (`backend/app/main.py`, `frontend/src/App.tsx`, `frontend/src/styles.css`, `backend/tests/test_admin_supplement.py`)**: added 3rd zero-charge `bonus_free` delivery mode alongside `approve` and `charge_now`, mode-reactive auto-comments (`default_comments_by_mode`), non-red `пересчитано — готово к отправке` status styling with collapsible original error details, fixed `Отправить клиенту →` hover contrast, and compact sent admin-file badges (`📤 Отправлено`).
+  - **Clean Delivery City Formatting (`backend/app/report_builder.py`, `backend/app/price_monitoring/excel_report.py`, `backend/tests/test_search_improvements.py`)**: normalized leading `г.` / `г ` city prefixes to eliminate duplicate `г. г. Москва` headings in DOCX/XLSX outputs.
+  - **Cabinet Background Polling & `504` Error Isolation (`site/src/app/cabinet/cabinet-client.tsx`)**: scoped file-splitting `504` hints strictly to actual `submitJob` uploads, prevented transient background `loadJobs` / `loadSession` poll failures from overwriting the New Job form error banner, deduplicated concurrent background session refreshes, and skipped redundant invoice polling every 3s during active jobs.
+  - **Universal Multi-Chunk / Multi-File Position Deduplication (`backend/app/exact_product/pipeline.py`, `backend/tests/test_exact_product_selection_engine.py`)**: added domain-agnostic `_merge_duplicate_structured_positions` to merge duplicate identical-spec extractions across split chunks/documents (≥5 parameters, ≥80% equivalent specs + SI unit alias normalization) while keeping flat spreadsheets and differing numeric configs separate.
+  - **Tests & Live Deploy**: `pytest backend/tests -q` (**1,438 passed, 54 subtests passed**), `cd site && npm run typecheck`, `cd frontend && npm run build`, and `./scripts/deploy_tenderlex_live.sh` verified live (`127.0.0.1:8088` / `127.0.0.1:3093` `200 OK`).
 
 - Rule 14 Semantic Supplier Search, Service Providers («Товар как услуга») & Admin Supplement UX Fixes (2026-11-12):
   - **Semantic 3-Way Intake & Mixed-TZ Guard (`backend/app/supplier_search.py`, `backend/app/jobs.py`)**: removed rigid string/suffix heuristics (`_looks_like_services_without_goods`, `_strip_placeholder_suffix`) and outdated service rejections in `sanitize_customer_error`. Added `ProcurementItem.item_kind` (`"goods" | "service"`) and `ProcurementProfile.subject_kind` (`"goods" | "services"`) with deterministic mixed-TZ filtering (when goods and ancillary services coexist, service lines are discarded and `subject_kind` stays `"goods"`).

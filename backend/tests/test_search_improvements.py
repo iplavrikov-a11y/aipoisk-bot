@@ -396,3 +396,39 @@ async def test_services_mode_queries_verify_minprom_skip_and_quote_request(monke
     assert "**Место оказания услуг:** г. Москва" in quote_md
     assert "по указанным ниже товарам" not in quote_md
     assert "Упаковка/тара" not in quote_md
+
+
+def test_write_supplier_xlsx_avoids_duplicate_city_prefix(tmp_path):
+    import openpyxl
+    from app.report_builder import write_supplier_xlsx
+
+    out_path = tmp_path / "suppliers.xlsx"
+    rows = [
+        {
+            "company_name": "ООО ТестКлининг",
+            "status": "исполнитель",
+            "site": "https://test-clean.ru",
+            "phones": ["+7 (495) 111-22-33"],
+            "emails": ["info@test-clean.ru"],
+            "product": "Комплексная уборка помещений",
+            "comments": "Профильная компания",
+            "match_level": "exact",
+            "quality_score": 95,
+        }
+    ]
+    write_supplier_xlsx(
+        out_path,
+        rows,
+        title="Уборка",
+        target=5,
+        subject="Комплексная уборка помещений",
+        delivery_city="г. Москва",
+    )
+    wb = openpyxl.load_workbook(out_path, read_only=True)
+    ws = wb.active
+    header_texts = [str(ws.cell(row=r, column=1).value or "") for r in (1, 2, 3)]
+    wb.close()
+    joined = "\n".join(header_texts)
+    assert "г. Москва" in joined
+    assert "г. г." not in joined
+

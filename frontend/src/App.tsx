@@ -795,6 +795,7 @@ const statusLabels: Record<string, string> = {
   partial: 'частично готово',
   needs_review: 'нужна проверка',
   failed: 'ошибка',
+  resolved: 'решено',
   cancelled: 'отменено',
   awaiting_customer_confirmation: 'ожидает клиента',
   awaiting_exact_selection: 'ожидает выбора товаров',
@@ -1076,6 +1077,60 @@ function isMinpromNotFound(job: { status?: string; message?: string; error?: str
     msg.includes('по реестру подходящие поставщики не подтверждены') ||
     (msg.includes('в реестре минпромторга') && msg.includes('не найден'))
   )
+}
+
+function isHealthyAdminRerun(parentJob: Pick<Job, 'mode'>, rerun: JobAdminRerunInfo): boolean {
+  if (rerun.status !== 'completed' || rerun.is_minprom_empty) return false
+  if (!rerun.files || rerun.files.length === 0) return false
+  const effectiveMode = rerun.mode || parentJob.mode
+  if (effectiveMode === 'procurement_report') return true
+  return (rerun.verified_count ?? 0) > 0
+}
+
+function getLatestHealthyAdminRerun(job: Job): JobAdminRerunInfo | null {
+  const reruns = job.admin_reruns?.length ? job.admin_reruns : job.admin_rerun ? [job.admin_rerun] : []
+  return reruns.find(r => isHealthyAdminRerun(job, r)) || null
+}
+
+function isAdminErrorSolved(job: Job): boolean {
+  if (job.status !== 'failed' || isMinpromNotFound(job)) return false
+  return Boolean(job.has_admin_supplement || getLatestHealthyAdminRerun(job))
+}
+
+function truncateMiddleFilename(filename: string, maxLen = 28): string {
+  const clean = filename.trim()
+  if (clean.length <= maxLen) return clean
+  const dotIdx = clean.lastIndexOf('.')
+  if (dotIdx > 0 && clean.length - dotIdx <= 6) {
+    const ext = clean.slice(dotIdx)
+    const stemMax = Math.max(8, maxLen - ext.length - 1)
+    return `${clean.slice(0, stemMax).trimEnd()}…${ext}`
+  }
+  return `${clean.slice(0, maxLen - 1).trimEnd()}…`
+}
+
+function formatSupplementBadge(job: Pick<Job, 'has_admin_supplement' | 'admin_supplement_name' | 'admin_supplement_at' | 'admin_comment' | 'status'>): {
+  shortText: string
+  tooltip: string
+} {
+  const names = (job.admin_supplement_name || '')
+    .split(',')
+    .map(part => part.trim())
+    .filter(Boolean)
+  const verb = job.status === 'awaiting_customer_confirmation' ? 'Предложено' : 'Отправлено'
+  let shortText = `${verb}: ответ эксперта`
+  if (names.length === 1) {
+    shortText = `${verb}: ${truncateMiddleFilename(names[0], 26)}`
+  } else if (names.length > 1) {
+    shortText = `${verb} (${names.length}): ${truncateMiddleFilename(names[0], 22)} +${names.length - 1}`
+  }
+  const when = job.admin_supplement_at ? ` (${formatDate(job.admin_supplement_at)})` : ''
+  const filesInfo = names.length > 0 ? names.join(', ') : 'комментарий эксперта'
+  const commentPart = job.admin_comment ? `\nКомментарий: ${job.admin_comment}` : ''
+  return {
+    shortText,
+    tooltip: `${verb} клиенту${when}: ${filesInfo}${commentPart}`,
+  }
 }
 
 function humanMode(mode: string) {
@@ -4005,6 +4060,9 @@ function JobsView({
   const [nowTs, setNowTs] = useState(() => Date.now())
   const [showServerModal, setShowServerModal] = useState(false)
   const [supplementModalJob, setSupplementModalJob] = useState<Job | null>(null)
+  const [rerunConfirmJob, setRerunConfirmJob] = useState<Job | null>(null)
+  const [rerunSubmitting, setRerunSubmitting] = useState(false)
+  const [rerunError, setRerunError] = useState('')
   const [activeFilesDropdownJobId, setActiveFilesDropdownJobId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -4182,18 +4240,25 @@ function JobsView({
     setPage(1)
   }, [showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery])
 
-  async function adminRerun(job: Job) {
+  function adminRerun(job: Job) {
     if (needsAdminSelection(job) || (job.admin_rerun && activeExpertStatuses.includes(job.admin_rerun.status))) return
-    const isProductMode = ['exact_product', 'price_monitoring'].includes(job.mode)
-    const promptMsg = isProductMode
-      ? `Создать новый экспертный поиск по задаче #${job.job_number || job.id}?\n\n${expertScope(job)}\n\n• Нажмите «ОК» для запуска с распознаванием ТЗ заново через ИИ (рекомендуется, если позиции были определены неверно).\n• Баланс клиента не списывается.\n• Нажмите «Отмена» для отмены запуска.`
-      : `Создать новый экспертный поиск по задаче #${job.job_number || job.id}?\n\n${expertScope(job)}\n\nБаланс клиента не списывается. Результат не отправляется автоматически — используйте «Дополнить отчёт».`
-    if (!window.confirm(promptMsg)) return
+    setRerunError('')
+    setRerunConfirmJob(job)
+  }
+
+  async function confirmAdminRerun() {
+    if (!rerunConfirmJob || rerunSubmitting) return
+    const targetJob = rerunConfirmJob
+    setRerunSubmitting(true)
+    setRerunError('')
     try {
-      await api(`/api/jobs/${job.id}/admin-rerun?reparse=true`, { method: 'POST' })
-      await onChange(job.id)
+      await api(`/api/jobs/${targetJob.id}/admin-rerun?reparse=true`, { method: 'POST' })
+      setRerunConfirmJob(null)
+      await onChange(targetJob.id)
     } catch (err: any) {
-      alert(err.message || 'Ошибка перезапуска задачи')
+      setRerunError(formatError(err) || err?.message || 'Ошибка перезапуска задачи')
+    } finally {
+      setRerunSubmitting(false)
     }
   }
   async function resolveJob(job: Job) {
@@ -4410,10 +4475,13 @@ function JobsView({
           const totalFileCount = inputFiles.length + inputSources.length + clientResultFiles.length + allAdminFilesCount
           const isFilesDropdownOpen = activeFilesDropdownJobId === job.id
           const minpromNotFound = isMinpromNotFound(job)
+          const healthyRerun = getLatestHealthyAdminRerun(job)
+          const errorSolvedByAdmin = isAdminErrorSolved(job)
+          const supplementBadge = job.has_admin_supplement ? formatSupplementBadge(job) : null
 
           return (
           <article
-            className={`job-card compact mode-${job.mode} status-${job.status} ${minpromNotFound ? 'minprom-not-found' : ''} ${job.is_internal ? 'service' : ''}`}
+            className={`job-card compact mode-${job.mode} status-${job.status} ${minpromNotFound ? 'minprom-not-found' : ''} ${errorSolvedByAdmin ? 'admin-resolved' : ''} ${job.is_internal ? 'service' : ''}`}
             key={job.id}
             style={{ zIndex: isFilesDropdownOpen ? 50 : undefined, position: 'relative' }}
           >
@@ -4429,6 +4497,36 @@ function JobsView({
                   {minpromNotFound ? (
                     <span className="status minprom-not-found" title="По спецификации в реестре Минпромторга не найдено подходящих производителей">
                       не найдено в Минпромторге
+                    </span>
+                  ) : errorSolvedByAdmin ? (
+                    job.has_admin_supplement ? (
+                      <span
+                        className="status admin-sent"
+                        title={supplementBadge?.tooltip || 'Исходный запуск завершился сбоем; экспертный отчёт подготовлен и отправлен клиенту'}
+                      >
+                        исправлено · отправлено
+                      </span>
+                    ) : (
+                      <span
+                        className="status admin-ready"
+                        title={`Исходный запуск завершился сбоем, но экспертный перерасчёт${healthyRerun?.job_number ? ` #${healthyRerun.job_number}` : ''} готов — отправьте отчёт клиенту через «Дополнить отчёт»`}
+                      >
+                        пересчитано · готово к отправке
+                      </span>
+                    )
+                  ) : job.has_admin_supplement && job.status === 'awaiting_customer_confirmation' ? (
+                    <span
+                      className="status admin-ready"
+                      title={supplementBadge?.tooltip || 'Экспертный отчёт предложен клиенту на согласование'}
+                    >
+                      ожидает согласия · отчёт предложен
+                    </span>
+                  ) : job.has_admin_supplement && ['completed', 'partial', 'resolved'].includes(job.status) ? (
+                    <span
+                      className="status admin-sent"
+                      title={supplementBadge?.tooltip || 'Админ-отчёт отправлен клиенту'}
+                    >
+                      готово · админ-отчёт отправлен
                     </span>
                   ) : (
                     <StatusBadge status={job.status} />
@@ -4468,12 +4566,19 @@ function JobsView({
                 </p>
               </div>
               <div className="job-card-top-right">
-                {job.status !== 'completed' && <JobTimeline job={job} hasInput={hasInput} />}
+                {job.status !== 'completed' && (
+                  <JobTimeline
+                    job={job}
+                    hasInput={hasInput}
+                    adminResolved={errorSolvedByAdmin}
+                    adminSent={Boolean(job.has_admin_supplement)}
+                  />
+                )}
                 {(job.status === 'running' || job.status === 'pending') && (
                   <button className="icon-button small danger" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={13} /></button>
                 )}
                 {job.status === 'failed' && !minpromNotFound && (
-                  <button className="icon-button small" style={{ color: '#059669', borderColor: '#a7f3d0', background: '#ecfdf5' }} onClick={() => void resolveJob(job)} title="Отметить решённым (устранено)"><CheckCircle2 size={13} /></button>
+                  <button className="icon-button small" style={{ color: '#059669', borderColor: '#a7f3d0', background: '#ecfdf5' }} onClick={() => void resolveJob(job)} title={errorSolvedByAdmin ? 'Закрыть исходный сбой и перевести статус в «Решено»' : 'Отметить решённым (устранено)'}><CheckCircle2 size={13} /></button>
                 )}
               </div>
             </div>
@@ -4576,12 +4681,17 @@ function JobsView({
                     </>
                   ) : null}
 
-                  {job.has_admin_supplement && (
+                  {supplementBadge && (
                     <>
                       <span className="meta-sep">·</span>
-                      <span className="meta-tag supplement" title={job.admin_comment || 'Дополнено администратором'}>
-                        ✨ Дополнено{job.admin_supplement_name ? `: ${job.admin_supplement_name}` : ''}
-                      </span>
+                      <button
+                        type="button"
+                        className="meta-tag supplement supplement-btn"
+                        onClick={() => setSupplementModalJob(job)}
+                        title={supplementBadge.tooltip}
+                      >
+                        📤 {supplementBadge.shortText}
+                      </button>
                     </>
                   )}
 
@@ -4929,8 +5039,45 @@ function JobsView({
               </div>
             )}
 
-            {job.status === 'failed' && Boolean(job.error) && !showProgress && !minpromNotFound && (
-              <div className="alert error compact">{job.error}</div>
+            {job.status === 'failed' && !showProgress && !minpromNotFound && (
+              errorSolvedByAdmin ? (
+                <div className={`admin-resolved-banner ${job.has_admin_supplement ? 'is-sent' : 'is-ready'}`}>
+                  <div className="admin-resolved-banner-main">
+                    <CheckCircle2 size={14} className="admin-resolved-icon" />
+                    <span>
+                      {job.has_admin_supplement ? (
+                        <>
+                          <strong>Проблема решена и отчёт отправлен клиенту</strong>
+                          {healthyRerun?.job_number ? ` (перерасчёт #${healthyRerun.job_number})` : ''} — исходный сбой закрыт.
+                        </>
+                      ) : (
+                        <>
+                          <strong>Админ-перерасчёт{healthyRerun?.job_number ? ` #${healthyRerun.job_number}` : ''} выполнен</strong>
+                          {typeof healthyRerun?.verified_count === 'number' && healthyRerun.verified_count > 0
+                            ? ` (${healthyRerun.verified_count} пост.)`
+                            : ''}
+                          {' '}— готово к отправке клиенту.{' '}
+                          <button
+                            type="button"
+                            className="admin-resolved-link-btn"
+                            onClick={() => setSupplementModalJob(job)}
+                          >
+                            Отправить клиенту →
+                          </button>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  {Boolean(job.error) && (
+                    <details className="admin-resolved-history">
+                      <summary>Причина исходного сбоя</summary>
+                      <div className="admin-resolved-history-text">{job.error}</div>
+                    </details>
+                  )}
+                </div>
+              ) : Boolean(job.error) ? (
+                <div className="alert error compact">{job.error}</div>
+              ) : null
             )}
             {minpromNotFound && !showProgress && (
               <div className="alert compact" style={{ background: '#f8fafc', borderColor: '#cbd5e1', color: '#475569', fontSize: '11.5px', padding: '5px 9px', marginTop: '6px', borderRadius: '4px' }}>
@@ -4962,6 +5109,79 @@ function JobsView({
           onClose={() => setSupplementModalJob(null)}
           onSuccess={() => onChange(supplementModalJob.id)}
         />
+      )}
+      {rerunConfirmJob && (
+        <div
+          className="server-modal-backdrop"
+          onClick={() => {
+            if (!rerunSubmitting) {
+              setRerunConfirmJob(null)
+              setRerunError('')
+            }
+          }}
+        >
+          <div className="server-modal-card" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
+            <div className="server-modal-header">
+              <h3>ЭКСПЕРТНЫЙ ПЕРЕЗАПУСК #{rerunConfirmJob.job_number || rerunConfirmJob.id}</h3>
+              <button
+                type="button"
+                className="server-modal-close"
+                disabled={rerunSubmitting}
+                onClick={() => {
+                  setRerunConfirmJob(null)
+                  setRerunError('')
+                }}
+                title="Закрыть"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <p style={{ margin: 0, fontSize: 13, color: '#0f172a', fontWeight: 600 }}>
+                {rerunConfirmJob.human_title || rerunConfirmJob.title}
+              </p>
+              <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', fontSize: 12, color: '#334155', lineHeight: 1.5 }}>
+                <div>{expertScope(rerunConfirmJob)}</div>
+                {['exact_product', 'price_monitoring'].includes(rerunConfirmJob.mode) ? (
+                  <div style={{ marginTop: 6, color: '#0f766e' }}>
+                    Запуск с повторным распознаванием ТЗ через ИИ. Баланс клиента не списывается.
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 6, color: '#475569' }}>
+                    Запуск со свежим разбором ТЗ через ИИ. Баланс клиента не списывается. Результат не отправляется автоматически — используйте «Дополнить отчёт».
+                  </div>
+                )}
+              </div>
+              {rerunError && (
+                <div className="alert error compact" style={{ margin: 0 }}>
+                  {rerunError}
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={rerunSubmitting}
+                  onClick={() => {
+                    setRerunConfirmJob(null)
+                    setRerunError('')
+                  }}
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  disabled={rerunSubmitting}
+                  onClick={() => void confirmAdminRerun()}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                >
+                  {rerunSubmitting ? <Loader2 size={14} className="spin" /> : <Play size={14} />}
+                  <span>{rerunSubmitting ? 'Запускаем...' : 'Запустить переанализ'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   )
@@ -5093,6 +5313,42 @@ type OfferPreview = {
   default_offer_comment?: string
 }
 
+type SupplementBillingMode = 'offer' | 'charge_now' | 'free_bonus'
+
+function formatRubDisplay(value?: number | string | null): string {
+  const num = Number(value ?? 0)
+  if (!Number.isFinite(num)) return '0'
+  return Number.isInteger(num) ? String(num) : num.toFixed(2).replace(/\.?0+$/, '')
+}
+
+function generateSupplementCommentForMode(
+  mode: SupplementBillingMode,
+  job: Job,
+  preview: OfferPreview | null,
+): string {
+  const chargeRub = Number(preview?.charge_amount_rub ?? 0)
+  if (!preview || chargeRub <= 0) {
+    return generateDefaultComment(job)
+  }
+  const rubText = formatRubDisplay(chargeRub)
+  const newCount = preview.new_verified_count ?? 0
+  const priorCount = preview.prior_verified_count ?? 0
+  const isSupplier = job.mode === 'supplier_search' || job.mode === 'analysis_and_suppliers'
+  const item = cleanItemNameForComment(job.human_title || job.title || '')
+  const resultSummary = isSupplier ? `подобрано ${newCount} комп.` : `найдено ${newCount} поз.`
+
+  if (mode === 'offer') {
+    if (preview.default_offer_comment) return preview.default_offer_comment
+    return isSupplier
+      ? `Здравствуйте! Специалисты TenderLex провели экспертный подбор по вашей задаче: найдено ${newCount} комп. (ранее было ${priorCount}). Готовы выдать обновлённый отчёт. Стоимость доплаты составит ${rubText} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи.`
+      : `Здравствуйте! Специалисты TenderLex пересчитали спецификацию: найдено ${newCount} поз. (ранее было ${priorCount} поз.). Готовы выдать дополненный экспертный отчёт. Стоимость доплаты составит ${rubText} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи.`
+  }
+  if (mode === 'charge_now') {
+    return `Здравствуйте! Специалисты TenderLex подготовили и опубликовали дополненный экспертный отчёт по задаче «${item}» (${resultSummary}). С вашего баланса списано ${rubText} ₽ — файлы уже доступны для скачивания на карточке задачи.`
+  }
+  return `Здравствуйте! Специалисты TenderLex подготовили и опубликовали для вас исправленный отчёт по задаче «${item}» (${resultSummary}) без списания средств (бонусом от платформы). Готовые файлы уже доступны на карточке задачи.`
+}
+
 function AdminSupplementModal({
   job,
   onClose,
@@ -5105,10 +5361,11 @@ function AdminSupplementModal({
   const rawTg = String(job.created_by_telegram_id || '').trim()
   const isWebClient = !rawTg || rawTg.startsWith('web:') || !/^-?\d+$/.test(rawTg)
   const [comment, setComment] = useState(() => defaultAdminComment(job))
+  const [commentEditedByUser, setCommentEditedByUser] = useState(false)
   const [candidates, setCandidates] = useState<SupplementCandidate[]>([])
   const [loadingCandidates, setLoadingCandidates] = useState(true)
   const [offerPreview, setOfferPreview] = useState<OfferPreview | null>(null)
-  const [asOffer, setAsOffer] = useState(false)
+  const [billingMode, setBillingMode] = useState<SupplementBillingMode>('offer')
   const [offerChargeRub, setOfferChargeRub] = useState<number | ''>('')
   const [chatMessages, setChatMessages] = useState<any[]>([])
   const [loadingChat, setLoadingChat] = useState(true)
@@ -5184,13 +5441,16 @@ function AdminSupplementModal({
           if (data && active && data.offer_preview) {
             const prev = data.offer_preview as OfferPreview
             const requiresApproval = Boolean(prev.requires_payment_approval ?? ((prev.charge_amount_rub ?? 0) > 0))
+            const initialMode: SupplementBillingMode = requiresApproval ? 'offer' : 'free_bonus'
             setOfferPreview(prev)
             setOfferChargeRub(prev.charge_amount_rub ?? 0)
-            setAsOffer(requiresApproval)
-            if (requiresApproval && prev.default_offer_comment && (!job.admin_comment || isZeroOfferComment(job.admin_comment))) {
-              setComment(prev.default_offer_comment)
+            setBillingMode(initialMode)
+            if (requiresApproval && (!job.admin_comment || isZeroOfferComment(job.admin_comment))) {
+              setComment(generateSupplementCommentForMode(initialMode, job, prev))
+              setCommentEditedByUser(false)
             } else if (!requiresApproval && isZeroOfferComment(job.admin_comment)) {
               setComment(generateDefaultComment(job))
+              setCommentEditedByUser(false)
             }
           }
         }
@@ -5205,6 +5465,14 @@ function AdminSupplementModal({
       active = false
     }
   }, [job.id])
+
+  function selectBillingMode(nextMode: SupplementBillingMode) {
+    setBillingMode(nextMode)
+    if (!commentEditedByUser || !comment.trim()) {
+      setComment(generateSupplementCommentForMode(nextMode, job, offerPreview))
+      setCommentEditedByUser(false)
+    }
+  }
 
   function toggleJobFileKind(compositeId: string) {
     setSelectedJobFileKinds(prev =>
@@ -5238,10 +5506,16 @@ function AdminSupplementModal({
         formData.append('file_kinds', selectedJobFileKinds.join(','))
         formData.append('file_kind', selectedJobFileKinds[0])
       }
+      const hasPositiveCharge = (offerPreview?.charge_amount_rub ?? 0) > 0
+      const effectiveOffer = hasPositiveCharge && billingMode === 'offer'
+      const effectiveWaive = hasPositiveCharge && billingMode === 'free_bonus'
       formData.append('comment', comment.trim())
       formData.append('notify_telegram', String(notifyTelegram))
-      formData.append('as_offer', String(asOffer))
-      if (offerChargeRub !== '') {
+      formData.append('as_offer', String(effectiveOffer))
+      formData.append('waive_charge', String(effectiveWaive))
+      if (effectiveWaive) {
+        formData.append('offer_charge_rub', '0')
+      } else if (offerChargeRub !== '') {
         formData.append('offer_charge_rub', String(offerChargeRub))
       }
 
@@ -5318,23 +5592,32 @@ function AdminSupplementModal({
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6, borderTop: '1px solid #dcfce7' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: billingMode === 'offer' ? 700 : 500, color: billingMode === 'offer' ? '#0f172a' : '#475569', cursor: 'pointer' }}>
                       <input
                         type="radio"
-                        name="as_offer_toggle"
-                        checked={asOffer}
-                        onChange={() => setAsOffer(true)}
+                        name="supplement_billing_mode"
+                        checked={billingMode === 'offer'}
+                        onChange={() => selectBillingMode('offer')}
                       />
-                      <span>Отправить клиенту как предложение на согласование (со списанием {offerPreview.charge_amount_rub} ₽ только после согласия)</span>
+                      <span>Отправить клиенту как предложение на согласование (со списанием {formatRubDisplay(offerPreview.charge_amount_rub)} ₽ только после согласия)</span>
                     </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 500, color: '#475569', cursor: 'pointer' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: billingMode === 'charge_now' ? 700 : 500, color: billingMode === 'charge_now' ? '#0f172a' : '#475569', cursor: 'pointer' }}>
                       <input
                         type="radio"
-                        name="as_offer_toggle"
-                        checked={!asOffer}
-                        onChange={() => setAsOffer(false)}
+                        name="supplement_billing_mode"
+                        checked={billingMode === 'charge_now'}
+                        onChange={() => selectBillingMode('charge_now')}
                       />
-                      <span>Опубликовать сразу (списать {offerPreview.charge_amount_rub} ₽ без согласования)</span>
+                      <span>Опубликовать сразу и списать {formatRubDisplay(offerPreview.charge_amount_rub)} ₽ без согласования</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: billingMode === 'free_bonus' ? 700 : 500, color: billingMode === 'free_bonus' ? '#0f766e' : '#475569', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="supplement_billing_mode"
+                        checked={billingMode === 'free_bonus'}
+                        onChange={() => selectBillingMode('free_bonus')}
+                      />
+                      <span>Отправить без списания — бесплатно (бонус за счёт платформы)</span>
                     </label>
                   </div>
                 </div>
@@ -5611,7 +5894,10 @@ function AdminSupplementModal({
                   type="button"
                   className="ghost small-text"
                   style={{ fontSize: 10.5, padding: '1px 6px', height: 'auto', color: '#0d9488', border: '1px solid #99f6e4', background: '#f0fdfa', borderRadius: 4, cursor: 'pointer' }}
-                  onClick={() => setComment(generateDefaultComment(job))}
+                  onClick={() => {
+                    setCommentEditedByUser(false)
+                    setComment(generateSupplementCommentForMode(billingMode, job, offerPreview))
+                  }}
                 >
                   Восстановить автотекст
                 </button>
@@ -5619,7 +5905,10 @@ function AdminSupplementModal({
               <textarea
                 rows={3}
                 value={comment}
-                onChange={e => setComment(e.target.value)}
+                onChange={e => {
+                  setComment(e.target.value)
+                  setCommentEditedByUser(true)
+                }}
                 placeholder="Укажите комментарий эксперта..."
                 style={{ width: '100%', padding: '8px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 6, resize: 'vertical' }}
               />
@@ -5660,8 +5949,12 @@ function AdminSupplementModal({
               <span>
                 {loading
                   ? 'Сохранение...'
-                  : asOffer && (offerPreview?.charge_amount_rub ?? 0) > 0
-                  ? `Отправить предложение клиенту (${offerPreview?.charge_amount_rub} ₽)`
+                  : (offerPreview?.charge_amount_rub ?? 0) > 0 && billingMode === 'offer'
+                  ? `Отправить предложение клиенту (${formatRubDisplay(offerPreview?.charge_amount_rub)} ₽)`
+                  : (offerPreview?.charge_amount_rub ?? 0) > 0 && billingMode === 'charge_now'
+                  ? `Опубликовать и списать ${formatRubDisplay(offerPreview?.charge_amount_rub)} ₽`
+                  : (offerPreview?.charge_amount_rub ?? 0) > 0 && billingMode === 'free_bonus'
+                  ? 'Опубликовать бесплатно (бонус)'
                   : isWebClient
                   ? 'Опубликовать в личном кабинете'
                   : notifyTelegram
@@ -5676,20 +5969,69 @@ function AdminSupplementModal({
   )
 }
 
-function JobTimeline({ job, hasInput }: { job: Job; hasInput: boolean }) {
+function JobTimeline({
+  job,
+  hasInput,
+  adminResolved = false,
+  adminSent = false,
+}: {
+  job: Job
+  hasInput: boolean
+  adminResolved?: boolean
+  adminSent?: boolean
+}) {
   const minpromNotFound = isMinpromNotFound(job)
-  const failed = !minpromNotFound && (job.status === 'failed' || Boolean(job.error))
-  const completed = job.status === 'completed' || job.has_result || (job.result_files?.length || 0) > 0
+  const isResolvedStatus = job.status === 'resolved' || adminResolved
+  const failed = !minpromNotFound && !isResolvedStatus && (job.status === 'failed' || Boolean(job.error))
+  const completed =
+    job.status === 'completed' ||
+    isResolvedStatus ||
+    job.has_result ||
+    (job.result_files?.length || 0) > 0
   const steps = [
     { label: 'Создана', state: 'done' },
     { label: 'Входные', state: hasInput ? 'done' : job.status === 'pending' ? 'current' : 'waiting' },
-    { label: 'ИИ', state: failed ? 'error' : completed || job.progress >= 70 || minpromNotFound ? 'done' : job.status === 'running' ? 'current' : 'waiting' },
-    { label: 'Результат', state: failed ? 'error' : minpromNotFound ? 'empty' : completed ? 'done' : job.status === 'running' || job.status === 'pending' ? 'current' : 'waiting' },
+    {
+      label: 'ИИ',
+      state: isResolvedStatus
+        ? 'done'
+        : failed
+          ? 'error'
+          : completed || job.progress >= 70 || minpromNotFound
+            ? 'done'
+            : job.status === 'running'
+              ? 'current'
+              : 'waiting',
+    },
+    {
+      label: 'Результат',
+      state: isResolvedStatus
+        ? (adminSent || job.status === 'resolved' ? 'done' : 'resolved')
+        : failed
+          ? 'error'
+          : minpromNotFound
+            ? 'empty'
+            : completed
+              ? 'done'
+              : job.status === 'running' || job.status === 'pending'
+                ? 'current'
+                : 'waiting',
+    },
   ]
   return (
     <div className="job-timeline" aria-label="Этапы обработки задачи">
       {steps.map(step => (
-        <div className={`job-timeline-step ${step.state}`} key={step.label} title={`Этап: ${step.label} (${step.state === 'empty' ? 'в реестре не найдено' : step.state})`}>
+        <div
+          className={`job-timeline-step ${step.state}`}
+          key={step.label}
+          title={`Этап: ${step.label} (${
+            step.state === 'empty'
+              ? 'в реестре не найдено'
+              : step.state === 'resolved'
+                ? 'готово у админа (ожидает отправки клиенту)'
+                : step.state
+          })`}
+        >
           <span className="timeline-dot" />
           <span className="timeline-text">{step.label}</span>
         </div>

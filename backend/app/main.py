@@ -1575,7 +1575,7 @@ def _create_fresh_processing_job(db: Session, parent: Job, *, client: Client, cr
         if active:
             raise HTTPException(status_code=409, detail="Для этой задачи уже выполняется новый подбор. Завершите или отмените его.")
         from .geo_policy import GEO_SUPPORTED_MODES
-        retry_city = parent.delivery_city if parent.mode in GEO_SUPPORTED_MODES else ""
+        retry_city = parent.delivery_city if (parent.mode in GEO_SUPPORTED_MODES and parent.geo_radius_km is not None) else ""
         retry_radius = parent.geo_radius_km if parent.mode in GEO_SUPPORTED_MODES else None
         error = client_access_error(db, client, parent.mode, geo_radius_km=retry_radius)
         if error:
@@ -1591,6 +1591,8 @@ def _create_fresh_processing_job(db: Session, parent: Job, *, client: Client, cr
                            geo_scope=getattr(parent, "geo_scope", "ru") or "ru",
                            initial_status="draft")
         child.parent_job_id = parent.id
+        if parent.mode in GEO_SUPPORTED_MODES and parent.geo_radius_km is None and getattr(parent, "delivery_city", ""):
+            child.delivery_city = (parent.delivery_city or "").strip()
         update_dobor_context_dict(child, {"retry_selection_intent": intent})
         for key in ("filter_marketplaces", "filter_foreign", "max_suppliers", "max_variation_pct", "geo_scope"):
             setattr(child, key, getattr(parent, key))
@@ -4872,11 +4874,15 @@ def admin_rerun_job(
         from .geo_policy import GEO_SUPPORTED_MODES, validate_geo_request
         if new_job.mode not in GEO_SUPPORTED_MODES:
             new_job.delivery_city, new_job.geo_radius_km = "", None
-        else:
+        elif new_job.geo_radius_km is not None:
             try:
                 new_job.delivery_city, new_job.geo_radius_km = validate_geo_request(new_job.delivery_city, new_job.geo_radius_km, mode=new_job.mode)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            # MCP API / legacy tasks may carry a city/region hint without a paid geo-radius.
+            new_job.delivery_city = (new_job.delivery_city or "").strip()
+            new_job.geo_radius_km = None
         db.add(new_job)
         db.flush()
 
@@ -5074,18 +5080,31 @@ def get_job_supplement_candidates(job_id: str, db: Session = Depends(db_session)
         needed_kopeks = unit_price_kopeks if delta_units > 0 else 0
 
     charge_rub = round(needed_kopeks / 100, 2)
+    charge_rub_str = str(int(charge_rub)) if charge_rub == int(charge_rub) else f"{charge_rub:.2f}".rstrip("0").rstrip(".")
     already_charged_rub = round(already_charged_kopeks / 100, 2)
     requires_payment_approval = needed_kopeks > 0
     prior_c = already_charged_units or int(job.verified_count or 0)
-    default_offer_comment = (
-        (
-            f"Здравствуйте! Специалисты TenderLex пересчитали спецификацию: найдено {max_verified} поз. "
-            f"(ранее было {prior_c} поз.). Готовы выдать дополненный экспертный отчёт. "
-            f"Стоимость доплаты составит {charge_rub} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи."
+    is_supplier_job = job.mode in (MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS)
+    if is_supplier_job:
+        default_offer_comment = (
+            (
+                f"Здравствуйте! Специалисты TenderLex провели экспертный подбор по вашей задаче: найдено {max_verified} комп. "
+                f"(ранее было {prior_c}). Готовы выдать обновлённый отчёт. "
+                f"Стоимость доплаты составит {charge_rub_str} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи."
+            )
+            if requires_payment_approval
+            else ""
         )
-        if requires_payment_approval
-        else ""
-    )
+    else:
+        default_offer_comment = (
+            (
+                f"Здравствуйте! Специалисты TenderLex пересчитали спецификацию: найдено {max_verified} поз. "
+                f"(ранее было {prior_c} поз.). Готовы выдать дополненный экспертный отчёт. "
+                f"Стоимость доплаты составит {charge_rub_str} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи."
+            )
+            if requires_payment_approval
+            else ""
+        )
 
     offer_preview = {
         "client_id": job.client_id or "",
@@ -5225,6 +5244,7 @@ async def upload_admin_supplement(
     file_kinds: str = Form(default=""),
     file_kind: str = Form(default=""),
     as_offer: bool = Form(default=False),
+    waive_charge: bool = Form(default=False),
     offer_charge_rub: float | None = Form(default=None),
     db: Session = Depends(db_session),
 ) -> dict:
@@ -5386,6 +5406,14 @@ async def upload_admin_supplement(
     elif isinstance(as_offer, str):
         is_offer = as_offer.lower() in ("true", "1", "yes")
 
+    is_waived = False
+    if isinstance(waive_charge, bool):
+        is_waived = waive_charge
+    elif hasattr(waive_charge, "default"):
+        is_waived = bool(waive_charge.default)
+    elif isinstance(waive_charge, str):
+        is_waived = waive_charge.lower() in ("true", "1", "yes")
+
     clean_charge_rub: float | None = None
     if isinstance(offer_charge_rub, (int, float)):
         clean_charge_rub = float(offer_charge_rub)
@@ -5397,7 +5425,10 @@ async def upload_admin_supplement(
         except ValueError:
             clean_charge_rub = None
 
-    if clean_charge_rub is not None:
+    if is_waived:
+        is_offer = False
+        needed_kopeks = 0
+    elif clean_charge_rub is not None:
         needed_kopeks = max(0, int(round(clean_charge_rub * 100)))
 
     charge_rub = round(needed_kopeks / 100, 2)
@@ -5478,11 +5509,20 @@ async def upload_admin_supplement(
         if max_verified > int(getattr(job, "verified_count", 0) or 0):
             job.verified_count = max_verified
 
+        (target_dir / "supplement_offer.json").unlink(missing_ok=True)
+        if getattr(job, "confirmation_kind", "") == "admin_supplement_offer":
+            job.confirmation_kind = ""
+            job.confirmation_outcome = ""
+
         job.status = "completed"
         job.progress = 100
         job.error = ""
-        job.message = "Дополнено экспертом TenderLex"
-        chat_text = clean_comment or "Экспертный отчёт TenderLex дополнен новыми материалами."
+        job.message = "Дополнено экспертом TenderLex (без списания — бонус)" if is_waived else "Дополнено экспертом TenderLex"
+        chat_text = clean_comment or (
+            "Экспертный отчёт TenderLex подготовлен и опубликован для вас бонусом без списания средств."
+            if is_waived
+            else "Экспертный отчёт TenderLex дополнен новыми материалами."
+        )
 
     # Seed prior messages if any
     get_job_chat_messages(db, job, auto_seed=True)

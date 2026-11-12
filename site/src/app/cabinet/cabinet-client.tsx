@@ -771,13 +771,15 @@ function pluralizeRu(value: number, [one, few, many]: [string, string, string]) 
   return many;
 }
 
-function parseError(raw: string) {
+function parseError(raw: string, options?: { isUpload?: boolean }) {
   const str = String(raw || "").trim();
   if (str.includes("502 Bad Gateway")) {
     return "Сервер временно обновляется или перезагружается (502 Bad Gateway). Пожалуйста, подождите пару секунд и повторите.";
   }
   if (str.includes("504 Gateway Time-out") || str.includes("504 Gateway Timeout")) {
-    return "Время ожидания ответа сервера истекло (504 Gateway Timeout). Попробуйте разбить файл на части или повторите попытку.";
+    return options?.isUpload
+      ? "Время ожидания ответа сервера истекло (504 Gateway Timeout). Попробуйте разбить файл на части или повторите попытку."
+      : "Сервер не успел ответить вовремя (504 Gateway Timeout). Пожалуйста, повторите попытку через пару секунд.";
   }
   if (str.includes("500 Internal Server Error")) {
     return "Внутренняя ошибка сервера (500). Пожалуйста, повторите попытку позже.";
@@ -802,9 +804,9 @@ function filenameFromResponse(response: Response, fallback: string) {
   return plain?.[1] || fallback;
 }
 
-async function readJson<T>(response: Response): Promise<T> {
+async function readJson<T>(response: Response, options?: { isUpload?: boolean }): Promise<T> {
   const text = await response.text();
-  if (!response.ok) throw new Error(parseError(text));
+  if (!response.ok) throw new Error(parseError(text, options));
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
 
@@ -1697,6 +1699,7 @@ export function CabinetClient() {
   const jobsRequestIdRef = useRef(0);
   const jobsForegroundRequestRef = useRef<number | null>(null);
   const jobsBackgroundRequestRef = useRef<number | null>(null);
+  const sessionBackgroundRequestRef = useRef(false);
   const [findMoreConfirmJob, setFindMoreConfirmJob] = useState<CustomerJob | null>(null);
   const [findMorePrompt, setFindMorePrompt] = useState("");
   const [startSupplierSearchConfirmJob, setStartSupplierSearchConfirmJob] = useState<CustomerJob | null>(null);
@@ -2128,7 +2131,10 @@ export function CabinetClient() {
   const jobsEnd = Math.min(jobsTotal, jobsPage * jobsPageSize);
   const hasFindMoreSuppliers = jobs.some((job) => job.can_find_more_suppliers);
 
-  async function loadSession() {
+  async function loadSession(options?: { background?: boolean }) {
+    const background = Boolean(options?.background);
+    if (background && sessionBackgroundRequestRef.current) return null;
+    if (background) sessionBackgroundRequestRef.current = true;
     try {
       const response = await fetch("/api/customer/auth/session", { credentials: "same-origin", cache: "no-store" });
       if (response.status === 401 || response.status === 404) {
@@ -2141,7 +2147,9 @@ export function CabinetClient() {
       const payload = await readJson<SessionPayload>(response);
       setSession(payload.authenticated ? payload : null);
       if (payload.authenticated) {
-        loadCustomerInvoices();
+        if (!background) {
+          loadCustomerInvoices();
+        }
         if (payload.user?.phone) {
           setPayerPhone((cur) => cur || formatPhoneRu(payload.user?.phone || ""));
         }
@@ -2154,7 +2162,11 @@ export function CabinetClient() {
         setCustomerInvoicesTotal(0);
       }
       return payload;
+    } catch (err) {
+      if (background) return null;
+      throw err;
     } finally {
+      if (background) sessionBackgroundRequestRef.current = false;
       setSessionLoading(false);
     }
   }
@@ -2347,7 +2359,7 @@ export function CabinetClient() {
       }
       setJobs(incomingItems);
     } catch (err) {
-      if (requestId === jobsRequestIdRef.current) setError(err instanceof Error ? err.message : String(err));
+      if (!background && requestId === jobsRequestIdRef.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (jobsBackgroundRequestRef.current === requestId) jobsBackgroundRequestRef.current = null;
       if (jobsForegroundRequestRef.current === requestId) {
@@ -2557,7 +2569,7 @@ export function CabinetClient() {
     if (!authenticated) return;
     const timer = window.setInterval(() => {
       loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, true);
-      if (activeJobs) loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+      if (activeJobs) loadSession({ background: true }).catch(() => {});
     }, activeJobs ? 3000 : 7000);
     return () => window.clearInterval(timer);
   }, [authenticated, jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, activeJobs]);
@@ -3037,7 +3049,7 @@ export function CabinetClient() {
         headers: { "x-csrf-token": csrf },
         body: form,
       });
-      const payload = await readJson<{ batch: boolean; count: number }>(response);
+      const payload = await readJson<{ batch: boolean; count: number }>(response, { isUpload: true });
       trackGoal("task_started", { module: selectedMode });
       setText("");
       setSourceUrls("");
@@ -3046,8 +3058,8 @@ export function CabinetClient() {
       clearSelectedFiles();
       setMessage(payload.batch ? `Запущено задач: ${payload.count}.` : "Задача запущена.");
       setJobsPage(1);
-      await loadSession();
-      await loadJobs(1);
+      await loadSession({ background: true });
+      await loadJobs(1).catch(() => {});
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

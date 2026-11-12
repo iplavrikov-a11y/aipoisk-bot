@@ -271,3 +271,76 @@ async def test_structured_table_does_not_fall_back_to_line_splitting_when_ai_ret
     assert rows[0]["name"] == "Перчатки смотровые нитриловые"
     assert len(rows[0]["requirements"]) == 3
 
+
+@pytest.mark.asyncio
+async def test_multi_document_identical_spec_chunks_merge_without_losing_analogs(tmp_path):
+    from app.exact_product.pipeline import prepare_exact_product_positions
+
+    tz_file = tmp_path / "tz.txt"
+    nmck_file = tmp_path / "nmck.txt"
+    tz_file.write_text("Техническое задание на поставку промышленного компрессора", encoding="utf-8")
+    nmck_file.write_text("Обоснование НМЦК на поставку промышленного компрессора", encoding="utf-8")
+
+    tz_parsed = {
+        "positions": [{
+            "name": "Компрессор винтовой электрический",
+            "requirements": [
+                {"param_name": "Производительность", "tz_requirement": ">= 1500 л/мин"},
+                {"param_name": "Давление", "tz_requirement": ">= 8 <= 10 бар"},
+                {"param_name": "Мощность двигателя", "tz_requirement": ">= 11 <= 15 кВт"},
+                {"param_name": "Длина", "tz_requirement": ">= 900 <= 1200 мм"},
+                {"param_name": "Масса", "tz_requirement": "<= 450 кг"},
+                {"param_name": "Комплектация", "tz_requirement": "Осушитель; Ресивер; Фильтр"},
+            ],
+        }]
+    }
+    nmck_parsed = {
+        "positions": [{
+            "name": "Компрессор винтовой",
+            "analogs": [{"brand": "Atlas Copco", "model": "GA 11"}],
+            "requirements": [
+                {"param_name": "Производительность", "tz_requirement": "больше или равно 1500 л/мин"},
+                {"param_name": "Давление", "tz_requirement": "≥ 8 и ≤ 10 бар"},
+                {"param_name": "Мощность двигателя", "tz_requirement": "≥ 11 и ≤ 15 киловатт"},
+                {"param_name": "Длина", "tz_requirement": "≥ 900 ≤ 1200 миллиметр"},
+                {"param_name": "Масса", "tz_requirement": "≤ 450 килограмм"},
+                {"param_name": "Комплектация", "tz_requirement": "Фильтр; Ресивер; Осушитель"},
+            ],
+        }]
+    }
+
+    with patch("app.exact_product.matcher.parse_tz_structure", new_callable=AsyncMock, side_effect=[tz_parsed, nmck_parsed]):
+        rows = await prepare_exact_product_positions(SystemSettings(), "", [tz_file, nmck_file])
+
+    assert len(rows) == 1
+    assert rows[0]["analogs"] == [{"brand": "Atlas Copco", "model": "GA 11"}]
+
+
+def test_different_spec_numbers_are_never_merged():
+    from app.exact_product.pipeline import _merge_duplicate_structured_positions
+
+    server_a = {
+        "name": "Сервер стоечный",
+        "requirements": [
+            {"param_name": "Форм-фактор", "tz_requirement": "2U"},
+            {"param_name": "Оперативная память", "tz_requirement": ">= 64 ГБ"},
+            {"param_name": "Количество процессоров", "tz_requirement": "2 шт"},
+            {"param_name": "Диски NVMe", "tz_requirement": "4 шт"},
+            {"param_name": "Блоки питания", "tz_requirement": ">= 800 Вт"},
+            {"param_name": "Гарантия", "tz_requirement": "36 мес"},
+        ],
+    }
+    server_b = {
+        "name": "Сервер стоечный",
+        "requirements": [
+            {"param_name": "Форм-фактор", "tz_requirement": "2U"},
+            {"param_name": "Оперативная память", "tz_requirement": ">= 256 ГБ"},
+            {"param_name": "Количество процессоров", "tz_requirement": "2 шт"},
+            {"param_name": "Диски NVMe", "tz_requirement": "8 шт"},
+            {"param_name": "Блоки питания", "tz_requirement": ">= 1200 Вт"},
+            {"param_name": "Гарантия", "tz_requirement": "36 мес"},
+        ],
+    }
+    assert len(_merge_duplicate_structured_positions([server_a, server_b])) == 2
+
+

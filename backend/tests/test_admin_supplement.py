@@ -545,6 +545,108 @@ async def test_supplement_candidates_recommend_only_latest_healthy_rerun_and_zer
     assert "0.0 ₽" not in (orig_job.admin_comment or "")
 
 
+@pytest.mark.asyncio
+async def test_admin_supplement_three_modes_offer_charge_now_and_free_bonus(db, tmp_path):
+    from app.models import BillingTransaction, ClientTariffOverride
+
+    client = Client(
+        name="Денис",
+        telegram_id="web:denis-test",
+        is_active=True,
+        money_balance_kopeks=50_000,
+    )
+    db.add(client)
+    db.flush()
+
+    db.add(
+        ClientTariffOverride(
+            client_id=client.id,
+            kind="supplier_search",
+            price_kopeks=9_900,
+            is_enabled=True,
+        )
+    )
+
+    orig_job = Job(
+        client_id=client.id,
+        created_by_telegram_id="web:denis-test",
+        mode="supplier_search",
+        status="failed",
+        verified_count=0,
+        job_number=1081,
+        title="Уборка помещений",
+    )
+    rerun_job = Job(
+        client_id=client.id,
+        parent_job_id="",
+        is_admin_rerun=True,
+        created_by_telegram_id="web:denis-test",
+        mode="supplier_search",
+        status="completed",
+        verified_count=13,
+        job_number=1083,
+        title="[Админ] Уборка помещений",
+    )
+    db.add(orig_job)
+    db.flush()
+    rerun_job.parent_job_id = orig_job.id
+    db.add(rerun_job)
+    db.commit()
+
+    f_xlsx = tmp_path / "suppliers.xlsx"
+    f_xlsx.write_bytes(b"xlsx")
+
+    def fake_pkg(j):
+        if j.id == rerun_job.id:
+            return [{"kind": "suppliers", "label": "Поставщики", "path": str(f_xlsx)}]
+        return []
+
+    with patch("app.main.package_job_output_items", side_effect=fake_pkg):
+        cand_res = get_job_supplement_candidates(orig_job.id, db=db)
+        assert cand_res["offer_preview"]["charge_amount_rub"] == 99.0
+        assert "13 комп." in cand_res["offer_preview"]["default_offer_comment"]
+        assert "99 ₽" in cand_res["offer_preview"]["default_offer_comment"]
+
+        # 3rd option: waive_charge=True (free bonus) -> 0 kopeks deducted, published immediately
+        bonus_res = await upload_admin_supplement(
+            job_id=orig_job.id,
+            comment="Отправлено бонусом без списания",
+            notify_telegram=False,
+            source_mode="job_file",
+            file_kinds=f"{rerun_job.id}:suppliers",
+            as_offer=False,
+            waive_charge=True,
+            offer_charge_rub=0.0,
+            db=db,
+        )
+    assert bonus_res["success"] is True
+    db.refresh(client)
+    db.refresh(orig_job)
+    assert client.money_balance_kopeks == 50_000
+    assert orig_job.status == "completed"
+    assert orig_job.verified_count == 13
+    assert db.query(BillingTransaction).filter(BillingTransaction.job_id == orig_job.id, BillingTransaction.operation == "charge").count() == 0
+
+    # 2nd option: charge_now (as_offer=False, waive_charge=False) -> deducts 9900 kopeks immediately
+    with patch("app.main.package_job_output_items", side_effect=fake_pkg):
+        paid_res = await upload_admin_supplement(
+            job_id=orig_job.id,
+            comment="Опубликовано со списанием 99 ₽",
+            notify_telegram=False,
+            source_mode="job_file",
+            file_kinds=f"{rerun_job.id}:suppliers",
+            as_offer=False,
+            waive_charge=False,
+            offer_charge_rub=99.0,
+            db=db,
+        )
+    assert paid_res["success"] is True
+    db.refresh(client)
+    assert client.money_balance_kopeks == 40_100
+    assert db.query(BillingTransaction).filter(BillingTransaction.job_id == orig_job.id, BillingTransaction.operation == "charge").count() == 1
+
+
+
 
 
 
