@@ -7103,6 +7103,7 @@ async def create_customer_job_api(
     mode: str,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
     multi_item_mode: str = "balanced",
+    auto_confirm_strategy: bool = False,
     delivery_city: str = "",
     geo_radius_km: int | None = None,
     geo_scope: str = "ru",
@@ -7185,6 +7186,8 @@ async def create_customer_job_api(
                     geo_scope=geo_scope,
                     initial_status="draft",
                 )
+                if auto_confirm_strategy and normalized_multi_item_mode == "balanced":
+                    update_dobor_context_dict(job, {"multi_item_confirmed": True, "selected_item_ids": None})
                 created_jobs.append(job)
                 reserve_job_units(db, client, job)
                 jobs.append(job)
@@ -7214,6 +7217,8 @@ async def create_customer_job_api(
             initial_status="draft",
         )
         created_jobs.append(job)
+        if auto_confirm_strategy and mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS} and normalized_multi_item_mode == "balanced":
+            update_dobor_context_dict(job, {"multi_item_confirmed": True, "selected_item_ids": None})
         reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
         job.status = "pending"
         job.message = "Задача создана"

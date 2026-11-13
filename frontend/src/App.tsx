@@ -5190,13 +5190,17 @@ function JobsView({
 function AdminExactSelection({ jobId, selection, mode, multiItemMode, reissue = false, internal = false, geography = '', onChange }: {
   jobId: string; selection: ExactSelection; mode?: string; multiItemMode?: string; reissue?: boolean; internal?: boolean; geography?: string; onChange: () => Promise<void>
 }) {
-  const [selected, setSelected] = useState<string[]>(selection.selected_ids || [])
+  const isSupplier = ['supplier_search', 'analysis_and_suppliers'].includes(mode || selection.mode || '')
+  const initialSelected = (selection.selected_ids && selection.selected_ids.length > 0)
+    ? selection.selected_ids
+    : (isSupplier ? (selection.items || []).map(row => row.id) : (selection.selected_ids || []))
+  const [selected, setSelected] = useState<string[]>(initialSelected)
   const [strategy, setStrategy] = useState(multiItemMode || 'balanced')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const maximum = selection.max_positions || (selection.pricing_mode === 'per_position' ? (selection.items?.length || 100) : 5)
   const monitoring = mode === 'price_monitoring' || selection.pricing_mode === 'per_found_position'
-  const supplier = ['supplier_search', 'analysis_and_suppliers'].includes(mode || selection.mode || '')
+  const supplier = isSupplier
   const balanced = supplier && strategy === 'balanced'
   const effectiveIds = selected
   const noCharge = reissue || internal
@@ -5236,6 +5240,23 @@ function AdminExactSelection({ jobId, selection, mode, multiItemMode, reissue = 
         <option value="per_item">Попозиционный — независимый поиск по отмеченным позициям</option>
       </select>
     </label>}
+    <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, fontSize: 12 }}>
+      <button
+        type="button"
+        style={{ background: 'none', border: 'none', color: '#0d9488', fontWeight: 700, cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+        onClick={() => setSelected((selection.items || []).map(r => r.id))}
+      >
+        Выбрать все ({selection.items?.length || 0})
+      </button>
+      <span style={{ color: '#cbd5e1' }}>|</span>
+      <button
+        type="button"
+        style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+        onClick={() => setSelected([])}
+      >
+        Снять все
+      </button>
+    </div>
     <div style={{ maxHeight: 280, overflowY: 'auto', display: 'grid', gap: 10, marginBottom: 12 }}>
       {selection.items.map(row => <label key={row.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', overflowWrap: 'anywhere' }}>
         <input type="checkbox" checked={effectiveIds.includes(row.id)} disabled={busy || (!selected.includes(row.id) && selected.length >= maximum)}

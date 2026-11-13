@@ -5407,6 +5407,49 @@ export function CabinetClient() {
                     }}
                   />
 
+                  {job.awaiting_customer_confirmation && job.confirmation_kind === "multi_item_strategy" ? (
+                    <div className="col-span-12 mt-2 p-3 sm:p-3.5 rounded-2xl bg-gradient-to-r from-amber-50 to-teal-50/40 border border-amber-300 text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-2xs">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="text-xl shrink-0" aria-hidden="true">📋</span>
+                        <div className="space-y-0.5 text-xs min-w-0">
+                          <strong className="font-extrabold text-slate-900 block truncate">
+                            В спецификации найдено {job.multi_item_details?.items?.length || 0} {pluralizeRu(job.multi_item_details?.items?.length || 0, ["позиция", "позиции", "позиций"])}: выберите стратегию поиска
+                          </strong>
+                          <p className="text-slate-600 text-[11px] leading-relaxed">
+                            Стандартный сбалансированный поиск по всей спецификации выполняется в рамках вашего тарифа (без доплат).
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+                        <button
+                          type="button"
+                          className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void chooseStrategy(job, "balanced");
+                          }}
+                          disabled={busy || strategySubmittingJobId === job.id}
+                        >
+                          <CheckCircle2 size={14} aria-hidden="true" />
+                          <span>Продолжить (без доплат)</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold shadow-2xs transition-colors cursor-pointer"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            unmarkStrategyDismissed(job.id);
+                            openStrategyConfirmModal(job);
+                          }}
+                          disabled={busy}
+                        >
+                          <Sliders size={14} aria-hidden="true" />
+                          <span>Настроить</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
                   {(!job.awaiting_customer_confirmation || job.confirmation_kind !== "multi_item_strategy") &&
                   job.multi_item_details?.items &&
                   job.multi_item_details.items.length > 1 ? (
@@ -6268,11 +6311,11 @@ export function CabinetClient() {
                           ⚖️ Сбалансированный поиск
                         </strong>
                         <span className="text-[11px] font-bold text-teal-700 bg-teal-100/70 px-2 py-0.5 rounded-full shrink-0">
-                          1 списание
+                          1 списание (без доплат)
                         </span>
                       </div>
                       <p className="text-[11px] sm:text-xs text-slate-600 font-normal leading-relaxed">
-                        Единый консолидированный отчёт. Целевая квота поставщиков распределяется между всеми позициями ТЗ. В итоговом Excel формируется единый лист «Сводный реестр» со сворачиваемой структурой строк (+ / -) по каждой позиции. Формируется единый официальный Запрос КП (.docx) со всеми позициями.
+                        Стандартный консолидированный отчёт по вашему тарифу. Целевая квота поставщиков распределяется между всеми позициями ТЗ. В итоговом Excel формируется единый лист «Сводный реестр» со сворачиваемой структурой строк (+ / -) по каждой позиции. Формируется единый официальный Запрос КП (.docx) со всеми позициями.
                       </p>
                     </div>
                   </button>

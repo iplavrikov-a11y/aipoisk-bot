@@ -168,12 +168,12 @@ TOOLS_DEFINITIONS = [
     },
     {
         "name": "tenderlex_update_queued_job",
-        "description": "Подтверждает стратегию поиска поставщиков либо решение клиента принять/отклонить неполный результат. Применяйте только после явного выбора пользователя.",
+        "description": "Подтверждает стратегию поиска поставщиков (action='strategy', multi_item_mode='balanced' или 'per_item') либо решение принять/отклонить результат (action='accept' / 'decline'). Для продолжения многопозиционного поиска используйте action='strategy', multi_item_mode='balanced'.",
         "inputSchema": {"type": "object", "properties": {
             "job_id": {"type": "string"},
             "action": {"type": "string", "enum": ["strategy", "accept", "decline"]},
             "revision": {"type": "string", "description": "Revision исходного списка из multi_item_details; передавайте при выборе стратегии."},
-            "multi_item_mode": {"type": "string", "enum": ["balanced", "per_item"]},
+            "multi_item_mode": {"type": "string", "enum": ["balanced", "per_item"], "description": "'balanced' — единый сбалансированный поиск по всей спецификации (по умолчанию); 'per_item' — независимый попозиционный поиск."},
             "selected_item_ids": {"type": "array", "items": {"type": "string"}},
         }, "required": ["job_id", "action"]},
     },
@@ -485,7 +485,19 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
             if job.get("multi_item_details"):
                 lines.append(json.dumps(job["multi_item_details"], ensure_ascii=False))
             if job.get("awaiting_customer_confirmation"):
-                lines.append("- Ожидается решение по неполному результату: используйте API POST /accept или /decline.")
+                kind = str(job.get("confirmation_kind") or "")
+                if kind == "multi_item_strategy":
+                    lines.append(
+                        f"- В спецификации обнаружено несколько позиций. Задача ожидает выбора стратегии поиска.\n"
+                        f"  Для запуска вызовите: tenderlex_update_queued_job(job_id='{job_id}', action='strategy', multi_item_mode='balanced')\n"
+                        f"  (режим 'balanced' — стандартный сбалансированный поиск по всем позициям в рамках одного списания)."
+                    )
+                elif kind == "registry_fallback":
+                    lines.append(
+                        f"- По реестру Минпромторга поставщики не найдены. Ожидается подтверждение альтернатив: вызовите tenderlex_update_queued_job(job_id='{job_id}', action='accept') или action='decline'."
+                    )
+                else:
+                    lines.append(f"- Ожидается подтверждение решения клиентом: используйте tenderlex_update_queued_job(job_id='{job_id}', action='accept' или 'strategy').")
             for item in job.get("result_files") or []:
                 lines.append(f"- Файл: {item.get('label') or item.get('kind')} (`{item.get('kind')}`), скачивание: GET /api/v1/mcp/jobs/{job_id}/files/{item.get('kind')}")
             return [{"type": "text", "text": "\n".join(lines)}]

@@ -1,12 +1,19 @@
 # TenderLex Bot
 
-Актуальный выпуск 12 ноября 2026 (ч. 2): [Три режима выдачи админ-доработки с динамическими комментариями и статусом «пересчитано — готово к отправке», фикс дубля «г. г.», изоляция фоновых `504`-ошибок в веб-кабинете и универсальная дедупликация позиций в многофайловых ТЗ](docs/PROJECT_STATUS.md).
+Актуальный выпуск 13 ноября 2026: [Устранение зависаний подтверждения позиций и стратегии (`multi_item_strategy`), авто-подтверждение для API/MCP, 1-клик продолжение в кабинете («без доплат») и разблокировка админки](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 12 ноября (ч. 2): все бэкенд-тесты (`1 438 passed, 54 subtests passed`), проверка типов сайта (`cd site && npm run typecheck`), сборка админ-панели (`cd frontend && npm run build`) и продакшн-деплой (`./scripts/deploy_tenderlex_live.sh`, службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
+Серверный прогон выпуска 13 ноября: все бэкенд-тесты (`1 438 passed, 54 subtests passed`), проверка типов сайта (`cd site && npm run typecheck`), сборка админ-панели (`cd frontend && npm run build`) и продакшн-деплой (`./scripts/deploy_tenderlex_live.sh`, службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Supplier Strategy Confirmation Drop-off Elimination, Auto-Confirm for API/MCP, 1-Click Cabinet Continuation & Admin Panel Unblocking (2026-11-13):
+  - **API & MCP Job Auto-Confirmation (`backend/app/main.py`, `backend/app/mcp_jobs_api.py`)**: added `auto_confirm_strategy: bool = Form(default=True)` in `create_queued_job` and initialized `dobor_context` with `{"multi_item_confirmed": True, "selected_item_ids": None}` for balanced supplier searches in `create_customer_job_api`. Completely prevents automated external AI agents/scripts (e.g. customer Dmitry Vasilyev #101 jobs #1092, #1093, #1094) from deadlocking in polling loops.
+  - **MCP Instructions & Tool Alignment (`mcp_server/server.py`, `scripts/tenderlex_mcp.py`, `site/public/scripts/tenderlex_mcp.py`)**: replaced misleading `POST /accept` or `/decline` message on `multi_item_strategy` status with exact instruction to call `tenderlex_update_queued_job(action="strategy", multi_item_mode="balanced")`. Synchronized copies across the codebase.
+  - **Admin Panel Default Selection & 1-Click Confirm (`frontend/src/App.tsx`)**: pre-selects all positions by default (`(selection.items || []).map(row => row.id)`) when `selected_ids` is empty, added «Выбрать все (N)» and «Снять все» toggle buttons, and enabled immediate 1-click confirmation for operators.
+  - **Client Web Cabinet Inline Card Banner & 1-Click Launch (`site/src/app/cabinet/cabinet-client.tsx`)**: displayed inline notice directly inside the task card with a 1-click «Продолжить (без доплат)» button and «Настроить» modal trigger; updated modal copy to explicitly state «1 списание (без доплат)» to eliminate customer anxiety over surprise extra charges.
+  - **Tests & Live Deploy**: `pytest backend/tests -q` (**1,438 passed, 54 subtests passed**), `cd site && npm run typecheck`, `cd frontend && npm run build`, and live deploy `./scripts/deploy_tenderlex_live.sh` verified live (`127.0.0.1:8088` / `127.0.0.1:3093` `200 OK`).
 
 - Admin Supplement 3-Mode Delivery, Resolved Cards UX, City Prefix Normalization, Cabinet `504` Poll Isolation & Multi-Doc Deduplication (2026-11-12):
   - **Admin Supplement Workflow & Resolved Task Cards (`backend/app/main.py`, `frontend/src/App.tsx`, `frontend/src/styles.css`, `backend/tests/test_admin_supplement.py`)**: added 3rd zero-charge `bonus_free` delivery mode alongside `approve` and `charge_now`, mode-reactive auto-comments (`default_comments_by_mode`), non-red `пересчитано — готово к отправке` status styling with collapsible original error details, fixed `Отправить клиенту →` hover contrast, and compact sent admin-file badges (`📤 Отправлено`).
