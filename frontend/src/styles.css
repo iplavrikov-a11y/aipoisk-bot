@@ -291,6 +291,22 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 
 .stack { display: grid; gap: 14px; }
+.invoice-admin-view .invoice-toolbar { grid-template-columns: minmax(260px, 1fr) auto auto; }
+.invoice-toolbar small { display: block; margin-top: 4px; color: #64748b; }
+.invoice-toolbar-status { color: #0369a1; background: #e0f2fe; border-radius: 999px; padding: 5px 9px; font-size: 12px; font-weight: 700; }
+.invoice-table { min-width: 1080px; }
+.invoice-status { display: inline-flex; font-size: 12px; font-weight: 700; }
+.invoice-confirmed { display: inline-flex; align-items: center; gap: 5px; color: #047857; font-size: 12px; font-weight: 700; }
+.invoice-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.invoice-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #64748b; font-size: 12px; }
+.invoice-pagination > div { display: flex; align-items: center; gap: 8px; }
+.invoice-empty { display: flex; min-height: 160px; align-items: center; justify-content: center; gap: 8px; color: #64748b; }
+.spin { animation: invoice-spin .8s linear infinite; }
+@keyframes invoice-spin { to { transform: rotate(360deg); } }
+@media (max-width: 760px) {
+  .invoice-admin-view .invoice-toolbar { grid-template-columns: 1fr auto; }
+  .invoice-toolbar-status { display: none; }
+}
 .toolbar-panel { padding: 14px; display: grid; grid-template-columns: 230px 1fr 1fr auto; gap: 10px; align-items: center; }
 .client-create-panel {
   display: grid;
@@ -925,6 +941,96 @@ a.api-service-row.configured:hover {
   border-image: none !important;
 }
 
+/* Исход "не найдено в Минпромторге" - бизнес-результат поиска, не системная ошибка */
+.job-card.compact.minprom-not-found {
+  border-left: 4px solid #94a3b8 !important;
+  border-image: none !important;
+}
+
+/* Ошибка исходного запуска решена админ-перерасчётом или дополнением */
+.job-card.compact.status-failed.admin-resolved,
+.job-card.compact.admin-resolved,
+.job-card.compact.status-resolved {
+  border-left: 4px solid #0d9488 !important;
+  border-image: none !important;
+}
+
+.admin-resolved-banner {
+  margin-top: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  border: 1px solid #a7f3d0;
+  background: #ecfdf5;
+  color: #065f46;
+}
+.admin-resolved-banner.is-sent {
+  border-color: #99f6e4;
+  background: #f0fdfa;
+  color: #115e59;
+}
+.admin-resolved-banner-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.admin-resolved-icon {
+  flex-shrink: 0;
+  color: #059669;
+}
+.admin-resolved-banner.is-sent .admin-resolved-icon {
+  color: #0d9488;
+}
+button.admin-resolved-link-btn,
+.admin-resolved-link-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 0;
+  height: auto;
+  padding: 2px 6px;
+  margin: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+button.admin-resolved-link-btn:hover,
+button.admin-resolved-link-btn:focus-visible,
+.admin-resolved-link-btn:hover {
+  background: #ccfbf1;
+  color: #115e59;
+}
+.admin-resolved-history {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #64748b;
+}
+.admin-resolved-history summary {
+  cursor: pointer;
+  user-select: none;
+  width: fit-content;
+}
+.admin-resolved-history summary:hover {
+  color: #334155;
+}
+.admin-resolved-history-text {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #475569;
+  white-space: pre-wrap;
+}
+
 .job-card.service { background: #f8fafc; }
 .job-card-top {
   display: flex;
@@ -1117,10 +1223,30 @@ a.api-service-row.configured:hover {
   font-weight: 600;
   white-space: nowrap;
 }
-.meta-tag.supplement {
+.meta-tag.supplement,
+button.meta-tag.supplement-btn {
   background: #f0fdfa;
   color: #0f766e;
   border: 1px solid #99f6e4;
+  min-height: 0;
+  height: auto;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+button.meta-tag.supplement-btn {
+  cursor: pointer;
+}
+button.meta-tag.supplement-btn:hover,
+button.meta-tag.supplement-btn:focus-visible {
+  background: #ccfbf1;
+  color: #115e59;
+  border-color: #5eead4;
 }
 .meta-tag.admin-result {
   background: #ecfdf5;
@@ -1584,6 +1710,18 @@ a.api-service-row.configured:hover {
 }
 .job-timeline-step.error .timeline-dot {
   background: #dc2626;
+}
+.job-timeline-step.empty {
+  color: #64748b;
+}
+.job-timeline-step.empty .timeline-dot {
+  background: #94a3b8;
+}
+.job-timeline-step.resolved {
+  color: #0f766e;
+}
+.job-timeline-step.resolved .timeline-dot {
+  background: #0d9488;
 }
 .job-inline-downloads {
   display: flex;
@@ -2233,6 +2371,9 @@ a.api-service-row.configured:hover {
 .status.partial, .status.needs_review { background: #fef3c7; color: #92400e; }
 .status.warning { background: #fef3c7; color: #92400e; }
 .status.failed, .status.disabled { background: #fee2e2; color: #991b1b; }
+.status.resolved, .status.admin-sent { background: #f0fdfa; color: #0f766e; border: 1px solid #99f6e4; }
+.status.admin-ready { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+.status.minprom_not_found, .status.minprom-not-found { background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; }
 .status.cancelled { background: #f3f4f6; color: #6b7280; }
 .status.running, .status.pending { background: #dbeafe; color: #1e40af; }
 .progress-wrap { min-width: 180px; }

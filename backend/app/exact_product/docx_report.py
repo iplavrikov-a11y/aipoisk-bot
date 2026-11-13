@@ -255,6 +255,9 @@ def write_exact_product_docx(
         cells[0].text = str(pos.position_no or pos_idx)
         cells[1].text = pos.name_in_tz
         cells[2].text = f"{pos.identified_brand} {pos.identified_model}".strip()
+        if getattr(pos, "status", "found") != "found":
+            label = {"not_found": "Подходящая модель не найдена", "needs_clarification": "Требуется уточнение характеристик", "error": "Ошибка обработки"}.get(pos.status, "Требуется проверка")
+            cells[2].text = f"{cells[2].text}\n{label}".strip()
         cells[3].text = pos.manufacturer
         gisp_cell_text = "Не в реестре"
         if pos.gisp_match and pos.gisp_match.registry_number:
@@ -320,6 +323,11 @@ def write_exact_product_docx(
     sec2_run.font.color.rgb = BRAND_EMERALD
 
     for pos in report.positions:
+        if getattr(pos, "status", "found") != "found" and not pos.identified_model:
+            doc.add_heading(f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}", level=2)
+            doc.add_paragraph({"not_found": "Подходящая модель в этом поиске не найдена.", "needs_clarification": "Для подбора необходимо уточнить характеристики.", "error": "Обработка позиции не завершена."}.get(pos.status, "Требуется проверка."))
+            doc.add_paragraph(pos.error or pos.reasoning)
+            continue
         pos_banner = doc.add_table(rows=1, cols=1)
         pos_banner.alignment = WD_TABLE_ALIGNMENT.CENTER
         pos_banner.autofit = False
@@ -341,6 +349,8 @@ def write_exact_product_docx(
             if pos.gisp_match.conclusion_number:
                 gisp_str += f" (Заключение № {pos.gisp_match.conclusion_number})"
         status_prefix = "" if conf_pct >= 60 else f"ВНИМАНИЕ — ОТКЛОНЕНИЕ ОТ ТЗ ({conf_pct}%): "
+        if getattr(pos, "status", "found") != "found":
+            status_prefix = "ТРЕБУЕТСЯ УТОЧНЕНИЕ ХАРАКТЕРИСТИК: "
         brun = bp.add_run(
             f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}\n"
             f"{status_prefix}Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_str}"

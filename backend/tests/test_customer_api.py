@@ -47,9 +47,37 @@ from app.main import (
     _customer_upload_payload,
     ALLOWED_UPLOAD_EXTENSIONS,
 )
-from app.main import complete_web_password_reset, customer_password_reset_request_api
-from app.models import BillingTransaction, Client, ClientTariffOverride, Job, JobFile, LegalAcceptance, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser, now_utc
-from app.schemas import WebEmailChangeRequest, WebPasswordResetComplete, WebPasswordResetRequestCreate, WebRegisterRequest
+from app.main import (
+    complete_web_password_reset,
+    customer_change_password_api,
+    customer_password_reset_confirm_api,
+    customer_password_reset_request_api,
+)
+from app.models import (
+    BillingTransaction,
+    Client,
+    ClientTariffOverride,
+    Job,
+    JobFile,
+    LegalAcceptance,
+    SupplierResult,
+    SystemSettings,
+    TariffPackage,
+    WebEmailVerificationToken,
+    WebPasswordResetRequest,
+    WebPasswordResetToken,
+    WebRegistrationAttempt,
+    WebUser,
+    now_utc,
+)
+from app.schemas import (
+    WebEmailChangeRequest,
+    WebPasswordChangeRequest,
+    WebPasswordResetComplete,
+    WebPasswordResetConfirm,
+    WebPasswordResetRequestCreate,
+    WebRegisterRequest,
+)
 from app.web_auth import (
     CSRF_HEADER,
     WebAuthContext,
@@ -715,6 +743,66 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(authenticate_web_user(db, "buyer-reset@example.com", "StrongPass123"))
             self.assertEqual(authenticate_web_user(db, "buyer-reset@example.com", "NextPass123").id, user.id)
             self.assertIsNotNone(session.revoked_at)
+        finally:
+            db.close()
+
+    def test_automated_password_reset_flow(self) -> None:
+        db = self.Session()
+        try:
+            user = create_web_user(db, email="auto-reset@example.com", password="OldPassword123", name="Auto Reset")
+            _token, _csrf_token, old_session = create_web_session(db, user, request=fake_request())
+
+            # 1. Request reset
+            req_res = customer_password_reset_request_api(
+                WebPasswordResetRequestCreate(email="auto-reset@example.com"),
+                fake_request(),
+                db,
+            )
+            self.assertTrue(req_res["success"])
+
+            # Verify token created in DB
+            reset_record = db.query(WebPasswordResetToken).filter_by(user_id=user.id).order_by(WebPasswordResetToken.created_at.desc()).first()
+            self.assertIsNotNone(reset_record)
+            self.assertIsNone(reset_record.used_at)
+
+            # We need the plain token: let's test confirm via newly generated token
+            from app.web_auth import create_password_reset_token
+            plain_token, token_obj = create_password_reset_token(db, user, request=fake_request())
+
+            # 2. Confirm reset with new password
+            from fastapi import Response
+            response = Response()
+            confirm_res = customer_password_reset_confirm_api(
+                WebPasswordResetConfirm(token=plain_token, new_password="BrandNewPass456"),
+                fake_request(),
+                response,
+                db,
+            )
+            self.assertTrue(confirm_res["success"])
+            self.assertTrue(confirm_res["authenticated"])
+            self.assertIn("tenderlex_customer_session", response.headers.get("set-cookie", ""))
+
+            # Verify password was updated
+            db.refresh(user)
+            self.assertIsNone(authenticate_web_user(db, "auto-reset@example.com", "OldPassword123"))
+            self.assertIsNotNone(authenticate_web_user(db, "auto-reset@example.com", "BrandNewPass456"))
+
+            # Verify old session was revoked
+            db.refresh(old_session)
+            self.assertIsNotNone(old_session.revoked_at)
+
+            # Verify token was marked used
+            db.refresh(token_obj)
+            self.assertIsNotNone(token_obj.used_at)
+
+            # Reusing the token must fail
+            with self.assertRaises(Exception):
+                customer_password_reset_confirm_api(
+                    WebPasswordResetConfirm(token=plain_token, new_password="AnotherPass789"),
+                    fake_request(),
+                    Response(),
+                    db,
+                )
         finally:
             db.close()
 
@@ -1933,6 +2021,73 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                 await _customer_upload_payload(bad_file, settings)
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertIn("Неподдерживаемый формат", ctx.exception.detail)
+
+    def test_customer_change_password_api(self) -> None:
+        db = self.Session()
+        try:
+            user = create_web_user(db, email="pwd-change@example.com", password="OldPassword123", name="Change Pass")
+            token, csrf_token, session = create_web_session(db, user)
+            req = fake_request(csrf_token=csrf_token)
+            ctx = WebAuthContext(user=user, session=session)
+
+            # 1. Wrong current password
+            with self.assertRaises(HTTPException) as err:
+                customer_change_password_api(
+                    WebPasswordChangeRequest(current_password="WrongPassword123", new_password="NewPassword123"),
+                    request=req,
+                    context=ctx,
+                    db=db,
+                )
+            self.assertEqual(err.exception.status_code, 400)
+            self.assertIn("неверно", err.exception.detail)
+
+            # 2. Too short new password (< 10)
+            with self.assertRaises(Exception):
+                customer_change_password_api(
+                    WebPasswordChangeRequest(current_password="OldPassword123", new_password="short"),
+                    request=req,
+                    context=ctx,
+                    db=db,
+                )
+
+            # 3. Successful password change
+            res = customer_change_password_api(
+                WebPasswordChangeRequest(current_password="OldPassword123", new_password="NewStrongPassword123"),
+                request=req,
+                context=ctx,
+                db=db,
+            )
+            self.assertTrue(res["ok"])
+
+            # Verify login with new password works
+            db.refresh(user)
+            self.assertIsNotNone(authenticate_web_user(db, "pwd-change@example.com", "NewStrongPassword123"))
+            self.assertIsNone(authenticate_web_user(db, "pwd-change@example.com", "OldPassword123"))
+        finally:
+            db.close()
+
+    def test_name_sanitization_on_registration(self) -> None:
+        db = self.Session()
+        try:
+            req = fake_request()
+            res = customer_register_api(
+                WebRegisterRequest(
+                    email="xss-test@example.com",
+                    password="StrongPassword123",
+                    name="<script>alert(1)</script>  Иван \x00Петров  ",
+                    terms_accepted=True,
+                    personal_data_consent=True,
+                ),
+                request=req,
+                response=Response(),
+                db=db,
+            )
+            user = db.query(WebUser).filter(WebUser.email == "xss-test@example.com").one()
+            self.assertNotIn("<script>", user.name)
+            self.assertNotIn("\x00", user.name)
+            self.assertEqual(user.name, "alert(1) Иван Петров")
+        finally:
+            db.close()
 
 
 if __name__ == "__main__":

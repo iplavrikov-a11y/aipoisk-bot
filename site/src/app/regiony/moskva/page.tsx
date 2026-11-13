@@ -25,7 +25,7 @@ export const metadata: Metadata = {
     type: "website",
     url: "/regiony/moskva",
     title: "Поиск поставщиков по ТЗ в Москве и МО | TenderLex",
-    description: "Автоматизированный подбор контрагентов под спецификации закупки в Москве и ЦФО.",
+    description: "Поиск потенциальных поставщиков по спецификациям закупки в Москве и ЦФО.",
     siteName: "TenderLex",
     images: ["/tenderlex-product-preview.png"],
   },

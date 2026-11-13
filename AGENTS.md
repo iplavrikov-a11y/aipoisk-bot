@@ -1,5 +1,14 @@
 # TenderLex / aipoisk-bot
 
+## ⚠️ ОБЯЗАТЕЛЬНЫЙ РАБОЧИЙ ПРОТОКОЛ (ПЕРЕЗАПУСК СЛУЖБ)
+- Бэкенд работает как системная служба: `systemd: tenderlex-api.service` (uvicorn на 127.0.0.1:8088).
+- Файлы на диске НЕ подхватываются uvicorn на лету! После правок в `backend/app/`:
+  `systemctl restart tenderlex-api.service`
+  и проверка: `curl -I http://127.0.0.1:8088/<endpoint>`
+- Если браузер пишет `404 Not Found`, ЗАПРЕЩЕНО менять фронтенд. Это 100% признак того, что uvicorn не перезапущен или роут не зарегистрирован.
+- После правок в `site/`: `cd site && npm run build && systemctl restart tenderlex-site.service`.
+- Комплексный деплой: `./scripts/deploy_tenderlex_live.sh`.
+
 ## Project Context
 
 - Backend: FastAPI in `backend/app`, SQLite data under `data/`, admin API guarded by admin session/token.

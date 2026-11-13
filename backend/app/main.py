@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import hashlib
+from html import escape as html_escape
 import json
 import logging
 import os
@@ -11,19 +13,21 @@ import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import time
+import uuid
 
 import httpx
 import jwt
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-from sqlalchemy import func, or_
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import and_, case, func, or_
+from sqlalchemy.orm import Session, object_session, selectinload
 
 from .ai import call_llm, resolve_job_ai_info
 from .result_offers import (
@@ -35,6 +39,8 @@ from .result_offers import (
 )
 from .billing import (
     BillingError,
+    cancel_price_monitoring_job,
+    cancel_exact_product_job,
     KIND_MONEY,
     KIND_DEPOSIT,
     KIND_SUPPLIER_SEARCH,
@@ -63,11 +69,14 @@ from .billing import (
     debit_money_balance,
     debit_package_units,
     effective_price_kopeks,
+    effective_job_unit_price_kopeks,
     expire_stale_confirmations,
     grant_money_balance,
     grant_package_units,
     invalidate_tariff_packages_cache,
     operation_label,
+    preload_clients_billing_cache,
+    clear_clients_billing_cache,
     release_job_reservation,
     list_tariffs,
     recent_billing_transactions,
@@ -81,6 +90,7 @@ from .legal import (
     LEGAL_DOCUMENT_PERSONAL_DATA,
     record_legal_acceptance,
 )
+from .position_selection import AWAITING_POSITION_SELECTION, confirm_position_selection, processing_retry_lock
 from .config import config
 from .db import db_session, init_db
 from .jobs import (
@@ -107,6 +117,7 @@ from .jobs import (
     package_job_outputs,
     read_supplier_exclusions,
     read_supplier_exclusions_payload,
+    sanitize_customer_error,
     recover_interrupted_jobs,
     read_dobor_context,
     update_dobor_context_dict,
@@ -114,6 +125,7 @@ from .jobs import (
     write_supplier_exclusions,
 )
 from .price_monitoring.cookie_manager import cookie_manager
+from .position_selection import AWAITING_EXACT_SELECTION, build_selection_snapshot, confirm_exact_product_selection, read_selection, validate_selected_ids
 from .models import (
     AccountLinkToken,
     ApiKey,
@@ -121,7 +133,9 @@ from .models import (
     Client,
     ClientTariffOverride,
     ClientTelegramAccount,
+    Invoice,
     Job,
+    JobChatMessage,
     JobFile,
     JobSource,
     OnboardingReminder,
@@ -131,9 +145,12 @@ from .models import (
     UserJourneyEvent,
     WebEmailVerificationToken,
     WebPasswordResetRequest,
+    WebPasswordResetToken,
     WebRegistrationAttempt,
     WebSession,
     WebUser,
+    YooKassaPayment,
+    configured_geo_surcharge_pct,
     new_id,
     now_utc,
     parse_json_dict,
@@ -167,6 +184,8 @@ from .schemas import (
     ClientTelegramAccountPatch,
     ClientTariffOverridePatch,
     BillingGrantCreate,
+    CreateYooKassaPaymentRequest,
+    YooKassaTestRequest,
     LoginRequest,
     ManualJobCreate,
     SettingsPatch,
@@ -175,11 +194,23 @@ from .schemas import (
     WebEmailChangeRequest,
     WebLoginRequest,
     WebEmailVerificationConfirm,
+    WebPasswordChangeRequest,
     WebPasswordResetComplete,
+    WebPasswordResetConfirm,
     WebPasswordResetRequestCreate,
     WebRegisterRequest,
 )
 from .readiness import build_readiness
+from .yookassa_service import (
+    YooKassaError,
+    create_yookassa_payment,
+    fetch_yookassa_payment,
+    notify_admin_payment_attempt,
+    notify_admin_payment_canceled,
+    notify_admin_payment_success,
+    notify_client_payment_success,
+    verify_yookassa_credentials,
+)
 from .security import (
     ADMIN_COOKIE,
     admin_cookie_max_age,
@@ -198,6 +229,7 @@ from .web_auth import (
     clear_customer_session_cookie,
     clear_yandex_oauth_state_cookie,
     create_email_verification_token,
+    create_password_reset_token,
     create_web_session,
     create_web_user,
     extract_telegram_auth_payload,
@@ -207,6 +239,7 @@ from .web_auth import (
     get_or_create_yandex_web_user,
     hash_password,
     send_email_verification,
+    send_password_reset_email,
     optional_web_context,
     require_customer_csrf,
     require_web_context,
@@ -214,7 +247,9 @@ from .web_auth import (
     set_customer_session_cookie,
     set_yandex_oauth_state_cookie,
     validate_email,
+    verify_and_consume_password_reset_token,
     verify_email_token,
+    verify_password,
     verify_telegram_auth_payload,
     yandex_oauth_redirect_uri,
 )
@@ -234,11 +269,13 @@ logger = logging.getLogger(__name__)
 from .outreach_api import router as outreach_router
 from .outreach_unsubscribe import router as outreach_unsubscribe_router
 from .mcp_api import router as mcp_router, admin_router as mcp_admin_router, generate_api_key
+from .mcp_jobs_api import router as mcp_jobs_router
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
 app.include_router(outreach_router)
 app.include_router(outreach_unsubscribe_router)
 app.include_router(mcp_router)
+app.include_router(mcp_jobs_router)
 app.include_router(mcp_admin_router)
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 CUSTOMER_AUTH_ATTEMPTS: dict[str, list[float]] = {}
@@ -478,6 +515,11 @@ def customer_register_api(
             ip_address=client_ip,
             user_agent=user_agent,
         )
+        if getattr(data, "phone", None) and str(data.phone).strip():
+            raw_phone = str(data.phone).strip()
+            user.phone = raw_phone
+            if user.client:
+                user.client.phone = raw_phone
         if getattr(data, "ref", None) and str(data.ref).strip() and user.client:
             try:
                 from .referral import resolve_referrer, link_referral_and_grant_welcome
@@ -773,7 +815,16 @@ def customer_password_reset_request_api(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     user = db.query(WebUser).filter(WebUser.email == email, WebUser.is_active.is_(True)).first()
+    email_sent = False
     if user:
+        settings = get_or_create_settings(db)
+        token, _record = create_password_reset_token(db, user, request=request)
+        try:
+            email_sent = send_password_reset_email(user, token, public_base_url=settings.public_base_url)
+        except Exception as exc:
+            logger.warning("password_reset_email_send_failed", extra={"email": email, "error": str(exc)})
+            email_sent = False
+
         recent_cutoff = now_utc() - timedelta(minutes=15)
         recent = (
             db.query(WebPasswordResetRequest.id)
@@ -783,19 +834,77 @@ def customer_password_reset_request_api(
             .first()
         )
         if not recent:
+            now = now_utc()
             db.add(
                 WebPasswordResetRequest(
                     user_id=user.id,
                     email=email,
+                    status="completed" if email_sent else "open",
+                    resolved_by="system" if email_sent else None,
+                    resolved_at=now if email_sent else None,
                     requested_ip=str(getattr(request.client, "host", "") or "")[:80],
                     user_agent=str(request.headers.get("user-agent", ""))[:1000],
+                    admin_note="Ссылка отправлена на email" if email_sent else "Заявка на сброс пароля",
                 )
             )
             db.commit()
     return {
         "success": True,
-        "message": "Если такой кабинет зарегистрирован, заявка отправлена. Мы поможем восстановить доступ через указанные на сайте контакты.",
+        "email_sent": email_sent,
+        "message": (
+            "Мы отправили ссылку для сброса пароля на ваш email. Проверьте входящие (и папку «Спам»)."
+            if email_sent
+            else "Если такой кабинет зарегистрирован, заявка отправлена. Мы поможем восстановить доступ через указанные на сайте контакты."
+        ),
     }
+
+
+@app.post("/api/customer/auth/password-reset/confirm")
+def customer_password_reset_confirm_api(
+    data: WebPasswordResetConfirm,
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> dict:
+    key = _check_customer_auth_rate(request, f"confirm_{data.token[:16]}")
+    _record_customer_auth_failure(key)
+    try:
+        user = verify_and_consume_password_reset_token(db, data.token, data.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    session_token, csrf_token, session = create_web_session(db, user, request=request)
+    set_customer_session_cookie(response, session_token)
+    CUSTOMER_AUTH_ATTEMPTS.pop(key, None)
+    payload = customer_session_payload(db, user, csrf_token=csrf_token, authenticated=True)
+    payload["success"] = True
+    payload["message"] = "Пароль успешно обновлён. Вы вошли в личный кабинет."
+    return payload
+
+
+@app.post("/api/customer/auth/change-password")
+def customer_change_password_api(
+    data: WebPasswordChangeRequest,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    user = context.user
+    if not verify_password(data.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=400,
+            detail="Текущий пароль указан неверно.",
+        )
+    new_pwd = str(data.new_password or "")
+    if len(new_pwd) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Новый пароль должен быть не короче 10 символов.",
+        )
+    user.password_hash = hash_password(new_pwd)
+    db.commit()
+    return {"ok": True, "message": "Пароль успешно изменён."}
 
 
 @app.post("/api/customer/auth/verify-email/request")
@@ -972,12 +1081,11 @@ def customer_list_api_keys(
         items.append({
             "id": k.id,
             "key_prefix": k.key_prefix,
-            "raw_key": k.secret_token or k.key_prefix,
             "name": k.name,
             "created_at": k.created_at.isoformat() if k.created_at else None,
             "is_active": k.is_active,
             "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
-            "total_spent": (k.spent_supplier_search or 0) + (k.spent_exact_product or 0) + (k.spent_procurement_report or 0),
+            "total_spent": (k.spent_supplier_search or 0) + (k.spent_exact_product or 0) + (k.spent_procurement_report or 0) + (k.spent_price_monitoring or 0),
         })
     return {
         "keys": items,
@@ -992,12 +1100,28 @@ def customer_create_api_key(
     db: Session = Depends(db_session),
 ) -> dict:
     require_customer_csrf(request, context)
+    if not context.user.is_email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Подтвердите email в личном кабинете, чтобы выпустить API-ключ.",
+        )
     client = context.user.client
+    active_count = (
+        db.query(func.count(ApiKey.id))
+        .filter(ApiKey.client_id == client.id, ApiKey.is_active == True)
+        .scalar()
+        or 0
+    )
+    if active_count >= 5:
+        raise HTTPException(
+            status_code=400,
+            detail="Достигнут лимит активных API-ключей (максимум 5). Отзовите неиспользуемый ключ перед выпуском нового.",
+        )
     raw_key, key_hash, key_prefix = generate_api_key(is_admin=False)
     api_key = ApiKey(
         key_hash=key_hash,
         key_prefix=key_prefix,
-        secret_token=raw_key,
+        secret_token="",
         name="Ключ API (Личный кабинет)",
         client_id=client.id,
         is_admin=False,
@@ -1005,6 +1129,7 @@ def customer_create_api_key(
         allowed_supplier_search=True,
         allowed_exact_product=True,
         allowed_procurement_report=True,
+        allowed_price_monitoring=True,
         quota_supplier_search=999999,
         quota_exact_product=999999,
         quota_procurement_report=999999,
@@ -1038,6 +1163,146 @@ def customer_revoke_api_key(
     api_key.is_active = False
     db.commit()
     return {"ok": True}
+
+
+def get_job_admin_supplements(job: Job) -> list[dict]:
+    raw_path = getattr(job, "admin_supplement_path", "") or ""
+    if not raw_path:
+        return []
+    raw_path = raw_path.strip()
+    if raw_path.startswith("[") and raw_path.endswith("]"):
+        try:
+            data = json.loads(raw_path)
+            if isinstance(data, list):
+                res = []
+                for idx, item in enumerate(data):
+                    if isinstance(item, dict) and item.get("path"):
+                        p = Path(str(item["path"]))
+                        if p.is_file():
+                            label = item.get("label") or ("Дополнительный отчет (эксперт)" if len(data) == 1 else f"Дополнительный отчет {idx + 1} (эксперт)")
+                            res.append({
+                                "path": str(p),
+                                "name": item.get("name") or p.name,
+                                "label": label,
+                                "kind": "admin_supplement" if len(data) == 1 else f"admin_supplement_{idx}",
+                            })
+                if res:
+                    return res
+        except Exception:
+            pass
+    p = Path(raw_path)
+    if p.is_file():
+        name = getattr(job, "admin_supplement_name", "") or p.name
+        return [{
+            "path": str(p),
+            "name": name,
+            "label": "Дополнительный отчет (эксперт)",
+            "kind": "admin_supplement",
+        }]
+    return []
+
+
+def resolve_chat_job_id(job: Job) -> str:
+    if getattr(job, "is_admin_rerun", False) and getattr(job, "parent_job_id", ""):
+        return job.parent_job_id
+    return job.id
+
+
+def chat_message_to_dict(msg: JobChatMessage, job_map: dict[str, Job] | None = None) -> dict:
+    attachments = []
+    if msg.attachments_json:
+        try:
+            raw = json.loads(msg.attachments_json)
+            if isinstance(raw, list):
+                for idx, a in enumerate(raw):
+                    if isinstance(a, dict):
+                        url = (
+                            f"/api/jobs/{msg.job_id}/chat/{msg.id}/attachment/{idx}"
+                            if msg.job_id
+                            else f"/api/admin/chat/{msg.id}/attachment/{idx}"
+                        )
+                        customer_url = (
+                            f"/api/customer/jobs/{msg.job_id}/chat/{msg.id}/attachment/{idx}"
+                            if msg.job_id
+                            else f"/api/customer/chat/{msg.id}/attachment/{idx}"
+                        )
+                        attachments.append({
+                            "index": idx,
+                            "name": a.get("name") or Path(a.get("path", "")).name or "file",
+                            "label": a.get("label") or a.get("name") or "Файл",
+                            "size": a.get("size") or 0,
+                            "url": url,
+                            "customer_url": customer_url,
+                        })
+        except Exception:
+            attachments = []
+
+    job_info = None
+    if job_map and msg.job_id and msg.job_id in job_map:
+        j = job_map[msg.job_id]
+        job_info = {
+            "job_id": j.id,
+            "job_number": getattr(j, "job_number", None),
+            "job_title": human_job_title(j),
+            "job_mode": j.mode,
+            "job_mode_label": mode_label(j.mode),
+            "job_status": j.status,
+        }
+
+    return {
+        "id": msg.id,
+        "job_id": msg.job_id,
+        "job_info": job_info,
+        "job_number": job_info["job_number"] if job_info else None,
+        "job_title": job_info["job_title"] if job_info else None,
+        "job_mode_label": job_info["job_mode_label"] if job_info else None,
+        "client_id": msg.client_id,
+        "sender_role": msg.sender_role,
+        "message": msg.message,
+        "attachments": attachments,
+        "is_read_by_client": bool(msg.is_read_by_client),
+        "is_read_by_admin": bool(msg.is_read_by_admin),
+        "created_at": msg.created_at.isoformat() if msg.created_at else None,
+    }
+
+
+def get_job_chat_messages(db: Session, job: Job, auto_seed: bool = True) -> list[JobChatMessage]:
+    root_id = resolve_chat_job_id(job)
+    msgs = db.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).order_by(JobChatMessage.created_at.asc()).all()
+    if not msgs and auto_seed:
+        target_job = job
+        if root_id != job.id:
+            parent = db.get(Job, root_id)
+            if parent:
+                target_job = parent
+        admin_c = str(getattr(target_job, "admin_comment", "") or getattr(job, "admin_comment", "") or "").strip()
+        supplements = get_job_admin_supplements(target_job) or get_job_admin_supplements(job)
+        if admin_c or supplements:
+            atts = []
+            for s in supplements:
+                atts.append({
+                    "name": s.get("name") or "Дополнительный отчет",
+                    "label": s.get("label") or s.get("name") or "Дополнительный отчет",
+                    "path": s.get("path", ""),
+                })
+            first_msg = JobChatMessage(
+                id=new_id(),
+                job_id=root_id,
+                client_id=target_job.client_id or job.client_id or "",
+                sender_role="admin",
+                message=admin_c or "Экспертный отчёт TenderLex подготовлен и прикреплен к задаче.",
+                attachments_json=json.dumps(atts, ensure_ascii=False),
+                is_read_by_admin=True,
+                is_read_by_client=True,
+                created_at=target_job.admin_supplement_at or target_job.updated_at or now_utc(),
+            )
+            try:
+                db.add(first_msg)
+                db.commit()
+                msgs = [first_msg]
+            except Exception:
+                db.rollback()
+    return msgs
 
 
 @app.get("/api/customer/jobs")
@@ -1080,7 +1345,18 @@ def customer_jobs_api(
         query = query.filter(Job.status == clean_status)
     total = query.count()
     jobs = query.order_by(Job.created_at.desc()).offset(safe_offset).limit(safe_limit).all()
-    items = [customer_job_to_dict(job) for job in jobs]
+    job_ids = [j.id for j in jobs]
+    chat_map: dict[str, list[dict]] = {}
+    if job_ids:
+        raw_msgs = (
+            db.query(JobChatMessage)
+            .filter(JobChatMessage.job_id.in_(job_ids))
+            .order_by(JobChatMessage.created_at.asc())
+            .all()
+        )
+        for m in raw_msgs:
+            chat_map.setdefault(m.job_id, []).append(chat_message_to_dict(m))
+    items = [customer_job_to_dict(job, db=db, chat_messages=chat_map.get(job.id, [])) for job in jobs]
     if include_pagination:
         return {"items": items, "total": total, "limit": safe_limit, "offset": safe_offset}
     return items
@@ -1136,6 +1412,7 @@ async def customer_create_job_route(
     multi_item_mode: str = Form(default="balanced"),
     delivery_city: str = Form(default=""),
     geo_radius_km: int | None = Form(default=None),
+    geo_scope: str = Form(default="ru"),
     text: str = Form(default=""),
     source_urls: str = Form(default=""),
     target_suppliers: int = Form(default=0),
@@ -1150,6 +1427,7 @@ async def customer_create_job_route(
         multi_item_mode=multi_item_mode,
         delivery_city=delivery_city,
         geo_radius_km=geo_radius_km,
+        geo_scope=geo_scope,
         text=text,
         source_urls=source_urls,
         target_suppliers=target_suppliers,
@@ -1173,17 +1451,36 @@ def customer_job_detail_api(
 @app.post("/api/customer/jobs/{job_id}/retry")
 def customer_job_retry_api(
     job_id: str,
+    request: Request,
     policy: str | None = Query(default=None),
     multi_item_mode: str | None = Query(default=None),
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    require_customer_csrf(request, context)
     job = _customer_job_or_404(db, job_id, context)
+    if job.mode in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}:
+        child, created = _create_fresh_processing_job(db, job, client=context.user.client, created_by=f"web:{context.user.id}")
+        if created:
+            enqueue_job(child.id)
+        return {"ok": True, "message": "Создана новая задача; предыдущий результат сохранён", "job": customer_job_to_dict(child)}
     if policy:
         normalized = _normalize_supplier_search_policy_for_job(job.mode, policy)
         job.supplier_search_policy = normalized
     if multi_item_mode in ("balanced", "per_item"):
         job.multi_item_mode = multi_item_mode
+    if job.client and not getattr(job, "is_admin_rerun", False):
+        supplier_search_count = 1
+        dobor_ctx = read_dobor_context(job)
+        if getattr(job, "multi_item_mode", "") == "per_item":
+            raw_items = (dobor_ctx.get("procurement_profile") or {}).get("items") or []
+            selected_ids = dobor_ctx.get("selected_item_ids")
+            supplier_search_count = len(selected_ids) if selected_ids is not None else len(raw_items)
+            supplier_search_count = max(1, supplier_search_count)
+        try:
+            reserve_job_units(db, job.client, job, supplier_search_count=supplier_search_count)
+        except BillingError as exc:
+            raise HTTPException(status_code=402, detail=str(exc)) from exc
     job.status = "pending"
     job.progress = 0
     job.error = ""
@@ -1192,6 +1489,133 @@ def customer_job_retry_api(
     db.commit()
     enqueue_job(job.id)
     return {"ok": True, "message": "Задача успешно перезапущена"}
+
+
+@app.post("/api/customer/jobs/{job_id}/position-selection")
+async def customer_position_selection_route(job_id: str, request: Request,
+                                            context: WebAuthContext = Depends(require_web_context),
+                                            db: Session = Depends(db_session)) -> dict:
+    require_customer_csrf(request, context)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректный выбор позиций.")
+    return choose_product_positions_api(job_id, revision=payload.get("revision"), selected_item_ids=payload.get("selected_item_ids"), context=context, db=db)
+
+
+def choose_product_positions_api(job_id: str, *, revision: str, selected_item_ids: list[str], context: WebAuthContext, db: Session) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    try:
+        changed = confirm_position_selection(db, job, revision, selected_item_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if changed:
+        enqueue_job(job.id)
+    return {"ok": True, "job": customer_job_to_dict(job)}
+
+
+@app.post("/api/customer/jobs/{job_id}/exact-selection")
+async def customer_exact_selection_route(job_id: str, request: Request,
+                                         context: WebAuthContext = Depends(require_web_context),
+                                         db: Session = Depends(db_session)) -> dict:
+    require_customer_csrf(request, context)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректный выбор позиций.")
+    return choose_exact_product_positions_api(job_id, revision=payload.get("revision"),
+               selected_item_ids=payload.get("selected_item_ids"), context=context, db=db)
+
+
+def choose_exact_product_positions_api(job_id: str, *, revision: str, selected_item_ids: list[str],
+                                        context: WebAuthContext, db: Session) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    try:
+        changed = confirm_exact_product_selection(db, job, revision, selected_item_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if changed:
+        enqueue_job(job.id)
+    return {"ok": True, "job": customer_job_to_dict(job)}
+
+
+@app.post("/api/customer/jobs/{job_id}/exact-selection/retry")
+async def customer_exact_selection_retry_route(job_id: str, request: Request,
+                                               context: WebAuthContext = Depends(require_web_context),
+                                               db: Session = Depends(db_session)) -> dict:
+    require_customer_csrf(request, context)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректный выбор позиций.")
+    parent = _customer_job_or_404(db, job_id, context)
+    if parent.mode != MODE_EXACT_PRODUCT or parent.status not in {"completed", "failed"}:
+        raise HTTPException(status_code=409, detail="Повтор позиции доступен после завершения подбора.")
+    selection = read_selection(parent)
+    try:
+        chosen = validate_selected_ids(selection, payload.get("revision"), payload.get("selected_item_ids"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    child, _created = _create_fresh_processing_job(db, parent, client=context.user.client,
+            created_by=f"web:{context.user.id}", selected_source_ids=chosen)
+    return {"ok": True, "job": customer_job_to_dict(child)}
+
+
+def _create_fresh_processing_job(db: Session, parent: Job, *, client: Client, created_by: str = "",
+                                 selected_source_ids: list[str] | None = None) -> tuple[Job, bool]:
+    # The retry lock is independent of the client billing lock: no nested flock
+    # on the same client, and no DB write occurs before acquiring either lock.
+    with processing_retry_lock(parent.id):
+        db.refresh(parent, attribute_names=["status"])
+        if parent.status in {"pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION, "settling"}:
+            raise HTTPException(status_code=409, detail="Дождитесь завершения или отмените текущую задачу.")
+        intent = sorted(selected_source_ids) if selected_source_ids is not None else "all"
+        active = db.query(Job).filter(Job.parent_job_id == parent.id, Job.mode == parent.mode,
+                    Job.status.in_(["draft", "pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION, "settling"])).all()
+        for child in active:
+            if read_dobor_context(child).get("retry_selection_intent", "all") == intent:
+                return child, False
+        if active:
+            raise HTTPException(status_code=409, detail="Для этой задачи уже выполняется новый подбор. Завершите или отмените его.")
+        from .geo_policy import GEO_SUPPORTED_MODES
+        retry_city = parent.delivery_city if (parent.mode in GEO_SUPPORTED_MODES and parent.geo_radius_km is not None) else ""
+        retry_radius = parent.geo_radius_km if parent.mode in GEO_SUPPORTED_MODES else None
+        error = client_access_error(db, client, parent.mode, geo_radius_km=retry_radius)
+        if error:
+            raise HTTPException(status_code=403, detail=error)
+        files = [(file.original_filename, Path(file.stored_path).read_bytes()) for file in parent.files if Path(file.stored_path).is_file()]
+        sources = [{"kind": source.kind, "label": source.label, "value": source.value} for source in parent.sources]
+        if not files and not sources:
+            raise HTTPException(status_code=400, detail="Исходные документы недоступны. Загрузите их заново.")
+        child = create_job(db, client_id=client.id, created_by_telegram_id=created_by or parent.created_by_telegram_id,
+                           mode=parent.mode, title=parent.title, target_suppliers=parent.target_suppliers,
+                           files=files, sources=sources, supplier_search_policy=parent.supplier_search_policy,
+                           multi_item_mode=parent.multi_item_mode, delivery_city=retry_city, geo_radius_km=retry_radius,
+                           geo_scope=getattr(parent, "geo_scope", "ru") or "ru",
+                           initial_status="draft")
+        child.parent_job_id = parent.id
+        if parent.mode in GEO_SUPPORTED_MODES and parent.geo_radius_km is None and getattr(parent, "delivery_city", ""):
+            child.delivery_city = (parent.delivery_city or "").strip()
+        update_dobor_context_dict(child, {"retry_selection_intent": intent})
+        for key in ("filter_marketplaces", "filter_foreign", "max_suppliers", "max_variation_pct", "geo_scope"):
+            setattr(child, key, getattr(parent, key))
+        try:
+            reserve_job_units(db, client, child)
+        except BillingError as exc:
+            child.status, child.error = "failed", str(exc)
+            db.commit()
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if selected_source_ids is not None:
+            selection = read_selection(parent)
+            reserve = db.query(BillingTransaction).filter_by(job_id=child.id, kind=KIND_EXACT_PRODUCT, operation=OP_RESERVE).first()
+            price = int(reserve.amount_kopeks or 0) if reserve else effective_job_unit_price_kopeks(db, client, KIND_EXACT_PRODUCT, job=child)
+            snapshot = json.loads(build_selection_snapshot(selection["items"], price_kopeks=price))
+            old_indexes = [i for i, row in enumerate(selection["items"]) if row["id"] in selected_source_ids]
+            snapshot["selected_ids"] = [snapshot["items"][index]["id"] for index in old_indexes]
+            child.position_selection_json = json.dumps(snapshot, ensure_ascii=False)
+            child.status = AWAITING_EXACT_SELECTION
+            child.message = "Проверьте выбранную позицию и подтвердите стоимость нового подбора"
+        else:
+            child.status = "pending"
+        db.commit()
+        return child, True
 
 
 @app.get("/api/customer/jobs/{job_id}/download")
@@ -1280,16 +1704,20 @@ async def customer_choose_strategy_route(
     job_id: str,
     request: Request,
     multi_item_mode: str = Query(default="balanced"),
+    revision: str | None = Query(default=None),
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
     require_customer_csrf(request, context)
     selected_item_ids: list[str] | None = None
+    revision = revision if isinstance(revision, str) else None
     try:
         content_type = request.headers.get("content-type", "")
         if "application/json" in content_type:
             body = await request.json()
             if isinstance(body, dict):
+                if "revision" in body:
+                    revision = body["revision"]
                 if "multi_item_mode" in body:
                     multi_item_mode = str(body["multi_item_mode"] or multi_item_mode)
                 if "selected_item_ids" in body and isinstance(body["selected_item_ids"], list):
@@ -1300,6 +1728,7 @@ async def customer_choose_strategy_route(
         job_id,
         multi_item_mode=multi_item_mode,
         selected_item_ids=selected_item_ids,
+        revision=revision,
         context=context,
         db=db,
     )
@@ -1333,10 +1762,14 @@ async def customer_start_supplier_search_route(
     require_customer_csrf(request, context)
     if not context.user.is_email_verified:
         raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
+    original_job = _customer_job_or_404(db, job_id, context)
     supplier_search_policy = SUPPLIER_POLICY_NORMAL
     multi_item_mode = "balanced"
     include_alternatives = True
     additional_prompt = ""
+    delivery_city = ""
+    geo_radius_km = None
+    geo_scope = getattr(original_job, "geo_scope", "ru") or "ru"
     try:
         body = await request.json()
         if isinstance(body, dict):
@@ -1344,9 +1777,12 @@ async def customer_start_supplier_search_route(
             multi_item_mode = str(body.get("multi_item_mode") or "balanced").strip()
             include_alternatives = bool(body.get("include_alternatives", True))
             additional_prompt = str(body.get("additional_prompt") or "").strip()
+            delivery_city = str(body.get("delivery_city") or "").strip()
+            geo_radius_km = body.get("geo_radius_km")
+            if "geo_scope" in body:
+                geo_scope = str(body.get("geo_scope") or geo_scope).strip()
     except Exception:
         pass
-    original_job = _customer_job_or_404(db, job_id, context)
     job = create_supplier_search_from_exact_product(
         db,
         client=context.user.client,
@@ -1356,6 +1792,9 @@ async def customer_start_supplier_search_route(
         multi_item_mode=multi_item_mode,
         include_alternatives=include_alternatives,
         additional_prompt=additional_prompt,
+        delivery_city=delivery_city,
+        geo_radius_km=geo_radius_km,
+        geo_scope=geo_scope,
     )
     return {
         "success": True,
@@ -1364,9 +1803,1199 @@ async def customer_start_supplier_search_route(
     }
 
 
+@app.post("/api/customer/jobs/{job_id}/chat")
+async def customer_job_chat_route(
+    job_id: str,
+    message: str = Form(default=""),
+    files: list[UploadFile] = File(default=[]),
+    file: UploadFile | None = File(default=None),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    root_id = resolve_chat_job_id(job)
+    clean_message = str(message or "").strip()
+
+    all_uploads: list[UploadFile] = []
+    if files and isinstance(files, (list, tuple)):
+        all_uploads.extend([f for f in files if isinstance(f, UploadFile)])
+    if file and isinstance(file, UploadFile) and file not in all_uploads:
+        all_uploads.append(file)
+
+    if not clean_message and not all_uploads:
+        raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
+
+    recent_chat_count = (
+        db.query(func.count(JobChatMessage.id))
+        .filter(
+            JobChatMessage.client_id == (job.client_id or context.user.client_id),
+            JobChatMessage.sender_role == "client",
+            JobChatMessage.created_at >= now_utc() - timedelta(seconds=60),
+        )
+        .scalar()
+        or 0
+    )
+    if recent_chat_count >= 8:
+        raise HTTPException(status_code=429, detail="Слишком много сообщений подряд. Подождите минуту.")
+
+    get_job_chat_messages(db, job, auto_seed=True)
+
+    target_dir = job_dir(root_id) / "chat"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    attachments: list[dict] = []
+    max_chat_bytes = 10 * 1024 * 1024
+    for uf in all_uploads[:10]:
+        if not uf.filename:
+            continue
+        safe_name = Path(uf.filename).name
+        ext = Path(safe_name).suffix.lower()
+        if not ext or ext not in ALLOWED_UPLOAD_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Неподдерживаемый формат файла: {safe_name}")
+        content = await uf.read(max_chat_bytes + 1)
+        if len(content) > max_chat_bytes:
+            raise HTTPException(status_code=413, detail=f"Файл {safe_name} превышает 10 МБ")
+        if content:
+            dest = target_dir / f"client_{int(time.time())}_{safe_name}"
+            dest.write_bytes(content)
+            attachments.append({
+                "path": str(dest),
+                "name": safe_name,
+                "label": safe_name,
+                "size": len(content),
+            })
+
+    phone_match = re.search(r'(?:\+?7|8)[\s\-\(]*\d{3}[\s\-\)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}', clean_message)
+    if phone_match:
+        extracted_phone = phone_match.group(0).strip()
+        if not getattr(context.user, "phone", ""):
+            context.user.phone = extracted_phone
+        if job.client and not getattr(job.client, "phone", ""):
+            job.client.phone = extracted_phone
+
+    new_msg = JobChatMessage(
+        id=new_id(),
+        job_id=root_id,
+        client_id=job.client_id or "",
+        sender_role="client",
+        message=clean_message,
+        attachments_json=json.dumps(attachments, ensure_ascii=False),
+        is_read_by_client=True,
+        is_read_by_admin=False,
+        created_at=now_utc(),
+    )
+    db.add(new_msg)
+
+    db.query(JobChatMessage).filter(
+        JobChatMessage.job_id == root_id,
+        JobChatMessage.sender_role == "admin",
+        JobChatMessage.is_read_by_client == False,
+    ).update({"is_read_by_client": True})
+
+    job.updated_at = now_utc()
+    db.commit()
+
+    msgs = db.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).order_by(JobChatMessage.created_at.asc()).all()
+    return {"ok": True, "messages": [chat_message_to_dict(m) for m in msgs]}
+
+
+@app.post("/api/customer/jobs/{job_id}/chat/read")
+def customer_job_chat_mark_read_route(
+    job_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    root_id = resolve_chat_job_id(job)
+    db.query(JobChatMessage).filter(
+        JobChatMessage.job_id == root_id,
+        JobChatMessage.sender_role == "admin",
+        JobChatMessage.is_read_by_client == False,
+    ).update({"is_read_by_client": True})
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/customer/jobs/{job_id}/chat/{message_id}/attachment/{att_idx}")
+def customer_job_chat_attachment_route(
+    job_id: str,
+    message_id: str,
+    att_idx: int,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+):
+    job = _customer_job_or_404(db, job_id, context)
+    root_id = resolve_chat_job_id(job)
+    msg = db.get(JobChatMessage, message_id)
+    if not msg or msg.job_id != root_id:
+        raise HTTPException(status_code=404, detail="Сообщение не найдено.")
+
+    if msg.sender_role == "admin" and (
+        job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION
+        or (job.confirmation_kind == "admin_supplement_offer" and job.confirmation_outcome != "accepted")
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Файлы отчёта будут доступны для скачивания после согласования и оплаты на карточке задачи.",
+        )
+
+    try:
+        raw = json.loads(msg.attachments_json or "[]")
+        if not isinstance(raw, list) or att_idx < 0 or att_idx >= len(raw):
+            raise HTTPException(status_code=404, detail="Вложение не найдено.")
+        att = raw[att_idx]
+        p = Path(str(att.get("path") or ""))
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail="Файл вложения не найден на сервере.")
+        return FileResponse(p, filename=att.get("name") or p.name)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=404, detail="Не удалось прочитать вложение.")
+
+
+@app.get("/api/customer/chat/messages")
+def customer_chat_messages_route(
+    context: WebAuthContext | None = Depends(optional_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    # The public chat widget probes this endpoint on every public page. Guests get
+    # a 200 {"authenticated": false} instead of a 401 so that crawlers and
+    # anonymous visitors do not see console errors on SEO landing pages.
+    if not context:
+        return {"authenticated": False}
+    client_id = context.user.client_id
+    client = context.user.client or db.get(Client, client_id)
+    if not client:
+        return {"authenticated": True, "messages": [], "jobs": [], "unread_admin_count": 0}
+
+    # Fast single query for chat messages
+    msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == client_id)
+        .order_by(JobChatMessage.created_at.asc())
+        .all()
+    )
+
+    # Fetch recent jobs for chat context and auto-seeding
+    recent_jobs = (
+        db.query(Job)
+        .filter(Job.client_id == client_id, Job.is_admin_rerun.is_(False))
+        .order_by(Job.created_at.desc())
+        .limit(25)
+        .all()
+    )
+
+    # Only auto-seed if any recent job has admin comment/supplements and does not have chat messages yet
+    existing_job_ids = {m.job_id for m in msgs}
+    candidates = [
+        j for j in recent_jobs
+        if resolve_chat_job_id(j) not in existing_job_ids
+        and (getattr(j, "admin_comment", "") or get_job_admin_supplements(j))
+    ]
+    if candidates:
+        for j in candidates[:5]:
+            get_job_chat_messages(db, j, auto_seed=True)
+        msgs = (
+            db.query(JobChatMessage)
+            .filter(JobChatMessage.client_id == client_id)
+            .order_by(JobChatMessage.created_at.asc())
+            .all()
+        )
+
+    msg_job_ids = {m.job_id for m in msgs if m.job_id}
+    msg_jobs = db.query(Job).filter(Job.id.in_(msg_job_ids)).all() if msg_job_ids else []
+    job_map = {j.id: j for j in msg_jobs}
+    for j in recent_jobs:
+        job_map[j.id] = j
+
+    client_jobs = [
+        {
+            "id": j.id,
+            "job_number": getattr(j, "job_number", None),
+            "title": human_job_title(j),
+            "mode": j.mode,
+            "mode_label": mode_label(j.mode),
+            "status": j.status,
+        }
+        for j in recent_jobs
+    ]
+
+    unread_count = sum(1 for m in msgs if m.sender_role == "admin" and not m.is_read_by_client)
+
+    return {
+        "authenticated": True,
+        "client": {
+            "id": client.id,
+            "name": client.name or context.user.name or "",
+            "email": context.user.email or "",
+            "phone": getattr(client, "phone", "") or getattr(context.user, "phone", "") or "",
+        },
+        "messages": [chat_message_to_dict(m, job_map=job_map) for m in msgs],
+        "jobs": client_jobs,
+        "unread_admin_count": unread_count,
+    }
+
+
+@app.post("/api/customer/chat")
+async def customer_chat_post_route(
+    message: str = Form(default=""),
+    job_id: str = Form(default=""),
+    files: list[UploadFile] = File(default=[]),
+    file: UploadFile | None = File(default=None),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    client_id = context.user.client_id
+    client = context.user.client or db.get(Client, client_id)
+    clean_message = str(message or "").strip()
+    clean_job_id = str(job_id or "").strip()
+
+    all_uploads: list[UploadFile] = []
+    if files and isinstance(files, (list, tuple)):
+        all_uploads.extend([f for f in files if isinstance(f, UploadFile)])
+    if file and isinstance(file, UploadFile) and file not in all_uploads:
+        all_uploads.append(file)
+
+    if not clean_message and not all_uploads:
+        raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
+
+    recent_chat_count = (
+        db.query(func.count(JobChatMessage.id))
+        .filter(
+            JobChatMessage.client_id == client_id,
+            JobChatMessage.sender_role == "client",
+            JobChatMessage.created_at >= now_utc() - timedelta(seconds=60),
+        )
+        .scalar()
+        or 0
+    )
+    if recent_chat_count >= 8:
+        raise HTTPException(status_code=429, detail="Слишком много сообщений подряд. Подождите минуту.")
+
+    target_job = None
+    root_job_id = ""
+    if clean_job_id:
+        candidate = db.get(Job, clean_job_id)
+        if candidate and candidate.client_id == client_id:
+            target_job = candidate
+            root_job_id = resolve_chat_job_id(target_job)
+            target_dir = job_dir(root_job_id) / "chat"
+        else:
+            clean_job_id = ""
+
+    if not clean_job_id:
+        target_dir = Path(config.storage_path) / "clients" / client_id / "chat"
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    attachments: list[dict] = []
+    max_chat_bytes = 10 * 1024 * 1024
+    for uf in all_uploads[:10]:
+        if not uf.filename:
+            continue
+        safe_name = Path(uf.filename).name
+        ext = Path(safe_name).suffix.lower()
+        if not ext or ext not in ALLOWED_UPLOAD_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Неподдерживаемый формат файла: {safe_name}")
+        content = await uf.read(max_chat_bytes + 1)
+        if len(content) > max_chat_bytes:
+            raise HTTPException(status_code=413, detail=f"Файл {safe_name} превышает 10 МБ")
+        if content:
+            dest = target_dir / f"client_{int(time.time())}_{safe_name}"
+            dest.write_bytes(content)
+            attachments.append({
+                "path": str(dest),
+                "name": safe_name,
+                "label": safe_name,
+                "size": len(content),
+            })
+
+    phone_match = re.search(r'(?:\+?7|8)[\s\-\(]*\d{3}[\s\-\)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}', clean_message)
+    if phone_match:
+        extracted_phone = phone_match.group(0).strip()
+        if not getattr(context.user, "phone", ""):
+            context.user.phone = extracted_phone
+        if client and not getattr(client, "phone", ""):
+            client.phone = extracted_phone
+
+    new_msg = JobChatMessage(
+        id=new_id(),
+        job_id=root_job_id or clean_job_id or "",
+        client_id=client_id,
+        sender_role="client",
+        message=clean_message,
+        attachments_json=json.dumps(attachments, ensure_ascii=False),
+        is_read_by_client=True,
+        is_read_by_admin=False,
+        created_at=now_utc(),
+    )
+    db.add(new_msg)
+
+    # Mark prior admin messages as read by client
+    db.query(JobChatMessage).filter(
+        JobChatMessage.client_id == client_id,
+        JobChatMessage.sender_role == "admin",
+        JobChatMessage.is_read_by_client == False,
+    ).update({"is_read_by_client": True})
+
+    if target_job:
+        target_job.updated_at = now_utc()
+    db.commit()
+
+    # Telegram notification to admin
+    try:
+        from .admin_alerts import send_telegram_admin_alert
+        client_label = client.name if (client and client.name) else (context.user.email or "Клиент")
+        job_label = f" по задаче #{target_job.job_number or target_job.id[:6]}" if target_job else ""
+        tg_text = (
+            f"📩 <b>Новое сообщение от клиента{job_label}!</b>\n\n"
+            f"👤 <b>Клиент:</b> {html_escape(client_label)}\n"
+            f"✉️ <b>Email:</b> {html_escape(context.user.email or '')}\n"
+        )
+        phone_val = (getattr(client, "phone", "") if client else "") or getattr(context.user, "phone", "")
+        if phone_val:
+            tg_text += f"📞 <b>Телефон:</b> {html_escape(phone_val)}\n"
+        tg_text += f"💬 <b>Сообщение:</b> {html_escape(clean_message or '📎 Прикреплен файл')}\n\n"
+        tg_text += "👉 Ответить можно в панели администратора в разделе «Диалоги»."
+        await send_telegram_admin_alert(tg_text, deduplicate_key=f"chat_client_{client_id}", throttle_seconds=60)
+    except Exception as exc:
+        logger.warning("Error notifying admin about customer chat message: %s", exc)
+
+    job_map = {j.id: j for j in client.jobs} if client else {}
+    msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == client_id)
+        .order_by(JobChatMessage.created_at.asc())
+        .all()
+    )
+    return {"ok": True, "messages": [chat_message_to_dict(m, job_map=job_map) for m in msgs]}
+
+
+@app.post("/api/customer/chat/read")
+def customer_chat_mark_read_route(
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    client_id = context.user.client_id
+    db.query(JobChatMessage).filter(
+        JobChatMessage.client_id == client_id,
+        JobChatMessage.sender_role == "admin",
+        JobChatMessage.is_read_by_client == False,
+    ).update({"is_read_by_client": True})
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/customer/chat/{message_id}/attachment/{att_idx}")
+def customer_chat_attachment_route(
+    message_id: str,
+    att_idx: int,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+):
+    client_id = context.user.client_id
+    msg = db.get(JobChatMessage, message_id)
+    if not msg or msg.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Сообщение не найдено.")
+
+    if msg.job_id:
+        job = db.get(Job, msg.job_id)
+        if job and msg.sender_role == "admin" and (
+            job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION
+            or (job.confirmation_kind == "admin_supplement_offer" and job.confirmation_outcome != "accepted")
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Файлы отчёта будут доступны для скачивания после согласования и оплаты на карточке задачи.",
+            )
+
+    try:
+        raw = json.loads(msg.attachments_json or "[]")
+        if not isinstance(raw, list) or att_idx < 0 or att_idx >= len(raw):
+            raise HTTPException(status_code=404, detail="Вложение не найдено.")
+        att = raw[att_idx]
+        p = Path(str(att.get("path") or ""))
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail="Файл вложения не найден на сервере.")
+        return FileResponse(p, filename=att.get("name") or p.name)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=404, detail="Не удалось прочитать вложение.")
+
+
+# ==============================================================================
+# B2B INVOICES & REQUISITES (Счета для юридических лиц)
+# ==============================================================================
+
+@app.get("/api/customer/dadata/company-by-inn")
+@app.get("/api/dadata/company-by-inn")
+async def dadata_company_by_inn_api(
+    inn: str = Query(...),
+    context: WebAuthContext = Depends(require_web_context),
+) -> dict:
+    from .dadata_client import enrich_company_by_inn
+
+    cleaned = re.sub(r"\D+", "", str(inn or "")).strip()
+    if not cleaned or len(cleaned) not in (10, 12):
+        raise HTTPException(
+            status_code=400,
+            detail="ИНН должен содержать 10 цифр (для юрлиц) или 12 цифр (для ИП).",
+        )
+    try:
+        profile = await enrich_company_by_inn(cleaned)
+        if not profile or not profile.get("company_name"):
+            return {
+                "found": False,
+                "message": "Организация или ИП с таким ИНН не найдены в ФНС",
+            }
+        return {"found": True, "company": profile}
+    except Exception as e:
+        return {"found": False, "message": f"Ошибка сервиса подсказок: {e}"}
+
+
+@app.post("/api/customer/invoices")
+async def customer_create_invoice_api(
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    if not context.user.is_email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Подтвердите email перед выставлением счёта.",
+        )
+    body = await request.json()
+    amount_rub = int(body.get("amount_rub") or 0)
+    if amount_rub < 500:
+        raise HTTPException(status_code=400, detail="Минимальная сумма счёта — 500 ₽")
+
+    buyer_inn = re.sub(r"\D+", "", str(body.get("buyer_inn") or "")).strip()
+    buyer_name = str(body.get("buyer_name") or "").strip()
+    if not buyer_inn:
+        raise HTTPException(status_code=400, detail="Укажите ИНН организации или ИП")
+    if not buyer_name:
+        raise HTTPException(status_code=400, detail="Укажите наименование организации или ИП")
+
+    buyer_kpp = str(body.get("buyer_kpp") or "").strip()
+    buyer_address = str(body.get("buyer_address") or "").strip()
+    buyer_email = str(body.get("buyer_email") or context.user.email or "").strip()
+    buyer_phone = str(body.get("buyer_phone") or body.get("phone") or getattr(context.user, "phone", "") or "").strip()
+    buyer_telegram = str(body.get("buyer_telegram") or body.get("telegram_username") or getattr(context.user, "telegram_username", "") or "").strip().lstrip("@")
+    tariff_name = str(body.get("tariff_name") or "Пополнение баланса").strip()
+
+    if buyer_phone:
+        context.user.phone = buyer_phone
+        if not getattr(context.user.client, "phone", None):
+            context.user.client.phone = buyer_phone
+    if buyer_telegram:
+        context.user.telegram_username = buyer_telegram
+        if not context.user.client.username:
+            context.user.client.username = buyer_telegram
+
+    from .billing import calculate_deposit_bonus_kopeks
+    from .invoice_service import next_invoice_number, notify_admin_telegram
+
+    bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, context.user.client)
+    bonus_rub = bonus_kopeks // 100
+    total_credit_rub = amount_rub + bonus_rub
+
+    invoice_num = next_invoice_number(db)
+
+    invoice = Invoice(
+        invoice_number=invoice_num,
+        client_id=context.user.client.id,
+        amount_rub=amount_rub,
+        bonus_rub=bonus_rub,
+        total_credit_rub=total_credit_rub,
+        tariff_name=tariff_name,
+        service_name="Предоставление права использования сервиса TenderLex",
+        buyer_inn=buyer_inn,
+        buyer_kpp=buyer_kpp,
+        buyer_name=buyer_name,
+        buyer_address=buyer_address,
+        buyer_email=buyer_email,
+        buyer_phone=buyer_phone,
+        buyer_telegram=buyer_telegram,
+        status="issued",
+    )
+    db.add(invoice)
+    db.commit()
+    db.refresh(invoice)
+
+    # Notify admin in Telegram in background
+    try:
+        asyncio.create_task(notify_admin_telegram(invoice))
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "invoice": invoice.to_dict(),
+        "html_url": f"/api/customer/invoices/{invoice.id}/html",
+        "download_xlsx_url": f"/api/customer/invoices/{invoice.id}/download?format=xlsx",
+        "download_pdf_url": f"/api/customer/invoices/{invoice.id}/download?format=pdf",
+    }
+
+
+@app.get("/api/customer/invoices")
+def customer_list_invoices_api(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    query = db.query(Invoice).filter(Invoice.client_id == context.user.client.id)
+    total = query.count()
+    invoices = query.order_by(Invoice.created_at.desc(), Invoice.id.desc()).offset(offset).limit(limit).all()
+    return {"invoices": [inv.to_dict() for inv in invoices], "total": total}
+
+
+@app.get("/api/customer/invoices/{invoice_id}")
+def customer_get_invoice_api(
+    invoice_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice or invoice.client_id != context.user.client.id:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+    return {
+        "invoice": invoice.to_dict(),
+        "html_url": f"/api/customer/invoices/{invoice.id}/html",
+        "download_xlsx_url": f"/api/customer/invoices/{invoice.id}/download?format=xlsx",
+        "download_pdf_url": f"/api/customer/invoices/{invoice.id}/download?format=pdf",
+    }
+
+
+@app.post("/api/customer/invoices/{invoice_id}/proof")
+async def customer_invoice_proof_api(
+    invoice_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.client_id == context.user.client.id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+    allowed = {"application/pdf", "image/jpeg", "image/png"}
+    content_type = str(file.content_type or "").lower()
+    if content_type not in allowed:
+        raise HTTPException(status_code=400, detail="Платёжка должна быть в PDF, JPG или PNG")
+    max_bytes = 10 * 1024 * 1024
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=413, detail="Размер платёжки не должен превышать 10 МБ")
+    from .invoice_service import save_invoice_payment_proof, notify_invoice_payment_proof
+    try:
+        proof_path = await save_invoice_payment_proof(invoice, content, original_name=file.filename or "payment-proof", content_type=content_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.commit()
+    db.refresh(invoice)
+    await notify_invoice_payment_proof(invoice, proof_path)
+    return {"success": True, "invoice": invoice.to_dict()}
+
+
+@app.get("/api/customer/invoices/{invoice_id}/html")
+def customer_invoice_html_api(
+    invoice_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> HTMLResponse:
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.client_id == context.user.client.id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+    from .invoice_service import render_invoice_html
+
+    html = render_invoice_html(invoice)
+    return HTMLResponse(content=html)
+
+
+@app.get("/api/customer/invoices/{invoice_id}/download")
+def customer_invoice_download_api(
+    invoice_id: str,
+    format: str = Query("xlsx"),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> FileResponse:
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.client_id == context.user.client.id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+
+    from .invoice_service import generate_invoice_pdf, generate_invoice_xlsx
+
+    storage_base = Path(config.storage_path) / "invoices"
+    storage_base.mkdir(parents=True, exist_ok=True)
+
+    fmt = str(format or "xlsx").lower().strip()
+    try:
+        if fmt == "pdf":
+            file_path = storage_base / f"schet_{invoice.invoice_number}.pdf"
+            generate_invoice_pdf(invoice, str(file_path))
+            return FileResponse(
+                str(file_path),
+                media_type="application/pdf",
+                filename=f"schet_{invoice.invoice_number}.pdf",
+            )
+        else:
+            file_path = storage_base / f"schet_{invoice.invoice_number}.xlsx"
+            generate_invoice_xlsx(invoice, str(file_path))
+            return FileResponse(
+                str(file_path),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                filename=f"schet_{invoice.invoice_number}.xlsx",
+            )
+    except Exception as exc:
+        logger.exception("invoice_download_error", extra={"invoice_id": invoice_id, "error": str(exc)})
+        raise HTTPException(status_code=500, detail=f"Ошибка генерации файла: {exc}")
+
+
+@app.post("/api/customer/invoices/{invoice_id}/send-email")
+async def customer_invoice_send_email_api(
+    invoice_id: str,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice or invoice.client_id != context.user.client.id:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+
+    email = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            email = str(body.get("email") or "").strip()
+    except Exception:
+        pass
+    if not email:
+        email = invoice.buyer_email or context.user.email
+
+    from .invoice_service import send_invoice_email
+
+    ok, msg = send_invoice_email(invoice, email)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": f"Счёт успешно отправлен на {email}"}
+
+
+@app.get("/api/admin/invoices", dependencies=[Depends(require_admin)])
+def admin_list_invoices_api(
+    status: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(db_session),
+) -> dict:
+    query = db.query(Invoice)
+    if status:
+        query = query.filter(Invoice.status == status)
+    total = query.count()
+    invoices = query.order_by(Invoice.created_at.desc(), Invoice.id.desc()).offset(offset).limit(limit).all()
+    return {"invoices": [inv.to_dict() for inv in invoices], "total": total}
+
+
+@app.get("/api/admin/invoices/{invoice_id}/proof", dependencies=[Depends(require_admin)])
+def admin_invoice_proof_api(invoice_id: str, db: Session = Depends(db_session)) -> FileResponse:
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice or not invoice.proof_path:
+        raise HTTPException(status_code=404, detail="Платёжка не найдена")
+    root = (Path(config.storage_path) / "invoices" / "payment_proofs").resolve()
+    path = Path(invoice.proof_path).resolve()
+    if root not in path.parents or not path.is_file():
+        raise HTTPException(status_code=404, detail="Файл платёжки недоступен")
+    return FileResponse(str(path), media_type=invoice.proof_content_type or "application/octet-stream", filename=invoice.proof_original_name or path.name)
+
+
+@app.post("/api/admin/invoices/{invoice_id}/mark-paid", dependencies=[Depends(require_admin)])
+def admin_mark_invoice_paid_api(
+    invoice_id: str,
+    db: Session = Depends(db_session),
+) -> dict:
+    from .invoice_service import lock_invoice_for_update
+    from .billing import _billing_client_lock, _idempotent_transaction, _grant_money_balance_locked
+
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+    client_id = invoice.client_id
+    # All balance mutations acquire the client lock before the SQLite write lock.
+    with _billing_client_lock(client_id):
+        invoice = lock_invoice_for_update(db, invoice_id)
+        if not invoice:
+            raise HTTPException(status_code=404, detail="Счёт не найден")
+        if invoice.status == "paid":
+            return {"success": True, "message": "Счёт уже закрыт", "invoice": invoice.to_dict()}
+        if invoice.status == "cancelled":
+            raise HTTPException(status_code=409, detail="Отменённый счёт нельзя подтвердить")
+        client = db.query(Client).filter(Client.id == client_id).first()
+        if not client:
+            raise HTTPException(status_code=404, detail="Клиент не найден")
+        db.refresh(client)
+        amount_kopeks = invoice.total_credit_rub * 100
+        if amount_kopeks <= 0:
+            raise HTTPException(status_code=400, detail="Некорректная сумма начисления")
+        key = f"invoice_paid_{invoice.id}"
+        existing = _idempotent_transaction(db, key, client_id=client.id, kind=KIND_MONEY, operation=OP_GRANT, amount_kopeks=amount_kopeks, units=0)
+        invoice.status = "paid"
+        invoice.paid_at = now_utc()
+        invoice.settlement_mode = "credited"
+        if not existing:
+            _grant_money_balance_locked(db, client, amount=amount_kopeks, note=f"Оплата по счету № {invoice.invoice_number} ({invoice.buyer_name})", created_by="admin_invoice", idempotency_key=key)
+        else:
+            db.commit()
+        db.refresh(invoice)
+
+    return {
+        "success": True,
+        "message": f"Счёт {invoice.invoice_number} оплачен, на баланс зачислено {invoice.total_credit_rub:,} ₽",
+        "invoice": invoice.to_dict(),
+    }
+
+
+@app.post("/api/admin/invoices/{invoice_id}/close-manually", dependencies=[Depends(require_admin)])
+async def admin_close_invoice_manually_api(invoice_id: str, request: Request, db: Session = Depends(db_session)) -> dict:
+    """Close an invoice whose balance was credited outside this action; never credits funds."""
+    body = await request.json()
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="Требуется явное подтверждение закрытия без начисления")
+    from .invoice_service import lock_invoice_for_update
+    invoice = lock_invoice_for_update(db, invoice_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+    if invoice.status == "paid":
+        return {"success": True, "credited": False, "invoice": invoice.to_dict()}
+    if invoice.status == "cancelled":
+        raise HTTPException(status_code=409, detail="Отменённый счёт нельзя закрыть как оплаченный")
+    note = str(body.get("note") or "Оплата подтверждена вручную вне этого действия").strip()
+    invoice.status = "paid"
+    invoice.paid_at = invoice.paid_at or now_utc()
+    invoice.settlement_mode = "manual_closed"
+    invoice.notes = (invoice.notes + "\n" if invoice.notes else "") + note
+    db.commit()
+    db.refresh(invoice)
+    return {"success": True, "credited": False, "invoice": invoice.to_dict()}
+
+
+def _settings_yookassa_ready(settings: SystemSettings) -> bool:
+    return bool(
+        str(settings.payment_provider or "").lower() == "yookassa"
+        and str(settings.yookassa_shop_id or "").strip()
+        and str(settings.yookassa_secret_key or "").strip()
+    )
+
+
+def _process_yookassa_payment_success(
+    db: Session,
+    payment_data: dict,
+    payment_record: YooKassaPayment | None = None,
+) -> None:
+    payment_id = payment_data.get("id")
+    if not payment_id:
+        return
+
+    record = payment_record or db.query(YooKassaPayment).filter(YooKassaPayment.payment_id == payment_id).first()
+    metadata = payment_data.get("metadata") or {}
+    client_id = getattr(record, "client_id", None) or metadata.get("client_id")
+    user_id = getattr(record, "user_id", None) or metadata.get("user_id")
+
+    if not client_id:
+        logger.error("Cannot process YooKassa payment %s: client_id missing", payment_id)
+        return
+
+    client = db.get(Client, client_id)
+    if not client:
+        logger.error("Client %s for YooKassa payment %s not found", client_id, payment_id)
+        return
+
+    amount_val = payment_data.get("amount", {}).get("value")
+    try:
+        amount_rub = int(float(amount_val))
+    except Exception:
+        amount_rub = int(getattr(record, "amount_rub", 0) or metadata.get("amount_rub") or 0)
+
+    bonus_rub = int(getattr(record, "bonus_rub", 0) or metadata.get("bonus_rub") or 0)
+    total_credit_rub = int(getattr(record, "total_credit_rub", 0) or metadata.get("total_credit_rub") or (amount_rub + bonus_rub))
+    package_name = getattr(record, "package_name", "") or metadata.get("package_name") or "Пополнение баланса"
+
+    # Credit money balance with idempotency
+    idempotency_key = f"yookassa_{payment_id}"
+    existing_tx = db.query(BillingTransaction).filter(BillingTransaction.idempotency_key == idempotency_key).first()
+    if not existing_tx:
+        from .billing import grant_money_balance
+        grant_money_balance(
+            db,
+            client,
+            amount_kopeks=total_credit_rub * 100,
+            note=f"Оплата через ЮKassa № {payment_id} ({package_name})",
+            created_by="yookassa",
+            idempotency_key=idempotency_key,
+        )
+
+    pm_type = payment_data.get("payment_method", {}).get("type") or ""
+
+    if record:
+        record.status = "succeeded"
+        record.payment_method_type = pm_type
+        record.paid_at = now_utc()
+    else:
+        new_record = YooKassaPayment(
+            payment_id=payment_id,
+            client_id=client.id,
+            user_id=user_id or None,
+            status="succeeded",
+            amount_rub=amount_rub,
+            bonus_rub=bonus_rub,
+            total_credit_rub=total_credit_rub,
+            package_name=package_name,
+            payment_method_type=pm_type,
+            paid_at=now_utc(),
+        )
+        db.add(new_record)
+
+    db.commit()
+    logger.info("Successfully processed YooKassa payment %s: credited %s rub to client %s", payment_id, total_credit_rub, client.id)
+
+    user_email = metadata.get("user_email") or ""
+    if not user_email:
+        first_user = client.users[0] if getattr(client, "users", None) else None
+        user_email = getattr(first_user, "email", "") or ""
+
+    payer_phone = metadata.get("phone") or (payment_record.phone if payment_record else "") or (client.web_users[0].phone if client.web_users else "") or getattr(client, "phone", "")
+    payer_tg = metadata.get("telegram_username") or (payment_record.telegram_username if payment_record else "") or (client.web_users[0].telegram_username if client.web_users else "") or getattr(client, "username", "")
+
+    notify_admin_payment_success(
+        payment_id=payment_id,
+        amount_rub=amount_rub,
+        bonus_rub=bonus_rub,
+        total_credit_rub=total_credit_rub,
+        package_name=package_name,
+        user_email=user_email,
+        client_name=getattr(client, "name", "") or "",
+        payment_method_type=pm_type,
+        phone=str(payer_phone or ""),
+        telegram_username=str(payer_tg or ""),
+    )
+
+    tg_id = metadata.get("telegram_id") or getattr(client, "telegram_id", "")
+    if tg_id and str(tg_id).isdigit():
+        notify_client_payment_success(
+            telegram_id=str(tg_id),
+            amount_rub=amount_rub,
+            bonus_rub=bonus_rub,
+            total_credit_rub=total_credit_rub,
+            package_name=package_name,
+        )
+
+
+def _process_yookassa_payment_canceled(
+    db: Session,
+    payment_data: dict,
+    payment_record: YooKassaPayment | None = None,
+) -> None:
+    payment_id = payment_data.get("id")
+    if not payment_id:
+        return
+    record = payment_record or db.query(YooKassaPayment).filter(YooKassaPayment.payment_id == payment_id).first()
+    if record and record.status != "succeeded":
+        record.status = "canceled"
+        db.commit()
+
+    metadata = payment_data.get("metadata") or {}
+    if metadata.get("test") == "true" or metadata.get("client_id") == "test_verification":
+        return
+
+    user_email = metadata.get("user_email") or ""
+    if not record and not user_email:
+        # Ignore orphan/untracked cancellation webhooks without client metadata
+        return
+
+    reason = payment_data.get("cancellation_details", {}).get("reason") or ""
+    if reason == "expired_on_confirmation":
+        # Suppress admin alerts for ordinary expired checkout windows
+        return
+    amount_rub = getattr(record, "amount_rub", 0) or 0
+    if not amount_rub:
+        try:
+            amount_val = float(payment_data.get("amount", {}).get("value", 0))
+            amount_rub = int(amount_val)
+        except Exception:
+            amount_rub = 0
+    package_name = getattr(record, "package_name", "") or "Пополнение баланса"
+
+    notify_admin_payment_canceled(
+        payment_id=payment_id,
+        amount_rub=amount_rub,
+        package_name=package_name,
+        user_email=user_email,
+        reason=reason,
+    )
+
+
+@app.post("/api/customer/payments/yookassa/create")
+def customer_create_yookassa_payment_api(
+    data: CreateYooKassaPaymentRequest,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    if not context.user.is_email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Подтвердите email перед пополнением баланса. Проверьте почту или запросите письмо повторно.",
+        )
+    settings = get_or_create_settings(db)
+    if not _settings_yookassa_ready(settings):
+        raise HTTPException(
+            status_code=400,
+            detail="Онлайн-оплата временно недоступна. Пожалуйста, напишите нам в Telegram для зачисления.",
+        )
+    client = context.user.client
+    if not client:
+        raise HTTPException(status_code=400, detail="Аккаунт клиента не найден")
+
+    from .billing import calculate_deposit_bonus_kopeks
+
+    amount_rub = int(data.amount_rub)
+    bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, client)
+    bonus_rub = round(bonus_kopeks / 100)
+    total_credit_rub = amount_rub + bonus_rub
+
+    package_name = "Пополнение баланса"
+    if data.package_id:
+        package = db.get(TariffPackage, data.package_id)
+        if package:
+            package_name = package.name
+
+    base_url = (settings.public_base_url or "https://tenderlex.ru").rstrip("/")
+    desc = f"TenderLex: {package_name} ({context.user.email})"
+
+    phone = (data.phone or "").strip()
+    tg_user = (data.telegram_username or "").strip().lstrip("@")
+    if phone:
+        digits = re.sub(r"\D+", "", phone)
+        if len(digits) < 10 or len(digits) > 15:
+            raise HTTPException(
+                status_code=400,
+                detail="Укажите корректный номер телефона (например, +7 999 123-45-67).",
+            )
+        context.user.phone = phone
+        if not getattr(client, "phone", None):
+            client.phone = phone
+    if tg_user:
+        context.user.telegram_username = tg_user
+        if not client.username:
+            client.username = tg_user
+
+    final_phone = phone or getattr(context.user, "phone", "") or getattr(client, "phone", "") or ""
+    final_tg = tg_user or getattr(context.user, "telegram_username", "") or getattr(client, "username", "") or ""
+
+    # Generate local record first
+    payment_record = YooKassaPayment(
+        payment_id=f"temp_{uuid.uuid4().hex[:16]}",
+        client_id=client.id,
+        user_id=context.user.id,
+        status="pending",
+        amount_rub=amount_rub,
+        bonus_rub=bonus_rub,
+        total_credit_rub=total_credit_rub,
+        package_name=package_name,
+        phone=final_phone,
+        telegram_username=final_tg,
+    )
+    db.add(payment_record)
+    db.flush()
+
+    metadata = {
+        "tenderlex_payment_id": payment_record.id,
+        "client_id": client.id,
+        "user_id": context.user.id,
+        "user_email": context.user.email,
+        "phone": final_phone,
+        "telegram_username": final_tg,
+        "amount_rub": str(amount_rub),
+        "bonus_rub": str(bonus_rub),
+        "total_credit_rub": str(total_credit_rub),
+        "package_name": package_name,
+    }
+
+    actual_return_url = f"{base_url}/cabinet?payment_status=check&tenderlex_payment_id={payment_record.id}"
+
+    try:
+        res = create_yookassa_payment(
+            shop_id=settings.yookassa_shop_id,
+            secret_key=settings.yookassa_secret_key,
+            amount_rub=amount_rub,
+            return_url=actual_return_url,
+            description=desc,
+            metadata=metadata,
+            customer_email=context.user.email,
+            send_receipt=bool(getattr(settings, "yookassa_send_receipt", False)),
+        )
+    except YooKassaError as err:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(err))
+
+    yoo_payment_id = res.get("id")
+    conf = res.get("confirmation") or {}
+    conf_url = conf.get("confirmation_url") or ""
+
+    if not yoo_payment_id or not conf_url:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="ЮKassa не вернула ссылку на оплату")
+
+    payment_record.payment_id = yoo_payment_id
+    payment_record.confirmation_url = conf_url
+    db.commit()
+    db.refresh(payment_record)
+
+    notify_admin_payment_attempt(
+        payment_id=payment_record.payment_id,
+        amount_rub=payment_record.amount_rub,
+        bonus_rub=payment_record.bonus_rub,
+        total_credit_rub=payment_record.total_credit_rub,
+        package_name=payment_record.package_name or "Пополнение баланса",
+        user_email=context.user.email or "",
+        client_name=client.name or "",
+        phone=payment_record.phone or "",
+        telegram_username=payment_record.telegram_username or "",
+    )
+
+    return {
+        "success": True,
+        "payment_id": payment_record.payment_id,
+        "tenderlex_payment_id": payment_record.id,
+        "confirmation_url": payment_record.confirmation_url,
+        "amount_rub": payment_record.amount_rub,
+        "bonus_rub": payment_record.bonus_rub,
+        "total_credit_rub": payment_record.total_credit_rub,
+    }
+
+
+@app.get("/api/customer/payments/{payment_id}/status")
+def customer_check_yookassa_payment_status_api(
+    payment_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    clean_id = str(payment_id or "").strip()
+    payment = (
+        db.query(YooKassaPayment)
+        .filter(
+            (YooKassaPayment.payment_id == clean_id) | (YooKassaPayment.id == clean_id)
+        )
+        .first()
+    )
+    if not payment:
+        raise HTTPException(status_code=404, detail="Платёж не найден")
+    if payment.client_id != context.user.client_id:
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+    if payment.status == "succeeded":
+        client = context.user.client
+        db.refresh(client)
+        return {
+            "status": "succeeded",
+            "amount_rub": payment.amount_rub,
+            "bonus_rub": payment.bonus_rub,
+            "total_credit_rub": payment.total_credit_rub,
+            "balance_rub": round((client.money_balance_kopeks or 0) / 100, 2),
+        }
+
+    settings = get_or_create_settings(db)
+    if settings.yookassa_shop_id and settings.yookassa_secret_key:
+        live = fetch_yookassa_payment(
+            shop_id=settings.yookassa_shop_id,
+            secret_key=settings.yookassa_secret_key,
+            payment_id=payment.payment_id,
+        )
+        if live:
+            status = live.get("status")
+            if status == "succeeded":
+                _process_yookassa_payment_success(db, live, payment_record=payment)
+                client = context.user.client
+                db.refresh(client)
+                return {
+                    "status": "succeeded",
+                    "amount_rub": payment.amount_rub,
+                    "bonus_rub": payment.bonus_rub,
+                    "total_credit_rub": payment.total_credit_rub,
+                    "balance_rub": round((client.money_balance_kopeks or 0) / 100, 2),
+                }
+            elif status == "canceled":
+                payment.status = "canceled"
+                db.commit()
+
+    client = context.user.client
+    db.refresh(client)
+    return {
+        "status": payment.status,
+        "amount_rub": payment.amount_rub,
+        "bonus_rub": payment.bonus_rub,
+        "total_credit_rub": payment.total_credit_rub,
+        "balance_rub": round((client.money_balance_kopeks or 0) / 100, 2),
+    }
+
+
+@app.post("/api/payments/yookassa/webhook")
+async def yookassa_webhook_api(
+    request: Request,
+    db: Session = Depends(db_session),
+) -> dict:
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "error", "message": "Invalid JSON"}
+
+    event_type = payload.get("event")
+    payment_obj = payload.get("object") or {}
+    payment_id = payment_obj.get("id")
+
+    if not payment_id:
+        return {"status": "ignored", "reason": "No payment id"}
+
+    settings = get_or_create_settings(db)
+    if not settings.yookassa_shop_id or not settings.yookassa_secret_key:
+        logger.warning("YooKassa webhook received but credentials not configured")
+        return {"status": "not_configured"}
+
+    # Defense-in-depth: verify authentic state directly with YooKassa
+    verified = fetch_yookassa_payment(
+        shop_id=settings.yookassa_shop_id,
+        secret_key=settings.yookassa_secret_key,
+        payment_id=payment_id,
+    )
+    if not verified:
+        logger.warning("YooKassa webhook payment_id %s could not be verified with API", payment_id)
+        return {"status": "unverified"}
+
+    live_status = verified.get("status")
+    if live_status == "succeeded":
+        _process_yookassa_payment_success(db, verified)
+    elif live_status == "canceled":
+        _process_yookassa_payment_canceled(db, verified)
+
+    return {"status": "ok"}
+
+
+@app.post("/api/admin/yookassa/test", dependencies=[Depends(require_admin)])
+def admin_test_yookassa_api(
+    data: YooKassaTestRequest | None = None,
+    db: Session = Depends(db_session),
+) -> dict:
+    settings = get_or_create_settings(db)
+    shop_id = (str(data.shop_id or "").strip() if data and data.shop_id else "") or settings.yookassa_shop_id
+    secret_key = (str(data.secret_key or "").strip() if data and data.secret_key else "") or settings.yookassa_secret_key
+    ok, msg = verify_yookassa_credentials(
+        shop_id=shop_id,
+        secret_key=secret_key,
+    )
+    return {"success": ok, "message": msg}
+
+
 @app.post("/api/auth/login")
 def login(data: LoginRequest, request: Request, response: Response) -> dict:
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = _client_ip(request)
     now = time.time()
     attempts = [item for item in LOGIN_ATTEMPTS.get(client_ip, []) if now - item < 600]
     if len(attempts) >= 8:
@@ -1408,15 +3037,30 @@ def auth_me() -> dict:
 def dashboard(db: Session = Depends(db_session)) -> dict:
     now = now_utc()
     week_ago = now - timedelta(days=7)
+    clients_total, active_clients = (
+        db.query(
+            func.count(Client.id),
+            func.coalesce(func.sum(case((Client.is_active.is_(True), 1), else_=0)), 0),
+        ).one()
+    )
+    jobs_total, running_jobs, completed_jobs, failed_jobs_week, failed_jobs_total = (
+        db.query(
+            func.count(Job.id),
+            func.coalesce(func.sum(case((Job.status.in_(["pending", "running"]), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Job.status.in_(["completed", "partial"]), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((and_(Job.status == "failed", Job.created_at >= week_ago), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Job.status == "failed", 1), else_=0)), 0),
+        ).one()
+    )
     return {
-        "clients": db.query(Client).count(),
-        "active_clients": db.query(Client).filter(Client.is_active.is_(True)).count(),
-        "jobs": db.query(Job).count(),
-        "running_jobs": db.query(Job).filter(Job.status.in_(["pending", "running"])).count(),
-        "completed_jobs": db.query(Job).filter(Job.status.in_(["completed", "partial"])).count(),
-        "failed_jobs": db.query(Job).filter(Job.status == "failed", Job.created_at >= week_ago).count(),
-        "failed_jobs_total": db.query(Job).filter(Job.status == "failed").count(),
-        "suppliers": db.query(SupplierResult).count(),
+        "clients": int(clients_total or 0),
+        "active_clients": int(active_clients or 0),
+        "jobs": int(jobs_total or 0),
+        "running_jobs": int(running_jobs or 0),
+        "completed_jobs": int(completed_jobs or 0),
+        "failed_jobs": int(failed_jobs_week or 0),
+        "failed_jobs_total": int(failed_jobs_total or 0),
+        "suppliers": db.query(func.count(SupplierResult.id)).scalar() or 0,
     }
 
 
@@ -1508,11 +3152,19 @@ async def _fetch_yandex_billing_balance() -> dict:
                 return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "billing_api_failed"}
 
             data = billing_response.json()
+            balance_val = float(data.get("balance", 0.0))
+            is_active_val = bool(data.get("active", False))
             result = {
-                "balance": float(data.get("balance", 0.0)),
+                "balance": balance_val,
                 "currency": data.get("currency", "RUB"),
-                "is_active": data.get("active", False),
+                "is_active": is_active_val,
             }
+            if balance_val < 150.0 or not is_active_val:
+                try:
+                    from .admin_alerts import notify_low_yandex_balance
+                    notify_low_yandex_balance(balance_val, is_active_val, billing_account_id=billing_id)
+                except Exception as alert_exc:
+                    logger.debug("Failed to dispatch low yandex balance alert: %s", alert_exc)
             _yandex_billing_cache["data"] = result
             _yandex_billing_cache["timestamp"] = time.time()
             return result
@@ -1717,6 +3369,7 @@ def admin_get_price_monitoring_settings(db: Session = Depends(db_session)) -> di
         "filter_marketplaces": bool(getattr(settings, "price_monitoring_filter_marketplaces", True)),
         "filter_foreign_sources": bool(getattr(settings, "price_monitoring_filter_foreign", True)),
         "max_variation_pct": float(getattr(settings, "price_monitoring_max_variation_pct", 33.0) or 33.0),
+        "access_mode": getattr(settings, "price_monitoring_access_mode", "all") or "all",
     }
 
 
@@ -1742,6 +3395,10 @@ def admin_update_price_monitoring_settings(data: dict, db: Session = Depends(db_
         settings.price_monitoring_filter_foreign = bool(data["filter_foreign_sources"])
     if "max_variation_pct" in data:
         settings.price_monitoring_max_variation_pct = max(5.0, min(100.0, float(data["max_variation_pct"])))
+    if "access_mode" in data:
+        raw_mode = str(data["access_mode"]).strip().lower()
+        if raw_mode in ("all", "granular", "disabled"):
+            settings.price_monitoring_access_mode = raw_mode
 
     db.commit()
     return admin_get_price_monitoring_settings(db)
@@ -1926,26 +3583,79 @@ def list_clients(db: Session = Depends(db_session)) -> list[dict]:
         .order_by(Client.created_at.desc())
         .all()
     )
-    job_counts = dict(
-        db.query(Job.client_id, func.count(Job.id))
-        .filter(Job.client_id.isnot(None))
-        .group_by(Job.client_id)
-        .all()
-    )
+    client_ids = [client.id for client in clients]
+    client_by_id = {client.id: client for client in clients}
+    job_counts: dict[str, int] = {}
+    recent_usage_map: dict[str, list[dict]] = {}
+    if client_ids:
+        all_client_jobs = (
+            db.query(Job)
+            .filter(Job.client_id.in_(client_ids))
+            .order_by(Job.created_at.desc())
+            .all()
+        )
+        for job in all_client_jobs:
+            cid = str(job.client_id or "")
+            job_counts[cid] = job_counts.get(cid, 0) + 1
+            bucket = recent_usage_map.setdefault(cid, [])
+            if len(bucket) >= 5 or is_internal_job(job):
+                continue
+            supplier_units, report_units = requested_function_units(str(job.mode or ""))
+            if supplier_units <= 0 and report_units <= 0 and str(job.mode or "") != MODE_EXACT_PRODUCT:
+                continue
+            owner = client_by_id.get(cid)
+            raw_title = str(job.title or "").strip()
+            cleaned_title = _clean_customer_job_subject(raw_title) if raw_title else ""
+            if cleaned_title and not _looks_like_hash(cleaned_title):
+                is_admin = bool(getattr(job, "is_admin_rerun", False) or raw_title.startswith("[Админ]"))
+                fast_title = _customer_job_title_for_subject(str(job.mode or ""), cleaned_title)
+                fast_title = f"[Админ] {fast_title}" if is_admin else fast_title
+            else:
+                fast_title = human_job_title(job)
+            bucket.append(
+                {
+                    "id": job.id,
+                    "mode": job.mode,
+                    "mode_label": mode_label(job.mode),
+                    "human_title": fast_title,
+                    "created_by_telegram_id": job.created_by_telegram_id or (owner.telegram_id if owner else ""),
+                    "supplier_units": supplier_units,
+                    "procurement_report_units": report_units,
+                    "status": job.status,
+                    "created_at": job.created_at.isoformat() if job.created_at else None,
+                    "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+                    "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                }
+            )
     for client in clients:
         setattr(client, "_jobs_count", job_counts.get(client.id, 0))
-    return [client_to_dict(client, db=db) for client in clients]
+    try:
+        preload_clients_billing_cache(db, client_ids)
+        if hasattr(db, "info"):
+            db.info["client_recent_usage_map"] = recent_usage_map
+        return [client_to_dict(client, db=db) for client in clients]
+    finally:
+        if hasattr(db, "info"):
+            db.info.pop("client_recent_usage_map", None)
+        clear_clients_billing_cache(db)
 
 
 @app.get("/api/clients/sync-check", dependencies=[Depends(require_admin)])
 def clients_sync_check(db: Session = Depends(db_session)) -> dict:
-    clients_count = db.query(func.count(Client.id)).scalar() or 0
-    max_client_updated = db.query(func.max(Client.updated_at)).scalar()
-    max_client_created = db.query(func.max(Client.created_at)).scalar()
+    clients_count, max_client_updated, max_client_created = (
+        db.query(
+            func.count(Client.id),
+            func.max(Client.updated_at),
+            func.max(Client.created_at),
+        ).one()
+    )
+    clients_count = int(clients_count or 0)
     max_web_user_updated = db.query(func.max(WebUser.updated_at)).scalar()
     max_billing_created = db.query(func.max(BillingTransaction.created_at)).scalar()
-    jobs_count = db.query(func.count(Job.id)).scalar() or 0
-    max_job_updated = db.query(func.max(Job.updated_at)).scalar()
+    jobs_count, max_job_updated = (
+        db.query(func.count(Job.id), func.max(Job.updated_at)).one()
+    )
+    jobs_count = int(jobs_count or 0)
 
     latest_client = (
         db.query(Client)
@@ -1972,8 +3682,7 @@ def clients_sync_check(db: Session = Depends(db_session)) -> dict:
     c_cr = max_client_created.isoformat() if max_client_created else ""
     w_up = max_web_user_updated.isoformat() if max_web_user_updated else ""
     b_cr = max_billing_created.isoformat() if max_billing_created else ""
-    j_up = max_job_updated.isoformat() if max_job_updated else ""
-    version_key = f"{clients_count}:{c_up}:{c_cr}:{w_up}:{b_cr}:{jobs_count}:{j_up}"
+    version_key = f"{clients_count}:{c_up}:{c_cr}:{w_up}:{b_cr}:{jobs_count}"
 
     return {
         "version_key": version_key,
@@ -2050,19 +3759,46 @@ def update_client(client_id: str, data: ClientPatch, db: Session = Depends(db_se
 
 
 def _force_delete_client(db: Session, client: Client) -> None:
+    from .models import (
+        ApiOperation,
+        ApiRateLimitEvent,
+        Invoice,
+        PartnerPayoutRequest,
+        WebPasswordResetToken,
+        YooKassaPayment,
+    )
+
     jobs = db.query(Job).filter(Job.client_id == client.id).all()
     job_ids = [job.id for job in jobs]
     if job_ids:
         db.query(SupplierResult).filter(SupplierResult.job_id.in_(job_ids)).delete(synchronize_session=False)
         db.query(JobFile).filter(JobFile.job_id.in_(job_ids)).delete(synchronize_session=False)
         db.query(JobSource).filter(JobSource.job_id.in_(job_ids)).delete(synchronize_session=False)
+        db.query(JobChatMessage).filter(JobChatMessage.job_id.in_(job_ids)).delete(synchronize_session=False)
         db.query(BillingTransaction).filter(BillingTransaction.job_id.in_(job_ids)).delete(synchronize_session=False)
+        db.query(ApiOperation).filter(ApiOperation.job_id.in_(job_ids)).delete(synchronize_session=False)
+
+    db.query(JobChatMessage).filter(JobChatMessage.client_id == client.id).delete(synchronize_session=False)
+
+    api_keys = db.query(ApiKey).filter(ApiKey.client_id == client.id).all()
+    api_key_ids = [k.id for k in api_keys]
+    if api_key_ids:
+        db.query(ApiOperation).filter(ApiOperation.api_key_id.in_(api_key_ids)).delete(synchronize_session=False)
+        db.query(ApiRateLimitEvent).filter(ApiRateLimitEvent.api_key_id.in_(api_key_ids)).delete(synchronize_session=False)
+        db.query(ApiKey).filter(ApiKey.client_id == client.id).delete(synchronize_session=False)
+
+    db.query(YooKassaPayment).filter(YooKassaPayment.client_id == client.id).delete(synchronize_session=False)
+    db.query(Invoice).filter(Invoice.client_id == client.id).delete(synchronize_session=False)
+    db.query(PartnerPayoutRequest).filter(PartnerPayoutRequest.client_id == client.id).delete(synchronize_session=False)
+    db.query(Client).filter(Client.referrer_id == client.id).update({Client.referrer_id: None}, synchronize_session=False)
 
     web_users = db.query(WebUser).filter(WebUser.client_id == client.id).all()
     web_user_ids = [wu.id for wu in web_users]
     if web_user_ids:
+        db.query(YooKassaPayment).filter(YooKassaPayment.user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(WebSession).filter(WebSession.user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(WebPasswordResetRequest).filter(WebPasswordResetRequest.user_id.in_(web_user_ids)).delete(synchronize_session=False)
+        db.query(WebPasswordResetToken).filter(WebPasswordResetToken.user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(WebEmailVerificationToken).filter(WebEmailVerificationToken.user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(AccountLinkToken).filter(AccountLinkToken.web_user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(WebUser).filter(WebUser.client_id == client.id).delete(synchronize_session=False)
@@ -2079,6 +3815,7 @@ def _force_delete_client(db: Session, client: Client) -> None:
     for job in jobs:
         shutil.rmtree(config.storage_path / "jobs" / job.id, ignore_errors=True)
         db.delete(job)
+    shutil.rmtree(config.storage_path / "clients" / client.id, ignore_errors=True)
     db.delete(client)
 
 
@@ -2790,8 +4527,9 @@ def list_jobs(
     visible_jobs = jobs if include_internal else [job for job in jobs if not is_internal_job(job) and not getattr(job, "is_admin_rerun", False)]
     sliced_jobs = visible_jobs[:safe_limit]
 
-    # Pre-fetch admin reruns in a single batch query to avoid N+1 queries per job
+    # Pre-fetch admin reruns and chat counts in single batch queries to avoid N+1 queries per job
     child_reruns_map: dict[str, list[Job]] = {}
+    chat_counts_map: dict[str, tuple[int, int]] = {}
     if sliced_jobs:
         all_reruns = (
             db.query(Job)
@@ -2807,9 +4545,23 @@ def list_jobs(
             if r.parent_job_id:
                 child_reruns_map.setdefault(r.parent_job_id, []).append(r)
 
+        job_ids = [j.id for j in sliced_jobs]
+        raw_chat_rows = (
+            db.query(
+                JobChatMessage.job_id,
+                func.count(JobChatMessage.id),
+                func.sum(case((and_(JobChatMessage.sender_role == "client", JobChatMessage.is_read_by_admin == False), 1), else_=0))
+            )
+            .filter(JobChatMessage.job_id.in_(job_ids))
+            .group_by(JobChatMessage.job_id)
+            .all()
+        )
+        for jid, tot, unread in raw_chat_rows:
+            chat_counts_map[jid] = (int(tot or 0), int(unread or 0))
+
     settings = get_or_create_settings(db)
     return [
-        job_to_dict(job, settings=settings, db=db, child_reruns_map=child_reruns_map)
+        job_to_dict(job, settings=settings, db=db, child_reruns_map=child_reruns_map, chat_counts_map=chat_counts_map)
         for job in sliced_jobs
     ]
 
@@ -2949,11 +4701,30 @@ def retry_job(
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job.mode in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}:
+        if not job.client:
+            raise HTTPException(status_code=400, detail="У задачи нет клиента.")
+        child, created = _create_fresh_processing_job(db, job, client=job.client)
+        if created:
+            enqueue_job(child.id)
+        return {"success": True, "job": job_to_dict(child)}
     if policy:
         job.supplier_search_policy = _normalize_supplier_search_policy_for_job(job.mode, policy)
     if multi_item_mode in ("balanced", "per_item"):
         job.multi_item_mode = multi_item_mode
         update_dobor_context_dict(job, {"multi_item_confirmed": True})
+    if job.client and not getattr(job, "is_admin_rerun", False):
+        supplier_search_count = 1
+        dobor_ctx = read_dobor_context(job)
+        if getattr(job, "multi_item_mode", "") == "per_item":
+            raw_items = (dobor_ctx.get("procurement_profile") or {}).get("items") or []
+            selected_ids = dobor_ctx.get("selected_item_ids")
+            supplier_search_count = len(selected_ids) if selected_ids is not None else len(raw_items)
+            supplier_search_count = max(1, supplier_search_count)
+        try:
+            reserve_job_units(db, job.client, job, supplier_search_count=supplier_search_count)
+        except BillingError as exc:
+            raise HTTPException(status_code=400, detail=f"Недостаточно средств у клиента для перезапуска: {exc}") from exc
     job.status = "pending"
     job.progress = 0
     job.error = ""
@@ -2967,9 +4738,11 @@ def retry_job(
 def choose_admin_strategy(
     job_id: str,
     multi_item_mode: str = Query(default="balanced"),
+    selected_item_ids: list[str] | None = Query(default=None),
+    revision: str | None = Query(default=None),
     db: Session = Depends(db_session),
 ) -> dict:
-    return choose_admin_multi_item_strategy_api(job_id, multi_item_mode=multi_item_mode, db=db)
+    return choose_admin_multi_item_strategy_api(job_id, multi_item_mode=multi_item_mode, selected_item_ids=selected_item_ids, revision=revision if isinstance(revision, str) else None, db=db)
 
 
 @app.post("/api/jobs/{job_id}/admin-rerun", dependencies=[Depends(require_admin)])
@@ -2977,91 +4750,227 @@ def admin_rerun_job(
     job_id: str,
     policy: str | None = Query(default=None),
     multi_item_mode: str | None = Query(default=None),
+    revision: str | None = Query(default=None),
+    selected_item_ids: list[str] | None = Query(default=None),
+    selection_payload: dict | None = Body(default=None),
+    reparse: bool = Query(default=False),
     db: Session = Depends(db_session),
 ) -> dict:
     parent_job = resolve_admin_job(job_id, db)
     if not parent_job:
         raise HTTPException(status_code=404, detail="Job not found")
+    # Direct service calls (including regression tests) receive FastAPI's
+    # parameter descriptors rather than their route-resolved defaults.
+    if not isinstance(revision, str):
+        revision = None
+    if not isinstance(selected_item_ids, list):
+        selected_item_ids = None
+    if not isinstance(reparse, bool):
+        reparse = False
+    if isinstance(selection_payload, dict):
+        revision = revision or selection_payload.get("revision")
+        if selected_item_ids is None and isinstance(selection_payload.get("selected_item_ids"), list):
+            selected_item_ids = [str(item) for item in selection_payload["selected_item_ids"]]
+    explicit_selection_requested = revision is not None or selected_item_ids is not None or (
+        isinstance(selection_payload, dict) and any(key in selection_payload for key in ("revision", "selected_item_ids"))
+    )
+    if explicit_selection_requested and parent_job.mode not in {MODE_EXACT_PRODUCT, MODE_PRICE_MONITORING, MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        raise HTTPException(status_code=400, detail="Выбор позиций недоступен для этой задачи.")
+    if parent_job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION and parent_job.confirmation_kind == "multi_item_strategy" and revision is None and selected_item_ids is None:
+        raise HTTPException(status_code=409, detail="Сначала подтвердите стратегию поиска для исходной задачи.")
 
-    new_job_id = new_id()
-    orig_title = parent_job.title or ""
-    clean_title = orig_title.replace("[Админ] ", "").strip()
-    admin_title = f"[Админ] {clean_title}"
+    inherited_selection: dict | None = None
+    if parent_job.mode in {MODE_EXACT_PRODUCT, MODE_PRICE_MONITORING}:
+        if not reparse or explicit_selection_requested:
+            inherited_selection = read_selection(parent_job)
+            if explicit_selection_requested:
+                if revision is None or selected_item_ids is None:
+                    raise HTTPException(status_code=400, detail="Передайте актуальный список и выбранные позиции для экспертного перезапуска.")
+                try:
+                    chosen_source_ids = validate_selected_ids(inherited_selection, revision, selected_item_ids)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                inherited_selection = dict(inherited_selection, selected_ids=chosen_source_ids, confirmed=True)
+            elif not inherited_selection.get("confirmed"):
+                if parent_job.status in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION} or inherited_selection.get("items"):
+                    raise HTTPException(status_code=409, detail="Для экспертного перезапуска требуется подтверждённый выбор позиций исходной задачи.")
+            if inherited_selection.get("confirmed") and inherited_selection.get("items"):
+                source_selected_ids = set(inherited_selection.get("selected_ids") or [])
+                reissued = json.loads(build_selection_snapshot(
+                    inherited_selection["items"],
+                    price_kopeks=int(inherited_selection.get("price_kopeks") or 0),
+                    mode=parent_job.mode,
+                ))
+                old_indexes = [index for index, item in enumerate(inherited_selection["items"]) if item.get("id") in source_selected_ids]
+                reissued["selected_ids"] = [reissued["items"][index]["id"] for index in old_indexes]
+                reissued["confirmed"] = True
+                inherited_selection = reissued
+            if inherited_selection.get("items") and not inherited_selection.get("selected_ids"):
+                raise HTTPException(status_code=409, detail="Для экспертного перезапуска требуется хотя бы одна выбранная позиция.")
+        else:
+            inherited_selection = None
+
+    inherited_strategy: dict | None = None
+    if parent_job.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        if not reparse or explicit_selection_requested:
+            parent_context = read_dobor_context(parent_job)
+            profile = parent_context.get("procurement_profile")
+            source_items = profile.get("items") if isinstance(profile, dict) else None
+            if isinstance(source_items, list) and source_items:
+                explicit_selection = explicit_selection_requested
+                if explicit_selection:
+                    if revision != _multi_item_selection_revision(parent_job, profile):
+                        raise HTTPException(status_code=400, detail="Список позиций изменился. Обновите задачу и повторите выбор.")
+                    if selected_item_ids is None:
+                        raise HTTPException(status_code=400, detail="Выберите позиции для экспертного поиска.")
+                    chosen_ids = _validated_multi_item_selection(source_items, "balanced", selected_item_ids)
+                elif parent_context.get("multi_item_confirmed"):
+                    # A legacy None is a confirmed choice of all source rows. An
+                    # explicit empty/invalid selection must never become all rows.
+                    chosen_ids = _validated_multi_item_selection(source_items, "balanced", parent_context.get("selected_item_ids"))
+                else:
+                    raise HTTPException(status_code=409, detail="Для экспертного перезапуска подтвердите выбор позиций исходной задачи.")
+                inherited_strategy = {
+                    "multi_item_confirmed": True,
+                    "selected_item_ids": chosen_ids,
+                    "procurement_profile": profile,
+                }
+            elif revision is not None or selected_item_ids is not None:
+                raise HTTPException(status_code=400, detail="В исходной задаче нет списка позиций для подтверждения.")
+            elif isinstance(profile, dict):
+                raise HTTPException(status_code=409, detail="В исходной задаче нет подтверждённых позиций для экспертного поиска.")
+        else:
+            inherited_strategy = None
 
     root_parent_id = parent_job.parent_job_id if getattr(parent_job, "parent_job_id", "") else parent_job.id
+    with processing_retry_lock(root_parent_id):
+        active = db.query(Job).filter(Job.parent_job_id == root_parent_id, Job.is_admin_rerun == True,
+            Job.status.in_(["pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION, "settling"])).first()
+        if active:
+            return {"success": True, "job": job_to_dict(active, db=db), "parent_job_id": root_parent_id}
+        new_job_id = new_id()
+        orig_title = parent_job.title or ""
+        clean_title = orig_title.replace("[Админ] ", "").strip()
+        admin_title = f"[Админ] {clean_title}"
 
-    new_job = Job(
-        id=new_job_id,
-        job_number=next_job_number(db),
-        client_id=parent_job.client_id,
-        created_by_telegram_id="",
-        mode=parent_job.mode,
-        supplier_search_policy=_normalize_supplier_search_policy_for_job(parent_job.mode, policy or parent_job.supplier_search_policy),
-        multi_item_mode=multi_item_mode if multi_item_mode in ("balanced", "per_item") else getattr(parent_job, "multi_item_mode", "balanced"),
-        title=admin_title,
-        status="pending",
-        progress=0,
-        message="Экспертный перезапуск администратора",
-        parent_job_id=root_parent_id,
-        is_admin_rerun=True,
-        target_suppliers=parent_job.target_suppliers,
-    )
-    db.add(new_job)
-    db.flush()
-
-    parent_dir = job_dir(parent_job.id)
-    new_dir = job_dir(new_job.id)
-    new_dir.mkdir(parents=True, exist_ok=True)
-
-    parent_input_dir = parent_dir / "input"
-    new_input_dir = new_dir / "input"
-    new_input_dir.mkdir(parents=True, exist_ok=True)
-    if parent_input_dir.exists():
-        shutil.copytree(parent_input_dir, new_input_dir, dirs_exist_ok=True)
-
-    for pf in parent_job.files:
-        src_p = Path(pf.stored_path) if pf.stored_path else None
-        dest_stored_path = ""
-        if src_p and src_p.exists():
-            dest_file = new_input_dir / src_p.name
-            if not dest_file.exists():
-                shutil.copy2(src_p, dest_file)
-            dest_stored_path = str(dest_file)
-        elif src_p:
-            dest_stored_path = str(new_input_dir / src_p.name)
-
-        new_file = JobFile(
-            id=new_id(),
-            job_id=new_job.id,
-            original_filename=pf.original_filename,
-            stored_path=dest_stored_path,
-            parse_status="pending",
-            extracted_chars=pf.extracted_chars or 0,
-            error="",
+        new_job = Job(
+            id=new_job_id,
+            job_number=next_job_number(db),
+            client_id=parent_job.client_id,
+            created_by_telegram_id="",
+            mode=parent_job.mode,
+            supplier_search_policy=_normalize_supplier_search_policy_for_job(parent_job.mode, policy or parent_job.supplier_search_policy),
+            multi_item_mode=multi_item_mode if multi_item_mode in ("balanced", "per_item") else getattr(parent_job, "multi_item_mode", "balanced"),
+            title=admin_title,
+            status="pending",
+            progress=0,
+            message="Экспертный перезапуск администратора",
+            parent_job_id=root_parent_id,
+            is_admin_rerun=True,
+            target_suppliers=parent_job.target_suppliers,
         )
-        db.add(new_file)
+        for key in ("delivery_city", "geo_radius_km", "geo_scope", "filter_marketplaces", "filter_foreign", "max_suppliers", "max_variation_pct"):
+            setattr(new_job, key, getattr(parent_job, key))
+        from .geo_policy import GEO_SUPPORTED_MODES, validate_geo_request
+        if new_job.mode not in GEO_SUPPORTED_MODES:
+            new_job.delivery_city, new_job.geo_radius_km = "", None
+        elif new_job.geo_radius_km is not None:
+            try:
+                new_job.delivery_city, new_job.geo_radius_km = validate_geo_request(new_job.delivery_city, new_job.geo_radius_km, mode=new_job.mode)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            # MCP API / legacy tasks may carry a city/region hint without a paid geo-radius.
+            new_job.delivery_city = (new_job.delivery_city or "").strip()
+            new_job.geo_radius_km = None
+        db.add(new_job)
+        db.flush()
 
-    for ps in parent_job.sources:
-        new_source = JobSource(
-            id=new_id(),
-            job_id=new_job.id,
-            kind=ps.kind,
-            label=ps.label,
-            value=ps.value,
-            parse_status="pending",
-            context_path="",
-            extracted_chars=ps.extracted_chars or 0,
-            error="",
-        )
-        db.add(new_source)
+        parent_dir = job_dir(parent_job.id)
+        new_dir = job_dir(new_job.id)
+        new_dir.mkdir(parents=True, exist_ok=True)
 
-    db.commit()
-    enqueue_job(new_job.id)
-    return {
-        "success": True,
-        "job": job_to_dict(new_job, db=db),
-        "parent_job_id": root_parent_id,
-    }
+        parent_input_dir = parent_dir / "input"
+        new_input_dir = new_dir / "input"
+        new_input_dir.mkdir(parents=True, exist_ok=True)
+        if parent_input_dir.exists():
+            shutil.copytree(parent_input_dir, new_input_dir, dirs_exist_ok=True)
+        # Input files are reusable source material.  Search history, supplier
+        # exclusions and AI-derived context are not: every admin rerun searches
+        # the market anew and gets only the explicit selection below.
+        for transient_name in ("dobor_context.json", "excluded_suppliers.json"):
+            (new_input_dir / transient_name).unlink(missing_ok=True)
+
+        for pf in parent_job.files:
+            src_p = Path(pf.stored_path) if pf.stored_path else None
+            dest_stored_path = ""
+            if src_p and src_p.exists():
+                dest_file = new_input_dir / src_p.name
+                if not dest_file.exists():
+                    shutil.copy2(src_p, dest_file)
+                dest_stored_path = str(dest_file)
+            elif src_p:
+                dest_stored_path = str(new_input_dir / src_p.name)
+
+            new_file = JobFile(
+                id=new_id(),
+                job_id=new_job.id,
+                original_filename=pf.original_filename,
+                stored_path=dest_stored_path,
+                parse_status="pending",
+                extracted_chars=pf.extracted_chars or 0,
+                error="",
+            )
+            db.add(new_file)
+
+        for ps in parent_job.sources:
+            new_source = JobSource(
+                id=new_id(),
+                job_id=new_job.id,
+                kind=ps.kind,
+                label=ps.label,
+                value=ps.value,
+                parse_status="pending",
+                context_path="",
+                extracted_chars=ps.extracted_chars or 0,
+                error="",
+            )
+            db.add(new_source)
+
+        if inherited_selection is not None:
+            new_job.position_selection_json = json.dumps(inherited_selection, ensure_ascii=False)
+        if inherited_strategy is not None:
+            update_dobor_context_dict(new_job, inherited_strategy)
+
+        db.commit()
+        enqueue_job(new_job.id)
+        return {
+            "success": True,
+            "job": job_to_dict(new_job, db=db),
+            "parent_job_id": root_parent_id,
+        }
+
+
+def _is_supplement_job_empty(rj: Job) -> bool:
+    st = str(getattr(rj, "status", "") or "").lower()
+    if st in ("failed", "cancelled"):
+        return True
+    if st == "completed" and getattr(rj, "mode", "") != MODE_PROCUREMENT_REPORT:
+        return int(getattr(rj, "verified_count", 0) or 0) == 0
+    return False
+
+
+def _is_supplement_job_healthy(rj: Job) -> bool:
+    st = str(getattr(rj, "status", "") or "").lower()
+    if st != "completed":
+        return False
+    if getattr(rj, "mode", "") == MODE_PROCUREMENT_REPORT:
+        return True
+    return int(getattr(rj, "verified_count", 0) or 0) > 0
+
+
+def _is_zero_rub_offer_comment(text: str) -> bool:
+    return bool(re.search(r"стоимость\s+доплаты\s+составит\s*0(?:[.,]0+)?\s*₽", str(text or ""), re.I))
 
 
 @app.get("/api/jobs/{job_id}/supplement-candidates", dependencies=[Depends(require_admin)])
@@ -3080,34 +4989,163 @@ def get_job_supplement_candidates(job_id: str, db: Session = Depends(db_session)
         )
     ).order_by(Job.created_at.desc()).all()
 
-    candidates: list[dict] = []
+    job_entries: list[tuple[Job, bool, list[tuple[dict, Path, str]]]] = []
     seen_paths = set()
 
     for rj in related_jobs:
         is_rerun = bool(getattr(rj, "is_admin_rerun", False) or getattr(rj, "parent_job_id", "") or "[Админ]" in (rj.title or ""))
+        valid_items: list[tuple[dict, Path, str]] = []
         for item in package_job_output_items(rj):
             p = Path(str(item.get("path") or ""))
             if p.is_file() and str(p) not in seen_paths:
                 seen_paths.add(str(p))
                 k = str(item.get("kind") or p.stem).strip()
-                prefix = "👑 " if is_rerun else "📄 "
-                suffix = " (экспертный перезапуск)" if is_rerun else " (исходный отчет)"
-                candidates.append({
-                    "kind": k,
-                    "composite_id": f"{rj.id}:{k}",
-                    "label": f"{prefix}{item.get('label') or k}{suffix}",
-                    "filename": p.name,
-                    "job_id": rj.id,
-                    "is_admin_rerun": is_rerun,
-                    "created_at": rj.created_at.isoformat() if rj.created_at else None,
-                })
+                valid_items.append((item, p, k))
+        job_entries.append((rj, is_rerun, valid_items))
+
+    recommended_job_id: str | None = None
+    for pred in (
+        lambda rj, is_rerun: is_rerun and _is_supplement_job_healthy(rj),
+        lambda rj, is_rerun: is_rerun and not _is_supplement_job_empty(rj),
+        lambda rj, is_rerun: (not is_rerun) and _is_supplement_job_healthy(rj),
+        lambda rj, is_rerun: (not is_rerun) and not _is_supplement_job_empty(rj),
+    ):
+        match_id = next((rj.id for rj, is_rerun, valid in job_entries if valid and pred(rj, is_rerun)), None)
+        if match_id:
+            recommended_job_id = match_id
+            break
+
+    candidates: list[dict] = []
+    for rj, is_rerun, valid_items in job_entries:
+        is_empty_result = _is_supplement_job_empty(rj)
+        is_rec = bool(recommended_job_id and rj.id == recommended_job_id)
+        for item, p, k in valid_items:
+            prefix = "👑 " if is_rerun else "📄 "
+            suffix = " (экспертный перезапуск)" if is_rerun else " (исходный отчет)"
+            candidates.append({
+                "kind": k,
+                "composite_id": f"{rj.id}:{k}",
+                "label": f"{prefix}{item.get('label') or k}{suffix}",
+                "filename": p.name,
+                "job_id": rj.id,
+                "job_number": getattr(rj, "job_number", None),
+                "job_status": getattr(rj, "status", "") or "",
+                "verified_count": int(getattr(rj, "verified_count", 0) or 0),
+                "is_admin_rerun": is_rerun,
+                "is_empty_result": is_empty_result,
+                "is_recommended": is_rec,
+                "created_at": rj.created_at.isoformat() if rj.created_at else None,
+            })
+
+    # Calculate offer preview
+    max_verified = max(
+        [int(getattr(rj, "verified_count", 0) or 0) for rj in related_jobs],
+        default=int(getattr(job, "verified_count", 0) or 0),
+    )
+    charged_txs = (
+        db.query(BillingTransaction)
+        .filter(
+            BillingTransaction.job_id == root_id,
+            BillingTransaction.operation == "charge",
+        )
+        .all()
+    )
+    already_charged_units = sum(int(tx.units or 0) for tx in charged_txs)
+    already_charged_kopeks = sum(int(tx.amount_kopeks or 0) for tx in charged_txs)
+
+    client_obj = db.get(Client, job.client_id) if job.client_id else None
+    avail_kopeks = (
+        max(0, int(client_obj.money_balance_kopeks or 0) - int(client_obj.money_reserved_kopeks or 0))
+        if client_obj
+        else 0
+    )
+
+    unit_price_kopeks = 0
+    if client_obj:
+        if job.mode in ("price_monitoring", "exact_product"):
+            sel_data = read_selection(job)
+            unit_price_kopeks = (
+                int(sel_data.get("price_kopeks"))
+                if "price_kopeks" in sel_data and sel_data.get("price_kopeks") is not None
+                else effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
+            )
+        else:
+            unit_price_kopeks = effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
+
+    if job.mode in ("price_monitoring", "exact_product"):
+        delta_units = max(0, max_verified - already_charged_units)
+        needed_kopeks = delta_units * unit_price_kopeks
+    else:
+        delta_units = 1 if already_charged_kopeks == 0 else 0
+        needed_kopeks = unit_price_kopeks if delta_units > 0 else 0
+
+    charge_rub = round(needed_kopeks / 100, 2)
+    charge_rub_str = str(int(charge_rub)) if charge_rub == int(charge_rub) else f"{charge_rub:.2f}".rstrip("0").rstrip(".")
+    already_charged_rub = round(already_charged_kopeks / 100, 2)
+    requires_payment_approval = needed_kopeks > 0
+    prior_c = already_charged_units or int(job.verified_count or 0)
+    is_supplier_job = job.mode in (MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS)
+    if is_supplier_job:
+        default_offer_comment = (
+            (
+                f"Здравствуйте! Специалисты TenderLex провели экспертный подбор по вашей задаче: найдено {max_verified} комп. "
+                f"(ранее было {prior_c}). Готовы выдать обновлённый отчёт. "
+                f"Стоимость доплаты составит {charge_rub_str} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи."
+            )
+            if requires_payment_approval
+            else ""
+        )
+    else:
+        default_offer_comment = (
+            (
+                f"Здравствуйте! Специалисты TenderLex пересчитали спецификацию: найдено {max_verified} поз. "
+                f"(ранее было {prior_c} поз.). Готовы выдать дополненный экспертный отчёт. "
+                f"Стоимость доплаты составит {charge_rub_str} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи."
+            )
+            if requires_payment_approval
+            else ""
+        )
+
+    offer_preview = {
+        "client_id": job.client_id or "",
+        "client_name": client_obj.name if client_obj else "",
+        "client_balance_rub": round(avail_kopeks / 100, 2),
+        "already_charged_rub": already_charged_rub,
+        "requires_payment_approval": requires_payment_approval,
+        "prior_verified_count": prior_c,
+        "new_verified_count": max_verified,
+        "delta_units": delta_units,
+        "unit_price_rub": round(unit_price_kopeks / 100, 2),
+        "charge_amount_rub": charge_rub,
+        "can_afford": avail_kopeks >= needed_kopeks,
+        "default_offer_comment": default_offer_comment,
+    }
 
     return {
         "success": True,
         "job_id": job.id,
         "root_job_id": root_id,
         "candidates": candidates,
+        "offer_preview": offer_preview,
     }
+
+
+@app.post("/api/jobs/{job_id}/position-selection", dependencies=[Depends(require_admin)])
+@app.post("/api/jobs/{job_id}/exact-selection", dependencies=[Depends(require_admin)])
+async def admin_exact_selection_route(job_id: str, request: Request, db: Session = Depends(db_session)) -> dict:
+    job = resolve_admin_job(job_id, db)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректный выбор позиций.")
+    try:
+        changed = confirm_position_selection(db, job, payload.get("revision"), payload.get("selected_item_ids"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if changed:
+        enqueue_job(job.id)
+    return {"ok": True, "job": job_to_dict(job)}
 
 
 @app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(require_admin)])
@@ -3117,6 +5155,13 @@ def cancel_job(job_id: str, db: Session = Depends(db_session)) -> dict:
         raise HTTPException(status_code=404, detail="Job not found")
     if job.status in TERMINAL_JOB_STATUSES:
         return {"success": True, "job": job_to_dict(job), "note": "Job already in terminal status"}
+    if job.mode in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}:
+        cancel_atomic = cancel_price_monitoring_job if job.mode == MODE_PRICE_MONITORING else cancel_exact_product_job
+        cancelled = cancel_atomic(db, job, note="Резерв возвращён: задача отменена администратором", message="Задача отменена администратором")
+        if cancelled:
+            cancel_running_job(job.id)
+        db.refresh(job)
+        return {"success": cancelled, "job": job_to_dict(job)}
     release_job_reservation(db, job, note="Резерв возвращён: задача отменена администратором")
     job.status = "cancelled"
     job.progress = 100
@@ -3143,6 +5188,12 @@ def force_fail_stale_jobs(
     )
     cancelled = []
     for job in stale_jobs:
+        if job.mode in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}:
+            cancel_atomic = cancel_price_monitoring_job if job.mode == MODE_PRICE_MONITORING else cancel_exact_product_job
+            if cancel_atomic(db, job, note="Резерв возвращён: задача зависла", message="Задача принудительно остановлена"):
+                cancel_running_job(job.id)
+                cancelled.append(job.id)
+            continue
         release_job_reservation(db, job, note="Резерв возвращён: задача зависла и принудительно остановлена")
         job.status = "cancelled"
         job.progress = 100
@@ -3192,11 +5243,21 @@ async def upload_admin_supplement(
     source_mode: str = Form(default="upload"),
     file_kinds: str = Form(default=""),
     file_kind: str = Form(default=""),
+    as_offer: bool = Form(default=False),
+    waive_charge: bool = Form(default=False),
+    offer_charge_rub: float | None = Form(default=None),
     db: Session = Depends(db_session),
 ) -> dict:
     job = resolve_admin_job(job_id, db)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    # Если админ нажал «Дополнить отчёт» на карточке экспертного перезапуска (is_admin_rerun),
+    # привязываем дополнение к родительской задаче клиента, чтобы клиент увидел его в личном кабинете.
+    if getattr(job, "is_admin_rerun", False) and getattr(job, "parent_job_id", ""):
+        parent_job = db.get(Job, job.parent_job_id)
+        if parent_job is not None:
+            job = parent_job
 
     clean_comment = str(comment if isinstance(comment, str) else "").strip()
     supplement_items: list[dict] = []
@@ -3215,14 +5276,40 @@ async def upload_admin_supplement(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     if (source_mode == "job_file" or raw_kinds) and not all_uploads:
-        output_items = package_job_output_items(job)
-        for target_kind in raw_kinds:
+        root_id = job.parent_job_id if getattr(job, "parent_job_id", "") else job.id
+        related_jobs_map: dict[str, Job] = {
+            rj.id: rj
+            for rj in db.query(Job).filter(
+                or_(
+                    Job.id == root_id,
+                    Job.parent_job_id == root_id,
+                    Job.id == job.id,
+                )
+            ).all()
+        }
+        used_dest_names: set[str] = set()
+        for raw_k in raw_kinds:
+            if ":" in raw_k:
+                target_jid, _, target_kind = raw_k.partition(":")
+            else:
+                target_jid, target_kind = job.id, raw_k
+            src_job = related_jobs_map.get(target_jid) or db.get(Job, target_jid) or job
+            output_items = package_job_output_items(src_job)
             for item in output_items:
                 k = str(item.get("kind") or "").strip()
                 p = Path(str(item.get("path") or ""))
-                if k == target_kind or p.name == target_kind:
+                if k == target_kind or p.name == target_kind or k == raw_k or p.name == raw_k:
                     if p.is_file():
-                        dest = target_dir / f"supplement_{p.name}"
+                        dest_name = f"supplement_{p.name}"
+                        if dest_name.lower() in used_dest_names:
+                            short_jid = (src_job.id or "")[:6]
+                            dest_name = f"supplement_{p.stem}_{short_jid}{p.suffix}"
+                            idx = 2
+                            while dest_name.lower() in used_dest_names:
+                                dest_name = f"supplement_{p.stem}_{short_jid}_{idx}{p.suffix}"
+                                idx += 1
+                        used_dest_names.add(dest_name.lower())
+                        dest = target_dir / dest_name
                         shutil.copy2(p, dest)
                         supplement_items.append({
                             "path": str(dest),
@@ -3261,6 +5348,199 @@ async def upload_admin_supplement(
 
     if clean_comment:
         job.admin_comment = clean_comment
+
+    # Рассчитываем позиции и стоимость доплаты
+    root_id = job.parent_job_id if getattr(job, "parent_job_id", "") and getattr(job, "is_admin_rerun", False) else job.id
+    all_rel_jobs = (
+        db.query(Job)
+        .filter(or_(Job.id == root_id, Job.parent_job_id == root_id, Job.id == job.id))
+        .all()
+    )
+    max_verified = max(
+        [int(getattr(rj, "verified_count", 0) or 0) for rj in all_rel_jobs],
+        default=int(getattr(job, "verified_count", 0) or 0),
+    )
+    charged_txs = (
+        db.query(BillingTransaction)
+        .filter(
+            BillingTransaction.job_id == root_id,
+            BillingTransaction.operation == "charge",
+        )
+        .all()
+    )
+    already_charged_units = sum(int(tx.units or 0) for tx in charged_txs)
+    already_charged_kopeks = sum(int(tx.amount_kopeks or 0) for tx in charged_txs)
+
+    client_obj = db.get(Client, job.client_id) if job.client_id else None
+    avail_kopeks = (
+        max(0, int(client_obj.money_balance_kopeks or 0) - int(client_obj.money_reserved_kopeks or 0))
+        if client_obj
+        else 0
+    )
+
+    unit_price_kopeks = 0
+    if client_obj:
+        if job.mode in ("price_monitoring", "exact_product"):
+            sel_data = read_selection(job)
+            unit_price_kopeks = (
+                int(sel_data.get("price_kopeks"))
+                if "price_kopeks" in sel_data and sel_data.get("price_kopeks") is not None
+                else effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
+            )
+        else:
+            unit_price_kopeks = effective_job_unit_price_kopeks(db, client_obj, job.mode, job=job)
+
+    if job.mode in ("price_monitoring", "exact_product"):
+        delta_units = max(0, max_verified - already_charged_units)
+        needed_kopeks = delta_units * unit_price_kopeks
+    else:
+        delta_units = 1 if already_charged_kopeks == 0 else 0
+        needed_kopeks = unit_price_kopeks if delta_units > 0 else 0
+
+    # Normalize Form parameters when invoked directly in tests
+    is_offer = False
+    if isinstance(as_offer, bool):
+        is_offer = as_offer
+    elif hasattr(as_offer, "default"):
+        is_offer = bool(as_offer.default)
+    elif isinstance(as_offer, str):
+        is_offer = as_offer.lower() in ("true", "1", "yes")
+
+    is_waived = False
+    if isinstance(waive_charge, bool):
+        is_waived = waive_charge
+    elif hasattr(waive_charge, "default"):
+        is_waived = bool(waive_charge.default)
+    elif isinstance(waive_charge, str):
+        is_waived = waive_charge.lower() in ("true", "1", "yes")
+
+    clean_charge_rub: float | None = None
+    if isinstance(offer_charge_rub, (int, float)):
+        clean_charge_rub = float(offer_charge_rub)
+    elif hasattr(offer_charge_rub, "default") and isinstance(getattr(offer_charge_rub, "default", None), (int, float)):
+        clean_charge_rub = float(offer_charge_rub.default)
+    elif isinstance(offer_charge_rub, str) and offer_charge_rub.strip():
+        try:
+            clean_charge_rub = float(offer_charge_rub.strip())
+        except ValueError:
+            clean_charge_rub = None
+
+    if is_waived:
+        is_offer = False
+        needed_kopeks = 0
+    elif clean_charge_rub is not None:
+        needed_kopeks = max(0, int(round(clean_charge_rub * 100)))
+
+    charge_rub = round(needed_kopeks / 100, 2)
+    prior_c = already_charged_units or int(job.verified_count or 0)
+
+    if needed_kopeks <= 0:
+        if _is_zero_rub_offer_comment(clean_comment):
+            clean_comment = "Экспертный отчёт TenderLex дополнен новыми материалами."
+            job.admin_comment = clean_comment
+        elif not clean_comment and _is_zero_rub_offer_comment(getattr(job, "admin_comment", "")):
+            job.admin_comment = "Экспертный отчёт TenderLex дополнен новыми материалами."
+
+    # Если отправляется как предложение клиенту на согласование (деньги спишутся только после согласия)
+    if is_offer and needed_kopeks > 0:
+        offer_payload = {
+            "kind": "admin_supplement_offer",
+            "created_at": now_utc().isoformat(),
+            "expires_at": (now_utc() + timedelta(days=3)).isoformat(),
+            "prior_count": prior_c,
+            "new_count": max_verified,
+            "delta_units": delta_units,
+            "unit_price_kopeks": unit_price_kopeks,
+            "charge_amount_kopeks": needed_kopeks,
+            "charge_amount_rub": charge_rub,
+            "comment": clean_comment,
+            "items": supplement_items,
+            "status": "pending",
+        }
+        (target_dir / "supplement_offer.json").write_text(
+            json.dumps(offer_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        job.status = STATUS_AWAITING_CUSTOMER_CONFIRMATION
+        job.confirmation_kind = "admin_supplement_offer"
+        job.confirmation_outcome = "pending"
+        job.confirmation_offered_at = now_utc()
+        job.confirmation_expires_at = now_utc() + timedelta(days=3)
+        job.progress = 100
+        job.message = f"Эксперты TenderLex пересчитали спецификацию: найдено {max_verified} поз. Ожидается подтверждение клиента на доплату {charge_rub} ₽."
+
+        chat_text = clean_comment or (
+            f"Здравствуйте! Специалисты TenderLex пересчитали вашу спецификацию: найдено {max_verified} поз. (ранее было {prior_c} поз.). "
+            f"Готовы выдать дополненный экспертный отчёт. Стоимость доплаты составит {charge_rub} ₽ с баланса. "
+            f"Подтвердите, пожалуйста, согласие на карточке задачи в кабинете."
+        )
+    else:
+        # Прямая публикация без ожидания согласования (или бесплатное дополнение)
+        if supplement_items and job.client_id and not getattr(job, "is_admin_rerun", False) and needed_kopeks > 0:
+            try:
+                if client_obj is not None and avail_kopeks > 0:
+                    actual_charge = min(needed_kopeks, avail_kopeks)
+                    if actual_charge > 0:
+                        client_obj.money_balance_kopeks = int(client_obj.money_balance_kopeks or 0) - actual_charge
+                        existing_charge = (
+                            db.query(BillingTransaction)
+                            .filter(
+                                BillingTransaction.job_id == job.id,
+                                BillingTransaction.kind == job.mode,
+                                BillingTransaction.operation == "charge",
+                            )
+                            .first()
+                        )
+                        tx_kind = f"{job.mode}_supplement" if existing_charge is not None else job.mode
+                        db.add(
+                            BillingTransaction(
+                                client_id=client_obj.id,
+                                job_id=job.id,
+                                kind=tx_kind,
+                                operation="charge",
+                                units=delta_units or 1,
+                                amount_kopeks=actual_charge,
+                                note=f"Оплата по дополненному экспертному отчёту: +{delta_units} поз. (всего найдено {max_verified} поз.)",
+                            )
+                        )
+            except Exception as bill_exc:
+                logger.warning("Failed to settle supplement charge for job %s: %s", job.id, bill_exc)
+
+        if max_verified > int(getattr(job, "verified_count", 0) or 0):
+            job.verified_count = max_verified
+
+        (target_dir / "supplement_offer.json").unlink(missing_ok=True)
+        if getattr(job, "confirmation_kind", "") == "admin_supplement_offer":
+            job.confirmation_kind = ""
+            job.confirmation_outcome = ""
+
+        job.status = "completed"
+        job.progress = 100
+        job.error = ""
+        job.message = "Дополнено экспертом TenderLex (без списания — бонус)" if is_waived else "Дополнено экспертом TenderLex"
+        chat_text = clean_comment or (
+            "Экспертный отчёт TenderLex подготовлен и опубликован для вас бонусом без списания средств."
+            if is_waived
+            else "Экспертный отчёт TenderLex дополнен новыми материалами."
+        )
+
+    # Seed prior messages if any
+    get_job_chat_messages(db, job, auto_seed=True)
+
+    # Record chat message from admin
+    chat_msg = JobChatMessage(
+        id=new_id(),
+        job_id=root_id,
+        client_id=job.client_id or "",
+        sender_role="admin",
+        message=chat_text,
+        attachments_json=json.dumps(supplement_items, ensure_ascii=False),
+        is_read_by_admin=True,
+        is_read_by_client=False,
+        created_at=now_utc(),
+    )
+    db.add(chat_msg)
+
     job.admin_supplement_at = now_utc()
     job.updated_at = now_utc()
     db.commit()
@@ -3270,16 +5550,27 @@ async def upload_admin_supplement(
         target_tg_id = job.created_by_telegram_id or (job.client.telegram_id if job.client else "")
         if target_tg_id:
             try:
-                from .bot import send_admin_supplement_telegram
-
-                supp_list = get_job_admin_supplements(job)
-                tg_sent = await send_admin_supplement_telegram(
-                    telegram_id=target_tg_id,
-                    job_title=human_job_title(job) or job.title,
-                    job_id=job.id,
-                    comment=job.admin_comment,
-                    files=supp_list,
-                )
+                if is_offer and needed_kopeks > 0:
+                    from .bot import bot
+                    tg_text = (
+                        f"📋 *Предложение по задаче «{human_job_title(job) or job.title}»*\n\n"
+                        f"Специалисты TenderLex пересчитали спецификацию: найдено *{max_verified}* позиций "
+                        f"(ранее было {prior_c}).\n"
+                        f"Стоимость доплаты: *{charge_rub} ₽* с баланса.\n\n"
+                        f"Перейдите в личный кабинет на сайте https://tenderlex.ru/cabinet для согласования и скачивания отчёта."
+                    )
+                    await bot.send_message(chat_id=int(target_tg_id), text=tg_text, parse_mode="Markdown")
+                    tg_sent = True
+                else:
+                    from .bot import send_admin_supplement_telegram
+                    supp_list = get_job_admin_supplements(job)
+                    tg_sent = await send_admin_supplement_telegram(
+                        telegram_id=target_tg_id,
+                        job_title=human_job_title(job) or job.title,
+                        job_id=job.id,
+                        comment=job.admin_comment,
+                        files=supp_list,
+                    )
             except Exception as exc:
                 logger.warning("Error notifying telegram in admin-supplement: %s", exc)
 
@@ -3290,6 +5581,461 @@ async def upload_admin_supplement(
     }
 
 
+@app.get("/api/admin/dialogs", dependencies=[Depends(require_admin)])
+def admin_dialogs_list(
+    db: Session = Depends(db_session),
+    filter_unread: bool = False,
+) -> dict:
+    chat_client_ids = [row[0] for row in db.query(JobChatMessage.client_id).distinct().all() if row[0]]
+    comment_jobs = (
+        db.query(Job)
+        .filter(
+            or_(
+                func.coalesce(Job.admin_comment, "") != "",
+                func.coalesce(Job.admin_supplement_path, "") != "",
+            ),
+            Job.is_admin_rerun == False,
+        )
+        .all()
+    )
+    all_client_ids = list(dict.fromkeys(chat_client_ids + [j.client_id for j in comment_jobs if j.client_id]))
+    if not all_client_ids:
+        return {"dialogs": [], "total_unread_admin": 0}
+
+    clients = (
+        db.query(Client)
+        .options(selectinload(Client.web_users), selectinload(Client.jobs))
+        .filter(Client.id.in_(all_client_ids))
+        .all()
+    )
+    client_map = {c.id: c for c in clients}
+
+    all_msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id.in_(all_client_ids))
+        .order_by(JobChatMessage.created_at.asc())
+        .all()
+    )
+    msgs_by_client: dict[str, list[JobChatMessage]] = {}
+    for m in all_msgs:
+        msgs_by_client.setdefault(m.client_id, []).append(m)
+
+    dialogs = []
+    total_unread_admin = 0
+
+    for cid in all_client_ids:
+        client = client_map.get(cid)
+        if not client:
+            continue
+
+        msgs = msgs_by_client.get(cid)
+        if not msgs:
+            for j in client.jobs:
+                if not getattr(j, "is_admin_rerun", False):
+                    get_job_chat_messages(db, j, auto_seed=True)
+            msgs = (
+                db.query(JobChatMessage)
+                .filter(JobChatMessage.client_id == cid)
+                .order_by(JobChatMessage.created_at.asc())
+                .all()
+            )
+            if not msgs:
+                continue
+
+        unread_cnt = sum(1 for m in msgs if m.sender_role == "client" and not m.is_read_by_admin)
+        total_unread_admin += unread_cnt
+
+        if filter_unread and unread_cnt == 0:
+            continue
+
+        last_m = msgs[-1]
+        client_name = client.name if client else ""
+        client_email = ""
+        client_phone = getattr(client, "phone", "") or ""
+        if client and client.web_users:
+            for wu in client.web_users:
+                if wu.email and not client_email:
+                    client_email = wu.email
+                if getattr(wu, "phone", "") and not client_phone:
+                    client_phone = wu.phone
+
+        client_jobs = []
+        for j in client.jobs:
+            if not getattr(j, "is_admin_rerun", False):
+                client_jobs.append({
+                    "job_id": j.id,
+                    "job_number": getattr(j, "job_number", None),
+                    "job_title": human_job_title(j),
+                    "job_mode": j.mode,
+                    "job_mode_label": mode_label(j.mode),
+                    "job_status": j.status,
+                    "created_at": j.created_at.isoformat() if j.created_at else None,
+                })
+        client_jobs.sort(key=lambda x: x.get("job_number") or 0, reverse=True)
+        primary_job = client_jobs[0] if client_jobs else None
+
+        dialogs.append({
+            "client_id": client.id,
+            "client_number": getattr(client, "client_number", None),
+            "client_name": client_name or "Без названия",
+            "client_email": client_email,
+            "client_phone": client_phone,
+            "telegram_id": client.telegram_id if client else "",
+            "last_message": last_m.message or ("📎 Прикреплены файлы" if last_m.attachments_json != "[]" else ""),
+            "last_message_at": last_m.created_at.isoformat() if last_m.created_at else None,
+            "last_sender_role": last_m.sender_role,
+            "unread_admin_count": unread_cnt,
+            "total_messages": len(msgs),
+            "jobs": client_jobs,
+            "job_id": primary_job["job_id"] if primary_job else "",
+            "job_number": primary_job["job_number"] if primary_job else None,
+            "job_title": primary_job["job_title"] if primary_job else "",
+            "job_mode": primary_job["job_mode"] if primary_job else "",
+            "job_mode_label": primary_job["job_mode_label"] if primary_job else "",
+            "job_status": primary_job["job_status"] if primary_job else "",
+        })
+
+    dialogs.sort(key=lambda d: d.get("last_message_at") or "", reverse=True)
+    return {"dialogs": dialogs, "total_unread_admin": total_unread_admin}
+
+
+@app.get("/api/admin/clients/{client_id}/chat", dependencies=[Depends(require_admin)])
+def admin_client_chat_get(client_id: str, db: Session = Depends(db_session)) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Клиент не найден.")
+
+    # Fast single query for chat messages
+    msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == client_id)
+        .order_by(JobChatMessage.created_at.asc())
+        .all()
+    )
+
+    # Only auto-seed if any job has admin comment/supplements and does not have chat messages yet
+    existing_job_ids = {m.job_id for m in msgs}
+    candidates = [
+        j for j in client.jobs
+        if not getattr(j, "is_admin_rerun", False)
+        and resolve_chat_job_id(j) not in existing_job_ids
+        and (getattr(j, "admin_comment", "") or get_job_admin_supplements(j))
+    ]
+    if candidates:
+        for j in candidates[:5]:
+            get_job_chat_messages(db, j, auto_seed=True)
+        msgs = (
+            db.query(JobChatMessage)
+            .filter(JobChatMessage.client_id == client_id)
+            .order_by(JobChatMessage.created_at.asc())
+            .all()
+        )
+
+    updated = False
+    for m in msgs:
+        if m.sender_role == "client" and not m.is_read_by_admin:
+            m.is_read_by_admin = True
+            updated = True
+    if updated:
+        db.commit()
+
+    job_map = {j.id: j for j in client.jobs}
+    client_jobs = []
+    for j in client.jobs:
+        if not getattr(j, "is_admin_rerun", False):
+            client_jobs.append({
+                "job_id": j.id,
+                "job_number": getattr(j, "job_number", None),
+                "job_title": human_job_title(j),
+                "job_mode": j.mode,
+                "job_mode_label": mode_label(j.mode),
+                "job_status": j.status,
+            })
+    client_jobs.sort(key=lambda x: x.get("job_number") or 0, reverse=True)
+
+    client_email = ""
+    client_phone = getattr(client, "phone", "") or ""
+    if client.web_users:
+        for wu in client.web_users:
+            if wu.email and not client_email:
+                client_email = wu.email
+            if getattr(wu, "phone", "") and not client_phone:
+                client_phone = wu.phone
+
+    return {
+        "client": {
+            "id": client.id,
+            "number": client.client_number,
+            "name": client.name or "Без названия",
+            "email": client_email,
+            "phone": client_phone,
+            "telegram_id": client.telegram_id or "",
+        },
+        "jobs": client_jobs,
+        "messages": [chat_message_to_dict(m, job_map=job_map) for m in msgs],
+    }
+
+
+@app.post("/api/admin/clients/{client_id}/chat", dependencies=[Depends(require_admin)])
+async def admin_client_chat_post(
+    client_id: str,
+    message: str = Form(default=""),
+    job_id: str = Form(default=""),
+    notify_telegram: bool = Form(default=False),
+    files: list[UploadFile] = File(default=[]),
+    file: UploadFile | None = File(default=None),
+    db: Session = Depends(db_session),
+) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Клиент не найден.")
+
+    clean_message = str(message or "").strip()
+    clean_job_id = str(job_id or "").strip()
+
+    all_uploads: list[UploadFile] = []
+    if files and isinstance(files, (list, tuple)):
+        all_uploads.extend([f for f in files if isinstance(f, UploadFile)])
+    if file and isinstance(file, UploadFile) and file not in all_uploads:
+        all_uploads.append(file)
+
+    if not clean_message and not all_uploads:
+        raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
+
+    target_job = None
+    root_job_id = ""
+    if clean_job_id:
+        target_job = db.get(Job, clean_job_id)
+        if target_job and target_job.client_id == client_id:
+            root_job_id = resolve_chat_job_id(target_job)
+            target_dir = job_dir(root_job_id) / "chat"
+        else:
+            clean_job_id = ""
+
+    if not clean_job_id:
+        target_dir = Path(config.storage_path) / "clients" / client_id / "chat"
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    attachments: list[dict] = []
+    for uf in all_uploads:
+        if not uf.filename:
+            continue
+        content = await uf.read()
+        if content:
+            safe_name = Path(uf.filename).name
+            dest = target_dir / f"{int(time.time())}_{safe_name}"
+            dest.write_bytes(content)
+            attachments.append({
+                "path": str(dest),
+                "name": safe_name,
+                "label": safe_name,
+                "size": len(content),
+            })
+
+    new_msg = JobChatMessage(
+        id=new_id(),
+        job_id=root_job_id or clean_job_id or "",
+        client_id=client_id,
+        sender_role="admin",
+        message=clean_message,
+        attachments_json=json.dumps(attachments, ensure_ascii=False),
+        is_read_by_admin=True,
+        is_read_by_client=False,
+        created_at=now_utc(),
+    )
+    db.add(new_msg)
+
+    if target_job:
+        if clean_message:
+            target_job.admin_comment = clean_message
+        target_job.admin_supplement_at = now_utc()
+        target_job.updated_at = now_utc()
+    db.commit()
+
+    if notify_telegram and client.telegram_id:
+        try:
+            from .bot import send_admin_supplement_telegram
+            if target_job:
+                supp_list = get_job_admin_supplements(target_job)
+                await send_admin_supplement_telegram(
+                    telegram_id=client.telegram_id,
+                    job_title=human_job_title(target_job) or target_job.title,
+                    job_id=target_job.id,
+                    comment=clean_message,
+                    files=supp_list,
+                )
+            else:
+                bot_token = (config.bot_token or os.getenv("AIPOISK_BOT_TOKEN") or "").strip()
+                if bot_token:
+                    async with httpx.AsyncClient(timeout=8.0) as http_client:
+                        await http_client.post(
+                            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                            json={
+                                "chat_id": client.telegram_id,
+                                "text": f"💬 <b>Специалист TenderLex ответил вам:</b>\n\n{html_escape(clean_message)}",
+                                "parse_mode": "HTML",
+                            },
+                        )
+        except Exception as exc:
+            logger.warning("Error notifying telegram in admin client chat: %s", exc)
+
+    job_map = {j.id: j for j in client.jobs}
+    msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == client_id)
+        .order_by(JobChatMessage.created_at.asc())
+        .all()
+    )
+    return {"ok": True, "messages": [chat_message_to_dict(m, job_map=job_map) for m in msgs]}
+
+
+@app.get("/api/admin/chat/{message_id}/attachment/{att_idx}", dependencies=[Depends(require_admin)])
+def admin_chat_attachment(
+    message_id: str,
+    att_idx: int,
+    db: Session = Depends(db_session),
+):
+    msg = db.get(JobChatMessage, message_id)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Сообщение не найдено.")
+    try:
+        raw = json.loads(msg.attachments_json or "[]")
+        if not isinstance(raw, list) or att_idx < 0 or att_idx >= len(raw):
+            raise HTTPException(status_code=404, detail="Вложение не найдено.")
+        att = raw[att_idx]
+        p = Path(str(att.get("path") or ""))
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail="Файл вложения не найден на диске.")
+        return FileResponse(p, filename=att.get("name") or p.name)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=404, detail="Не удалось прочитать вложение.")
+
+
+@app.get("/api/jobs/{job_id}/chat", dependencies=[Depends(require_admin)])
+def admin_job_chat_get(job_id: str, db: Session = Depends(db_session)) -> dict:
+    job = resolve_admin_job(job_id, db)
+    if not job:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    msgs = get_job_chat_messages(db, job, auto_seed=True)
+    updated = False
+    for m in msgs:
+        if m.sender_role == "client" and not m.is_read_by_admin:
+            m.is_read_by_admin = True
+            updated = True
+    if updated:
+        db.commit()
+    return {"messages": [chat_message_to_dict(m) for m in msgs]}
+
+
+@app.post("/api/jobs/{job_id}/chat", dependencies=[Depends(require_admin)])
+async def admin_job_chat_post(
+    job_id: str,
+    message: str = Form(default=""),
+    notify_telegram: bool = Form(default=False),
+    files: list[UploadFile] = File(default=[]),
+    file: UploadFile | None = File(default=None),
+    db: Session = Depends(db_session),
+) -> dict:
+    job = resolve_admin_job(job_id, db)
+    if not job:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    root_id = resolve_chat_job_id(job)
+    clean_message = str(message or "").strip()
+
+    all_uploads: list[UploadFile] = []
+    if files and isinstance(files, (list, tuple)):
+        all_uploads.extend([f for f in files if isinstance(f, UploadFile)])
+    if file and isinstance(file, UploadFile) and file not in all_uploads:
+        all_uploads.append(file)
+
+    if not clean_message and not all_uploads:
+        raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
+
+    get_job_chat_messages(db, job, auto_seed=True)
+
+    target_dir = job_dir(root_id) / "chat"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    attachments: list[dict] = []
+    for uf in all_uploads:
+        if not uf.filename:
+            continue
+        content = await uf.read()
+        if content:
+            safe_name = Path(uf.filename).name
+            dest = target_dir / f"{int(time.time())}_{safe_name}"
+            dest.write_bytes(content)
+            attachments.append({
+                "path": str(dest),
+                "name": safe_name,
+                "label": safe_name,
+                "size": len(content),
+            })
+
+    new_msg = JobChatMessage(
+        id=new_id(),
+        job_id=root_id,
+        client_id=job.client_id or "",
+        sender_role="admin",
+        message=clean_message,
+        attachments_json=json.dumps(attachments, ensure_ascii=False),
+        is_read_by_admin=True,
+        is_read_by_client=False,
+        created_at=now_utc(),
+    )
+    db.add(new_msg)
+
+    target_job = db.get(Job, root_id) or job
+    if clean_message:
+        target_job.admin_comment = clean_message
+    target_job.admin_supplement_at = now_utc()
+    target_job.updated_at = now_utc()
+    db.commit()
+
+    if notify_telegram:
+        target_tg_id = target_job.created_by_telegram_id or (target_job.client.telegram_id if target_job.client else "")
+        if target_tg_id:
+            try:
+                from .bot import send_admin_supplement_telegram
+                supp_list = get_job_admin_supplements(target_job)
+                await send_admin_supplement_telegram(
+                    telegram_id=target_tg_id,
+                    job_title=human_job_title(target_job) or target_job.title,
+                    job_id=target_job.id,
+                    comment=clean_message,
+                    files=supp_list,
+                )
+            except Exception as exc:
+                logger.warning("Error notifying telegram in admin chat: %s", exc)
+
+    msgs = db.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).order_by(JobChatMessage.created_at.asc()).all()
+    return {"ok": True, "messages": [chat_message_to_dict(m) for m in msgs]}
+
+
+@app.get("/api/jobs/{job_id}/chat/{message_id}/attachment/{att_idx}", dependencies=[Depends(require_admin)])
+def admin_job_chat_attachment(
+    job_id: str,
+    message_id: str,
+    att_idx: int,
+    db: Session = Depends(db_session),
+):
+    msg = db.get(JobChatMessage, message_id)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Сообщение не найдено.")
+    try:
+        raw = json.loads(msg.attachments_json or "[]")
+        if not isinstance(raw, list) or att_idx < 0 or att_idx >= len(raw):
+            raise HTTPException(status_code=404, detail="Вложение не найдено.")
+        att = raw[att_idx]
+        p = Path(str(att.get("path") or ""))
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail="Файл вложения не найден на диске.")
+        return FileResponse(p, filename=att.get("name") or p.name)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=404, detail="Не удалось прочитать вложение.")
 def read_job_evidence_payload(job: Job, *, storage_root: Path | None = None) -> dict:
     evidence_path = str(getattr(job, "evidence_path", "") or "")
     root = (storage_root or config.storage_path).resolve()
@@ -3691,6 +6437,9 @@ def human_status_label(status: str) -> str:
         "needs_review": "нужна проверка",
         "failed": "ошибка",
         "awaiting_customer_confirmation": "ожидает клиента",
+        AWAITING_EXACT_SELECTION: "выберите товары",
+        AWAITING_POSITION_SELECTION: "выберите позиции",
+        "settling": "завершаю расчёт",
         "customer_declined": "отклонено",
         "confirmation_expired": "истёк срок",
         "cancelled": "отменено",
@@ -3855,14 +6604,6 @@ def _analytics_client_row(db: Session, client: Client, jobs: list[Job]) -> dict:
     }
 
 
-def _settings_yookassa_ready(settings: SystemSettings) -> bool:
-    return bool(
-        str(settings.payment_provider or "").lower() == "yookassa"
-        and str(settings.yookassa_shop_id or "").strip()
-        and str(settings.yookassa_secret_key or "").strip()
-    )
-
-
 def public_site_payload(db: Session) -> dict:
     settings = get_or_create_settings(db)
     tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
@@ -3927,7 +6668,7 @@ def public_site_payload(db: Session) -> dict:
         },
         "geo_radius": {
             "enabled": bool(getattr(settings, "geo_radius_search_enabled_global", False)),
-            "surcharge_pct": float(getattr(settings, "geo_radius_surcharge_pct", 30.0) or 30.0),
+            "surcharge_pct": configured_geo_surcharge_pct(settings),
         },
         "updated_at": settings.updated_at.isoformat() if settings.updated_at else None,
     }
@@ -3994,11 +6735,14 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
     settings = get_or_create_settings(db)
     tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
     deposit_packages = [item for item in tariffs if item["kind"] == "deposit"]
-    price_search = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH) or 9900
-    price_exact = effective_price_kopeks(db, user.client, KIND_EXACT_PRODUCT) or 9900
-    price_report = effective_price_kopeks(db, user.client, KIND_PROCUREMENT_REPORT) or 9900
-    price_extra = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH_EXTRA) or 4900
-    price_monitoring = effective_price_kopeks(db, user.client, KIND_PRICE_MONITORING) or int(getattr(settings, "price_monitoring_default_price_kopeks", 5000) or 5000)
+    balance = client_usage_summary(db, user.client)
+
+    eff = balance.get("effective_prices", {})
+    price_search = int(eff.get(KIND_SUPPLIER_SEARCH, {}).get("price_kopeks") or 9900)
+    price_exact = int(eff.get(KIND_EXACT_PRODUCT, {}).get("price_kopeks") or 9900)
+    price_report = int(eff.get(KIND_PROCUREMENT_REPORT, {}).get("price_kopeks") or 9900)
+    price_extra = int(eff.get(KIND_SUPPLIER_SEARCH_EXTRA, {}).get("price_kopeks") or 4900)
+    price_monitoring = int(eff.get(KIND_PRICE_MONITORING, {}).get("price_kopeks") or int(getattr(settings, "price_monitoring_default_price_kopeks", 5000) or 5000))
     function_prices = {
         "supplier_search": {"price_kopeks": price_search, "price_rub": round(price_search / 100)},
         "exact_product": {"price_kopeks": price_exact, "price_rub": round(price_exact / 100)},
@@ -4012,7 +6756,7 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
         "csrf_token": csrf_token,
         "csrf_header": CSRF_HEADER,
         "user": customer_user_to_dict(db, user),
-        "balance": client_usage_summary(db, user.client),
+        "balance": balance,
         "limits": {
             "max_upload_mb": int(settings.max_upload_mb or 50),
             "max_files_per_batch": int(settings.max_files_per_batch or 20),
@@ -4062,16 +6806,30 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         getattr(settings, "geo_radius_search_enabled_global", False)
         or (user.client and getattr(user.client, "allowed_geo_radius", False))
     )
+    has_telegram = bool(
+        (user.client and user.client.telegram_id and not str(user.client.telegram_id).startswith("web:"))
+        or (user.client and db.query(ClientTelegramAccount.id).filter(ClientTelegramAccount.client_id == user.client.id).first())
+    )
+    pm_mode = getattr(settings, "price_monitoring_access_mode", "all") or "all"
+    if pm_mode == "all":
+        is_pm_allowed = True
+    elif pm_mode == "disabled":
+        is_pm_allowed = False
+    else:
+        is_pm_allowed = bool(user.client and getattr(user.client, "allowed_price_monitoring", False))
     return {
         "id": user.id,
         "email": user.email,
         "name": user.name,
+        "phone": getattr(user, "phone", "") or (user.client and getattr(user.client, "phone", "")) or "",
+        "telegram_username": getattr(user, "telegram_username", "") or (user.client and getattr(user.client, "username", "")) or "",
         "is_active": bool(user.is_active),
         "is_email_verified": bool(user.is_email_verified),
+        "has_telegram": has_telegram,
         "client_id": user.client_id,
-        "allowed_price_monitoring": getattr(user.client, "allowed_price_monitoring", False) if user.client else False,
+        "allowed_price_monitoring": is_pm_allowed,
         "allowed_geo_radius": is_geo_allowed,
-        "geo_radius_surcharge_pct": float(getattr(settings, "geo_radius_surcharge_pct", 30.0) or 30.0),
+        "geo_radius_surcharge_pct": configured_geo_surcharge_pct(settings),
         "is_trial": client_uses_trial_access(db, user.client) if user.client else False,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
@@ -4134,7 +6892,13 @@ def customer_billing_transaction_to_dict(transaction: BillingTransaction) -> dic
     }
 
 
-def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session | None = None) -> dict:
+def customer_job_to_dict(
+    job: Job,
+    include_files: bool = False,
+    *,
+    db: Session | None = None,
+    chat_messages: list[dict] | None = None,
+) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
     result_files = customer_job_result_files(job)
     confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
@@ -4152,6 +6916,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
     raw_items = profile_dict.get("items") or []
     if raw_items:
         multi_item_details = {
+            "revision": _multi_item_selection_revision(job, dobor_ctx["procurement_profile"]) if isinstance(dobor_ctx.get("procurement_profile"), dict) else None,
             "items": [
                 {
                     "id": str(it.get("id") or f"item-{idx}"),
@@ -4170,8 +6935,44 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
             "multi_item_mode": getattr(job, "multi_item_mode", "balanced"),
         }
     status_lbl = human_status_label(job.status)
-    if job.status == "failed" and getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY and ("реестр" in (job.error or "").lower() or "реестр" in (job.message or "").lower()):
-        status_lbl = "нет в реестре"
+    is_cabinet_minprom_empty = (
+        job.status == "failed"
+        and (
+            getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY
+            or "реестр" in (job.error or "").lower()
+            or "реестр" in (job.message or "").lower()
+            or "минпром" in (job.message or "").lower()
+        )
+        and (
+            "не найден" in (job.message or "").lower()
+            or "не найден" in (job.error or "").lower()
+            or "реестр" in (job.message or "").lower()
+            or not getattr(job, "verified_count", 0)
+        )
+    )
+    if is_cabinet_minprom_empty:
+        status_lbl = "не найдено в Минпромторге"
+
+    chat_list: list[dict] = []
+    unread_admin_cnt = 0
+    if chat_messages is not None:
+        chat_list = chat_messages
+        unread_admin_cnt = sum(1 for m in chat_messages if m.get("sender_role") == "admin" and not m.get("is_read_by_client"))
+    else:
+        s = db or object_session(job)
+        if s:
+            try:
+                root_id = resolve_chat_job_id(job)
+                raw_msgs = s.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).order_by(JobChatMessage.created_at.asc()).all()
+                if not raw_msgs and (getattr(job, "admin_comment", "") or getattr(job, "admin_supplement_path", "")):
+                    raw_msgs = get_job_chat_messages(s, job, auto_seed=True)
+                for m in raw_msgs:
+                    chat_list.append(chat_message_to_dict(m))
+                    if m.sender_role == "admin" and not m.is_read_by_client:
+                        unread_admin_cnt += 1
+            except Exception:
+                pass
+
     data = {
         "id": job.id,
         "job_number": getattr(job, "job_number", None),
@@ -4183,10 +6984,15 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "multi_item_mode": getattr(job, "multi_item_mode", "balanced"),
         "delivery_city": getattr(job, "delivery_city", "") or "",
         "geo_radius_km": getattr(job, "geo_radius_km", None),
+        "geo_scope": getattr(job, "geo_scope", "ru") or "ru",
         "confirmation_kind": confirmation_kind,
         "multi_item_details": multi_item_details,
+        "exact_product_selection": read_selection(job) if job.mode == MODE_EXACT_PRODUCT else None,
+        "position_selection": read_selection(job) if job.mode in {MODE_EXACT_PRODUCT, MODE_PRICE_MONITORING} else None,
+        "exact_product_positions": _customer_exact_product_positions(job),
         "status": job.status,
         "status_label": status_lbl,
+        "is_minprom_empty": is_cabinet_minprom_empty,
         "progress": job.progress,
         "message": job.message,
         "title": job.title,
@@ -4198,18 +7004,20 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "file_count": job.file_count,
         "has_result": bool(result_files),
         "can_download": bool(result_files) and job.status not in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED},
-        "can_cancel": job.status in {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION},
+        "can_cancel": job.status in {"pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION, STATUS_AWAITING_CUSTOMER_CONFIRMATION},
         "can_find_more_suppliers": job_can_find_more_suppliers(job),
         "can_start_supplier_search": job_can_start_supplier_search(job),
         "exact_product_summary": _customer_exact_product_summary(job) if job_can_start_supplier_search(job) else None,
         "result_files": result_files,
         "result_offer": result_offer,
         "awaiting_customer_confirmation": job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION,
-        "error": job.error,
+        "error": sanitize_customer_error(job.error, mode=job.mode, message=job.message),
         "has_admin_supplement": bool(getattr(job, "admin_supplement_path", "") or getattr(job, "admin_comment", "")),
         "admin_comment": getattr(job, "admin_comment", "") or "",
         "admin_supplement_name": getattr(job, "admin_supplement_name", "") or "",
         "admin_supplement_at": job.admin_supplement_at.isoformat() if getattr(job, "admin_supplement_at", None) else None,
+        "chat_messages": chat_list,
+        "unread_admin_messages_count": unread_admin_cnt,
         "yandex_requests_count": getattr(job, "yandex_requests_count", 0) or 0,
         "yandex_cost_rub": getattr(job, "yandex_cost_rub", 0.0) or 0.0,
         "yandex_cost_label": f"{(getattr(job, 'yandex_cost_rub', 0.0) or 0.0):.2f} ₽",
@@ -4228,6 +7036,22 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
     return data
 
 
+def _customer_exact_product_positions(job: Job) -> list[dict]:
+    if job.mode != MODE_EXACT_PRODUCT or not job.evidence_path:
+        return []
+    try:
+        report = read_job_evidence_payload(job).get("exact_product_report") or {}
+        return [{"id": str(row.get("position_id") or ""), "position_no": row.get("position_no"),
+                 "name": row.get("name_in_tz") or "", "status": row.get("status") or "needs_clarification",
+                 "model": row.get("identified_model") or "", "manufacturer": row.get("manufacturer") or "",
+                 "alternatives": row.get("alternative_brands") or [], "error": row.get("error") or "",
+                 "source_url": row.get("source_url") or "",
+                 "can_retry_position": bool(row.get("position_id") and read_selection(job).get("confirmed") and job.status == "completed")}
+                for row in report.get("positions", []) if isinstance(row, dict)]
+    except Exception:
+        return []
+
+
 def customer_job_result_files(job: Job) -> list[dict]:
     if getattr(job, "status", "") in {"cancelled", STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED}:
         return []
@@ -4241,15 +7065,18 @@ def customer_job_result_files(job: Job) -> list[dict]:
                 "filename": path.name,
             }
         )
-    for supp in get_job_admin_supplements(job):
-        result.append(
-            {
-                "kind": supp["kind"],
-                "label": supp["label"],
-                "filename": supp["name"],
-                "is_admin_supplement": True,
-            }
-        )
+    if job.confirmation_kind == "admin_supplement_offer" and job.confirmation_outcome == "declined":
+        pass
+    else:
+        for supp in get_job_admin_supplements(job):
+            result.append(
+                {
+                    "kind": supp["kind"],
+                    "label": supp["label"],
+                    "filename": supp["name"],
+                    "is_admin_supplement": True,
+                }
+            )
     return result
 
 
@@ -4276,8 +7103,10 @@ async def create_customer_job_api(
     mode: str,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
     multi_item_mode: str = "balanced",
+    auto_confirm_strategy: bool = False,
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
     text: str = "",
     source_urls: str = "",
     target_suppliers: int = 0,
@@ -4292,7 +7121,11 @@ async def create_customer_job_api(
     normalized_policy = _normalize_supplier_search_policy_for_job(mode, supplier_search_policy)
     normalized_multi_item_mode = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
     settings = get_or_create_settings(db)
-    delivery_city = str(delivery_city or "").strip()
+    from .geo_policy import validate_geo_request
+    try:
+        delivery_city, geo_radius_km = validate_geo_request(delivery_city, geo_radius_km, mode=mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if delivery_city:
         is_geo_allowed = bool(
             getattr(settings, "geo_radius_search_enabled_global", False)
@@ -4327,10 +7160,12 @@ async def create_customer_job_api(
         mode,
         incoming_file_count=len(payload),
         supplier_search_count=supplier_search_count,
+        geo_radius_km=geo_radius_km,
     )
     if access_error:
         raise HTTPException(status_code=403, detail=access_error)
 
+    created_jobs: list[Job] = []
     try:
         if supplier_specs and len(supplier_specs) > 1:
             jobs: list[Job] = []
@@ -4348,10 +7183,20 @@ async def create_customer_job_api(
                     multi_item_mode=normalized_multi_item_mode,
                     delivery_city=delivery_city,
                     geo_radius_km=geo_radius_km,
+                    geo_scope=geo_scope,
+                    initial_status="draft",
                 )
+                if auto_confirm_strategy and normalized_multi_item_mode == "balanced":
+                    update_dobor_context_dict(job, {"multi_item_confirmed": True, "selected_item_ids": None})
+                created_jobs.append(job)
                 reserve_job_units(db, client, job)
-                enqueue_job(job.id)
                 jobs.append(job)
+            for ready in jobs:
+                ready.status = "pending"
+                ready.message = "Задача создана"
+            db.commit()
+            for ready in jobs:
+                enqueue_job(ready.id)
             return {"batch": True, "count": len(jobs), "jobs": [customer_job_to_dict(job) for job in jobs]}
 
         title = _customer_initial_job_title(mode, payload, sources)
@@ -4368,14 +7213,44 @@ async def create_customer_job_api(
             multi_item_mode=normalized_multi_item_mode,
             delivery_city=delivery_city,
             geo_radius_km=geo_radius_km,
+            geo_scope=geo_scope,
+            initial_status="draft",
         )
+        created_jobs.append(job)
+        if auto_confirm_strategy and mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS} and normalized_multi_item_mode == "balanced":
+            update_dobor_context_dict(job, {"multi_item_confirmed": True, "selected_item_ids": None})
         reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
+        job.status = "pending"
+        job.message = "Задача создана"
+        db.commit()
         enqueue_job(job.id)
     except BillingError as exc:
+        _abort_customer_job_creation(db, created_jobs, str(exc))
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
+        _abort_customer_job_creation(db, created_jobs, str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        _abort_customer_job_creation(db, created_jobs, "Не удалось запустить комплект")
+        raise
     return {"batch": False, "count": 1, "job": customer_job_to_dict(job)}
+
+
+def _abort_customer_job_creation(db: Session, jobs: list[Job], reason: str) -> None:
+    """Keep an audit trail but never leave staged batch reservations running."""
+    db.rollback()
+    for created in jobs:
+        db.refresh(created)
+        # Submitted jobs may already be owned by a worker; never rewind them.
+        if created.status != "draft":
+            continue
+        release_job_reservation(db, created, note="Комплект не запущен: резерв возвращён")
+        created.status = "failed"
+        created.error = reason[:500]
+        created.message = "Комплект не запущен; резерв возвращён"
+        created.completed_at = now_utc()
+        created.updated_at = now_utc()
+        db.commit()
 
 
 ALLOWED_UPLOAD_EXTENSIONS = {
@@ -4438,12 +7313,20 @@ def _customer_job_or_404(db: Session, job_id: str, context: WebAuthContext) -> J
     return job
 
 
-def download_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session):
-    job = _customer_job_or_404(db, job_id, context)
+def _ensure_customer_job_result_delivery_allowed(job: Job) -> None:
     if job.status in {STATUS_CONFIRMATION_EXPIRED, STATUS_DELIVERY_EXPIRED}:
         raise HTTPException(status_code=410, detail="Срок действия предложения или выдачи результата истёк.")
     if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
+    if job.status in {"cancelled", STATUS_CUSTOMER_DECLINED} or (
+        str(job.created_by_telegram_id or "").startswith("api:") and job.status != "completed"
+    ):
+        raise HTTPException(status_code=409, detail="Результат отменённой или незавершённой API-задачи недоступен.")
+
+
+def download_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session):
+    job = _customer_job_or_404(db, job_id, context)
+    _ensure_customer_job_result_delivery_allowed(job)
     output = package_job_outputs(job)
     if not output or not output.exists():
         items = package_job_output_items(job)
@@ -4461,12 +7344,11 @@ def download_customer_job_api(job_id: str, *, context: WebAuthContext, db: Sessi
 
 def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebAuthContext, db: Session):
     job = _customer_job_or_404(db, job_id, context)
-    if job.status in {STATUS_CONFIRMATION_EXPIRED, STATUS_DELIVERY_EXPIRED}:
-        raise HTTPException(status_code=410, detail="Срок действия предложения или выдачи результата истёк.")
-    if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
-        raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
+    _ensure_customer_job_result_delivery_allowed(job)
     normalized_kind = str(file_kind or "").strip()
     if normalized_kind in {"admin_supplement", "admin-supplement"} or normalized_kind.startswith("admin_supplement_") or normalized_kind.startswith("admin-supplement_"):
+        if job.confirmation_kind == "admin_supplement_offer" and job.confirmation_outcome == "declined":
+            raise HTTPException(status_code=403, detail="Вы отказались от предложения по дополнительному отчёту.")
         supplements = get_job_admin_supplements(job)
         if not supplements:
             raise HTTPException(status_code=404, detail="Дополнительный файл не найден.")
@@ -4503,9 +7385,25 @@ def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebA
 
 def cancel_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
     job = _customer_job_or_404(db, job_id, context)
-    cancellable_statuses = {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION}
+    cancellable_statuses = {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION, AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION}
     if job.status not in cancellable_statuses:
         raise HTTPException(status_code=409, detail="Эту задачу уже нельзя отменить.")
+    if (str(job.created_by_telegram_id or "").startswith("api:")
+            and job.mode not in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}
+            and job.status in {"pending", "running"}):
+        from .mcp_api import cancel_api_job
+        if not cancel_api_job(db, job):
+            raise HTTPException(status_code=409, detail="Эта задача уже завершается или отменена.")
+        cancel_running_job(job.id)
+        db.refresh(job)
+        return {"success": True, "job": customer_job_to_dict(job)}
+    if job.mode in {MODE_PRICE_MONITORING, MODE_EXACT_PRODUCT}:
+        cancel_atomic = cancel_price_monitoring_job if job.mode == MODE_PRICE_MONITORING else cancel_exact_product_job
+        if not cancel_atomic(db, job, note="Резерв возвращён: задача отменена клиентом", message="Задача отменена клиентом"):
+            raise HTTPException(status_code=409, detail="Эту задачу уже нельзя отменить.")
+        cancel_running_job(job.id)
+        db.refresh(job)
+        return {"success": True, "job": customer_job_to_dict(job)}
     release_job_reservation(db, job, note="Резерв возвращён: задача отменена клиентом")
     job.status = "cancelled"
     job.progress = 100
@@ -4619,6 +7517,7 @@ def choose_customer_multi_item_strategy_api(
     *,
     multi_item_mode: str,
     selected_item_ids: list[str] | None = None,
+    revision: str | None = None,
     context: WebAuthContext,
     db: Session,
 ) -> dict:
@@ -4626,23 +7525,19 @@ def choose_customer_multi_item_strategy_api(
     if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION or job.confirmation_kind != "multi_item_strategy":
         raise HTTPException(status_code=409, detail="Выбор стратегии уже не актуален.")
     normalized = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
+    dobor_ctx = read_dobor_context(job)
+    profile_dict = dobor_ctx.get("procurement_profile") or {}
+    if revision is not None and revision != _multi_item_selection_revision(job, profile_dict):
+        raise HTTPException(status_code=400, detail="Список позиций изменился. Обновите задачу и повторите выбор.")
+    raw_items = profile_dict.get("items") or []
+    final_selected_ids = _validated_multi_item_selection(raw_items, normalized, selected_item_ids)
     job.multi_item_mode = normalized
     job.confirmation_kind = ""
     job.confirmation_outcome = "accepted"
     job.status = "pending"
     job.progress = 32
 
-    dobor_ctx = read_dobor_context(job)
-    profile_dict = dobor_ctx.get("procurement_profile") or {}
-    raw_items = profile_dict.get("items") or []
-
-    final_selected_ids: list[str] | None = None
     if normalized == "per_item":
-        if selected_item_ids:
-            all_ids = {str(it.get("id") or f"item-{i}") for i, it in enumerate(raw_items)}
-            valid_ids = [sid for sid in selected_item_ids if sid in all_ids]
-            if valid_ids:
-                final_selected_ids = valid_ids
         target_count = len(final_selected_ids) if final_selected_ids is not None else len(raw_items)
         if target_count > 1 and job.client:
             from .billing import reserve_additional_job_units, BillingError
@@ -4667,11 +7562,38 @@ def choose_customer_multi_item_strategy_api(
     return {"success": True, "job": customer_job_to_dict(job, db=db)}
 
 
+def _multi_item_selection_revision(job: Job, profile: dict) -> str:
+    """Bind human selection to this job's frozen source rows, never market results."""
+    source = json.dumps([job.id, profile], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _serialized_multi_item_selected_ids(context: dict, items: list) -> list[str]:
+    selected_ids = context.get("selected_item_ids")
+    if selected_ids is None and context.get("multi_item_confirmed"):
+        return [str(item.get("id") or f"item-{index}") for index, item in enumerate(items) if isinstance(item, dict)]
+    return selected_ids if isinstance(selected_ids, list) else []
+
+
+def _validated_multi_item_selection(raw_items: list, multi_item_mode: str, selected_item_ids: list[str] | None) -> list[str] | None:
+    """Keep the explicitly chosen source rows; never silently turn bad input into all rows."""
+    if selected_item_ids is None:
+        return None
+    if not isinstance(selected_item_ids, list):
+        raise HTTPException(status_code=400, detail="Выберите существующие позиции для поиска.")
+    allowed = {str(item.get("id") or f"item-{index}") for index, item in enumerate(raw_items) if isinstance(item, dict)}
+    chosen = [str(item_id).strip() for item_id in selected_item_ids if str(item_id).strip()]
+    if not chosen or len(chosen) != len(selected_item_ids) or len(set(chosen)) != len(chosen) or any(item_id not in allowed for item_id in chosen):
+        raise HTTPException(status_code=400, detail="Выберите существующие позиции для поиска.")
+    return chosen
+
+
 def choose_admin_multi_item_strategy_api(
     job_id: str,
     *,
     multi_item_mode: str,
     selected_item_ids: list[str] | None = None,
+    revision: str | None = None,
     db: Session,
 ) -> dict:
     job = db.get(Job, job_id)
@@ -4680,25 +7602,21 @@ def choose_admin_multi_item_strategy_api(
     if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION or job.confirmation_kind != "multi_item_strategy":
         raise HTTPException(status_code=409, detail="Выбор стратегии уже не актуален.")
     normalized = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
+    dobor_ctx = read_dobor_context(job)
+    profile_dict = dobor_ctx.get("procurement_profile") or {}
+    if revision is not None and revision != _multi_item_selection_revision(job, profile_dict):
+        raise HTTPException(status_code=400, detail="Список позиций изменился. Обновите задачу и повторите выбор.")
+    raw_items = profile_dict.get("items") or []
+    final_selected_ids = _validated_multi_item_selection(raw_items, normalized, selected_item_ids)
     job.multi_item_mode = normalized
     job.confirmation_kind = ""
     job.confirmation_outcome = "accepted"
     job.status = "pending"
     job.progress = 32
 
-    dobor_ctx = read_dobor_context(job)
-    profile_dict = dobor_ctx.get("procurement_profile") or {}
-    raw_items = profile_dict.get("items") or []
-
-    final_selected_ids: list[str] | None = None
     if normalized == "per_item":
-        if selected_item_ids:
-            all_ids = {str(it.get("id") or f"item-{i}") for i, it in enumerate(raw_items)}
-            valid_ids = [sid for sid in selected_item_ids if sid in all_ids]
-            if valid_ids:
-                final_selected_ids = valid_ids
         target_count = len(final_selected_ids) if final_selected_ids is not None else len(raw_items)
-        if target_count > 1 and job.client:
+        if target_count > 1 and job.client and not getattr(job, "is_admin_rerun", False):
             from .billing import reserve_additional_job_units, BillingError
             try:
                 reserve_additional_job_units(db, job.client, job, additional_units=target_count - 1)
@@ -4790,6 +7708,7 @@ def create_additional_supplier_search_for_client(
         incoming_file_count=len(input_files),
         supplier_search_count=1,
         supplier_search_run_type=SUPPLIER_RUN_ADDITIONAL,
+        geo_radius_km=original_job.geo_radius_km,
     )
     if access_error:
         raise HTTPException(status_code=403, detail=access_error)
@@ -4812,6 +7731,8 @@ def create_additional_supplier_search_for_client(
             ),
             supplier_search_run_type=SUPPLIER_RUN_ADDITIONAL,
             multi_item_mode=getattr(original_job, "multi_item_mode", "balanced"),
+            delivery_city=original_job.delivery_city,
+            geo_radius_km=original_job.geo_radius_km,
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
         prior_verified_count = _cumulative_prior_verified_count(original_job)
@@ -5050,6 +7971,9 @@ def create_supplier_search_from_exact_product(
     multi_item_mode: str = "balanced",
     include_alternatives: bool = True,
     additional_prompt: str = "",
+    delivery_city: str = "",
+    geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> Job:
     if original_job.client_id != client.id:
         raise HTTPException(status_code=404, detail="Задача не найдена.")
@@ -5060,12 +7984,18 @@ def create_supplier_search_from_exact_product(
 
     input_files = _repeat_supplier_search_input_files(original_job)
     settings = get_or_create_settings(db)
+    from .geo_policy import validate_geo_request
+    try:
+        delivery_city, geo_radius_km = validate_geo_request(delivery_city, geo_radius_km, mode=MODE_SUPPLIER_SEARCH)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     access_error = client_access_error(
         db,
         client,
         MODE_SUPPLIER_SEARCH,
         incoming_file_count=max(1, len(input_files)),
         supplier_search_count=1,
+        geo_radius_km=geo_radius_km,
     )
     if access_error:
         raise HTTPException(status_code=403, detail=access_error)
@@ -5105,6 +8035,9 @@ def create_supplier_search_from_exact_product(
             supplier_search_policy=normalized_policy,
             supplier_search_run_type="initial",
             multi_item_mode=multi_item_mode,
+            delivery_city=delivery_city,
+            geo_radius_km=geo_radius_km,
+            geo_scope=geo_scope or getattr(original_job, "geo_scope", "ru") or "ru",
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
         enqueue_job(job.id)
@@ -5410,6 +8343,8 @@ def usage_counter(*, label: str, used: int, limit: int) -> dict:
 
 
 def client_recent_usage(db: Session, client: Client, *, limit: int = 5) -> list[dict]:
+    if limit == 5 and hasattr(db, "info") and "client_recent_usage_map" in db.info:
+        return db.info["client_recent_usage_map"].get(str(client.id), [])
     jobs = (
         commercial_jobs_query(db, client)
         .order_by(Job.created_at.desc())
@@ -5511,15 +8446,26 @@ def build_system_status(settings: SystemSettings, db: Session, yandex_balance: f
     }
     now = now_utc()
     week_ago = now - timedelta(days=7)
+    q_pending, q_running, q_failed_week, q_failed_total, q_completed = (
+        db.query(
+            func.coalesce(func.sum(case((Job.status == "pending", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Job.status == "running", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((and_(Job.status == "failed", Job.created_at >= week_ago), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Job.status == "failed", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Job.status.in_(["completed", "partial"]), 1), else_=0)), 0),
+        ).one()
+    )
     queue = {
-        "pending": db.query(Job).filter(Job.status == "pending").count(),
-        "running": db.query(Job).filter(Job.status == "running").count(),
-        "failed": db.query(Job).filter(Job.status == "failed", Job.created_at >= week_ago).count(),
-        "failed_total": db.query(Job).filter(Job.status == "failed").count(),
-        "completed": db.query(Job).filter(Job.status.in_(["completed", "partial"])).count(),
+        "pending": int(q_pending or 0),
+        "running": int(q_running or 0),
+        "failed": int(q_failed_week or 0),
+        "failed_total": int(q_failed_total or 0),
+        "completed": int(q_completed or 0),
     }
     services = api_service_statuses(settings, yandex_balance=yandex_balance)
     warnings = []
+    if yandex_balance is not None and yandex_balance < 150.0:
+        warnings.append(f"Баланс Яндекс.Облака подходит к концу ({yandex_balance:.2f} ₽). Пополните счёт во избежание сбоев в поиске.")
     if server["disk_free_gb"] < 10:
         warnings.append("На сервере осталось меньше 10 ГБ свободного места.")
     if server["ram_percent"] >= 85:
@@ -5724,6 +8670,7 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "is_pending": is_pending_telegram_id(client.telegram_id),
         "name": client.name,
         "username": client.username,
+        "phone": getattr(client, "phone", "") or (client.web_users[0].phone if client.web_users and getattr(client.web_users[0], "phone", "") else ""),
         "is_active": client.is_active,
         "is_trial": client.is_trial,
         "access_until": client.access_until,
@@ -5774,6 +8721,8 @@ def web_user_to_admin_dict(user: WebUser) -> dict:
         "client_id": user.client_id,
         "email": user.email,
         "name": user.name,
+        "phone": getattr(user, "phone", "") or "",
+        "telegram_username": getattr(user, "telegram_username", "") or "",
         "is_active": bool(user.is_active),
         "is_email_verified": bool(user.is_email_verified),
         "created_at": user.created_at.isoformat() if user.created_at else None,
@@ -5806,6 +8755,7 @@ def job_to_dict(
     settings: SystemSettings | None = None,
     db: Session | None = None,
     child_reruns_map: dict[str, list[Job]] | None = None,
+    chat_counts_map: dict[str, tuple[int, int]] | None = None,
 ) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
     evidence_path = str(getattr(job, "evidence_path", "") or "")
@@ -5815,12 +8765,32 @@ def job_to_dict(
     confirmation_outcome = str(getattr(job, "confirmation_outcome", "") or "")
     offer_delivery_outcome = str(getattr(job, "offer_delivery_outcome", "") or "")
     result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
+    position_selection = read_selection(job)
+    selected_position_ids = position_selection.get("selected_ids") or []
+    available_positions = position_selection.get("items") or []
+    strategy_context = read_dobor_context(job) if job.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS} else {}
+    strategy_profile = strategy_context.get("procurement_profile") if isinstance(strategy_context.get("procurement_profile"), dict) else {}
+    strategy_items = strategy_profile.get("items") if isinstance(strategy_profile.get("items"), list) else []
+    strategy_selected_ids = _serialized_multi_item_selected_ids(strategy_context, strategy_items)
     client_email = ""
     client_web_users = getattr(job.client, "web_users", None) or [] if job.client else []
     if client_web_users:
         users_with_email = [u for u in client_web_users if getattr(u, "email", None)]
         if users_with_email:
             client_email = users_with_email[0].email or ""
+
+    chat_msgs_count = 0
+    unread_client_msgs = 0
+    if chat_counts_map is not None:
+        chat_msgs_count, unread_client_msgs = chat_counts_map.get(job.id, (0, 0))
+    elif db:
+        try:
+            root_id = resolve_chat_job_id(job)
+            chat_msgs = db.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).all()
+            chat_msgs_count = len(chat_msgs)
+            unread_client_msgs = sum(1 for m in chat_msgs if m.sender_role == "client" and not m.is_read_by_admin)
+        except Exception:
+            pass
 
     created_by_raw = str(getattr(job, "created_by_telegram_id", "") or "").strip()
     created_by_label = ""
@@ -5845,6 +8815,25 @@ def job_to_dict(
         tg_id = job.client.telegram_id
         created_by_label = f"TG: {tg_id}" if tg_id.startswith("@") else f"TG ID: {tg_id}"
 
+    status_lbl = human_status_label(job.status)
+    is_minprom_empty = (
+        job.status == "failed"
+        and (
+            getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY
+            or "реестр" in (job.error or "").lower()
+            or "реестр" in (job.message or "").lower()
+            or "минпром" in (job.message or "").lower()
+        )
+        and (
+            "не найден" in (job.message or "").lower()
+            or "не найден" in (job.error or "").lower()
+            or "реестр" in (job.message or "").lower()
+            or not getattr(job, "verified_count", 0)
+        )
+    )
+    if is_minprom_empty:
+        status_lbl = "не найдено в Минпромторге"
+
     data = {
         "id": job.id,
         "job_number": getattr(job, "job_number", None),
@@ -5860,12 +8849,28 @@ def job_to_dict(
         "mode_label": mode_label(job.mode),
         "supplier_search_policy": getattr(job, "supplier_search_policy", None) or SUPPLIER_POLICY_NORMAL,
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", None) or SUPPLIER_RUN_INITIAL,
+        "exact_product_selection": (position_selection or None) if job.mode == MODE_EXACT_PRODUCT else None,
+        "position_selection": position_selection or None,
+        "selected_position_count": len(selected_position_ids),
+        "available_position_count": len(available_positions),
+        "multi_item_selection": {
+            "revision": _multi_item_selection_revision(job, strategy_profile),
+            "items": strategy_items,
+            "selected_ids": strategy_selected_ids,
+            "confirmed": bool(strategy_context.get("multi_item_confirmed")),
+            "mode": getattr(job, "multi_item_mode", "balanced") or "balanced",
+        } if strategy_items else None,
+        "exact_product_positions": _customer_exact_product_positions(job),
         "multi_item_mode": getattr(job, "multi_item_mode", "balanced") or "balanced",
         "confirmation_kind": confirmation_kind,
         "confirmation_outcome": confirmation_outcome,
+        "confirmation_offered_at": job.confirmation_offered_at.isoformat() if getattr(job, "confirmation_offered_at", None) else None,
+        "confirmation_expires_at": job.confirmation_expires_at.isoformat() if getattr(job, "confirmation_expires_at", None) else None,
         "offer_delivery_outcome": offer_delivery_outcome,
         "result_offer": result_offer,
         "status": job.status,
+        "status_label": status_lbl,
+        "is_minprom_empty": is_minprom_empty,
         "progress": job.progress,
         "message": job.message,
         "title": job.title,
@@ -5874,6 +8879,9 @@ def job_to_dict(
         "supplier_units": supplier_units,
         "procurement_report_units": report_units,
         "target_suppliers": job.target_suppliers,
+        "delivery_city": getattr(job, "delivery_city", "") or "",
+        "geo_radius_km": getattr(job, "geo_radius_km", None),
+        "geo_scope": getattr(job, "geo_scope", "ru") or "ru",
         "verified_count": job.verified_count,
         "file_count": job.file_count,
         "has_result": bool(result_files),
@@ -5883,6 +8891,8 @@ def job_to_dict(
         "admin_comment": getattr(job, "admin_comment", "") or "",
         "admin_supplement_name": getattr(job, "admin_supplement_name", "") or "",
         "admin_supplement_at": job.admin_supplement_at.isoformat() if getattr(job, "admin_supplement_at", None) else None,
+        "chat_messages_count": chat_msgs_count,
+        "unread_client_messages_count": unread_client_msgs,
         "error": job.error,
         "ai_provider": ai_info.get("ai_provider", ""),
         "ai_provider_name": ai_info.get("ai_provider_name", ""),
@@ -5916,7 +8926,25 @@ def job_to_dict(
         data["admin_reruns"] = [
             {
                 "id": r.id,
+                "exact_product_selection": read_selection(r) if r.mode == MODE_EXACT_PRODUCT else None,
+                "position_selection": read_selection(r) or None,
+                "multi_item_selection": {
+                    "revision": _multi_item_selection_revision(r, read_dobor_context(r).get("procurement_profile") or {}),
+                    "items": ((read_dobor_context(r).get("procurement_profile") or {}).get("items") or []),
+                    "selected_ids": _serialized_multi_item_selected_ids(read_dobor_context(r), (read_dobor_context(r).get("procurement_profile") or {}).get("items") or []),
+                    "confirmed": bool(read_dobor_context(r).get("multi_item_confirmed")),
+                    "mode": getattr(r, "multi_item_mode", "balanced") or "balanced",
+                } if r.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS} else None,
+                "selected_position_count": len(read_selection(r).get("selected_ids") or []),
+                "available_position_count": len(read_selection(r).get("items") or []),
                 "job_number": getattr(r, "job_number", None),
+                "mode": r.mode,
+                "multi_item_mode": getattr(r, "multi_item_mode", "balanced") or "balanced",
+                "confirmation_kind": getattr(r, "confirmation_kind", "") or "",
+                "confirmation_expires_at": r.confirmation_expires_at.isoformat() if getattr(r, "confirmation_expires_at", None) else None,
+                "delivery_city": getattr(r, "delivery_city", "") or "",
+                "geo_radius_km": getattr(r, "geo_radius_km", None),
+                "geo_scope": getattr(r, "geo_scope", "ru") or "ru",
                 "status": r.status,
                 "progress": r.progress,
                 "message": r.message,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Coins,
   RefreshCw,
@@ -33,6 +33,12 @@ type ClientItem = {
   has_override: boolean
 }
 
+type ClientEdit = {
+  allowed: boolean
+  custom_price_rub: string
+  dirty: boolean
+}
+
 type JobItem = {
   id: string
   job_number: number | null
@@ -57,6 +63,7 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
   const [refreshing, setRefreshing] = useState(false)
 
   // System Settings State
+  const [accessMode, setAccessMode] = useState<'all' | 'granular' | 'disabled'>('all')
   const [defaultPriceRub, setDefaultPriceRub] = useState<number>(50)
   const [maxSuppliers, setMaxSuppliers] = useState<number>(5)
   const [maxPositions, setMaxPositions] = useState<number>(1000)
@@ -75,15 +82,17 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
   const [clientPage, setClientPage] = useState<number>(1)
   const [clientPageSize, setClientPageSize] = useState<number>(10)
   const [savingClientId, setSavingClientId] = useState<string | null>(null)
-  const [clientEdits, setClientEdits] = useState<Record<string, { allowed: boolean; custom_price_rub: string }>>({})
+  const [clientEdits, setClientEdits] = useState<Record<string, ClientEdit>>({})
   const [savedClientId, setSavedClientId] = useState<string | null>(null)
 
   // Jobs History State & Pagination
   const [jobs, setJobs] = useState<JobItem[]>([])
   const [jobPage, setJobPage] = useState<number>(1)
   const [jobPageSize, setJobPageSize] = useState<number>(10)
+  const latestLoadRequest = useRef(0)
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (savedClient?: Pick<ClientItem, 'id'> & Pick<ClientEdit, 'allowed' | 'custom_price_rub'>) => {
+    const requestId = ++latestLoadRequest.current
     try {
       setRefreshing(true)
       const [settingsRes, clientsRes, jobsRes] = await Promise.all([
@@ -92,8 +101,11 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
         fetch('/api/price-monitoring/jobs', { credentials: 'same-origin' }),
       ])
 
-      if (settingsRes.ok) {
+      if (requestId !== latestLoadRequest.current) return
+
+      if (settingsRes.ok && !savedClient) {
         const sData = await settingsRes.json()
+        setAccessMode(sData.access_mode ?? 'all')
         setDefaultPriceRub(sData.default_price_rub ?? 50)
         setMaxSuppliers(sData.max_suppliers_per_item ?? sData.max_suppliers ?? 5)
         setMaxPositions(sData.max_positions ?? 1000)
@@ -108,14 +120,29 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
         const cData = await clientsRes.json()
         const clientList: ClientItem[] = cData.clients || []
         setClients(clientList)
-        const initialEdits: Record<string, { allowed: boolean; custom_price_rub: string }> = {}
-        clientList.forEach((c) => {
-          initialEdits[c.id] = {
-            allowed: c.allowed,
-            custom_price_rub: c.custom_price_rub !== null ? String(c.custom_price_rub) : '',
-          }
+        setClientEdits((currentEdits) => {
+          const refreshedEdits: Record<string, ClientEdit> = {}
+          clientList.forEach((c) => {
+            const serverEdit: ClientEdit = {
+              allowed: c.allowed,
+              custom_price_rub: c.custom_price_rub !== null ? String(c.custom_price_rub) : '',
+              dirty: false,
+            }
+            const currentEdit = currentEdits[c.id]
+            const savedValueStillCurrent =
+              savedClient?.id === c.id &&
+              currentEdit?.allowed === savedClient.allowed &&
+              currentEdit.custom_price_rub === savedClient.custom_price_rub
+            // Keep only edits made after the latest server value. If an
+            // administrator changes the saved row while its request is in
+            // flight, that newer local input remains intact as well.
+            refreshedEdits[c.id] =
+              currentEdit?.dirty && !savedValueStillCurrent
+                ? currentEdit
+                : serverEdit
+          })
+          return refreshedEdits
         })
-        setClientEdits(initialEdits)
       }
 
       if (jobsRes.ok) {
@@ -125,8 +152,10 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
     } catch (err) {
       console.error('Failed to load price monitoring data', err)
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (requestId === latestLoadRequest.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }, [])
 
@@ -142,6 +171,7 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          access_mode: accessMode,
           default_price_rub: defaultPriceRub,
           max_suppliers_per_item: maxSuppliers,
           max_positions: maxPositions,
@@ -184,7 +214,11 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
       if (res.ok) {
         setSavedClientId(clientId)
         setTimeout(() => setSavedClientId(null), 2500)
-        void loadData()
+        void loadData({
+          id: clientId,
+          allowed: edit.allowed,
+          custom_price_rub: edit.custom_price_rub,
+        })
       }
     } catch (err) {
       console.error(err)
@@ -269,7 +303,7 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
             </button>
           )}
           <button
-            onClick={loadData}
+            onClick={() => void loadData()}
             disabled={refreshing}
             className="btn btn-secondary"
             style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', fontSize: '13px' }}
@@ -344,6 +378,107 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
             {savingSettings ? <Loader2 size={14} className="animate-spin" /> : settingsSaved ? <Check size={14} /> : <Save size={14} />}
             {settingsSaved ? 'Сохранено' : 'Сохранить настройки'}
           </button>
+        </div>
+
+        {/* Access Mode Selector */}
+        <div style={{ marginBottom: '16px', padding: '12px 14px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+          <div style={{ fontSize: '13px', fontWeight: 600, color: '#1e293b', marginBottom: '8px' }}>
+            Доступ к модулю для клиентов:
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '8px' }}>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '8px',
+                padding: '10px 12px',
+                borderRadius: '6px',
+                border: `1.5px solid ${accessMode === 'all' ? '#10b981' : '#cbd5e1'}`,
+                background: accessMode === 'all' ? '#ecfdf5' : '#ffffff',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <input
+                type="radio"
+                name="pm_access_mode"
+                value="all"
+                checked={accessMode === 'all'}
+                onChange={() => setAccessMode('all')}
+                style={{ marginTop: '2px', accentColor: '#059669' }}
+              />
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: '#065f46' }}>
+                  🟢 Включен для всех (по умолчанию)
+                </div>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                  Все клиенты видят вкладку «Мониторинг цен» в кабинете и могут запускать расчет.
+                </div>
+              </div>
+            </label>
+
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '8px',
+                padding: '10px 12px',
+                borderRadius: '6px',
+                border: `1.5px solid ${accessMode === 'granular' ? '#f59e0b' : '#cbd5e1'}`,
+                background: accessMode === 'granular' ? '#fffbeb' : '#ffffff',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <input
+                type="radio"
+                name="pm_access_mode"
+                value="granular"
+                checked={accessMode === 'granular'}
+                onChange={() => setAccessMode('granular')}
+                style={{ marginTop: '2px', accentColor: '#d97706' }}
+              />
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: '#92400e' }}>
+                  🟡 Точечный доступ
+                </div>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                  Доступен только клиентам, у которых включен чекбокс в списке ниже.
+                </div>
+              </div>
+            </label>
+
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '8px',
+                padding: '10px 12px',
+                borderRadius: '6px',
+                border: `1.5px solid ${accessMode === 'disabled' ? '#ef4444' : '#cbd5e1'}`,
+                background: accessMode === 'disabled' ? '#fef2f2' : '#ffffff',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <input
+                type="radio"
+                name="pm_access_mode"
+                value="disabled"
+                checked={accessMode === 'disabled'}
+                onChange={() => setAccessMode('disabled')}
+                style={{ marginTop: '2px', accentColor: '#dc2626' }}
+              />
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: '#991b1b' }}>
+                  🔴 Отключен для всех
+                </div>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                  Модуль скрыт и недоступен для всех клиентов в кабинете.
+                </div>
+              </div>
+            </label>
+          </div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
@@ -583,6 +718,22 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
           </div>
         </div>
 
+        {accessMode === 'all' && (
+          <div style={{ padding: '8px 12px', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: '6px', fontSize: '12px', color: '#065f46', marginBottom: '12px' }}>
+            <strong>Статус доступа:</strong> Сейчас модуль включен <strong>для всех клиентов</strong> по умолчанию. В таблице ниже вы можете задать индивидуальную цену за позицию для конкретных клиентов. Настройки чекбоксов доступа сохраняются для точечного режима.
+          </div>
+        )}
+        {accessMode === 'granular' && (
+          <div style={{ padding: '8px 12px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '6px', fontSize: '12px', color: '#92400e', marginBottom: '12px' }}>
+            <strong>Статус доступа:</strong> Включен <strong>точечный доступ</strong>. Модуль доступен только тем клиентам, у которых включен чекбокс в колонке «Доступ к модулю».
+          </div>
+        )}
+        {accessMode === 'disabled' && (
+          <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', fontSize: '12px', color: '#991b1b', marginBottom: '12px' }}>
+            <strong>Статус доступа:</strong> Модуль <strong>глобально отключен</strong> для всех клиентов. Вкладка скрыта в кабинете клиентов.
+          </div>
+        )}
+
         <div style={{ overflowX: 'auto' }}>
           <table className="table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
             <thead>
@@ -621,7 +772,11 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
                           onChange={(e) =>
                             setClientEdits((prev) => ({
                               ...prev,
-                              [client.id]: { ...edit, allowed: e.target.checked },
+                              [client.id]: {
+                                ...(prev[client.id] ?? edit),
+                                allowed: e.target.checked,
+                                dirty: true,
+                              },
                             }))
                           }
                           style={{ width: '15px', height: '15px', accentColor: '#059669' }}
@@ -639,7 +794,11 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
                         onChange={(e) =>
                           setClientEdits((prev) => ({
                             ...prev,
-                            [client.id]: { ...edit, custom_price_rub: e.target.value },
+                              [client.id]: {
+                                ...(prev[client.id] ?? edit),
+                                custom_price_rub: e.target.value,
+                                dirty: true,
+                              },
                           }))
                         }
                         className="form-input"

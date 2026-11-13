@@ -363,6 +363,59 @@ function Source({
           Видимые запросы не предоставлены источником.
         </p>
       )}
+      {google && number(object(source.click_anomalies).anomaly_clicks) ? (
+        <p className="seo-caption">
+          Аналитическая пометка: зафиксирован всплеск из{' '}
+          {shown(object(source.click_anomalies).anomaly_clicks)} кликов с
+          глубоких позиций (&gt;20) за{' '}
+          {rows(object(source.click_anomalies).anomaly_days)
+            .map((d) => date(d.date))
+            .join(', ')}
+          . Оценка живых органических кликов без учёта парсерных пиков:{' '}
+          <strong>
+            {shown(object(source.click_anomalies).estimated_organic_clicks)}
+          </strong>
+          .
+        </p>
+      ) : null}
+      <h3>Точки роста CTR (позиции 3–20)</h3>
+      {rows(source.growth_points).length ? (
+        <Table labels={['Запрос', 'Показы', 'Клики', 'Позиция', 'Действие']}>
+          {rows(source.growth_points)
+            .slice(0, 15)
+            .map((row, i) => (
+              <tr key={`gp-${text(row.text)}-${i}`}>
+                <td className="seo-query">{text(row.text) || '—'}</td>
+                <td>{shown(row.shows ?? row.impressions)}</td>
+                <td>{shown(row.clicks)}</td>
+                <td>{shown(row.avg_position, 2)}</td>
+                <td>{text(row.action) || text(row.potential) || '—'}</td>
+              </tr>
+            ))}
+        </Table>
+      ) : (
+        <p className="seo-empty">
+          В текущей выборке нет фраз, соответствующих критериям точек роста.
+        </p>
+      )}
+      {google && rows(source.top_pages).length ? (
+        <>
+          <h3>Топ посадочных страниц в Google (GSC)</h3>
+          <Table labels={['Страница', 'Клики', 'Показы', 'CTR', 'Средняя позиция']}>
+            {rows(source.top_pages)
+              .slice(0, 15)
+              .map((row, i) => (
+                <tr key={`gsc-page-${text(row.path)}-${i}`}>
+                  <td className="seo-query">{text(row.path) || text(row.url) || '—'}</td>
+                  <td>{shown(row.clicks)}</td>
+                  <td>{shown(row.shows)}</td>
+                  <td>{percent(row.ctr_percent)}</td>
+                  <td>{shown(row.avg_position, 2)}</td>
+                </tr>
+              ))}
+          </Table>
+        </>
+      ) : null}
     </section>
   )
 }
@@ -418,16 +471,21 @@ export function SeoTrafficView() {
   const [data, setData] = useState<Data | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [checkedAt, setCheckedAt] = useState('')
   useEffect(() => {
     let disposed = false
     let controller: AbortController | null = null
+    let hasAttemptedSync = false
     async function sync() {
       if (disposed || document.hidden || controller) return
+      const initialLoad = !hasAttemptedSync
+      hasAttemptedSync = true
       controller = new AbortController()
       const current = controller
       const timeout = window.setTimeout(() => current.abort(), 90000)
-      setLoading(true)
+      if (initialLoad) setLoading(true)
+      else setRefreshing(true)
       try {
         const response = await fetch('/api/seo-analytics', {
           credentials: 'same-origin',
@@ -457,7 +515,10 @@ export function SeoTrafficView() {
           )
       } finally {
         window.clearTimeout(timeout)
-        if (!disposed) setLoading(false)
+        if (!disposed) {
+          if (initialLoad) setLoading(false)
+          else setRefreshing(false)
+        }
         if (controller === current) controller = null
       }
     }
@@ -504,7 +565,13 @@ export function SeoTrafficView() {
         </span>
         <p className="seo-caption">
           Сбор источников: {stamp(data?.updated_at)}. Проверка панели:{' '}
-          {stamp(checkedAt)}. Панель проверяет данные каждые 2 минуты, пока
+          {stamp(checkedAt)}.{' '}
+          {refreshing && (
+            <span className="seo-refresh-state" role="status">
+              Проверяем обновления…
+            </span>
+          )}{' '}
+          Панель проверяет данные каждые 2 минуты, пока
           открыта; сбор источников использует отдельный фоновый цикл.
         </p>
       </section>
@@ -620,6 +687,30 @@ export function SeoTrafficView() {
               </Table>
             ) : (
               <p className="seo-empty">Данные целей не предоставлены.</p>
+            )}
+          </section>
+          <section className="seo-panel">
+            <h2>Автоматические рекомендации и статус выборки</h2>
+            {rows(data.recommendations).length ? (
+              <Table labels={['Категория', 'Цель', 'Задача', 'Обоснование']}>
+                {rows(data.recommendations).map((rec, i) => (
+                  <tr key={text(rec.id) || i}>
+                    <td>{text(rec.category) || '—'}</td>
+                    <td>{text(rec.target) || '—'}</td>
+                    <td>
+                      <strong>{text(rec.title)}</strong>
+                      {text(rec.proposed_text) ? (
+                        <div>
+                          <small>{text(rec.proposed_text)}</small>
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>{text(rec.rationale) || text(rec.impact) || '—'}</td>
+                  </tr>
+                ))}
+              </Table>
+            ) : (
+              <p className="seo-empty">Активных рекомендаций нет.</p>
             )}
           </section>
           <section className="seo-panel">

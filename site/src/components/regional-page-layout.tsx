@@ -104,7 +104,7 @@ export function RegionalPageLayout({
         />
       )}
 
-      <main className="bg-slate-50 text-slate-900 min-h-screen font-sans">
+      <main className="tl-public tl-regional-page bg-slate-50 text-slate-900 min-h-screen font-sans">
         <SiteHeader />
 
         {/* HERO */}

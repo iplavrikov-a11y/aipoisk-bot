@@ -609,10 +609,21 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "Расшифровка сложных характеристик, подбор эквивалентов под ТЗ заказчика с выгрузкой в Word (.docx).\n\n"
             "3️⃣ <b>Анализ документации:</b>\n"
             "Мгновенный аудит проектов контрактов по номеру закупки ЕИС — выявление штрафов выше нормы, скрытых обязательств и ловушек нацрежима.\n\n"
-            "На вашем балансе ещё есть средства — протестируйте эти сценарии на текущих расчетах!"
+            "На вашем балансе ещё есть средства — протестируйте эти сценарии на текущих расчетах!\n\n"
+            "<b>Как вам результат расчетов?</b>"
         )
         buttons = [
-            [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
+            [
+                {"text": "👍 Всё подошло", "callback_data": "nurturing_fb:good"},
+                {"text": "👎 Не то / мало заводов", "callback_data": "nurturing_fb:bad"},
+            ],
+            [
+                {"text": "💬 Поддержка / Вопрос", "callback_data": "open_contacts"},
+                {"text": "📱 Оставить телефон", "callback_data": "prompt_share_contact"},
+            ],
+            [
+                {"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"},
+            ],
         ]
     elif step == "step4_reengage":
         text = (
@@ -628,7 +639,14 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "Если для отдела снабжения нужны дополнительные лимиты для тестирования сложных закупок — напишите нам в ответ, поможем!"
         )
         buttons = [
-            [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
+            [
+                {"text": "🎁 Нужны ещё тесты", "callback_data": "nurturing_fb:need_credits"},
+                {"text": "💬 Помочь с ТЗ", "callback_data": "open_contacts"},
+            ],
+            [
+                {"text": "📱 Оставить контакт", "callback_data": "prompt_share_contact"},
+                {"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"},
+            ],
         ]
     else:  # step3
         text = (
@@ -639,6 +657,10 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "• Если требуется подключение для тендерного отдела или отдела снабжения — напишите нам в ответ, оперативно выставим счет для юрлица со всеми закрывающими документами (УПД/ЭДО)."
         )
         buttons = [
+            [
+                {"text": "💬 Обратная связь", "callback_data": "open_contacts"},
+                {"text": "📱 Оставить контакт", "callback_data": "prompt_share_contact"},
+            ],
             [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
         ]
 

@@ -517,6 +517,46 @@ class MultiItemSuppliersTests(unittest.IsolatedAsyncioTestCase):
         last_item = profile.items[-1]
         self.assertTrue(len(last_item.included_sub_items) > 0)
 
+    def test_per_item_geo_radius_ranking_picks_in_radius_suppliers_for_each_item(self) -> None:
+        profile = ProcurementProfile(
+            summary="Закупка металлопроката и крепежа",
+            items=(
+                ProcurementItem(id="item-1", name="Труба профильная 40х20х2"),
+                ProcurementItem(id="item-2", name="Арматура 12мм А500С"),
+                ProcurementItem(id="item-3", name="Болт М16х60 оцинкованный"),
+            ),
+        )
+
+        reviewed = [
+            # Item 1
+            {"company_name": "ООО Труба Шахты", "site": "https://truba-shakhty.ru", "supplier_city": "Шахты", "evidence_status": "verified", "quality_score": 90, "procurement_item_id": "item-1", "product_fit": "exact"},
+            {"company_name": "ООО Труба Москва", "site": "https://truba-msk.ru", "supplier_city": "Москва", "evidence_status": "verified", "quality_score": 95, "procurement_item_id": "item-1", "product_fit": "exact"},
+            # Item 2
+            {"company_name": "ООО Арматура Ростов", "site": "https://armatura-rnd.ru", "supplier_city": "Ростов-на-Дону", "evidence_status": "verified", "quality_score": 88, "procurement_item_id": "item-2", "product_fit": "exact"},
+            {"company_name": "ООО Арматура Москва", "site": "https://armatura-msk.ru", "supplier_city": "Москва", "evidence_status": "verified", "quality_score": 96, "procurement_item_id": "item-2", "product_fit": "exact"},
+            # Item 3
+            {"company_name": "ООО Крепеж Новочеркасск", "site": "https://bolt-novoch.ru", "supplier_city": "Новочеркасск", "evidence_status": "verified", "quality_score": 85, "procurement_item_id": "item-3", "product_fit": "exact"},
+            {"company_name": "ООО Крепеж Москва", "site": "https://bolt-msk.ru", "supplier_city": "Москва", "evidence_status": "verified", "quality_score": 98, "procurement_item_id": "item-3", "product_fit": "exact"},
+        ]
+
+        accepted = _accepted_supplier_results(
+            reviewed,
+            target=1,
+            profile=profile,
+            multi_item_mode="per_item",
+            delivery_city="Каменск-Шахтинский",
+            geo_radius_km=150,
+        )
+
+        self.assertEqual(len(accepted), 3)
+        cities = [item.get("supplier_city") for item in accepted]
+        self.assertIn("Шахты", cities)
+        self.assertIn("Ростов-на-Дону", cities)
+        self.assertIn("Новочеркасск", cities)
+        self.assertNotIn("Москва", cities)
+        for item in accepted:
+            self.assertTrue(item.get("supplier_distance_within_radius"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ import base64
 from dataclasses import dataclass
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import socket
@@ -368,7 +369,11 @@ async def fetch_yandex_search_candidates(
     candidates: list[OutreachCandidate] = []
     requests_count = 0
 
-    async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=45.0,
+        follow_redirects=True,
+        transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
+    ) as client:
         for page in range(max_pages):
             body = {
                 "query": {"searchType": "SEARCH_TYPE_RU", "queryText": query, "page": str(page)},
@@ -378,34 +383,44 @@ async def fetch_yandex_search_candidates(
             }
             try:
                 raw_xml = ""
-                # Fast path: Synchronous endpoint (<1s)
+                async_completed = False
+                # Primary path: Asynchronous search (30.50 ₽ / 1k reqs vs 488 ₽ / 1k reqs sync)
                 try:
-                    res = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
-                    requests_count += 1
+                    from .exact_product.yandex_search import _paced_async_post
+                    res = await _paced_async_post(
+                        client,
+                        "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync",
+                        headers=headers,
+                        json=body,
+                    )
                     if res.status_code == 200:
-                        data = res.json()
-                        raw_xml = str(data.get("rawData") or (data.get("response") or {}).get("rawData") or "")
-                except Exception as sync_exc:
-                    logger.debug("outreach yandex sync error: %s", sync_exc)
+                        requests_count += 1
+                        op_id = str(res.json().get("id") or "")
+                        if op_id:
+                            poll_delays = [0.5, 0.8, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0, 2.5, 2.5, 3.0, 3.0]
+                            for delay in poll_delays:
+                                await asyncio.sleep(delay)
+                                op_res = await client.get(f"https://operation.api.cloud.yandex.net/operations/{op_id}", headers=headers)
+                                if op_res.status_code == 200:
+                                    op_data = op_res.json()
+                                    if op_data.get("done"):
+                                        if not op_data.get("error"):
+                                            async_completed = True
+                                            raw_xml = str((op_data.get("response") or {}).get("rawData") or "")
+                                        break
+                except Exception as async_exc:
+                    logger.debug("outreach yandex async error: %s", async_exc)
 
-                # Slow path: Async operation polling fallback
-                if not raw_xml:
-                    res = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-                    requests_count += 1
-                    if res.status_code != 200:
-                        break
-                    op_id = str(res.json().get("id") or "")
-                    if not op_id:
-                        break
-
-                    for _ in range(25):
-                        await asyncio.sleep(1.8)
-                        op_res = await client.get(f"https://operation.api.cloud.yandex.net/operations/{op_id}", headers=headers)
-                        if op_res.status_code == 200:
-                            op_data = op_res.json()
-                            if op_data.get("done"):
-                                raw_xml = str((op_data.get("response") or {}).get("rawData") or "")
-                                break
+                # Fallback path: Synchronous endpoint only if explicitly enabled
+                if not async_completed and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK") == "1":
+                    try:
+                        res = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
+                        if res.status_code == 200:
+                            requests_count += 1
+                            data = res.json()
+                            raw_xml = str(data.get("rawData") or (data.get("response") or {}).get("rawData") or "")
+                    except Exception as sync_exc:
+                        logger.debug("outreach yandex sync error: %s", sync_exc)
 
                 if not raw_xml:
                     break
@@ -955,7 +970,7 @@ async def run_outreach_search_task(
 ) -> None:
     """Executes enterprise-grade B2B supplier search with Adaptive Multi-Pass loop, Playwright crawling & strict Yandex pricing."""
     sys_settings = get_fresh_system_settings(session_factory)
-    yandex_unit_price = float(getattr(sys_settings, "yandex_search_price_per_request", 0.04) or 0.04)
+    yandex_unit_price = float(getattr(sys_settings, "yandex_search_price_per_request", 0.0305) or 0.0305)
     folder_id = getattr(sys_settings, "yandex_search_folder_id", "") or ""
     api_key = getattr(sys_settings, "yandex_search_api_key", "") or ""
 

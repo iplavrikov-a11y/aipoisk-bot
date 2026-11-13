@@ -28,9 +28,24 @@ SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
 def _sqlite_connect_args(database_url: str) -> dict:
-    if not database_url.startswith("sqlite"):
-        return {}
-    return {"check_same_thread": False, "timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
+    if database_url.startswith("sqlite"):
+        return {"check_same_thread": False, "timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
+    if database_url.startswith("postgresql"):
+        # Remote PostgreSQL (RU data centre): detect dead peers quickly and keep tunnel active.
+        return {
+            "keepalives": 1,
+            "keepalives_idle": 15,
+            "keepalives_interval": 5,
+            "keepalives_count": 3,
+            "connect_timeout": 30,
+        }
+    return {}
+
+
+def _engine_pool_kwargs(database_url: str) -> dict:
+    if database_url.startswith("postgresql"):
+        return {"pool_size": 10, "max_overflow": 15, "pool_recycle": 180, "pool_timeout": 45}
+    return {}
 
 
 def _configure_sqlite_connection(dbapi_connection) -> None:
@@ -47,6 +62,7 @@ engine = create_engine(
     DATABASE_URL,
     connect_args=_sqlite_connect_args(DATABASE_URL),
     pool_pre_ping=True,
+    **_engine_pool_kwargs(DATABASE_URL),
 )
 
 if DATABASE_URL.startswith("sqlite"):
@@ -55,22 +71,85 @@ if DATABASE_URL.startswith("sqlite"):
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
+def _use_naive_datetimes_for_postgres() -> None:
+    """Keep SQLite semantics on PostgreSQL: DateTime columns are naive (TIMESTAMP WITHOUT TIME ZONE).
+
+    The code base was written against SQLite, which returns naive datetimes even for
+    ``DateTime(timezone=True)``. Mirroring that avoids naive/aware comparison errors.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    from sqlalchemy import DateTime
+
+    for table in Base.metadata.tables.values():
+        for column in table.columns:
+            if isinstance(column.type, DateTime):
+                column.type.timezone = False
+
+
+def _ensure_postgres_number_triggers(connection) -> None:
+    """PostgreSQL replacement for the SQLite triggers assigning clients.client_number / jobs.job_number."""
+    for table, column in (("clients", "client_number"), ("jobs", "job_number")):
+        connection.exec_driver_sql(
+            f"CREATE OR REPLACE FUNCTION assign_{table}_{column}() RETURNS trigger AS $$ "
+            f"BEGIN IF NEW.{column} IS NULL THEN "
+            f"NEW.{column} := (SELECT COALESCE(MAX({column}), 0) + 1 FROM {table}); "
+            f"END IF; RETURN NEW; END; "
+            f"$$ LANGUAGE plpgsql"
+        )
+        connection.exec_driver_sql(
+            f"DO $$ BEGIN "
+            f"IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_{table}_assign_number') THEN "
+            f"CREATE TRIGGER trg_{table}_assign_number BEFORE INSERT ON {table} "
+            f"FOR EACH ROW EXECUTE FUNCTION assign_{table}_{column}(); "
+            f"END IF; END $$;"
+        )
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
     from . import outreach_models  # noqa: F401
 
+    _use_naive_datetimes_for_postgres()
     Base.metadata.create_all(bind=engine)
     _ensure_schema()
     _ensure_legacy_client_accounts()
     _ensure_default_tariffs()
-    _ensure_master_api_key()
 
 
 def _ensure_schema() -> None:
     with engine.begin() as connection:
+        inspector = inspect(connection)
         if "job_sources" in Base.metadata.tables:
             Base.metadata.tables["job_sources"].create(bind=connection, checkfirst=True)
-        inspector = inspect(connection)
+        if "web_password_reset_tokens" in Base.metadata.tables:
+            Base.metadata.tables["web_password_reset_tokens"].create(bind=connection, checkfirst=True)
+        if "invoices" in Base.metadata.tables:
+            Base.metadata.tables["invoices"].create(bind=connection, checkfirst=True)
+        if "yookassa_payments" in Base.metadata.tables:
+            Base.metadata.tables["yookassa_payments"].create(bind=connection, checkfirst=True)
+        if "job_chat_messages" in Base.metadata.tables:
+            Base.metadata.tables["job_chat_messages"].create(bind=connection, checkfirst=True)
+        invoice_existing = _existing_columns(inspector, "invoices")
+        for column, definition in {
+            "settlement_mode": "VARCHAR(32) DEFAULT ''",
+            "proof_path": "TEXT DEFAULT ''",
+            "proof_original_name": "VARCHAR(255) DEFAULT ''",
+            "proof_content_type": "VARCHAR(80) DEFAULT ''",
+            "proof_size": "INTEGER DEFAULT 0",
+            "proof_submitted_at": "DATETIME",
+            "buyer_phone": "VARCHAR(32) DEFAULT ''",
+            "buyer_telegram": "VARCHAR(64) DEFAULT ''",
+        }.items():
+            if column not in invoice_existing:
+                connection.execute(text(f"ALTER TABLE invoices ADD COLUMN {column} {definition}"))
+        yookassa_existing = _existing_columns(inspector, "yookassa_payments")
+        for column, definition in {
+            "phone": "VARCHAR(32) DEFAULT ''",
+            "telegram_username": "VARCHAR(64) DEFAULT ''",
+        }.items():
+            if column not in yookassa_existing:
+                connection.execute(text(f"ALTER TABLE yookassa_payments ADD COLUMN {column} {definition}"))
         system_settings_existing = _existing_columns(inspector, "system_settings")
         system_settings_additions = {
             "document_settings_json": "TEXT DEFAULT '{}'",
@@ -98,6 +177,7 @@ def _ensure_schema() -> None:
             "yookassa_shop_id": "VARCHAR(255) DEFAULT ''",
             "yookassa_secret_key": "TEXT DEFAULT ''",
             "yookassa_return_url": "VARCHAR(255) DEFAULT ''",
+            "yookassa_send_receipt": "BOOLEAN DEFAULT 0",
             "supplier_ai_provider": "VARCHAR(80) DEFAULT ''",
             "supplier_ai_model": "VARCHAR(160) DEFAULT ''",
             "ai_analysis_fallback_json": "TEXT DEFAULT '[]'",
@@ -110,6 +190,7 @@ def _ensure_schema() -> None:
             "price_monitoring_filter_marketplaces": "BOOLEAN DEFAULT 1",
             "price_monitoring_filter_foreign": "BOOLEAN DEFAULT 1",
             "price_monitoring_max_variation_pct": "REAL DEFAULT 33.0",
+            "price_monitoring_access_mode": "VARCHAR(32) DEFAULT 'all'",
             "geo_radius_search_enabled_global": "BOOLEAN DEFAULT 0",
             "geo_radius_surcharge_pct": "REAL DEFAULT 30.0",
         }
@@ -132,12 +213,13 @@ def _ensure_schema() -> None:
             "custom_exclude_foreign": "BOOLEAN NULL",
             "custom_max_suppliers": "INTEGER NULL",
             "custom_max_variation_pct": "REAL NULL",
-            "yandex_search_price_per_request": "REAL DEFAULT 0.04",
+            "yandex_search_price_per_request": "REAL DEFAULT 0.0305",
             "marketing_unsubscribed": "BOOLEAN DEFAULT 0",
             "referrer_id": "VARCHAR(32) NULL",
             "referral_reward_granted": "BOOLEAN DEFAULT 0",
             "referral_code": "VARCHAR(32) DEFAULT ''",
             "registration_ip": "VARCHAR(64) DEFAULT ''",
+            "phone": "VARCHAR(32) DEFAULT ''",
             "client_number": "INTEGER NULL",
         }
         jobs_existing = _existing_columns(inspector, "jobs")
@@ -148,6 +230,7 @@ def _ensure_schema() -> None:
             "multi_item_mode": "VARCHAR(40) DEFAULT 'balanced'",
             "delivery_city": "VARCHAR(255) DEFAULT ''",
             "geo_radius_km": "INTEGER NULL",
+            "position_selection_json": "TEXT DEFAULT ''",
             "filter_marketplaces": "BOOLEAN NULL",
             "filter_foreign": "BOOLEAN NULL",
             "max_suppliers": "INTEGER NULL",
@@ -177,6 +260,7 @@ def _ensure_schema() -> None:
             "parent_job_id": "VARCHAR(32) DEFAULT ''",
             "is_admin_rerun": "BOOLEAN DEFAULT 0",
             "job_number": "INTEGER NULL",
+            "geo_scope": "VARCHAR(32) DEFAULT 'ru'",
         }
         billing_transactions_existing = _existing_columns(inspector, "billing_transactions")
         client_tariff_overrides_existing = _existing_columns(inspector, "client_tariff_overrides")
@@ -191,6 +275,8 @@ def _ensure_schema() -> None:
             "is_email_verified": "BOOLEAN DEFAULT 1",
             "marketing_unsubscribed": "BOOLEAN DEFAULT 0",
             "yandex_id": "VARCHAR(64) NULL",
+            "phone": "VARCHAR(32) DEFAULT ''",
+            "telegram_username": "VARCHAR(64) DEFAULT ''",
         }
         onboarding_reminders_existing = _existing_columns(inspector, "onboarding_reminders")
         onboarding_reminder_additions = {
@@ -299,35 +385,47 @@ def _ensure_schema() -> None:
                 "ON clients(client_number) WHERE client_number IS NOT NULL"
             )
         )
-        connection.execute(
-            text(
-                """
-            CREATE TRIGGER IF NOT EXISTS trg_clients_assign_number
-            AFTER INSERT ON clients
-            WHEN NEW.client_number IS NULL
-            BEGIN
-                UPDATE clients
-                SET client_number = (SELECT COALESCE(MAX(client_number), 0) + 1 FROM clients)
-                WHERE id = NEW.id;
-            END;
-        """
+        if connection.dialect.name == "sqlite":
+            connection.execute(
+                text(
+                    """
+                CREATE TRIGGER IF NOT EXISTS trg_clients_assign_number
+                AFTER INSERT ON clients
+                WHEN NEW.client_number IS NULL
+                BEGIN
+                    UPDATE clients
+                    SET client_number = (SELECT COALESCE(MAX(client_number), 0) + 1 FROM clients)
+                    WHERE id = NEW.id;
+                END;
+            """
+                )
             )
-        )
         for column, definition in job_additions.items():
             if column not in jobs_existing:
                 connection.execute(text(f"ALTER TABLE jobs ADD COLUMN {column} {definition}"))
-        connection.execute(text("UPDATE jobs SET job_number = rowid WHERE job_number IS NULL"))
+        if connection.dialect.name == "sqlite":
+            connection.execute(text("UPDATE jobs SET job_number = rowid WHERE job_number IS NULL"))
+        else:
+            connection.execute(text(
+                "UPDATE jobs SET job_number = numbered.rn FROM ("
+                "SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) + "
+                "(SELECT COALESCE(MAX(job_number), 0) FROM jobs) AS rn FROM jobs WHERE job_number IS NULL"
+                ") AS numbered WHERE jobs.id = numbered.id"
+            ))
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_job_number ON jobs(job_number) WHERE job_number IS NOT NULL"))
-        connection.execute(text("""
-            CREATE TRIGGER IF NOT EXISTS trg_jobs_assign_number
-            AFTER INSERT ON jobs
-            WHEN NEW.job_number IS NULL
-            BEGIN
-                UPDATE jobs
-                SET job_number = (SELECT COALESCE(MAX(job_number), 0) + 1 FROM jobs)
-                WHERE id = NEW.id;
-            END;
-        """))
+        if connection.dialect.name == "sqlite":
+            connection.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS trg_jobs_assign_number
+                AFTER INSERT ON jobs
+                WHEN NEW.job_number IS NULL
+                BEGIN
+                    UPDATE jobs
+                    SET job_number = (SELECT COALESCE(MAX(job_number), 0) + 1 FROM jobs)
+                    WHERE id = NEW.id;
+                END;
+            """))
+        else:
+            _ensure_postgres_number_triggers(connection)
         for column, definition in billing_transaction_additions.items():
             if billing_transactions_existing and column not in billing_transactions_existing:
                 connection.execute(text(f"ALTER TABLE billing_transactions ADD COLUMN {column} {definition}"))
@@ -389,10 +487,24 @@ def _ensure_schema() -> None:
         api_keys_existing = _existing_columns(inspector, "api_keys")
         api_keys_additions = {
             "secret_token": "VARCHAR(120) NULL",
+            "reserved_supplier_search": "INTEGER DEFAULT 0",
+            "reserved_exact_product": "INTEGER DEFAULT 0",
+            "reserved_procurement_report": "INTEGER DEFAULT 0",
+            "allowed_price_monitoring": "BOOLEAN DEFAULT 0",
+            "quota_price_monitoring": "INTEGER DEFAULT 0",
+            "spent_price_monitoring": "INTEGER DEFAULT 0",
+            "reserved_price_monitoring": "INTEGER DEFAULT 0",
         }
         for column, definition in api_keys_additions.items():
             if api_keys_existing and column not in api_keys_existing:
                 connection.execute(text(f"ALTER TABLE api_keys ADD COLUMN {column} {definition}"))
+        # Hashes are sufficient for authentication.  Remove legacy plaintext
+        # secrets without rotating or invalidating existing API keys.
+        if api_keys_existing and "secret_token" in api_keys_existing:
+            connection.execute(text("UPDATE api_keys SET secret_token = NULL WHERE secret_token IS NOT NULL"))
+        api_operations_existing = _existing_columns(inspector, "api_operations")
+        if api_operations_existing and "job_ids_json" not in api_operations_existing:
+            connection.execute(text("ALTER TABLE api_operations ADD COLUMN job_ids_json TEXT DEFAULT '[]'"))
         tariff_packages_existing = _existing_columns(inspector, "tariff_packages")
         tariff_package_additions = {
             "bonus_kopeks": "INTEGER DEFAULT 0",
@@ -534,51 +646,6 @@ def _ensure_default_tariffs() -> None:
                     )
                 )
             db.commit()
-    finally:
-        db.close()
-
-
-def _ensure_master_api_key() -> None:
-    from .models import ApiKey
-    import hashlib
-    import secrets
-
-    Session = sessionmaker(bind=engine)
-    db = Session()
-    try:
-        master = db.query(ApiKey).filter(ApiKey.is_admin == True, ApiKey.is_active == True).first()
-        if not master:
-            raw_key = f"tl_admin_{secrets.token_urlsafe(32)}"
-            key_hash = hashlib.sha256(raw_key.strip().encode("utf-8")).hexdigest()
-            key_prefix = f"{raw_key[:12]}...{raw_key[-4:]}"
-            master = ApiKey(
-                key_hash=key_hash,
-                key_prefix=key_prefix,
-                secret_token=raw_key,
-                name="Главный Master-ключ Администратора",
-                is_admin=True,
-                is_active=True,
-                allowed_supplier_search=True,
-                allowed_exact_product=True,
-                allowed_procurement_report=True,
-                quota_supplier_search=999999,
-                quota_exact_product=999999,
-                quota_procurement_report=999999,
-                rate_limit_per_minute=120,
-                notes="Мастер-ключ с полным безлимитным доступом ко всем модулям TenderLex",
-            )
-            db.add(master)
-            db.commit()
-        elif not master.secret_token:
-            raw_key = f"tl_admin_{secrets.token_urlsafe(32)}"
-            key_hash = hashlib.sha256(raw_key.strip().encode("utf-8")).hexdigest()
-            key_prefix = f"{raw_key[:12]}...{raw_key[-4:]}"
-            master.key_hash = key_hash
-            master.key_prefix = key_prefix
-            master.secret_token = raw_key
-            db.commit()
-    except Exception:
-        db.rollback()
     finally:
         db.close()
 

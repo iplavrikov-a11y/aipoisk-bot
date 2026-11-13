@@ -23,7 +23,7 @@ export const metadata: Metadata = {
     type: "website",
     url: "/regiony/krasnodar",
     title: "Поиск поставщиков и заводов в Краснодаре и ЮФО | TenderLex",
-    description: "Автоматизированный подбор контрагентов под спецификации закупки в Краснодарском крае и Южном федеральном округе.",
+    description: "Поиск потенциальных поставщиков по спецификациям закупки в Краснодарском крае и Южном федеральном округе.",
     siteName: "TenderLex",
     images: ["/tenderlex-product-preview.png"],
   },

@@ -11,7 +11,7 @@ declare global { interface Window { ym?: MetrikaFunction } }
 
 let counter: number | undefined;
 let consentGranted = false;
-const modules = new Set(["supplier_search", "exact_product", "procurement_report", "analysis_and_suppliers"]);
+const modules = new Set(["supplier_search", "exact_product", "procurement_report", "analysis_and_suppliers", "price_monitoring"]);
 
 export function configureAnalytics(counterId: string | undefined, granted: boolean) {
   counter = counterId && /^\d+$/.test(counterId) && Number(counterId) > 0 ? Number(counterId) : undefined;

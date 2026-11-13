@@ -351,7 +351,8 @@ def test_customer_api_keys_flow_and_job_logging():
     keys = list_resp2.json()["keys"]
     assert len(keys) == 1
     assert keys[0]["id"] == key_id
-    assert keys[0]["raw_key"] == created_data["raw_key"]
+    assert "raw_key" not in keys[0]
+    assert created_data["raw_key"] not in str(list_resp2.json())
     assert keys[0]["is_active"] is True
 
     # 5. Test record_api_job for admin audit
@@ -575,6 +576,47 @@ def test_mcp_zero_results_and_tool_call_flow():
     assert "поставщики не найдены" in tx_rel.note
 
     db.close()
+
+
+def test_unverified_web_user_cannot_create_api_key():
+    from app.models import Client, WebUser
+    from app.web_auth import create_web_session
+
+    db = TestingSessionLocal()
+    client = TestClient(app)
+    try:
+        client_obj = Client(
+            name="Unverified API Client",
+            telegram_id="test_tg_unverified_api",
+            is_active=True,
+            money_balance_kopeks=49500,
+        )
+        db.add(client_obj)
+        db.commit()
+        db.refresh(client_obj)
+
+        web_user = WebUser(
+            client_id=client_obj.id,
+            email="unverified_api@example.com",
+            name="Unverified User",
+            is_active=True,
+            is_email_verified=False,
+        )
+        db.add(web_user)
+        db.commit()
+        db.refresh(web_user)
+
+        raw_token, csrf_token, _ = create_web_session(db, web_user, request=None)
+        resp = client.post(
+            "/api/customer/api-keys",
+            cookies={"tenderlex_customer_session": raw_token},
+            headers={"X-CSRF-Token": csrf_token},
+        )
+        assert resp.status_code == 403
+        assert "Подтвердите email" in resp.json()["detail"]
+    finally:
+        db.close()
+
 
 
 

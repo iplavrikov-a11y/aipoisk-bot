@@ -9,13 +9,18 @@ _test_db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _test_db_path = _test_db_file.name
 _test_db_file.close()
 
-os.environ["AIPOISK_DATABASE_URL"] = f"sqlite:///{_test_db_path}"
+os.environ["AIPOISK_DATABASE_URL"] = os.environ.get("AIPOISK_TEST_DATABASE_URL") or f"sqlite:///{_test_db_path}"
 
 from app.db import init_db
 
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
+    import sqlalchemy as sa
+    from app.db import engine
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as conn:
+            conn.execute(sa.text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
     init_db()
     yield
     try:

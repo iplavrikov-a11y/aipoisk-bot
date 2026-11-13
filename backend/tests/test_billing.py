@@ -928,6 +928,90 @@ class BillingLedgerTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_retry_after_failure_re_reserves_and_charges_successfully(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-retry-success", telegram_id="retry-success", money_balance_kopeks=19_800)
+            job = Job(id="job-retry-success", client_id=client.id, mode="supplier_search")
+            db.add_all([
+                client,
+                job,
+                ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH, price_kopeks=9_900),
+            ])
+            db.commit()
+
+            # 1. Initial reservation
+            reserve_job_units(db, client, job)
+            db.refresh(client)
+            self.assertEqual(client.money_reserved_kopeks, 9_900)
+            self.assertEqual(client.money_balance_kopeks, 19_800)
+            self.assertTrue(job_has_unsettled_reservation(db, job))
+
+            # 2. Failure releases reservation
+            release_job_reservation(db, job, note="поставщики не найдены")
+            db.refresh(client)
+            self.assertEqual(client.money_reserved_kopeks, 0)
+            self.assertEqual(client.money_balance_kopeks, 19_800)
+            self.assertFalse(job_has_unsettled_reservation(db, job))
+
+            # 3. Retry re-reserves funds
+            reserve_job_units(db, client, job)
+            db.refresh(client)
+            self.assertEqual(client.money_reserved_kopeks, 9_900)
+            self.assertEqual(client.money_balance_kopeks, 19_800)
+            self.assertTrue(job_has_unsettled_reservation(db, job))
+
+            # 4. Completion charges the job
+            charge_job_reservation(db, job)
+            db.refresh(client)
+            self.assertEqual(client.money_reserved_kopeks, 0)
+            self.assertEqual(client.money_balance_kopeks, 9_900)
+            self.assertFalse(job_has_unsettled_reservation(db, job))
+
+            # Verify transactions
+            charge_tx = (
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.job_id == job.id, BillingTransaction.operation == OP_CHARGE)
+                .first()
+            )
+            self.assertIsNotNone(charge_tx)
+            self.assertEqual(charge_tx.amount_kopeks, 9_900)
+        finally:
+            db.close()
+
+    def test_retry_after_failure_insufficient_funds_raises_billing_error(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-retry-insufficient", telegram_id="retry-insufficient", money_balance_kopeks=9_900)
+            job = Job(id="job-retry-1", client_id=client.id, mode="supplier_search")
+            db.add_all([
+                client,
+                job,
+                ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH, price_kopeks=9_900),
+            ])
+            db.commit()
+
+            # Reserve and fail
+            reserve_job_units(db, client, job)
+            release_job_reservation(db, job, note="сбой")
+            db.refresh(client)
+            self.assertEqual(client.money_reserved_kopeks, 0)
+            self.assertEqual(client.money_balance_kopeks, 9_900)
+
+            # Spend balance on another job
+            job2 = Job(id="job-retry-2", client_id=client.id, mode="supplier_search")
+            db.add(job2)
+            db.commit()
+            reserve_job_units(db, client, job2)
+            db.refresh(client)
+            self.assertEqual(client.money_reserved_kopeks, 9_900)
+
+            # Attempting to retry job 1 must fail due to insufficient funds
+            with self.assertRaises(BillingError):
+                reserve_job_units(db, client, job)
+        finally:
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,7 +47,9 @@ export function absoluteUrl(path: string) {
 }
 
 export function formatSeoTitle(title: string, customSeoTitle?: string): string {
-  if (customSeoTitle) return customSeoTitle;
+  if (customSeoTitle) {
+    return customSeoTitle.replace(/\s*\|\s*TenderLex\s*$/i, "").trim();
+  }
   let clean = title;
   if (clean.includes(":")) {
     clean = clean.split(":")[0].trim();
@@ -111,7 +113,13 @@ export function buildBreadcrumbJsonLd(items: BreadcrumbItem[]) {
   };
 }
 
-export function buildOrganizationJsonLd({ botUrl }: { botUrl?: string } = {}) {
+export function buildOrganizationJsonLd({
+  botUrl,
+  contacts,
+}: {
+  botUrl?: string;
+  contacts?: { email?: string; phone?: string; phone_url?: string; telegram?: string; max?: string };
+} = {}) {
   const siteUrl = normalizedSiteUrl();
   return {
     "@context": "https://schema.org",
@@ -120,6 +128,8 @@ export function buildOrganizationJsonLd({ botUrl }: { botUrl?: string } = {}) {
     name: "TenderLex",
     alternateName: ["ТендерЛекс", "TenderLex B2B"],
     url: siteUrl,
+    ...(contacts?.email ? { email: contacts.email } : {}),
+    ...(contacts?.phone ? { telephone: contacts.phone } : {}),
     logo: {
       "@type": "ImageObject",
       url: `${siteUrl}/icon.png`,
@@ -166,19 +176,30 @@ export function buildOrganizationJsonLd({ botUrl }: { botUrl?: string } = {}) {
         name: "Самарская область",
       },
     ],
-    ...(botUrl ? { contactPoint: {
-      "@type": "ContactPoint",
-      contactType: "customer support",
-      url: botUrl,
-      availableLanguage: ["Russian"],
-    } } : {}),
-    sameAs: [...(botUrl ? [botUrl] : []), "https://productradar.ru/product/tenderlex"],
+    ...(botUrl || contacts?.email || contacts?.phone ? {
+      contactPoint: {
+        "@type": "ContactPoint",
+        contactType: "customer support",
+        ...(botUrl ? { url: botUrl } : {}),
+        ...(contacts?.email ? { email: contacts.email } : {}),
+        ...(contacts?.phone ? { telephone: contacts.phone } : {}),
+        availableLanguage: ["Russian"],
+      },
+    } : {}),
+    sameAs: [
+      ...(botUrl ? [botUrl] : []),
+      ...(contacts?.telegram ? [contacts.telegram] : []),
+      ...(contacts?.max ? [contacts.max] : []),
+      "https://productradar.ru/product/tenderlex",
+    ].filter((v, i, a) => Boolean(v) && a.indexOf(v) === i),
     knowsAbout: [
       "Поиск поставщиков по ТЗ",
+      "Подбор товара и аналогов по ТЗ",
       "Анализ закупочной документации",
-      "Реестр Минпромторга",
-      "Подготовка запросов КП",
-      "Оценка рисков закупок",
+      "Мониторинг цен поставщиков по ТЗ",
+      "Реестр Минпромторга (ПП РФ № 1875)",
+      "Подготовка запросов КП и расчет НМЦК",
+      "Оценка рисков закупок по 44-ФЗ и 223-ФЗ",
     ],
   };
 }
@@ -283,12 +304,14 @@ export function buildSoftwareApplicationJsonLd({ trialEnabled = false }: { trial
     name: "TenderLex",
     operatingSystem: "Web, Telegram, iOS, Android, Windows, macOS, Linux",
     applicationCategory: "BusinessApplication",
-    ...(trialEnabled ? { offers: {
-      "@type": "Offer",
-      price: "0",
-      priceCurrency: "RUB",
-      description: "Бесплатный пробный доступ при регистрации.",
-    } } : {}),
+    ...(trialEnabled ? {
+      offers: {
+        "@type": "Offer",
+        price: "0",
+        priceCurrency: "RUB",
+        description: "Бесплатный пробный доступ при регистрации.",
+      }
+    } : {}),
     description:
       "TenderLex — веб-сервис и Telegram-бот для смыслового анализа технического задания, выявления рисков контрактов и поиска прямых контактов поставщиков.",
     url: siteUrl,

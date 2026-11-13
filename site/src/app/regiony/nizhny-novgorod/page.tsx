@@ -23,7 +23,7 @@ export const metadata: Metadata = {
     type: "website",
     url: "/regiony/nizhny-novgorod",
     title: "Поиск заводов и поставщиков в Нижнем Новгороде | TenderLex",
-    description: "Автоматизированный подбор контрагентов под спецификации закупки в Нижегородской области и ПФО.",
+    description: "Поиск потенциальных поставщиков по спецификациям закупки в Нижегородской области и ПФО.",
     siteName: "TenderLex",
     images: ["/tenderlex-product-preview.png"],
   },

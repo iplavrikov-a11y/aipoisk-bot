@@ -33,6 +33,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .ai import call_llm, parse_json_object
+from .admin_alerts import notify_yandex_search_error
 from .config import config
 from .dadata_client import enrich_company_by_inn
 from .models import SystemSettings
@@ -153,6 +154,11 @@ BLOCKED_DOMAINS = {
     "b2b-project.ru", "comreport.ru", "check-pro.ru", "vsem-podryad.ru", "licexpert.ru",
     "trudvsem.ru", "star-pro.ru", "rospravosudie.com", "kartoteka.ru",
     "reestr-doverennostey.ru", "fedresurs.ru", "mebeloptovik.ru", "100best.ru",
+    # Сметно-нормативные базы, классификаторы, реестры и файловые хранилища тендеров
+    "smetnoedelo.ru", "cs.smetnoedelo.ru", "classinform.ru", "fgisrf.ru", "fgiscs.minstroyrf.ru",
+    "fixedassets.ru", "tz-lab.ru", "normacs.ru", "meganorm.ru", "fsnb2022.ru", "fsnb.ru",
+    "all-smety.ru", "smetaplus.ru", "defsmeta.com", "szbi.ru", "smeta.szbi.ru", "smetamarket.ru",
+    "snip-info.ru", "gosthelp.ru", "files.stroyinf.ru", "selcdn.ru", "kapremontkbr.ru", "fkr-moscow.ru",
     "focus.kontur.ru", "vbankcenter.ru", "zakupki.kontur.ru", "audit-it.ru",
     # Banks & Financial Brokers
     "sberbank.ru", "sber.ru", "vtb.ru", "alfabank.ru", "tbank.ru", "tinkoff.ru", "gazprombank.ru",
@@ -164,7 +170,9 @@ BLOCKED_DOMAINS = {
     "1-ofd.ru", "astral.ru", "tensor.ru", "taxcom.ru", "platformaofd.ru",
     "taxnet.ru", "e-dis.ru", "ecplegko.ru", "ed-sro.ru",
     # Additional Aggregators & Brokers
-    "klerk.ru", "leboard.ru", "profi.ru", "kwork.ru", "youla.ru", "hh.ru", "superjob.ru",
+    "klerk.ru", "leboard.ru", "profi.ru", "youdo.com", "uslugi.yandex.ru",
+    "zoon.ru", "flamp.ru", "yell.ru", "kwork.ru", "youla.ru",
+    "hh.ru", "superjob.ru", "rabota.ru", "zarplata.ru",
     "zakon.guru", "garant.ru", "vc.ru", "journal.tinkoff.ru",
     "seldon-pro.ru", "seldon.ru", "sberbank-ast.ru", "roseltorg.ru", "etp-ets.ru",
     "gz-spb.ru", "zakazrf.ru", "lot-online.ru", "etp-gpb.ru",
@@ -269,6 +277,7 @@ class ProcurementItem:
     is_auxiliary: bool = False
     included_sub_items: tuple[str, ...] = ()
     cost_tier: str = "medium"
+    item_kind: str = "goods"
 
 
 @dataclass(frozen=True)
@@ -277,6 +286,8 @@ class ProcurementProfile:
     items: tuple[ProcurementItem, ...]
     excluded_terms: tuple[str, ...] = ()
     raw: dict | None = None
+    subject_kind: str = "goods"
+    empty_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -303,6 +314,10 @@ class MinpromRegistryContext:
     filter_error: str = ""
     status: str = "not_required"
     error: str = ""
+
+
+class EmptyProcurementProfileError(RuntimeError):
+    pass
 
 
 SUPPLIER_POLICY_NORMAL = "normal"
@@ -373,6 +388,48 @@ def is_blocked(url_or_domain: str) -> bool:
     )
 
 
+FOREIGN_NATIONAL_CCTLDS = {
+    ".cn", ".by", ".kz", ".am", ".kg", ".ua", ".de", ".us", ".uk", ".pl", ".fr",
+    ".it", ".es", ".jp", ".kr", ".in", ".tr", ".cz", ".nl", ".se", ".fi",
+    ".ro", ".bg", ".hu", ".gr", ".at", ".ch", ".ca", ".au", ".br", ".mx", ".ar"
+}
+CIS_CCTLDS = {".by", ".kz", ".am", ".kg"}
+FOREIGN_B2B_PORTALS = {
+    "made-in-china.com", "alibaba.com", "globalsources.com", "1688.com",
+    "taiwantrade.com", "indiamart.com", "ec21.com", "tradekey.com", "dhgate.com",
+    "sino-fire.com", "pandapipe.com", "flowex-pipe.com", "aliexpress.com", "aliexpress.ru"
+}
+
+
+def is_domain_allowed_for_geo(domain_or_url: str, geo_scope: str = "ru") -> bool:
+    if not domain_or_url:
+        return True
+    dom = base_domain(domain_or_url).lower().strip()
+    scope = str(geo_scope or "ru").strip().lower()
+    for portal in FOREIGN_B2B_PORTALS:
+        if dom == portal or dom.endswith("." + portal):
+            return False
+
+    if scope == "world":
+        return True
+
+    parts = dom.split(".")
+    tld = f".{parts[-1]}" if len(parts) > 1 else ""
+
+    if scope == "ru":
+        if tld in FOREIGN_NATIONAL_CCTLDS:
+            return False
+        return True
+
+    if scope == "cis":
+        if tld in FOREIGN_NATIONAL_CCTLDS and tld not in CIS_CCTLDS:
+            return False
+        return True
+
+    return True
+
+
+
 def hostname(url_or_domain: str) -> str:
     value = str(url_or_domain or "").strip().lower()
     if "://" in value:
@@ -396,12 +453,17 @@ def normalize_url(value: str) -> str:
     return value
 
 
-def build_universal_negative_keywords(clean_context: str) -> list[str]:
+def build_universal_negative_keywords(clean_context: str, *, subject_kind: str = "goods") -> list[str]:
     """
-    Системно строит список отрицательных ключевых слов для любого типа товара:
-    1. Общезакупочные исключения (ст. 33 44-ФЗ — запрет на б/у, восстановленный товар, уценку).
-    2. Бинарные отраслевые антитезы (автоматический/ручной, электрический/дизельный, стационарный/мобильный).
+    Системно строит список отрицательных ключевых слов по типу предмета закупки:
+    - Для товаров: общезакупочные исключения (ст. 33 44-ФЗ — запрет на б/у, восстановленный товар, уценку, аренду, демонтаж)
+      и бинарные отраслевые антитезы.
+    - Для чистых услуг/работ (subject_kind='services'): не исключает 'аренда'/'демонтаж'/'после ремонта',
+      чтобы не сломать поиск профильных подрядчиков, если это сама услуга.
     """
+    if str(subject_kind or "goods").strip().lower() == "services":
+        return []
+
     universal_disallowed = [
         "б/у", "б.у.", "бывший в употреблении", "бывшие в употреблении",
         "восстановленный", "восстановленные", "с хранения", "неликвид",
@@ -853,7 +915,7 @@ def _minprom_registry_sqlite_meta(sqlite_path: Path | None = None) -> dict[str, 
             fresh = (
                 rows.get("source_jsonl_mtime_ns") == str(stat.st_mtime_ns)
                 and rows.get("source_jsonl_size") == str(stat.st_size)
-                and rows.get("schema_version") == MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION
+                and rows.get("schema_version") in {MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION, "3"}
             )
         return {
             "sqlite_ready": bool(entry_count and entry_count == fts_count and fresh),
@@ -924,7 +986,7 @@ def _minprom_registry_sqlite_is_fresh(index_path: Path, sqlite_path: Path) -> bo
         return (
             rows.get("source_jsonl_mtime_ns") == str(stat.st_mtime_ns)
             and rows.get("source_jsonl_size") == str(stat.st_size)
-            and rows.get("schema_version") == MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION
+            and rows.get("schema_version") in {MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION, "3"}
         )
     except Exception:
         return False
@@ -1516,55 +1578,59 @@ def _fts_match_expression(terms: tuple[str, ...]) -> str:
 async def build_procurement_profile(settings: SystemSettings, context: str) -> ProcurementProfile:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for procurement profile extraction")
-    prompt = f"""Извлеки из технического задания профиль закупки для поиска поставщиков.
+    prompt = f"""Извлеки из технического задания профиль закупки для поиска поставщиков или профильных компаний-исполнителей (ПРАВИЛО 14 — 100% СЕМАНТИЧЕСКИЙ АНАЛИЗ БЕЗ ЖЁСТКИХ ШАБЛОНОВ).
 
-ПРАВИЛА КЛАСТЕРИЗАЦИИ И ВЫДЕЛЕНИЯ ПОЗИЦИЙ ДЛЯ СНАБЖЕНИЯ (ПРАВИЛО 14 — СТРОГО СЕМАНТИЧЕСКИЙ АНАЛИЗ БЕЗ ЖЕСТКИХ СЛОВ И ШАБЛОНОВ):
-1. ОБЪЕДИНЕНИЕ В СИСТЕМЫ И ПУЛЫ ПОСТАВЩИКОВ:
-   - Если несколько позиций ТЗ технологически, функционально или конструктивно относятся к одной системе, сборочной единице или комплекту — объединяй их в ЕДИНУЮ категорию для поиска поставщиков.
-   - Производители и профильные дистрибьюторы поставляют комплексные системы согласованно. Не разделяй составные элементы единого технического узла на изолированные микрокатегории.
-   - Для каждой объединенной группы ОБЯЗАТЕЛЬНО заполни "included_sub_items" — точные исходные формулировки строк ТЗ, вошедших в эту категорию.
+КРИТИЧЕСКАЯ ИЕРАРХИЯ ПРИОРИТЕТОВ (соблюдай строго по смыслу документа):
 
-2. РАЗДЕЛЕНИЕ НА ОСНОВНЫЕ И СОПУТСТВУЮЩИЕ:
-   - is_core: true — основные бюджетообразующие материальные ресурсы и целевое оборудование, определяющие профильный рынок производителей.
-   - is_auxiliary: true — сопутствующие монтажные, соединительные, крепежные элементы и расходные материалы. Если они функционально привязаны к основному узлу или оборудованию, включай их в included_sub_items соответствующей группы, не создавая под них отдельные категории поиска.
-   - cost_tier: "high" (основной объем/бюджет), "medium" (стандартная номенклатура), "low" (сопутствующие комплектующие и вспомогательные элементы).
+ПРИОРИТЕТ 1 — В ДОКУМЕНТЕ ЕСТЬ ФИЗИЧЕСКИЕ ТОВАРЫ, ОБОРУДОВАНИЕ, МАТЕРИАЛЫ (в том числе в смешанном ТЗ вместе с работами/услугами):
+- Установи "subject_kind": "goods".
+- Если в закупке указаны и товары/оборудование, и сопутствующие работы/услуги (доставка, погрузка, разгрузка, такелаж, сборка, монтаж, шеф-монтаж, пусконаладка/ПНР, обучение персонала, вывоз мусора, гарантийный сервис, настройка), ИЗВЛЕКАЙ В "items" ТОЛЬКО ФИЗИЧЕСКИЕ ТОВАРЫ с "item_kind": "goods".
+- СТРОГО ИСКЛЮЧАЙ сопутствующие работы и услуги из "items" (переноси их в "excluded_terms"), чтобы не подменить поиск поставщиков товара поиском грузчиков, перевозчиков или монтажников.
+- Даже если товар описан кратко одной строкой с единицей «усл. ед.» и/или пометкой «отечественного производства» (например: «1. Серверы, 1 усл. ед, ОКПД2 26.20.14.100» для модернизации ЦОД), это конкретный физический товар ("subject_kind": "goods", "item_kind": "goods"). Называй позицию предметно («Серверы», «Серверное оборудование»), не сводя к общим словам «Оборудование» или «Отечественное оборудование».
 
-3. РАЗНОРОДНЫЕ ОТРАСЛЕВЫЕ ГРУППЫ:
-   - Выделяй в самостоятельные категории с is_core=true только те товарные группы, которые обращаются на принципиально независимых отраслевых рынках производителей и дистрибьюторов.
+ПРИОРИТЕТ 2 — В ДОКУМЕНТЕ НЕТ НИ ОДНОГО ФИЗИЧЕСКОГО ТОВАРА, НО УКАЗАНА КОНКРЕТНАЯ УСЛУГА ИЛИ РАБОТА:
+- Если документ целиком посвящён оказанию услуг или выполнению работ (например: комплексная уборка помещений / клининг, охрана объектов, техническое обслуживание инженерных систем, ремонтные или сервисные работы под ключ без спецификации товаров к поставке, вывоз ТКО, логистические, медицинские, ИТ-услуги и т.п.) и самостоятельных товаров к поставке в нём нет — установи "subject_kind": "services".
+- Извлеки в "items" целевую услугу или работу с "item_kind": "service".
+- Название позиции ("name") должно отражать конкретный рыночный профиль исполнителя (например: «Комплексная уборка помещений», «Охрана объектов», «Техническое обслуживание систем вентиляции»), а НЕ пустое слово «Услуги» или «Работы».
+- В "category_terms" укажи профильные B2B-направления деятельности компаний-подрядчиков для поиска.
+- В "exact_terms" и "required_terms" укажи существенные параметры объекта, объёма, типа помещения/площадки, периодичности, локации или специальных лицензий/допусков из ТЗ.
+- НИКОГДА не смешивай в "items" goods и service одновременно: при наличии хотя бы одного физического товара выбирается Приоритет 1 (только товары).
 
-4. РАЗГРАНИЧЕНИЕ МАТЕРИАЛЬНЫХ РЕСУРСОВ И РАБОТ (СМЕТЫ, ВОР, КС-2):
-   - Поиск поставщиков направлен исключительно на поставку физических материальных ресурсов (товаров, оборудования, конструкций, сырья и материалов).
-   - Если исходный документ описывает сметные расценки или перечень строительно-монтажных, ремонтных, земляных, демонтажных, погрузочных или пусконаладочных процессов — ИСКЛЮЧАЙ наименования работ и технологических операций из категорий снабжения.
-   - Формируй категории исключительно по наименованиям физических материальных ресурсов, подлежащих закупке и поставке.
+ПРИОРИТЕТ 3 — ПУСТОЙ БЛАНК, ШАБЛОН ИЛИ ИНСТРУКЦИЯ БЕЗ ПРЕДМЕТА ЗАКУПКИ:
+- Если в документе нет ни конкретных товаров, ни конкретных услуг/работ (пустая форма предложения, инструкция участнику, реквизиты, штамп ЭП без позиций) — верни СТРОГО: "subject_kind": "goods", "items": [], "summary": "", "empty_reason": "empty_template".
+- СТРОГО ЗАПРЕЩЕНО выдумывать фиктивные позиции («Товары по техническому заданию», «Услуги по ТЗ», «Материальные ресурсы»).
 
-5. СЛУЖЕБНАЯ ИНФОРМАЦИЯ:
-   - Условия поставки, сроки, адреса, реквизиты, гарантийные обязательства, общие нормативные стандарты выноси в excluded_terms.
+ПРАВИЛА СТРУКТУРИРОВАНИЯ ПОЗИЦИЙ ВНУТРИ РЕЖИМА:
+1. ОБЪЕДИНЕНИЕ В СИСТЕМЫ И ПУЛЫ:
+   - Если несколько строк ТЗ технологически, функционально или конструктивно относятся к одной системе, сборочной единице или комплексу услуг одного профиля — объединяй их в единую категорию и перечисли исходные строки в "included_sub_items".
+   - Не более 25-35 укрупнённых категорий для объёмных спецификаций и смет.
+2. ОСНОВНЫЕ И СОПУТСТВУЮЩИЕ ПОЗИЦИИ (для товаров):
+   - is_core: true — основные бюджетообразующие товары/оборудование или основные виды услуг.
+   - is_auxiliary: true — вспомогательные комплектующие, расходники и крепёж; если привязаны к основному узлу, включай их в included_sub_items.
+   - cost_tier: "high" | "medium" | "low" | "auxiliary".
+3. СЛУЖЕБНАЯ ИНФОРМАЦИЯ И ОКПД2:
+   - Условия договора, сроки, штрафы, адреса заказчика и общие регламенты выноси в excluded_terms (важный город/регион исполнения или тип объекта оставь в required_terms, если это влияет на подбор исполнителя).
    - В okpd2_codes указывай только коды ОКПД2/ОКПД, явно присутствующие в исходном тексте ТЗ.
-
-6. МАКСИМАЛЬНОЕ КОЛИЧЕСТВО СИСТЕМ (ДЛЯ ОБЪЕМНЫХ СПЕЦИФИКАЦИЙ):
-   - Для объемных спецификаций и смет выдели не более 25-35 укрупненных отраслевых категорий для поиска поставщиков.
-   - Сопутствующие и вспомогательные строки ТЗ обязательно агрегируй в массив "included_sub_items" соответствующей профильной группы.
-
-7. ЕСЛИ В ДОКУМЕНТЕ НЕТ КОНКРЕТНЫХ ТОВАРОВ ИЛИ СПЕЦИФИКАЦИИ:
-   - Если загружен пустой шаблон, форма предложения, инструкция по заполнению, общие правила без конкретной номенклатуры/оборудования — верни СТРОГО пустой массив: "items": [], "summary": "".
-   - СТРОГО ЗАПРЕЩЕНО выдумывать фиктивные товары («Товары по техническому заданию», «Оборудование по спецификации», «Материальные ресурсы», слова из инструкций вроде «марка», «модель», «артикул»).
 
 Ответ строго JSON:
 {{
-  "summary": "краткое описание предмета закупки",
+  "subject_kind": "goods|services",
+  "summary": "краткое предметное описание закупки",
+  "empty_reason": "",
   "items": [
     {{
       "id": "item-1",
-      "name": "название укрупненной товарной категории для поиска поставщиков",
+      "item_kind": "goods|service",
+      "name": "предметное название товара или услуги для поиска компаний",
       "is_core": true,
       "is_auxiliary": false,
       "cost_tier": "high",
-      "included_sub_items": ["названия исходных строк ТЗ, объединенных в эту категорию"],
-      "aliases": ["марки, модели, русские/английские варианты, аналоги"],
-      "okpd2_codes": ["ОКПД2 коды из ТЗ/карточки, если есть"],
-      "category_terms": ["широкая товарная группа для поиска производителей и поставщиков"],
-      "exact_terms": ["точные размеры, ГОСТ, тип, марка, артикул"],
-      "required_terms": ["термины, которые помогают подтвердить соответствие сайта поставщика"],
+      "included_sub_items": ["исходные формулировки строк ТЗ, вошедших в эту категорию"],
+      "aliases": ["синонимы, альтернативные формулировки, марки, аналоги"],
+      "okpd2_codes": ["ОКПД2 коды из ТЗ, если есть"],
+      "category_terms": ["рыночная отраслевая группа компаний (поставщиков товара или исполнителей услуги)"],
+      "exact_terms": ["точные характеристики, ГОСТ, размеры, марка или ключевые параметры услуги"],
+      "required_terms": ["термины, подтверждающие профильность сайта компании"],
       "excluded_terms": ["что исключить"]
     }}
   ],
@@ -1580,8 +1646,10 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
                 settings,
                 prompt,
                 system_prompt=(
-                    "Ты закупочный аналитик. Строишь профиль закупки для поиска поставщиков, не подменяешь товар условиями и комплектующими. "
-                    "Если конкретных товаров в документе нет (пустая форма или инструкция), возвращаешь строго пустой массив items: []."
+                    "Ты закупочный аналитик. Строишь семантический профиль закупки: "
+                    "если в ТЗ есть физические товары (даже вместе со смежными услугами монтажа/доставки) — извлекаешь только товары (subject_kind='goods'); "
+                    "если товаров нет вовсе, но заказана конкретная услуга или работа — извлекаешь предмет услуги для подбора профильных компаний-исполнителей (subject_kind='services'); "
+                    "если документ пустой бланк или инструкция — возвращаешь items: []."
                 ),
                 tier="primary",
                 routing_key="supplier_procurement_profile",
@@ -1592,7 +1660,11 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
             )
             profile = _normalize_procurement_profile(parse_json_object(raw))
             return profile
+        except EmptyProcurementProfileError as exc:
+            raise EmptyProcurementProfileError(_empty_procurement_profile_message(context)) from exc
         except Exception as exc:
+            if isinstance(exc, EmptyProcurementProfileError) or "0 items" in str(exc) or "не найдены" in str(exc):
+                raise EmptyProcurementProfileError(_empty_procurement_profile_message(context)) from exc
             last_error = exc
             continue
     raise RuntimeError(f"AI procurement profile extraction failed: {last_error}") from last_error
@@ -1615,24 +1687,52 @@ async def build_supplier_queries(
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search query generation")
     profile = profile or await build_procurement_profile(settings, context)
-    
+    subject_kind = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower()
+    is_services = subject_kind == "services"
+
     geo_prompt = ""
     if delivery_city:
         rad_str = f" в радиусе {geo_radius_km} км" if geo_radius_km else ""
-        geo_prompt = (
-            f"\n- КРИТИЧНО ДЛЯ РЕГИОНАЛЬНОЙ ЛОГИСТИКИ: объект/поставка в городе {delivery_city}{rad_str}."
-            f" Обязательно добавь запросы с указанием города '{delivery_city}', официальных дилеров, дистрибьюторов, региональных оптовых складов и производителей в этом регионе!"
-        )
+        if is_services:
+            geo_prompt = (
+                f"\n- КРИТИЧНО ДЛЯ РЕГИОНАЛЬНОГО ПОДРЯДА: место оказания услуг — город {delivery_city}{rad_str}."
+                f" Обязательно добавь запросы с указанием города '{delivery_city}' для поиска профильных компаний-исполнителей и подрядчиков в этом регионе!"
+            )
+        else:
+            geo_prompt = (
+                f"\n- КРИТИЧНО ДЛЯ РЕГИОНАЛЬНОЙ ЛОГИСТИКИ: объект/поставка в городе {delivery_city}{rad_str}."
+                f" Обязательно добавь запросы с указанием города '{delivery_city}', официальных дилеров, дистрибьюторов, региональных оптовых складов и производителей в этом регионе!"
+            )
 
     if is_extend or wave_index > 1:
         refine_extra = f"\nДополнительные критерии добора: {additional_prompt.strip()}" if additional_prompt else ""
-        system_prompt = (
-            f"Ты ведущий эксперт по B2B поиску коммерческих поставщиков, региональных дистрибьюторов, торговых домов и оптовых складов. "
-            f"ЭТО РЕЖИМ ДОБОРА (ВОЛНА №{wave_index}). Базовые поставщики уже найдены. "
-            "Твоя задача — составить разнообразные поисковые запросы для нахождения альтернативных поставщиков, региональных центров сбыта, оптовых складов, торговых домов и комплектовщиков. "
-            "Используй отрицательные операторы Яндекса: -\"банковская гарантия\" -\"обучение\" -\"семинар\" -\"эцп\" -\"агрегатор\" -\"курсы\"."
-        )
-        prompt = f"""На основе профиля закупки сформируй поисковые запросы для ДОБОРА поставщиков (Волна #{wave_index}).
+        if is_services:
+            system_prompt = (
+                f"Ты ведущий эксперт по B2B поиску профильных сервисных компаний, подрядчиков и исполнителей услуг. "
+                f"ЭТО РЕЖИМ ДОБОРА (ВОЛНА №{wave_index}). Базовые исполнители уже найдены. "
+                "Твоя задача — составить разнообразные поисковые запросы для нахождения альтернативных профильных компаний-исполнителей и подрядных организаций. "
+                "Используй отрицательные операторы Яндекса: -\"банковская гарантия\" -\"вакансия\" -\"резюме\" -\"hh.ru\" -\"avito\" -\"profi.ru\" -\"агрегатор\"."
+            )
+            prompt = f"""На основе профиля закупки сформируй поисковые запросы для ДОБОРА компаний-исполнителей услуг/работ (Волна #{wave_index}).
+Нужно искать альтернативных B2B-подрядчиков, специализированные сервисные фирмы и исполнителей для организаций и учреждений.{refine_extra}{geo_prompt}
+Сформируй 18-28 поисковых запросов. НЕ ищи магазины инвентаря, доски вакансий, объявления частных мастеров и агрегаторы.
+Включай в запросы минус-слова (-вакансия -работа -резюме -агрегатор -форум -отзывы).
+Ответ строго JSON:
+{{"queries": ["..."]}}
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Фрагмент ТЗ для контекста:
+{context[:6000]}"""
+        else:
+            system_prompt = (
+                f"Ты ведущий эксперт по B2B поиску коммерческих поставщиков, региональных дистрибьюторов, торговых домов и оптовых складов. "
+                f"ЭТО РЕЖИМ ДОБОРА (ВОЛНА №{wave_index}). Базовые поставщики уже найдены. "
+                "Твоя задача — составить разнообразные поисковые запросы для нахождения альтернативных поставщиков, региональных центров сбыта, оптовых складов, торговых домов и комплектовщиков. "
+                "Используй отрицательные операторы Яндекса: -\"банковская гарантия\" -\"обучение\" -\"семинар\" -\"эцп\" -\"агрегатор\" -\"курсы\"."
+            )
+            prompt = f"""На основе профиля закупки сформируй поисковые запросы для ДОБОРА поставщиков (Волна #{wave_index}).
 Нужно искать альтернативных поставщиков: региональные торговые дома, склады, дистрибьюторы, дилеры по номенклатуре закупки.{refine_extra}{geo_prompt}
 Сформируй 18-28 поисковых запросов для поиска по регионам РФ и специализированным каналам сбыта.
 Включай в запросы минус-слова (-"банковская гарантия" -"обучение" -семинар -эцп -агрегатор -курсы).
@@ -1647,18 +1747,43 @@ async def build_supplier_queries(
 {context[:6000]}"""
     else:
         system_prompt = "Ты закупочный исследователь. Формируешь только поисковые запросы."
-        universal_negatives = build_universal_negative_keywords(context)
+        universal_negatives = build_universal_negative_keywords(context, subject_kind=subject_kind)
         neg_line = f"\n- СТРОГО исключай слова: {', '.join(universal_negatives[:8])}" if universal_negatives else ""
         if profile and len(profile.items) > 1 and multi_item_mode == "per_item":
             item_list_md = "\n".join(f"- {it.name}" for it in profile.items)
-            prompt = f"""На основе профиля закупки сформируй поисковые запросы для ПОПОЗИЦИОННОГО глубокого поиска поставщиков.
+            role_hint = (
+                "профильные сервисные компании, подрядчики и B2B-исполнители услуг"
+                if is_services
+                else "производитель, завод, дилер, дистрибьютор, оптовые поставки, точные параметры из ТЗ"
+            )
+            prompt = f"""На основе профиля закупки сформируй поисковые запросы для ПОПОЗИЦИОННОГО глубокого поиска {'исполнителей услуг' if is_services else 'поставщиков'}.
 В закупке выделены следующие независимые позиции:
 {item_list_md}
 
-КРИТИЧНО: Для КАЖДОЙ из перечисленных позиций составь от 8 до 12 самостоятельных, качественных поисковых запросов (производитель, завод, дилер, дистрибьютор, оптовые поставки, точные параметры из ТЗ).
+КРИТИЧНО: Для КАЖДОЙ из перечисленных позиций составь от 8 до 12 самостоятельных, качественных поисковых запросов ({role_hint}).
 Не смешивай разные позиции в один запрос!
 Всего сформируй от {8 * len(profile.items)} до {12 * len(profile.items)} запросов с равномерным охватом всех позиций.{neg_line}{geo_prompt}
-Не добавляй агрегаторы, маркетплейсы, реестры, тендерные площадки, справочники, статьи, видео и учебные страницы.
+Не добавляй агрегаторы, маркетплейсы, реестры, тендерные площадки, доски вакансий, справочники, статьи, видео и учебные страницы.
+Ответ строго JSON:
+{{"queries": ["..."]}}
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Фрагмент ТЗ для контекста:
+{context[:6000]}"""
+        elif is_services:
+            prompt = f"""На основе профиля закупки сформируй поисковые запросы для поиска профильных компаний-исполнителей и подрядчиков по услугам/работам.
+
+Нужно найти реальные коммерческие компании (B2B-исполнителей, подрядные и сервисные организации), которые оказывают указанную услугу или выполняют работы для организаций/учреждений и могут подготовить коммерческое предложение.
+Сформируй 18-28 коротких запросов для поиска официальных сайтов профильных компаний-исполнителей.
+Обязательная структура:
+- 40-60% запросов широкие по профилю услуги/работы для организаций (B2B, юридические лица, коммерческое предложение, подрядчик, сервисная компания);
+- 20-40% запросов с уточнением объекта/специфики из ТЗ (например: тип помещений/учреждений, локация, требования, режим выполнения);
+- используй коммерческие маркеры поиска исполнителя: "компания", "подрядчик", "услуги для организаций", "заказать", "коммерческое предложение", "официальный сайт";
+- НЕ добавляй слова "завод", "производитель оборудования", "купить инвентарь", "оптом", чтобы не находить магазины расходников вместо исполнителей услуг.{neg_line}{geo_prompt}
+Не добавляй агрегаторы услуг (Avito, Профи.ру, YouDo, Яндекс.Услуги, Zoon, 2ГИС), доски вакансий (hh.ru, работа, резюме), тендерные площадки, реестры, справочники, статьи, видео и учебные страницы.
+Если позиций несколько, обязательно распредели запросы пропорционально между всеми позициями.
 Ответ строго JSON:
 {{"queries": ["..."]}}
 
@@ -1712,19 +1837,33 @@ async def build_supplier_queries(
                     queries = revised
             if delivery_city:
                 nearby = get_cities_within_radius(delivery_city, geo_radius_km or 300)
-                target_items = [it.name for it in profile.items[:3]] if (profile and profile.items) else [_clean_query_item(context[:100])]
+                if profile and profile.items:
+                    items_limit = len(profile.items) if multi_item_mode == 'per_item' else min(6, len(profile.items))
+                    target_items = [it.name for it in profile.items[:items_limit]]
+                else:
+                    target_items = [_clean_query_item(context[:100])]
                 geo_injections = []
                 for item_name in target_items:
-                    clean_it = " ".join(item_name.split()[:4])
-                    geo_injections.append(f"{clean_it} {delivery_city} официальный дилер")
-                    geo_injections.append(f"{clean_it} {delivery_city} купить оптом склад")
-                    for n_city in nearby[:2]:
-                        if n_city != delivery_city.lower():
-                            geo_injections.append(f"{clean_it} {n_city} поставщик опт")
+                    clean_it = ' '.join(item_name.split()[:4])
+                    if is_services:
+                        geo_injections.append(f'{clean_it} {delivery_city} компания исполнитель')
+                        geo_injections.append(f'{clean_it} {delivery_city} для организаций официальный сайт')
+                        for n_city in nearby[:2]:
+                            if n_city != delivery_city.lower():
+                                geo_injections.append(f'{clean_it} {n_city} услуги для организаций')
+                    else:
+                        geo_injections.append(f'{clean_it} {delivery_city} официальный дилер')
+                        geo_injections.append(f'{clean_it} {delivery_city} купить оптом склад')
+                        for n_city in nearby[:2]:
+                            if n_city != delivery_city.lower():
+                                geo_injections.append(f'{clean_it} {n_city} поставщик опт')
                 queries = _clean_supplier_queries(geo_injections + queries)
-            max_queries = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == "per_item") else 28
+            base_cap = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == 'per_item') else 28
             if delivery_city:
-                max_queries += 6
+                geo_extra = min(24, 4 * len(target_items)) if (profile and profile.items) else 6
+                max_queries = base_cap + geo_extra
+            else:
+                max_queries = base_cap
             return queries[:max_queries]
         except Exception as exc:
             last_error = exc
@@ -1753,6 +1892,7 @@ async def discover_suppliers(
     multi_item_mode: str = "balanced",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[dict], dict]:
     async with _browser_pool_session():
         return await _discover_suppliers_impl(
@@ -1771,6 +1911,7 @@ async def discover_suppliers(
             multi_item_mode=multi_item_mode,
             delivery_city=delivery_city,
             geo_radius_km=geo_radius_km,
+            geo_scope=geo_scope,
         )
 
 
@@ -1791,6 +1932,7 @@ async def _discover_suppliers_impl(
     multi_item_mode: str = "balanced",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[dict], dict]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search")
@@ -1812,8 +1954,10 @@ async def _discover_suppliers_impl(
     await _emit_progress(progress_callback, 36, f"Определил закупаемые позиции: {len(profile.items)}")
     
     if not profile or not profile.items:
-        raise ValueError("В прикреплённом файле не найдено закупаемых товаров или спецификации (обнаружена пустая форма или инструкция по заполнению). Для поиска поставщиков прикрепите файл с перечнем конкретных товаров, оборудования или материалов.")
+        raise ValueError("В прикреплённом файле не найдено закупаемых позиций (обнаружена пустая форма или инструкция по заполнению). Для поиска прикрепите файл с перечнем конкретных товаров или описанием требуемых услуг.")
 
+    subject_kind = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower()
+    is_services = subject_kind == "services"
     item_count = len(profile.items) if (profile and len(profile.items) > 1) else 1
     is_per_item = profile is not None and item_count > 1 and multi_item_mode == "per_item"
 
@@ -1825,10 +1969,19 @@ async def _discover_suppliers_impl(
         effective_delivery_target = delivery_target
 
     policy = normalize_supplier_search_policy(supplier_search_policy)
-    await _emit_progress(progress_callback, 39, "Проверяю требования к реестру Минпромторга")
-    if policy == SUPPLIER_POLICY_NORMAL:
+    if policy == SUPPLIER_POLICY_NORMAL and is_services:
+        minprom_requirement = MinpromRegistryRequirement(
+            required=False,
+            measure_type="not_applied",
+            evidence="",
+            reason="Реестр промышленной продукции Минпромторга не применяется при поиске исполнителей услуг.",
+            raw={"skipped_for_subject_kind": "services"},
+        )
+    elif policy == SUPPLIER_POLICY_NORMAL:
+        await _emit_progress(progress_callback, 39, "Проверяю требования к реестру Минпромторга")
         minprom_requirement = await assess_minprom_registry_requirement(settings, context)
     else:
+        await _emit_progress(progress_callback, 39, "Проверяю требования к реестру Минпромторга")
         minprom_requirement = MinpromRegistryRequirement(
             required=True,
             measure_type="prohibition" if policy == SUPPLIER_POLICY_MINPROM_ONLY else "restriction",
@@ -1970,7 +2123,7 @@ async def _discover_suppliers_impl(
         candidates = preloaded_objs + [c for c in discovered if c.domain not in preloaded_domains]
 
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
-    candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(effective_delivery_target * 5, 60 * item_count)]
+    candidates = _exclude_candidates(_rank_candidates(candidates, context, subject_kind=subject_kind), excluded_domains)[: max(effective_delivery_target * 5, 60 * item_count)]
     initial_candidate_pool = list(candidates)
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
     rerank = await ai_rerank_candidates(settings, profile, candidates, effective_delivery_target, registry_context=minprom_context)
@@ -2097,7 +2250,7 @@ async def _discover_suppliers_impl(
                     for candidate in recovery_candidates
                     if candidate.domain and candidate.domain not in seen_domains
                 ]
-                recovery_candidates = _rank_candidates(recovery_candidates, context)[: max(needed_gap * 4, 40)]
+                recovery_candidates = _rank_candidates(recovery_candidates, context, subject_kind=subject_kind)[: max(needed_gap * 4, 40)]
                 recovery_rerank = await ai_rerank_candidates(
                     settings,
                     profile,
@@ -2161,12 +2314,19 @@ async def _discover_suppliers_impl(
         accepted = _filter_minprom_verified_suppliers(accepted, minprom_context)
     elif minprom_context.status == "ok" and minprom_context.entries:
         await _emit_progress(progress_callback, 90, "Обогащаю контакты и реквизиты реестра через DaData и поиск")
+        enrich_metrics: dict[str, int] = {"yandex_requests_count": 0}
         accepted = await _enrich_unmatched_registry_suppliers(
             settings,
             accepted,
             minprom_context,
             limit=effective_delivery_target,
+            metrics_out=enrich_metrics,
         )
+        if enrich_metrics.get("yandex_requests_count", 0) > 0 and isinstance(search_meta, dict):
+            extra_reqs = int(enrich_metrics["yandex_requests_count"])
+            search_meta["yandex_requests_count"] = int(search_meta.get("yandex_requests_count") or 0) + extra_reqs
+            unit_p = float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305)
+            search_meta["yandex_cost_rub"] = round(int(search_meta["yandex_requests_count"]) * unit_p, 2)
 
     # Enrich general accepted suppliers with missing region/director
     accepted = await _enrich_accepted_suppliers_with_dadata(accepted)
@@ -2175,7 +2335,7 @@ async def _discover_suppliers_impl(
         annotate_contacts_radius_status(accepted, delivery_city, geo_radius_km)
         def _final_geo_sort(item: dict):
             within = item.get("supplier_distance_within_radius")
-            rad_rank = 0 if within is True else (1 if within is False else 2)
+            rad_rank = 0 if within is True else (1 if within is None else 2)
             dist = item.get("supplier_distance_km")
             effective_dist = dist if (dist is not None and dist > 0) else 999999
             base_key = _supplier_result_sort_key(item)
@@ -2276,6 +2436,7 @@ async def _enrich_unmatched_registry_suppliers(
     accepted: list[dict],
     registry_context: MinpromRegistryContext,
     limit: int = 15,
+    metrics_out: dict[str, int] | None = None,
 ) -> list[dict]:
     """Ensures ALL GISP registry entries appear in results and enriches them via DaData + targeted search."""
     if registry_context.status != "ok" or not registry_context.entries:
@@ -2320,15 +2481,17 @@ async def _enrich_unmatched_registry_suppliers(
         unmatched_entries = unmatched_entries[:limit]
 
     semaphore = asyncio.Semaphore(3)
+    search_budget_remaining = 6
 
     async def _enrich_single_entry(entry: dict) -> dict:
+        nonlocal search_budget_remaining
         async with semaphore:
             inn = re.sub(r"\D+", "", str(entry.get("inn") or ""))
             mfr = str(entry.get("manufacturer") or "").strip()
             product = str(entry.get("product") or "").strip()
             registry_number = str(entry.get("registry_number") or "").strip()
 
-            # Step 1: DaData enrichment
+            # Step 1: DaData enrichment (Free)
             dadata: dict[str, Any] = {}
             if inn:
                 try:
@@ -2344,35 +2507,48 @@ async def _enrich_unmatched_registry_suppliers(
             dadata_emails = dadata.get("emails") or []
             dadata_sites = dadata.get("sites") or []
 
-            # Step 2: Targeted web search for website & contacts
-            site = ""
-            evidence_url = ""
-            contact_url = ""
+            # Step 2: Use free DaData site first; only run paid web search if site is still missing
+            site = dadata_sites[0] if dadata_sites else ""
+            evidence_url = site
+            contact_url = site
             phone = dadata_phones[0] if dadata_phones else ""
             email = dadata_emails[0] if dadata_emails else ""
 
             queries = []
-            if inn:
-                queries.append(f'"{inn}" официальный сайт')
-            if mfr:
-                clean_name = re.sub(
-                    r'(?:ООО|АО|ЗАО|ПАО|ОАО|НАО|НПК|НМФ|ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ|АКЦИОНЕРНОЕ ОБЩЕСТВО)\s*',
-                    "",
-                    mfr,
-                    flags=re.I,
-                ).strip(' "«»')
-                if clean_name and len(clean_name) >= 3:
+            if not site and search_budget_remaining > 0:
+                clean_name = ""
+                if mfr:
+                    clean_name = re.sub(
+                        r'(?:ООО|АО|ЗАО|ПАО|ОАО|НАО|НПК|НМФ|ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ|АКЦИОНЕРНОЕ ОБЩЕСТВО)\s*',
+                        "",
+                        mfr,
+                        flags=re.I,
+                    ).strip(' "«»')
+                if inn and clean_name and len(clean_name) >= 3:
+                    queries.append(f'"{inn}" "{clean_name}" официальный сайт контакты')
+                elif inn:
+                    queries.append(f'"{inn}" официальный сайт')
+                elif clean_name and len(clean_name) >= 3:
                     queries.append(f'"{clean_name}" официальный сайт контакты')
 
-            if queries:
+            if queries and not site and search_budget_remaining > 0:
+                search_budget_remaining -= 1
                 try:
                     candidates: list[Candidate] = []
                     if settings.yandex_search_folder_id and settings.yandex_search_api_key:
-                        candidates, _ = await _search_with_yandex(settings, queries, max_results=6)
+                        candidates, enrich_reqs = await _search_with_yandex(
+                            settings,
+                            queries[:1],
+                            max_results=6,
+                            expand_queries=False,
+                            max_pages_per_query=1,
+                        )
+                        if metrics_out is not None:
+                            metrics_out["yandex_requests_count"] = int(metrics_out.get("yandex_requests_count") or 0) + int(enrich_reqs or 0)
                     elif settings.google_search_api_key and settings.google_search_cse_id:
-                        candidates = await _search_with_google(settings, queries, max_results=6)
+                        candidates = await _search_with_google(settings, queries[:1], max_results=6)
                     else:
-                        candidates = await _search_with_ddgs(queries, max_results=6)
+                        candidates = await _search_with_ddgs(queries[:1], max_results=6)
 
                     valid_candidates = []
                     for c in candidates:
@@ -2386,29 +2562,26 @@ async def _enrich_unmatched_registry_suppliers(
                         site = chosen_candidate.url
                         evidence_url = chosen_candidate.url
                         contact_url = chosen_candidate.url
-                        try:
-                            pages = await collect_pages(chosen_candidate.url)
-                            if pages:
-                                comb_text = "\n".join(p.get("text", "") for p in pages)
-                                phones = sorted(set(PHONE_RE.findall(comb_text)))
-                                emails = sorted(set(EMAIL_RE.findall(comb_text)))
-                                verified_p = _verified_phone("", phones)
-                                verified_e = _verified_email("", emails)
-                                if verified_p:
-                                    phone = verified_p
-                                if verified_e:
-                                    email = verified_e
-                                contact_url = contact_page_url(pages, emails, phones) or chosen_candidate.url
-                                evidence_url = pages[0].get("url") or chosen_candidate.url
-                        except Exception as crawl_exc:
-                            logger.warning("Targeted crawl failed for %s: %s", chosen_candidate.url, crawl_exc)
                 except Exception as search_exc:
                     logger.warning("Targeted search failed for entry %s: %s", inn or mfr, search_exc)
 
-            if not site and dadata_sites:
-                site = dadata_sites[0]
-                evidence_url = site
-                contact_url = site
+            if site and (not phone or not email):
+                try:
+                    pages = await collect_pages(site)
+                    if pages:
+                        comb_text = "\n".join(p.get("text", "") for p in pages)
+                        phones = sorted(set(PHONE_RE.findall(comb_text)))
+                        emails = sorted(set(EMAIL_RE.findall(comb_text)))
+                        verified_p = _verified_phone("", phones)
+                        verified_e = _verified_email("", emails)
+                        if verified_p and not phone:
+                            phone = verified_p
+                        if verified_e and not email:
+                            email = verified_e
+                        contact_url = contact_page_url(pages, emails, phones) or site
+                        evidence_url = pages[0].get("url") or site
+                except Exception as crawl_exc:
+                    logger.warning("Targeted crawl failed for %s: %s", site, crawl_exc)
 
             # Step 3: Build clean comment
             comment_parts = [
@@ -2631,33 +2804,50 @@ def _supplier_minprom_registry_match(item: dict, registry_context: MinpromRegist
 async def extract_supplier_search_context(settings: SystemSettings, context: str) -> str:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search context extraction")
-    prompt = f"""Из полного комплекта закупочной документации выдели контекст, который нужен именно для поиска поставщиков.
+    cleaned_input = re.sub(r"[ \t]+", " ", str(context or "")).strip()
+    cleaned_input = re.sub(r"\n{3,}", "\n\n", cleaned_input).strip()
+    if (
+        50 <= len(cleaned_input) <= 1200
+        and "=== FILE:" not in cleaned_input
+        and "=== TABLE" not in cleaned_input
+        and not any(
+            marker in cleaned_input.lower()
+            for marker in (
+                "инструкция по заполнению",
+                "порядок подачи заявки",
+                "ответственность сторон",
+                "проект контракта",
+            )
+        )
+    ):
+        return cleaned_input
+    prompt = f"""Из полного комплекта закупочной документации выдели контекст, который нужен именно для поиска поставщиков или профильных компаний-исполнителей.
 
 Нужно найти и сохранить:
-- техническое задание, описание объекта закупки, спецификацию или товарную таблицу;
-- наименования закупаемых товаров/номенклатуры;
-- характеристики, размеры, ГОСТ/ТУ/марки/модели/бренды, если они важны для проверки;
+- техническое задание, описание объекта закупки, спецификацию, перечень товаров или описание требуемых услуг/работ;
+- наименования закупаемых товаров, оборудования, материалов ИЛИ конкретных услуг/работ;
+- характеристики, размеры, ГОСТ/ТУ/марки/модели/бренды или параметры объекта оказания услуг (площадь, адреса/город, периодичность, требования);
 - ОКПД2, КТРУ, реестровые номера, сведения о баллах Минпромторга и сроке действия записи как внутренние признаки для поиска;
-- единицы измерения и количества;
-- требования к Минпромторгу/ГИСП/реестровым записям, если они есть;
-- краткий предмет закупки.
+- единицы измерения и количества (в том числе «усл. ед.»);
+- требования к Минпромторгу/ГИСП/реестровым записям или специальным лицензиям, если они есть;
+- краткий предмет закупки и регион/город поставки или оказания услуг.
 
 Нужно убрать или сильно сократить:
-- общие условия договора;
-- реквизиты, адреса, штрафы, обеспечение, инструкции подачи заявки;
-- формы документов и служебные таблицы, которые не описывают товар.
+- общие юридические условия договора;
+- реквизиты сторон, штрафы, обеспечение, инструкции подачи заявки;
+- пустые формы документов.
 
-Не придумывай товары и характеристики. Если в комплекте есть несколько разных ТЗ/ООЗ, сохрани каждую самостоятельную товарную позицию.
+Не придумывай товары и характеристики и не добавляй своих оценок об отсутствии детального ТЗ. Если в комплекте есть несколько разных ТЗ/ООЗ, сохрани каждую самостоятельную позицию дословно.
 
 Ответ строго JSON:
-{{"supplier_context": "самодостаточный текст ТЗ/ООЗ для поиска поставщиков"}}
+{{"supplier_context": "самодостаточный текст ТЗ/ООЗ для поиска поставщиков или исполнителей"}}
 
 Документация:
 {context[:180000]}"""
     raw = await call_llm(
         settings,
         prompt,
-        system_prompt="Ты закупочный аналитик. Выделяешь из документации только ТЗ/ООЗ и товарные требования для последующего поиска поставщиков.",
+        system_prompt="Ты закупочный аналитик. Выделяешь из документации только ТЗ/ООЗ и предметные требования (товары или услуги) для последующего поиска поставщиков/исполнителей.",
         tier="primary",
         routing_key="supplier_tz_context_extraction",
         json_mode=True,
@@ -2696,14 +2886,42 @@ def _supplier_exclusion_sets(excluded_suppliers: list[dict] | None) -> tuple[set
     return domains, company_keys
 
 
-def _exclude_candidates(candidates: list[Candidate], excluded_domains: set[str]) -> list[Candidate]:
-    if not excluded_domains:
-        return candidates
-    return [candidate for candidate in candidates if candidate.domain and candidate.domain not in excluded_domains]
+def _exclude_candidates(candidates: list[Candidate], excluded_domains: set[str], geo_scope: str = "ru") -> list[Candidate]:
+    filtered: list[Candidate] = []
+    for candidate in candidates:
+        if not candidate.domain:
+            continue
+        if excluded_domains and candidate.domain in excluded_domains:
+            continue
+        if not is_domain_allowed_for_geo(candidate.domain, geo_scope):
+            continue
+        filtered.append(candidate)
+    return filtered
+
+
+
+def _empty_procurement_profile_message(context: str = "", empty_reason: str = "") -> str:
+    return (
+        "В загруженных документах не найдены товары или спецификация "
+        "(обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+        "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров или требуемых услуг текстом."
+    )
+
+
+def _normalize_item_kind(raw_kind: object, *, default_kind: str = "goods") -> str:
+    kind = str(raw_kind or "").strip().lower()
+    if kind in {"service", "services", "work", "works", "услуга", "услуги", "работа", "работы"}:
+        return "service"
+    if kind in {"good", "goods", "product", "products", "товар", "товары"}:
+        return "goods"
+    return "service" if default_kind == "services" else "goods"
 
 
 def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
     raw_items = data.get("items") if isinstance(data, dict) else []
+    raw_subject_kind = str((data or {}).get("subject_kind") or "").strip().lower() if isinstance(data, dict) else ""
+    inferred_default_kind = "services" if raw_subject_kind in {"service", "services"} else "goods"
+    empty_reason = re.sub(r"\s+", " ", str((data or {}).get("empty_reason") or "")).strip()[:200] if isinstance(data, dict) else ""
     items: list[ProcurementItem] = []
     for index, item in enumerate(raw_items if isinstance(raw_items, list) else [], start=1):
         if not isinstance(item, dict):
@@ -2731,6 +2949,10 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
             "оборудование по техническому заданию",
             "материальные ресурсы",
             "материальные ресурсы по тз",
+            "услуги по тз",
+            "услуги по техническому заданию",
+            "работы по тз",
+            "работы по техническому заданию",
             "техническое предложение",
             "форма технического предложения",
             "наименование товара",
@@ -2740,6 +2962,7 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
         }
         if not name or name.lower().strip() in GENERIC_UNDEFINED_NAMES or _is_placeholder_profile_term(name):
             continue
+        item_kind = _normalize_item_kind(item.get("item_kind"), default_kind=inferred_default_kind)
         item_context = f"{name} {' '.join(str(value) for value in item.values())}"
         item_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(item.get("id") or f"item-{index}")).strip("-").lower() or f"item-{index}"
         is_core = bool(item.get("is_core", True))
@@ -2773,8 +2996,21 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
                 is_auxiliary=is_auxiliary,
                 included_sub_items=included_sub_items,
                 cost_tier=cost_tier,
+                item_kind=item_kind,
             )
         )
+    # Mixed-TZ deterministic guard (Rule 14 structural invariant, zero keyword lists):
+    # Whenever physical goods exist alongside ancillary services, search ONLY for the goods.
+    has_goods = any(it.item_kind == "goods" for it in items)
+    has_services = any(it.item_kind == "service" for it in items)
+    if has_goods and has_services:
+        items = [it for it in items if it.item_kind == "goods"]
+        subject_kind = "goods"
+    elif has_services and not has_goods:
+        subject_kind = "services"
+    else:
+        subject_kind = "goods"
+
     MAX_PROFILE_ITEMS = 50
     if len(items) > MAX_PROFILE_ITEMS:
         core_items = [it for it in items if it.is_core]
@@ -2798,6 +3034,7 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
                 is_auxiliary=last.is_auxiliary,
                 included_sub_items=tuple(list(last.included_sub_items) + extra_sub_items[:50]),
                 cost_tier=last.cost_tier,
+                item_kind=last.item_kind,
             )
         items = kept_items
     summary = re.sub(r"\s+", " ", str(data.get("summary") or "")).strip() if isinstance(data, dict) else ""
@@ -2808,6 +3045,8 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
         items=tuple(items),
         excluded_terms=_clean_profile_terms(data.get("excluded_terms") if isinstance(data, dict) else None),
         raw=data if isinstance(data, dict) else {},
+        subject_kind=subject_kind,
+        empty_reason=empty_reason,
     )
 
 
@@ -2832,8 +3071,9 @@ _PLACEHOLDER_PROFILE_TERMS_EXACT = {
 _PLACEHOLDER_PROFILE_SUBSTRINGS = (
     "не указан", "не определен", "паспорт завода", "по спецификаци", "согласно тз",
     "в соответствии с тз", "согласно техническ", "в открытой документаци",
-    "отечественн", "по согласованию с заказчик", "страна происхожден",
-    "по требовани", "согласно документаци",
+    "отечественный производитель", "отечественного производител", "отечественного происхожден",
+    "по согласованию с заказчик", "страна происхожден",
+    "по требованию тз", "по требованию заказчик", "согласно документаци",
     "товары по техническому заданию", "товар по техническому заданию", "товары по тз", "товар по тз",
     "продукция по техническому заданию", "оборудование по техническому заданию",
     "по техническому заданию заказчика", "техническое предложение", "форма технического предложения",
@@ -2932,11 +3172,14 @@ def _profile_okpd2_hierarchy_codes(profile: ProcurementProfile) -> list[str]:
 
 def _profile_to_dict(profile: ProcurementProfile) -> dict:
     return {
+        "subject_kind": str(getattr(profile, "subject_kind", "goods") or "goods"),
         "summary": profile.summary,
+        "empty_reason": str(getattr(profile, "empty_reason", "") or ""),
         "items": [
             {
                 "id": item.id,
                 "name": item.name,
+                "item_kind": str(getattr(item, "item_kind", "goods") or "goods"),
                 "aliases": list(item.aliases),
                 "okpd2_codes": list(item.okpd2_codes),
                 "category_terms": list(item.category_terms),
@@ -2961,7 +3204,10 @@ normalize_procurement_profile = _normalize_procurement_profile
 def _validate_procurement_profile_response(raw: str) -> None:
     profile = _normalize_procurement_profile(parse_json_object(raw))
     if not profile.items:
-        raise RuntimeError(f"AI returned profile with 0 items (raw keys: {list(parse_json_object(raw).keys())})")
+        raise EmptyProcurementProfileError(
+            "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+            "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров текстом."
+        )
 
 
 def _validate_minprom_requirement_response(raw: str) -> None:
@@ -3293,7 +3539,30 @@ async def _revise_supplier_queries_with_ai(
     initial_queries: list[str],
     target: int,
 ) -> list[str]:
-    prompt = f"""Первый набор поисковых запросов получился слишком узко привязанным к точным характеристикам ТЗ.
+    is_services = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services"
+    if is_services:
+        prompt = f"""Первый набор поисковых запросов получился слишком узко привязанным к частным формулировкам ТЗ.
+
+Сформируй новый набор 18-28 запросов для поиска профильных B2B компаний-исполнителей и подрядчиков.
+Ищи коммерческие компании, сервисные организации и подрядчиков по направлению услуги, которые работают с организациями и учреждениями.
+Не повторяй ошибку: не делай каждый запрос с длинными цитатами контракта или узкими второстепенными деталями; оставь ключевые условия (тип объекта/регион) только в части запросов.
+НЕ добавляй маркетплейсы/агрегаторы услуг (Авито, Профи.ру, YouDo), доски вакансий (hh.ru) и магазины инвентаря.
+
+Цель отчёта: найти до {target} проверенных компаний-исполнителей.
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Слишком узкие запросы:
+{json.dumps(initial_queries, ensure_ascii=False)}
+
+Фрагмент ТЗ:
+{context[:5000]}
+
+Ответ строго JSON:
+{{"queries": ["..."]}}"""
+    else:
+        prompt = f"""Первый набор поисковых запросов получился слишком узко привязанным к точным характеристикам ТЗ.
 
 Сформируй новый набор 18-28 запросов для закупочного поиска поставщиков.
 Ищи производителей, заводы, дилеров, дистрибьюторов и B2B-поставщиков всей товарной группы/номенклатуры.
@@ -3358,7 +3627,38 @@ async def _build_supplier_recovery_queries_with_ai(
         }
         for item in accepted
     ][:20]
-    prompt = f"""Первый поисковый проход дал меньше подтверждённых поставщиков, чем нужно для качественного закупочного отчёта.
+    is_services = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services"
+    if is_services:
+        prompt = f"""Первый поисковый проход дал меньше подтверждённых компаний-исполнителей, чем нужно для качественного закупочного отчёта.
+
+Сформируй дополнительный набор 8-16 поисковых запросов для второго прохода.
+Это должно быть расширение поиска по рынку профильных сервисных компаний и подрядных организаций.
+
+Правила:
+- ищи специализированные B2B-компании, подрядчиков, сервисные фирмы и исполнителей услуг для организаций;
+- используй широкие category_terms и синонимы из профиля закупки, добавляя коммерческие маркеры ("для организаций", "юридическим лицам", "подрядчик", "официальный сайт", "заказать", "коммерческое предложение");
+- не ищи заводы/производителей инвентаря, доски вакансий (hh.ru), агрегаторы услуг (Avito, Профи, YouDo), тендерные площадки, реестры и статьи;
+- не повторяй исходные запросы без новой формулировки.
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Исходные запросы:
+{json.dumps(initial_queries, ensure_ascii=False)}
+
+Уже принятые компании:
+{json.dumps(accepted_samples, ensure_ascii=False)}
+
+Отклоненные/слабые кандидаты:
+{json.dumps(rejected_samples, ensure_ascii=False)}
+
+Фрагмент ТЗ:
+{context[:5000]}
+
+Ответ строго JSON:
+{{"queries": ["..."]}}"""
+    else:
+        prompt = f"""Первый поисковый проход дал меньше подтверждённых поставщиков, чем нужно для качественного закупочного отчёта.
 
 Сформируй дополнительный набор 8-16 поисковых запросов для второго прохода.
 Это должен быть не повтор точной позиции, а расширение поиска по товарной группе/номенклатуре.
@@ -3438,7 +3738,37 @@ async def ai_rerank_candidates(
     desired_review_count = _desired_candidate_review_count(target, len(payload_candidates))
     by_id = {str(index): candidate for index, candidate in enumerate(candidates[:limit])}
     minprom_guidance, minprom_payload = _minprom_rerank_context(registry_context)
-    prompt = f"""Отранжируй поисковых кандидатов перед открытием сайтов.
+    is_services = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services"
+    if is_services:
+        prompt = f"""Отранжируй поисковых кандидатов перед открытием сайтов.
+
+Нужно выбрать широкий пул профильных компаний-исполнителей и подрядчиков по услугам/работам для дальнейшей ИИ-проверки сайтов и контактов.
+Выбирай сайты специализированных сервисных компаний, подрядных организаций и B2B-исполнителей по профилю закупки.
+Если кандидат является профильной компанией нужного направления услуг, оставь его для детального ИИ-аудита.
+Для цели {target} компаний желательно оставить до {desired_review_count} кандидатов, если они похожи на официальные сайты компаний-исполнителей.
+Отклоняй маркетплейсы, агрегаторы услуг (Avito, Профи.ру, YouDo, Zoon, 2ГИС), доски вакансий (hh.ru, SuperJob), магазины расходников/инвентаря, тендерные площадки, реестры, справочники, статьи, видео и госресурсы.
+Для multi-item закупки сохрани покрытие разных позиций, если в выдаче есть подходящие кандидаты.
+
+Ответ строго JSON:
+{{
+  "ranked": [
+    {{
+      "id": "0",
+      "keep": true,
+      "confidence": 0,
+      "procurement_item_id": "item-1",
+      "reason": "кратко почему стоит открыть сайт"
+    }}
+  ]
+}}
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Кандидаты:
+{json.dumps(payload_candidates, ensure_ascii=False)}"""
+    else:
+        prompt = f"""Отранжируй поисковых кандидатов перед открытием сайтов.
 
 Нужно выбрать широкий пул кандидатов для дальнейшей ИИ-проверки сайтов и контактов, а не только точные товарные страницы.
 Выбирай производителей, заводы, дилеров, дистрибьюторов или B2B-поставщиков позиций из профиля закупки и релевантной товарной группы/номенклатуры.
@@ -3671,7 +4001,23 @@ async def _expand_candidate_rerank_with_ai(
         for item in remaining
     }
     minprom_guidance, minprom_payload = _minprom_rerank_context(registry_context)
-    prompt = f"""Первый ИИ-отбор оставил слишком мало кандидатов для отчёта на {target} поставщиков.
+    is_services = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services"
+    if is_services:
+        prompt = f"""Первый ИИ-отбор оставил слишком мало кандидатов для отчёта на {target} компаний-исполнителей.
+
+Выбери дополнительно до {needed} сайтов профильных сервисных компаний, подрядчиков и B2B-исполнителей для финального ИИ-аудита.
+Не выбирай агрегаторы услуг, доски вакансий, магазины расходников/инвентаря, маркетплейсы, тендеры, реестры, справочники, статьи и госстраницы.
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Кандидаты для дополнительного отбора:
+{json.dumps(remaining, ensure_ascii=False)}
+
+Ответ строго JSON:
+{{"ranked": [{{"id": "0", "keep": true, "confidence": 0, "procurement_item_id": "item-1", "reason": "почему стоит открыть сайт"}}]}}"""
+    else:
+        prompt = f"""Первый ИИ-отбор оставил слишком мало кандидатов для отчёта на {target} поставщиков.
 
 Выбери дополнительно до {needed} сайтов компаний для финального ИИ-аудита.
 Расширяй пул за счет производителей, заводов, дилеров, дистрибьюторов и B2B-поставщиков товарной группы/номенклатуры, даже если в сниппете нет точного размера, ГОСТ, артикула или модели.
@@ -3849,6 +4195,27 @@ async def _review_candidates_until_target(
         )
         if result:
             result["_source_rank"] = index
+            cand_url = str(candidate.url or result.get("site") or "").lower()
+            dom = base_domain(cand_url)
+            if dom.endswith(".by"):
+                result["supplier_country"] = "Беларусь 🇧🇾"
+            elif dom.endswith(".kz"):
+                result["supplier_country"] = "Казахстан 🇰🇿"
+            elif dom.endswith(".am"):
+                result["supplier_country"] = "Армения 🇦🇲"
+            elif dom.endswith(".kg"):
+                result["supplier_country"] = "Кыргызстан 🇰🇬"
+            elif dom.endswith(".cn") or any(p in dom for p in ("made-in-china", "alibaba", "globalsources", "1688", "sino-")):
+                result["supplier_country"] = "Китай 🇨🇳"
+            elif dom.endswith(".tr"):
+                result["supplier_country"] = "Турция 🇹🇷"
+            elif dom.endswith(".de"):
+                result["supplier_country"] = "Германия 🇩🇪"
+            elif result.get("inn") or dom.endswith((".ru", ".рф", ".su", ".xn--p1ai")):
+                result["supplier_country"] = "Россия 🇷🇺"
+            else:
+                result["supplier_country"] = "Россия 🇷🇺"
+
             raw_city = str(result.get("region") or result.get("supplier_city") or result.get("city") or "").strip()
             detected = extract_city_from_text(f"{raw_city} {result.get('company_name', '')} {result.get('comments', '')} {candidate.snippet} {result.get('contact_evidence_snippet', '')}")
             supplier_city = detected or raw_city
@@ -4115,6 +4482,7 @@ async def discover_candidates(
     primary_candidate_floor: int | None = None,
     fallback_candidate_limit: int | None = None,
     reserve_only: bool = False,
+    geo_scope: str = "ru",
 ) -> tuple[list[Candidate], dict]:
     candidates: list[Candidate] = []
     reports: list[dict] = []
@@ -4187,19 +4555,25 @@ async def discover_candidates(
         try:
             existing_domains = base_excluded_domains | {candidate.domain for candidate in candidates}
             if provider == "yandex":
-                y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
+                try:
+                    y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
+                except TypeError as t_err:
+                    if "geo_scope" in str(t_err):
+                        y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
+                    else:
+                        raise
                 if isinstance(y_res, tuple) and len(y_res) == 2:
                     provider_candidates, y_reqs = y_res
                 else:
                     provider_candidates, y_reqs = y_res, len(queries)
                 yandex_total_requests += y_reqs
             elif provider == "google":
-                provider_candidates = await _search_with_google(settings, queries, request_limit, existing_domains=existing_domains)
+                provider_candidates = await _search_with_google(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
             elif provider == "tavily":
-                provider_candidates = await _search_with_tavily(settings, queries, request_limit, existing_domains=existing_domains)
+                provider_candidates = await _search_with_tavily(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
             elif provider == "ddgs":
-                provider_candidates = await _search_with_ddgs(queries, request_limit, existing_domains=existing_domains)
-            provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains)[:request_limit]
+                provider_candidates = await _search_with_ddgs(queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
+            provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains, geo_scope=geo_scope)[:request_limit]
             status = "ok" if provider_candidates else "empty"
         except Exception as exc:
             status = "error"
@@ -4237,7 +4611,7 @@ async def discover_candidates(
             "reserve_only": reserve_only,
         },
         "yandex_requests_count": yandex_total_requests,
-        "yandex_cost_rub": round(yandex_total_requests * float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04), 2),
+        "yandex_cost_rub": round(yandex_total_requests * float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305), 2),
         "reports": reports,
     }
 
@@ -4350,23 +4724,25 @@ async def _search_with_yandex(
     existing_domains: set[str] | None = None,
     expand_queries: bool = True,
     max_pages_per_query: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[Candidate], int]:
     folder_id, api_key = _yandex_credentials(settings)
     if not folder_id or not api_key:
         return [], 0
     if expand_queries:
-        search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "yandex"))
+        search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "yandex"), geo_scope=geo_scope)
     else:
         search_queries = [q.strip() for q in queries if str(q).strip()]
     max_pages = max_pages_per_query if max_pages_per_query is not None else _yandex_max_pages_per_query(settings)
     semaphore = asyncio.Semaphore(3)
     requests_count = 0
 
-    async def _poll_yandex_operation(client: httpx.AsyncClient, operation_id: str) -> str:
+    async def _poll_yandex_operation(client: httpx.AsyncClient, operation_id: str) -> str | None:
         poll_delays = [
             0.5, 0.8, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0,
             2.0, 2.0, 2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 2.5, 2.5,
-            2.5, 2.5, 3.0, 3.0, 3.0, 3.0, 3.0
+            2.5, 2.5, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0,
+            3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0
         ]
         consecutive_429 = 0
         for _poll_idx in range(len(poll_delays)):
@@ -4387,18 +4763,19 @@ async def _search_with_yandex(
                     continue
                 if data.get("error"):
                     logger.warning("Yandex search async operation finished with error: id=%s error=%s", operation_id, data.get("error"))
-                    return ""
+                    return None
                 return str((data.get("response") or {}).get("rawData") or "")
             except Exception as poll_exc:
                 logger.debug("Yandex operation poll error: id=%s exc=%s", operation_id, poll_exc)
                 continue
         logger.warning("Yandex search async operation timed out after %d attempts: operation_id=%s", len(poll_delays), operation_id)
-        return ""
+        return None
 
     groups_on_page = _yandex_groups_on_page(settings)
+    async_supported = True
 
     async def search_one_page(client: httpx.AsyncClient, query: str, page: int) -> list[Candidate]:
-        nonlocal requests_count, headers
+        nonlocal requests_count, headers, async_supported
         async with semaphore:
             body = {
                 "query": {"searchType": "SEARCH_TYPE_RU", "queryText": query, "page": str(page)},
@@ -4406,38 +4783,62 @@ async def _search_with_yandex(
                 "responseFormat": "FORMAT_XML",
                 "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
             }
-            requests_count += 1
-            # Primary: Fast synchronous endpoint (returns rawData XML immediately <1s)
-            try:
-                response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
-                if response.status_code == 429:
-                    await asyncio.sleep(2.0)
-                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
-                if response.status_code == 200:
-                    data = response.json()
-                    raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
-                    if raw_data:
-                        return _parse_yandex_xml(raw_data, query=query)
-            except Exception as sync_exc:
-                logger.debug("Yandex sync search call failed, trying async fallback: %s", sync_exc)
+            # Primary: Cost-effective asynchronous search (30.50 ₽ / 1k reqs vs 488 ₽ / 1k reqs sync)
+            from .exact_product.yandex_search import (
+                is_yandex_async_available,
+                record_yandex_async_failure_429,
+                record_yandex_async_success,
+            )
+            if async_supported and is_yandex_async_available():
+                try:
+                    from .exact_product.yandex_search import _paced_async_post
+                    response = await _paced_async_post(
+                        client,
+                        "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync",
+                        headers=headers,
+                        json=body,
+                    )
+                    if response.status_code == 200:
+                        record_yandex_async_success()
+                        requests_count += 1
+                        operation_id = str(response.json().get("id") or "")
+                        if operation_id:
+                            raw_data = await _poll_yandex_operation(client, operation_id)
+                            if raw_data is not None:
+                                return _parse_yandex_xml(raw_data, query=query) if raw_data else []
+                    elif response.status_code in (404, 501):
+                        async_supported = False
+                    elif response.status_code == 429:
+                        record_yandex_async_failure_429(180.0)
+                        async_supported = False
+                    elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
+                        notify_yandex_search_error(response.status_code, response.text, query=query)
+                except Exception as async_exc:
+                    logger.debug("Yandex async search call failed: %s", async_exc)
 
-            # Fallback: Async search operation
-            try:
-                response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-                if response.status_code == 429:
-                    await asyncio.sleep(2.0)
-                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-                if response.status_code != 200:
-                    logger.warning("Yandex search POST failed: status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
+            # Fallback: Synchronous endpoint if async is unsupported, in 429 cooldown, or explicitly enabled
+            if (not async_supported or not is_yandex_async_available() or os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK") == "1") and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK") != "0":
+                try:
+                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
+                    if response.status_code == 429:
+                        await asyncio.sleep(1.5)
+                        response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
+                    if response.status_code == 200:
+                        requests_count += 1
+                        data = response.json()
+                        raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
+                        if raw_data:
+                            return _parse_yandex_xml(raw_data, query=query)
+                    elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
+                        logger.warning("Yandex search auth/billing error: status=%s error=%s", response.status_code, response.text[:200])
+                        notify_yandex_search_error(response.status_code, response.text, query=query)
+                        return []
+                    else:
+                        logger.warning("Yandex sync search status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
+                except Exception as sync_exc:
+                    logger.debug("Yandex sync search call failed: %s", sync_exc)
                     return []
-                operation_id = str(response.json().get("id") or "")
-                if not operation_id:
-                    return []
-                raw_data = await _poll_yandex_operation(client, operation_id)
-                return _parse_yandex_xml(raw_data, query=query) if raw_data else []
-            except Exception as async_exc:
-                logger.warning("Yandex async search call failed for query=%s: %s", query[:80], async_exc)
-                return []
+            return []
 
     headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
     candidates: list[Candidate] = []
@@ -4456,12 +4857,13 @@ async def _search_with_yandex(
                 new_added = 0
                 for c in page_candidates:
                     cand_domain = c.domain or base_domain(c.url)
-                    if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS:
+                    if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(cand_domain, geo_scope):
                         for entity in extract_supplier_entities_from_aggregator_snippet(c.title, c.snippet):
                             ent_key = entity.lower().strip()
                             if ent_key not in seen_mined_entities:
                                 seen_mined_entities.add(ent_key)
                                 mined_company_names.append(entity)
+                        continue
                     if c.domain not in seen_domains:
                         seen_domains.add(c.domain)
                         all_candidates.append(c)
@@ -4473,7 +4875,11 @@ async def _search_with_yandex(
         return all_candidates
 
     chunk_size = 4
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=60,
+        follow_redirects=True,
+        transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
+    ) as client:
         for start in range(0, len(search_queries), chunk_size):
             chunk = search_queries[start : start + chunk_size]
             tasks = [asyncio.create_task(search_one(client, query)) for query in chunk]
@@ -4508,7 +4914,7 @@ async def _search_with_yandex(
                 mined_page_candidates = await search_one_page(client, target_q, 0)
                 for mc in mined_page_candidates:
                     m_dom = mc.domain or base_domain(mc.url)
-                    if not m_dom or m_dom in seen or is_blocked(m_dom) or m_dom in BLOCKED_DOMAINS or m_dom in EXTRA_AGGREGATOR_DOMAINS:
+                    if not m_dom or m_dom in seen or is_blocked(m_dom) or m_dom in BLOCKED_DOMAINS or m_dom in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(m_dom, geo_scope):
                         continue
                     seen.add(m_dom)
                     candidates.append(
@@ -4569,27 +4975,31 @@ async def _search_with_google(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     api_key, cse_id = _google_credentials(settings)
     if not api_key or not cse_id:
         return []
-    search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "google"))
+    search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "google"), geo_scope=geo_scope)
     semaphore = asyncio.Semaphore(4)
+    scope = str(geo_scope or "ru").strip().lower()
 
     async def search_one(client: httpx.AsyncClient, query: str) -> list[Candidate]:
         async with semaphore:
+            params = {
+                "key": api_key,
+                "cx": cse_id,
+                "q": query,
+                "num": 10,
+                "safe": "off",
+            }
+            if scope == "ru":
+                params.update({"gl": "ru", "cr": "countryRU", "lr": "lang_ru"})
+            elif scope == "cis":
+                params.update({"lr": "lang_ru"})
             response = await client.get(
                 "https://www.googleapis.com/customsearch/v1",
-                params={
-                    "key": api_key,
-                    "cx": cse_id,
-                    "q": query,
-                    "num": 10,
-                    "gl": "ru",
-                    "cr": "countryRU",
-                    "lr": "lang_ru",
-                    "safe": "off",
-                },
+                params=params,
             )
             if response.status_code != 200:
                 return []
@@ -4642,13 +5052,14 @@ async def _search_with_tavily(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     key_candidates = _tavily_key_candidates(settings)
     if not key_candidates:
         return []
 
     base_url = _tavily_base_url(settings)
-    search_queries = _expand_search_queries(queries, max_queries=max(32, min(48, len(queries) * 3)))
+    search_queries = _expand_search_queries(queries, max_queries=max(32, min(48, len(queries) * 3)), geo_scope=geo_scope)
 
     async with httpx.AsyncClient(timeout=28, follow_redirects=True) as client:
         candidates, followups = await _run_tavily_queries(
@@ -4742,6 +5153,7 @@ async def _search_with_ddgs(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    geo_scope: str = "ru",
 ) -> list[Candidate]:
     try:
         from ddgs import DDGS  # type: ignore
@@ -4749,6 +5161,7 @@ async def _search_with_ddgs(
         return []
 
     search_queries = _ddgs_search_queries(queries)
+    region = "wt-wt" if str(geo_scope or "ru").strip().lower() == "world" else "ru-ru"
 
     def search_all_sync() -> list[Candidate]:
         candidates: list[Candidate] = []
@@ -4758,7 +5171,7 @@ async def _search_with_ddgs(
                 if len(candidates) >= max_results:
                     break
                 try:
-                    items = list(client.text(query, region="ru-ru", backend="auto", max_results=10))
+                    items = list(client.text(query, region=region, backend="auto", max_results=10))
                 except Exception:
                     continue
                 for item in items:
@@ -4823,9 +5236,10 @@ def _tavily_key_candidates(settings: SystemSettings) -> list[str]:
     return [key for key in dict.fromkeys(keys) if key]
 
 
-def _expand_search_queries(queries: list[str], *, max_queries: int) -> list[str]:
+def _expand_search_queries(queries: list[str], *, max_queries: int, geo_scope: str = "ru") -> list[str]:
     base_queries: list[str] = []
     secondary_variants: list[str] = []
+    scope = str(geo_scope or "ru").strip().lower()
     for query in queries:
         clean = re.sub(r"\s+", " ", str(query or "")).strip(" .,:;")
         if not clean:
@@ -4836,6 +5250,17 @@ def _expand_search_queries(queries: list[str], *, max_queries: int) -> list[str]
             f"{clean} производитель завод",
             f"{clean} каталог продукция",
         ]
+        if scope == "cis":
+            variants.extend([
+                f"{clean} завод Беларусь Казахстан",
+                f"{clean} производитель СНГ",
+            ])
+        elif scope == "world":
+            variants.extend([
+                f"{clean} manufacturer factory",
+                f"{clean} global supplier",
+                f"{clean} производитель фабрика импорт",
+            ])
         for item in variants:
             secondary_variants.append(item)
 
@@ -5030,7 +5455,8 @@ async def verify_candidate(
     if not pages:
         return None
     combined_text = "\n\n".join(page["text"] for page in pages)
-    match = assess_candidate_match(candidate, context, pages)
+    subject_kind = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() if profile else "goods"
+    match = assess_candidate_match(candidate, context, pages, subject_kind=subject_kind)
     if not settings.has_active_ai_provider:
         return {
             "company_name": candidate.domain,
@@ -5106,7 +5532,7 @@ async def verify_candidate(
         "company_name": decision.get("company_name") or candidate.domain,
         "inn": re.sub(r"\D+", "", verified_inn)[:12],
         "region": decision.get("region") or "",
-        "status": decision.get("status") or "поставщик",
+        "status": decision.get("status") or ("исполнитель" if subject_kind == "services" else "поставщик"),
         "product": decision.get("product") or match.product,
         "contact_person": decision.get("contact_person") or "",
         "phone": phone,
@@ -5158,8 +5584,21 @@ def _sanitize_minprom_comment_claims(comment: str, registry_context: MinpromRegi
 
 async def collect_pages(url: str) -> list[dict]:
     pages: list[dict] = []
-    async with httpx.AsyncClient(timeout=18, follow_redirects=True, headers={"User-Agent": "TenderLex supplier verifier"}) as client:
+    connect_failed = False
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    }
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(10.0, connect=4.5),
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
         first = await fetch_page(client, url)
+        connect_failed = bool(getattr(client, "_last_connect_failed", False))
         if first:
             pages.append(first)
             links = extract_internal_links(first["html"], first["url"])
@@ -5181,7 +5620,7 @@ async def collect_pages(url: str) -> list[dict]:
                         break
     if pages and _pages_have_contact(pages):
         return pages
-    if _is_non_html_url(url):
+    if _is_non_html_url(url) or (not pages and connect_failed):
         return pages
     browser_page = await fetch_page_with_browser(url)
     if browser_page:
@@ -5195,6 +5634,10 @@ async def collect_pages(url: str) -> list[dict]:
 
 
 async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
+    try:
+        setattr(client, "_last_connect_failed", False)
+    except Exception:
+        pass
     try:
         response = await client.get(url)
         if response.status_code >= 400:
@@ -5220,6 +5663,12 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
         if "text/html" not in ctype and "text/plain" not in ctype:
             return None
         html_text = response.text[:300000]
+    except (httpx.ConnectTimeout, httpx.ConnectError):
+        try:
+            setattr(client, "_last_connect_failed", True)
+        except Exception:
+            pass
+        return None
     except Exception:
         return None
     return html_text_to_page(html_text, str(response.url))
@@ -5486,7 +5935,7 @@ def extract_internal_links(html_text: str, base_url_value: str) -> list[str]:
         score = 0
         if any(word in label for word in ["контакт", "contact", "отдел", "sales", "продаж", "связ", "requisite", "реквизит"]):
             score += 4
-        if any(word in label for word in ["каталог", "product", "produk", "товар", "оборуд", "shop", "catalog", "номенклатур", "прайс", "price", "datasheet", "паспорт", ".pdf"]):
+        if any(word in label for word in ["каталог", "product", "produk", "товар", "оборуд", "shop", "catalog", "номенклатур", "прайс", "price", "datasheet", "паспорт", ".pdf", "услуг", "service", "services"]):
             score += 4
         if any(word in label for word in ["о компании", "about", "производ", "завод", "company"]):
             score += 2
@@ -5540,7 +5989,54 @@ async def ai_verify(
         "inns": extracted_inn if 'extracted_inn' in locals() and extracted_inn else [],
         "pages": [{"url": page["url"], "text": page["text"][:2500]} for page in pages[:4]],
     }
-    prompt = f"""Проверь поставщика для закупочного ТЗ.
+    is_services = bool(profile and str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services")
+    if is_services:
+        prompt = f"""Проверь компанию-исполнителя (подрядчика) для закупочного ТЗ на оказание услуг / выполнение работ.
+Твоя задача — финальный закупочный аудит перед попаданием строки в отчёт.
+
+Принимай только если одновременно верно:
+- сайт принадлежит реальной коммерческой компании-исполнителю (подрядчику, сервисной организации), которая оказывает требуемую услугу или выполняет работы для организаций/учреждений (B2B);
+- на сайте подтверждается профильное направление услуг/работ, достаточное для запроса КП;
+- контакт (телефон и/или корпоративный email) опубликован на открытой странице этого же сайта;
+- сайт не является маркетплейсом, агрегатором услуг (Avito, Профи.ру, YouDo, Zoon, 2ГИС), доской вакансий (hh.ru, SuperJob), тендерной площадкой, реестром, справочником, статьей, видео, форумом или госресурсом.
+
+	Классификация product_fit:
+- exact: на сайте прямо подтверждается оказание именно требуемой услуги/работы с подходящим профилем (в том числе по типу объекта, комплексности или локации);
+- analog: компания оказывает близкие профильные услуги смежного типа, детали соответствия ТЗ нужно уточнить при запросе КП;
+- category: сайт подтверждает профильное направление услуг/подряда, но конкретный формат из ТЗ не расписан;
+- profile: многопрофильный подрядчик релевантного направления, готовность выполнить конкретное ТЗ нужно уточнить.
+
+	В comments запрещено писать "полностью соответствует" для analog, category и profile. Для них пиши, что компания релевантна для запроса КП и нужно уточнить детали выполнения ТЗ.
+
+- Отклоняй, если совпадение только по случайному упоминанию слова, условиям договора, новостной статье, резюме/вакансии или форме документа.
+- СТРОГО отклоняй (action: "reject", product_fit: "unrelated"), если сайт продает инвентарь, расходники или химию/оборудование вместо оказания самой услуги (например, магазин швабр и моющих средств вместо клининговой компании), либо является каталогом/агрегатором/биржей частных мастеров.
+Ответ строго JSON:
+{{
+  "action": "accept|reject",
+  "confidence": 0,
+  "site_type": "service_company|manufacturer|dealer|distributor|supplier|marketplace|aggregator|tender|registry|directory|article|video|education|government|unknown",
+  "product_fit": "exact|analog|category|profile|unrelated",
+  "procurement_item_id": "",
+  "procurement_item_name": "",
+  "company_name": "",
+  "inn": "10 или 12 цифр ИНН компании если найдено на сайте",
+  "region": "",
+  "status": "исполнитель|подрядчик|сервисная компания",
+  "product": "",
+  "email": "",
+  "phone": "",
+  "evidence_url": "",
+  "contact_url": "",
+  "evidence_snippet": "короткая цитата/фрагмент страницы, подтверждающий оказание услуги",
+  "contact_evidence_snippet": "короткая цитата/фрагмент страницы, подтверждающий телефон/email",
+  "comments": ""
+}}
+
+Данные:
+{json.dumps(payload, ensure_ascii=False)}"""
+        system_prompt_verify = "Ты закупочный аудитор. Отбираешь реальные компании-исполнители услуг и подрядчиков, отсекаешь агрегаторы, вакансии и магазины инвентаря, не выдумываешь компании и контакты."
+    else:
+        prompt = f"""Проверь поставщика для закупочного ТЗ.
 Твоя задача — финальный закупочный аудит перед попаданием строки в отчёт.
 
 Принимай только если одновременно верно:
@@ -5590,11 +6086,12 @@ async def ai_verify(
 
 Данные:
 {json.dumps(payload, ensure_ascii=False)}"""
+        system_prompt_verify = "Ты закупочный аудитор. Не выдумываешь компании и контакты, но не отбрасываешь реального профильного поставщика только из-за отсутствия точного артикула."
     try:
         raw = await call_llm(
             settings,
             prompt,
-            system_prompt="Ты закупочный аудитор. Не выдумываешь компании и контакты, но не отбрасываешь реального профильного поставщика только из-за отсутствия точного артикула.",
+            system_prompt=system_prompt_verify,
             tier="primary",
             routing_key="supplier_candidate_verifier",
             json_mode=True,
@@ -6018,15 +6515,6 @@ def _deterministic_queries(context: str) -> list[str]:
     phrase_text = " ".join(product_phrases).lower()
     product_has_mine_context = not product_phrases or any(word in phrase_text for word in ("шахт", "горно", "горн", "вгсч"))
     product_has_fire_context = not product_phrases or any(word in phrase_text for word in ("пожар", "рукав", "гм 70", "гм-70"))
-    if "сверло шахтное" in lowered or "сшу" in lowered:
-        queries.extend(
-            [
-                '"Сверло шахтное универсальное" поставщик',
-                '"СШУ-22" "сверло шахтное"',
-                '"СШУ-22" купить',
-                '"сверло шахтное" "пожарных рукавов"',
-            ]
-        )
     if product_has_mine_context and any(word in lowered for word in ("шахт", "горно", "горн")):
         queries.extend(
             [
@@ -6262,56 +6750,16 @@ def _is_strong_product_phrase(phrase: str) -> bool:
         )
     ):
         return False
-    if lowered.startswith("работы") or "швеллер" in lowered:
+    if lowered.startswith("работы"):
         return False
     if len(lowered) > 100 and re.search(r"\bшт\b|кол-во|количество", lowered):
+        return False
+    if re.search(r"\b(?:ооо|пао|зао|ао|ип)\b", lowered):
         return False
     meaningful = [word for word in re.findall(r"[а-яёa-z0-9\-]{5,}", lowered) if word not in _supplier_anchor_stopwords()]
     if len(meaningful) < 2:
         return False
-    return any(
-        marker in lowered
-        for marker in (
-            "система",
-            "контрол",
-            "кабель",
-            "жгут",
-            "измер",
-            "испыт",
-            "приспособ",
-            "рукав",
-            "шахт",
-            "пожар",
-            "трубопровод",
-            "арматур",
-            "датчик",
-            "станок",
-            "установка",
-            "комплекс",
-            "поликарбон",
-            "вермикулит",
-            "оргстекл",
-            "панел",
-            "профил",
-            "свар",
-            "полуавтомат",
-            "скрайб",
-            "скалыв",
-            "холодильн",
-            "камера",
-            "камер",
-            "кладов",
-            "пенообраз",
-            "преобраз",
-            "электролиз",
-            "толкател",
-            "вагонет",
-            "газорегулятор",
-            "гидро",
-            "кальматрон",
-            "ультрабанд",
-        )
-    )
+    return True
 
 
 def _is_generic_supplier_anchor(value: str) -> bool:
@@ -6353,11 +6801,11 @@ def _supplier_anchor_stopwords() -> set[str]:
     }
 
 
-def _rank_candidates(candidates: list[Candidate], context: str) -> list[Candidate]:
-    return sorted(candidates, key=lambda item: _candidate_score(item, context), reverse=True)
+def _rank_candidates(candidates: list[Candidate], context: str, *, subject_kind: str = "goods") -> list[Candidate]:
+    return sorted(candidates, key=lambda item: _candidate_score(item, context, subject_kind=subject_kind), reverse=True)
 
 
-def _candidate_score(candidate: Candidate, context: str) -> int:
+def _candidate_score(candidate: Candidate, context: str, *, subject_kind: str = "goods") -> int:
     text = f"{candidate.url} {candidate.title} {candidate.snippet}".lower()
     score = 0
     exact_terms = _exact_match_terms(context)
@@ -6368,14 +6816,20 @@ def _candidate_score(candidate: Candidate, context: str) -> int:
     for term in important_terms(context)[:16]:
         if term in text:
             score += 3 if len(term) >= 8 else 2
-    if any(word in text for word in ("производ", "завод", "изготов", "официаль")):
-        score += 4
-    if any(word in text for word in ("catalog", "product", "produkt", "товар", "каталог")):
-        score += 2
+    if subject_kind == "services":
+        if any(word in text for word in ("услуг", "подряд", "обслуживан", "выполнен", "компани", "официаль")):
+            score += 4
+        if any(word in text for word in ("uslug", "service", "services", "прайс", "price", "стоимост")):
+            score += 2
+    else:
+        if any(word in text for word in ("производ", "завод", "изготов", "официаль")):
+            score += 4
+        if any(word in text for word in ("catalog", "product", "produkt", "товар", "каталог")):
+            score += 2
     if any(word in text for word in ("контакт", "contact", "mail", "email")):
         score += 1
     # Отрицательные ключевые слова и отраслевые антитезы
-    negatives = build_universal_negative_keywords(context)
+    negatives = build_universal_negative_keywords(context, subject_kind=subject_kind)
     for nkw in negatives:
         clean_nkw = nkw.lower().strip()
         if clean_nkw and len(clean_nkw) >= 3 and clean_nkw in text:
@@ -6383,7 +6837,7 @@ def _candidate_score(candidate: Candidate, context: str) -> int:
     return score
 
 
-def assess_candidate_match(candidate: Candidate, context: str, pages: list[dict]) -> CandidateMatch:
+def assess_candidate_match(candidate: Candidate, context: str, pages: list[dict], *, subject_kind: str = "goods") -> CandidateMatch:
     text = f"{candidate.title} {candidate.snippet}\n" + "\n".join(page["text"][:20000] for page in pages)
     front_text = f"{candidate.url} {candidate.title} {candidate.snippet}".lower()
     lowered = text.lower()
@@ -6395,7 +6849,7 @@ def assess_candidate_match(candidate: Candidate, context: str, pages: list[dict]
             reason="Страница похожа на справочник, тендер, учебный/госресурс или нерелевантный источник, а не на сайт поставщика.",
         )
 
-    commercial = _has_commercial_supplier_signal(lowered)
+    commercial = _has_commercial_supplier_signal(lowered, subject_kind=subject_kind)
     exact_terms = _exact_match_terms(context)
     exact_matches = tuple(term for term in exact_terms if term in lowered)
     category_hits = _category_hits(lowered)
@@ -6515,16 +6969,6 @@ def _exact_match_terms(context: str) -> list[str]:
         for code in _exact_codes(context)
         if not re.fullmatch(r"ГМ-\d+", code)
     )
-    lowered_context = context.lower()
-    if "сверло шахтное универсальное" in lowered_context:
-        result.extend(["сверло шахтное универсальное", "сверло шахтное", "сшу-22", "сшу 22"])
-    if "промежуточного подсоединения пожарных рукавов" in lowered_context:
-        result.extend(
-            [
-                "приспособление для промежуточного подсоединения",
-                "промежуточного подсоединения пожарных рукавов",
-            ]
-        )
     return [item for item in dict.fromkeys(re.sub(r"\s+", " ", term).strip(" .,:;") for term in result) if len(item) >= 5]
 
 
@@ -6608,8 +7052,8 @@ def _category_hits(text: str) -> set[str]:
     return hits
 
 
-def _has_commercial_supplier_signal(text: str) -> bool:
-    return any(
+def _has_commercial_supplier_signal(text: str, *, subject_kind: str = "goods") -> bool:
+    if any(
         word in text
         for word in (
             "производ",
@@ -6628,7 +7072,28 @@ def _has_commercial_supplier_signal(text: str) -> bool:
             "снабжен",
             "оборудован",
         )
-    )
+    ):
+        return True
+    if subject_kind == "services":
+        return any(
+            word in text
+            for word in (
+                "услуг",
+                "подряд",
+                "обслуживан",
+                "выполнен",
+                "сервис",
+                "прайс",
+                "стоимост",
+                "расчет",
+                "расчёт",
+                "договор",
+                "клиент",
+                "организац",
+                "коммерческ",
+            )
+        )
+    return False
 
 
 def _is_adjacent_category(category_hits: set[str], context: str) -> bool:

@@ -41,6 +41,8 @@ PRIORITY_URLS = [
     "https://tenderlex.ru/poisk-postavshchikov-po-tz",
     "https://tenderlex.ru/podbor-tovara-i-analogov-po-tz",
     "https://tenderlex.ru/analiz-zakupochnoi-dokumentacii",
+    "https://tenderlex.ru/monitoring-cen-postavshchikov-po-tz",
+    "https://tenderlex.ru/baza-znaniy/monitoring-cen-postavshchikov-po-specifikaciyam",
     "https://tenderlex.ru/baza-znaniy",
     "https://tenderlex.ru/sitemap.xml",
 ]
@@ -199,8 +201,12 @@ def main():
     print(f"Total sitemap URLs discovered: {len(all_urls)}")
 
     # 1. Yandex Webmaster Recrawl Queue (API)
-    print("\n--- 1. Submitting Priority URLs to Yandex.Webmaster Recrawl Queue ---")
-    yandex_res = submit_yandex_webmaster_recrawl(PRIORITY_URLS)
+    print("\n--- 1. Submitting priority + sitemap URLs to Yandex.Webmaster Recrawl Queue ---")
+    # Priority URLs first, then every other sitemap URL: the daily quota (150)
+    # covers the whole sitemap, and Yandex has not re-crawled most pages since
+    # early October. URLs over quota are reported as SKIPPED_QUOTA_EXCEEDED.
+    recrawl_urls = list(dict.fromkeys(PRIORITY_URLS + all_urls))
+    yandex_res = submit_yandex_webmaster_recrawl(recrawl_urls)
     print(f"Yandex Webmaster: submitted {yandex_res.get('submitted_count', 0)} URLs. Remaining quota: {yandex_res.get('quota_remainder', 0)}")
     for task in yandex_res.get("tasks", []):
         print(f"  • {task.get('status')}: {task.get('url')} (task_id: {task.get('task_id', '-')})")

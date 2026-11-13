@@ -145,9 +145,11 @@ class SupplierLocationsTests(unittest.TestCase):
 
             self.assertIn("Каменск-Шахтинский", subtitle_val)
             self.assertIn("300", subtitle_val)
+            loc_val = str(ws.cell(row=6, column=6).value or "")
             self.assertIn("Логистический фильтр", summary_val)
-            self.assertIn("Шахты", comment_val)
-            self.assertIn("78 км", comment_val)
+            self.assertIn("Шахты", loc_val)
+            self.assertIn("78 км", loc_val)
+            self.assertNotIn("Шахты", comment_val)
 
 
 if __name__ == "__main__":

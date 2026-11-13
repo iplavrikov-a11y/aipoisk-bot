@@ -7,8 +7,10 @@ import os
 import re
 import shutil
 import socket
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import and_, exists, func, or_, select, true
 from sqlalchemy.orm import Session, aliased
@@ -16,6 +18,9 @@ from sqlalchemy.orm import Session, aliased
 from . import document_parser
 from .ai import get_model_selection
 from .billing import (
+    settle_exact_product_job,
+    finalize_internal_exact_product_job,
+    BillingError,
     KIND_EXACT_PRODUCT,
     KIND_PRICE_MONITORING,
     KIND_PROCUREMENT_REPORT,
@@ -28,14 +33,16 @@ from .billing import (
     STATUS_DELIVERY_EXPIRED,
     charge_job_reservation,
     charge_price_monitoring_job,
-    effective_price_kopeks,
+    finalize_internal_price_monitoring_job,
+    reserve_price_monitoring_job,
+    effective_job_unit_price_kopeks,
     release_job_kind_reservation,
     release_job_reservation,
     expire_stale_confirmations,
 )
 from .config import config
 from .db import SessionLocal
-from .models import BillingTransaction, Job, JobFile, JobSource, SupplierResult, now_utc
+from .models import BillingTransaction, Job, JobFile, JobSource, SupplierResult, SystemSettings, now_utc
 from .procurement_sources import (
     SOURCE_KIND_PROCUREMENT_URL,
     SOURCE_KIND_TENDERPLAN_NOTICE,
@@ -46,10 +53,20 @@ from .procurement_sources import (
 from .models import parse_json_dict
 from .exact_product import (
     analyze_exact_product,
+    prepare_exact_product_positions,
     write_exact_product_docx,
     ExactProductReport,
+    is_exact_position_resolved,
 )
 from .price_monitoring import run_price_monitoring_pipeline
+from .position_selection import (
+    AWAITING_POSITION_SELECTION,
+    AWAITING_EXACT_SELECTION,
+    build_selection_snapshot,
+    extract_unit_and_quantity_from_position,
+    read_selection,
+    selected_positions,
+)
 from .procurement_report import generate_procurement_report
 from .quote_request import build_quote_request_markdown, build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
@@ -110,6 +127,23 @@ VALID_SUPPLIER_SEARCH_POLICIES = {
     SUPPLIER_POLICY_MINPROM_ONLY,
     SUPPLIER_POLICY_MINPROM_PRIORITY,
 }
+GEO_SCOPE_RU = "ru"
+GEO_SCOPE_CIS = "cis"
+GEO_SCOPE_WORLD = "world"
+VALID_GEO_SCOPES = {
+    GEO_SCOPE_RU,
+    GEO_SCOPE_CIS,
+    GEO_SCOPE_WORLD,
+}
+
+
+def normalize_geo_scope(value: str | None, supplier_search_policy: str = SUPPLIER_POLICY_NORMAL) -> str:
+    cleaned_policy = str(supplier_search_policy or "").strip().lower()
+    if cleaned_policy in {SUPPLIER_POLICY_MINPROM_ONLY, SUPPLIER_POLICY_MINPROM_PRIORITY}:
+        return GEO_SCOPE_RU
+    cleaned = str(value or "").strip().lower()
+    return cleaned if cleaned in VALID_GEO_SCOPES else GEO_SCOPE_RU
+
 SUPPLIER_RUN_INITIAL = "initial"
 SUPPLIER_RUN_ADDITIONAL = "additional"
 RESULT_STEM_MAX_BYTES = 150
@@ -160,7 +194,10 @@ def create_job(
     initial_status: str = "pending",
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = GEO_SCOPE_RU,
 ) -> Job:
+    from .geo_policy import validate_geo_request
+    delivery_city, geo_radius_km = validate_geo_request(delivery_city, geo_radius_km, mode=mode)
     normalized_sources = _normalized_job_sources(sources or [])
     if mode == MODE_SUPPLIER_SEARCH and normalized_sources:
         raise ValueError(
@@ -168,6 +205,7 @@ def create_job(
             "Номер извещения или ссылку закупки отправьте в режим анализа закупки или анализа + поставщики."
         )
     normalized_policy = normalize_supplier_search_policy(supplier_search_policy)
+    normalized_geo_scope = normalize_geo_scope(geo_scope, normalized_policy)
     if mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
         registry_error = minprom_registry_preflight_error(normalized_policy)
         if registry_error:
@@ -184,8 +222,9 @@ def create_job(
         supplier_search_policy=normalized_policy,
         supplier_search_run_type=normalized_run_type,
         multi_item_mode=normalized_multi_item_mode,
-        delivery_city=str(delivery_city or "").strip()[:255],
-        geo_radius_km=int(geo_radius_km) if geo_radius_km and int(geo_radius_km) > 0 else None,
+        delivery_city=delivery_city,
+        geo_radius_km=geo_radius_km,
+        geo_scope=normalized_geo_scope,
         title=title,
         target_suppliers=target_suppliers,
         status="draft" if initial_status == "draft" else "pending",
@@ -345,10 +384,13 @@ def should_requeue_stale_job(status: str, updated_at: datetime | None, now: date
 
 
 def recover_interrupted_jobs(db: Session, *, stale_after: timedelta = STALE_RUNNING_AFTER, limit: int = 20) -> list[str]:
+    from .mcp_api import recover_stale_direct_api_jobs
+    recover_stale_direct_api_jobs(db, limit=limit)
     now = now_utc()
     jobs = (
         db.query(Job)
         .filter(Job.status.in_(["pending", "running"]))
+        .filter(~Job.created_by_telegram_id.startswith("api:"))
         .order_by(Job.created_at.asc())
         .limit(max(1, limit * 4))
         .all()
@@ -380,14 +422,16 @@ def claim_next_job(
     stale_after: timedelta = STALE_RUNNING_AFTER,
     max_running_jobs_per_client: int | None = None,
 ) -> str | None:
+    from .mcp_api import recover_stale_direct_api_jobs
+    recover_stale_direct_api_jobs(db)
     now = now_utc()
     stale_cutoff = now - stale_after
     if max_running_jobs_per_client is None:
         max_running_jobs_per_client = getattr(config, "max_running_jobs_per_client", 2)
     max_per_client = _normalized_max_running_jobs_per_client(max_running_jobs_per_client)
-    eligible_status_filter = or_(
-        Job.status == "pending",
-        and_(Job.status == "running", Job.updated_at < stale_cutoff),
+    eligible_status_filter = and_(
+        ~Job.created_by_telegram_id.startswith("api:"),
+        or_(Job.status == "pending", and_(Job.status == "running", Job.updated_at < stale_cutoff)),
     )
     fair_client_filter = _client_under_concurrency_limit_filter(stale_cutoff, max_per_client=max_per_client)
     jobs = (
@@ -502,6 +546,13 @@ def _claim_job_for_worker(worker_id: str) -> str | None:
         expire_result_offers(db)
         expire_stale_confirmations(db)
         return claim_next_job(db, worker_id=worker_id)
+    except Exception as exc:
+        logger.warning("Transient DB error in _claim_job_for_worker: %s", exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return None
     finally:
         db.close()
 
@@ -547,7 +598,17 @@ async def worker_loop(*, poll_interval: float = WORKER_POLL_INTERVAL_SECONDS, co
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
     worker_concurrency = _normalized_worker_concurrency(concurrency if concurrency is not None else config.worker_concurrency)
     running_tasks: set[asyncio.Task[None]] = set()
+    last_billing_check: float = 0.0
     while True:
+        now_ts = time.time()
+        if (now_ts - last_billing_check) > 1800:
+            last_billing_check = now_ts
+            try:
+                from .main import _fetch_yandex_billing_balance
+                asyncio.create_task(_fetch_yandex_billing_balance())
+            except Exception:
+                pass
+
         finished = {task for task in running_tasks if task.done()}
         if finished:
             running_tasks.difference_update(finished)
@@ -636,28 +697,55 @@ def _check_cancelled(job_id: str, db: Session | None = None, job: Job | None = N
         _CANCELLED.discard(job_id)
         raise JobCancelledError("Задача отменена")
     if db is not None:
-        current = job or db.get(Job, job_id)
-        if current is not None:
-            try:
-                db.refresh(current, attribute_names=["status"])
-            except TypeError:
-                db.refresh(current)
-            if current.status == "cancelled":
-                raise JobCancelledError("Задача отменена")
+        try:
+            current = job or db.get(Job, job_id)
+            if current is not None:
+                try:
+                    db.refresh(current, attribute_names=["status"])
+                except TypeError:
+                    db.refresh(current)
+                if current.status == "cancelled":
+                    raise JobCancelledError("Задача отменена")
+        except JobCancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Job %s cancellation poll transient DB warning (continuing job): %s", job_id, exc)
 
 
 def _set_job(db: Session, job: Job, *, status: str | None = None, progress: int | None = None, message: str | None = None, error: str | None = None) -> None:
-    _check_cancelled(str(job.id), db=db, job=job)
-    if status is not None:
-        job.status = status
-    if progress is not None:
-        job.progress = max(0, min(100, progress))
-    if message is not None:
-        job.message = document_parser.clean_surrogates(str(message))
-    if error is not None:
-        job.error = document_parser.clean_surrogates(str(error))
-    job.updated_at = now_utc()
-    db.commit()
+    try:
+        _check_cancelled(str(job.id), db=db, job=job)
+    except JobCancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("Job %s cancellation check in _set_job warning: %s", job.id, exc)
+
+    for attempt in range(3):
+        try:
+            if status is not None:
+                job.status = status
+            if progress is not None:
+                job.progress = max(0, min(100, progress))
+            if message is not None:
+                job.message = document_parser.clean_surrogates(str(message))
+            if error is not None:
+                job.error = document_parser.clean_surrogates(str(error))
+            job.updated_at = now_utc()
+            db.commit()
+            break
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if attempt == 2:
+                if status in ("completed", "failed", "cancelled"):
+                    logger.error("Job %s critical status %s commit failed after 3 attempts: %s", job.id, status, exc)
+                    raise
+                else:
+                    logger.warning("Job %s progress update commit skipped due to DB error: %s", job.id, exc)
+                    return
+            time.sleep(0.5 * (attempt + 1))
     try:
         from .event_bus import job_event_bus
         job_event_bus.publish({
@@ -779,26 +867,171 @@ def _process_job_sync(job_id: str) -> None:
             stage = "supplier_search"
             _process_supplier_search(db, job, settings, context)
     except JobCancelledError as exc:
-        job = db.get(Job, job_id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        try:
+            job = db.get(Job, job_id)
+        except Exception:
+            try:
+                db.close()
+                db = SessionLocal()
+                job = db.get(Job, job_id)
+            except Exception:
+                job = None
         if job:
-            release_job_reservation(db, job, note="Резерв возвращён: задача отменена")
-            job.status = "cancelled"
-            job.progress = 100
-            job.message = str(exc)
-            job.error = ""
-            job.completed_at = now_utc()
-            job.updated_at = now_utc()
-            db.commit()
+            try:
+                release_job_reservation(db, job, note="Резерв возвращён: задача отменена")
+                job.status = "cancelled"
+                job.progress = 100
+                job.message = str(exc)
+                job.error = ""
+                job.completed_at = now_utc()
+                job.updated_at = now_utc()
+                db.commit()
+            except Exception:
+                pass
     except Exception as exc:
-        job = db.get(Job, job_id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        try:
+            job = db.get(Job, job_id)
+        except Exception:
+            try:
+                db.close()
+                db = SessionLocal()
+                job = db.get(Job, job_id)
+            except Exception:
+                job = None
+        if job and job.status in {"cancelled", "completed"}:
+            return
         if job:
-            release_job_reservation(db, job, note="Резерв возвращён: задача завершилась ошибкой")
-            _persist_failure_evidence(db, job, exc, stage=stage)
-            _set_job(db, job, status="failed", progress=100, message="Ошибка обработки", error=str(exc))
-            job.completed_at = now_utc()
-            db.commit()
+            try:
+                release_job_reservation(db, job, note="Резерв возвращён: задача завершилась ошибкой")
+            except Exception:
+                pass
+            try:
+                _persist_failure_evidence(db, job, exc, stage=stage)
+            except Exception:
+                pass
+            fail_msg = (
+                "В файле нет позиций для поиска"
+                if (
+                    "не найдены" in str(exc).lower()
+                    or "нет закупаемых позиций" in str(exc).lower()
+                    or "0 items" in str(exc).lower()
+                    or "пустой бланк" in str(exc).lower()
+                    or "пустая форма" in str(exc).lower()
+                )
+                else "Ошибка обработки"
+            )
+            try:
+                _set_job(db, job, status="failed", progress=100, message=fail_msg, error=str(exc))
+                job.completed_at = now_utc()
+                db.commit()
+            except Exception:
+                pass
+            try:
+                from .admin_alerts import notify_job_infrastructure_failure
+                client_name = getattr(job.client, "name", "") if job.client else f"Клиент #{job.client_id}"
+                notify_job_infrastructure_failure(
+                    job_number=job.job_number or 0,
+                    client_name=client_name or "Неизвестный клиент",
+                    mode=job.mode or "",
+                    error_text=str(exc),
+                )
+            except Exception:
+                pass
     finally:
         db.close()
+
+
+def sanitize_customer_error(error: str, *, mode: str = "", message: str = "") -> str:
+    raw = str(error or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    msg_lowered = str(message or "").lower()
+
+    if (
+        "0 items" in lowered
+        or "нет закупаемых позиций" in lowered
+        or "не найдены закупаемые позиции" in lowered
+        or "не найдены товары" in lowered
+        or "нет позиций" in lowered
+        or "нет позиций" in msg_lowered
+        or "пустой бланк" in lowered
+        or "пустая форма" in lowered
+        or "шаблон" in lowered
+        or "нет содержательного текста" in lowered
+        or "в загруженных документах отсутствует текст" in lowered
+        or "procurement profile" in lowered
+    ):
+        return (
+            "В загруженных документах не найдены товары или спецификация (обнаружен пустой бланк, инструкция или файл без перечня позиций). "
+            "Пожалуйста, прикрепите файл со спецификацией или отправьте перечень товаров или требуемых услуг текстом."
+        )
+
+    if "реестр" in lowered or "реестр" in msg_lowered:
+        return (
+            "В реестре Минпромторга (ГИСП) подтверждённые производители не найдены. "
+            "Вы можете запустить обычный поиск поставщиков по открытому рынку."
+        )
+
+    if (
+        "не удалось прочитать" in lowered
+        or "поврежден" in lowered
+        or "corrupt" in lowered
+        or "bad zip" in lowered
+        or "pdf_type" in lowered
+        or "cannot read" in lowered
+    ):
+        return (
+            "Не удалось прочитать загруженный файл. Убедитесь, что файл не повреждён и не защищён паролем, "
+            "или загрузите файл в формате Excel, Word или PDF."
+        )
+
+    if "candidate reranking" in lowered or "reranker" in lowered:
+        return (
+            "Не удалось надёжно отобрать подходящие сайты поставщиков. Баланс не списан (0 ₽). "
+            "Пожалуйста, повторите попытку через пару минут."
+        )
+
+    if "supplier query generation" in lowered:
+        return (
+            "Не удалось подготовить поисковые запросы для поставщиков. Баланс не списан (0 ₽). "
+            "Пожалуйста, повторите попытку через пару минут."
+        )
+
+    if (
+        "timeout" in lowered
+        or "timed out" in lowered
+        or "deadline exceeded" in lowered
+        or "ai provider" in lowered
+        or "tried models:" in lowered
+        or "rate limit" in lowered
+        or "overloaded" in lowered
+        or "503" in lowered
+        or "502" in lowered
+    ):
+        return (
+            "Временная задержка сервиса анализа. Баланс не списан (0 ₽). "
+            "Пожалуйста, повторите попытку через пару минут."
+        )
+
+    if any(k in lowered for k in ("traceback", "runtimeerror", "keyerror", "valueerror", "syntaxerror", "exception", "{", "}", "['")):
+        return (
+            "Не удалось обработать задачу из-за технического сбоя. Баланс не списан (0 ₽). "
+            "Пожалуйста, попробуйте перезапустить задачу."
+        )
+
+    if len(raw) <= 300 and not any(ch in raw for ch in ("{", "}", "[", "]", ":/", "\\", "models:", "raw keys")):
+        return raw
+
+    return "Не удалось обработать задачу. Пожалуйста, проверьте файл или попробуйте перезапустить задачу."
 
 
 def build_failure_evidence(job: Job, exc: Exception, *, stage: str) -> dict:
@@ -933,42 +1166,54 @@ def _persist_failure_evidence(db: Session, job: Job, exc: Exception, *, stage: s
 
 
 def _persist_supplier_rows(db: Session, job: Job, accepted: list[dict]) -> None:
-    db.query(SupplierResult).filter(SupplierResult.job_id == job.id).delete()
-    for row in accepted:
-        db.add(
-            SupplierResult(
-                job_id=job.id,
-                company_name=row.get("company_name", ""),
-                region=row.get("region", ""),
-                status=row.get("status", ""),
-                product=row.get("product", ""),
-                contact_person=row.get("contact_person", ""),
-                phone=row.get("phone", ""),
-                email=row.get("email", ""),
-                site=row.get("site", ""),
-                evidence_url=row.get("evidence_url", ""),
-                contact_url=row.get("contact_url", ""),
-                comments=row.get("comments", ""),
-                evidence_status=row.get("evidence_status", "verified"),
-                match_level=row.get("match_level", ""),
-                source=row.get("source", ""),
-                search_query=row.get("search_query", ""),
-                quality_score=int(row.get("quality_score") or 0),
-                quality_tier=row.get("quality_tier", ""),
-                procurement_item_id=row.get("procurement_item_id", ""),
-                procurement_item=row.get("procurement_item", ""),
-                ai_confidence=int(row.get("ai_confidence") or 0),
-                site_type=row.get("site_type", ""),
-                product_fit=row.get("product_fit", ""),
-                evidence_snippet=row.get("evidence_snippet", ""),
-                contact_evidence_snippet=row.get("contact_evidence_snippet", ""),
-                ai_rank_confidence=int(row.get("ai_rank_confidence") or 0),
-                ai_rank_reason=row.get("ai_rank_reason", ""),
-                supplier_city=str(row.get("supplier_city") or row.get("city") or "")[:255],
-                supplier_distance_km=int(row.get("supplier_distance_km")) if row.get("supplier_distance_km") is not None else None,
-            )
-        )
-    db.commit()
+    for attempt in range(3):
+        try:
+            db.query(SupplierResult).filter(SupplierResult.job_id == job.id).delete()
+            for row in accepted:
+                db.add(
+                    SupplierResult(
+                        job_id=job.id,
+                        company_name=row.get("company_name", ""),
+                        region=row.get("region", ""),
+                        status=row.get("status", ""),
+                        product=row.get("product", ""),
+                        contact_person=row.get("contact_person", ""),
+                        phone=row.get("phone", ""),
+                        email=row.get("email", ""),
+                        site=row.get("site", ""),
+                        evidence_url=row.get("evidence_url", ""),
+                        contact_url=row.get("contact_url", ""),
+                        comments=row.get("comments", ""),
+                        evidence_status=row.get("evidence_status", "verified"),
+                        match_level=row.get("match_level", ""),
+                        source=row.get("source", ""),
+                        search_query=row.get("search_query", ""),
+                        quality_score=int(row.get("quality_score") or 0),
+                        quality_tier=row.get("quality_tier", ""),
+                        procurement_item_id=row.get("procurement_item_id", ""),
+                        procurement_item=row.get("procurement_item", ""),
+                        ai_confidence=int(row.get("ai_confidence") or 0),
+                        site_type=row.get("site_type", ""),
+                        product_fit=row.get("product_fit", ""),
+                        evidence_snippet=row.get("evidence_snippet", ""),
+                        contact_evidence_snippet=row.get("contact_evidence_snippet", ""),
+                        ai_rank_confidence=int(row.get("ai_rank_confidence") or 0),
+                        ai_rank_reason=row.get("ai_rank_reason", ""),
+                        supplier_city=str(row.get("supplier_city") or row.get("city") or "")[:255],
+                        supplier_distance_km=int(row.get("supplier_distance_km")) if row.get("supplier_distance_km") is not None else None,
+                    )
+                )
+            db.commit()
+            return
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if attempt == 2:
+                raise
+            logger.warning("Job %s _persist_supplier_rows transient DB error (attempt %d/3): %s", job.id, attempt + 1, exc)
+            time.sleep(1.0 * (attempt + 1))
 
 
 def _source_title(job: Job) -> str:
@@ -1309,12 +1554,15 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
 
     multi_item_mode = getattr(job, "multi_item_mode", "balanced") or "balanced"
     active_profile_dict = dobor_ctx.get("procurement_profile")
-    if multi_item_mode == "per_item" and active_profile_dict and dobor_ctx.get("selected_item_ids"):
-        selected_ids = set(dobor_ctx.get("selected_item_ids") or [])
+    if active_profile_dict and dobor_ctx.get("selected_item_ids") is not None:
+        chosen_ids = dobor_ctx["selected_item_ids"]
         items = active_profile_dict.get("items") or []
-        filtered_items = [it for it in items if str(it.get("id")) in selected_ids]
-        if filtered_items:
-            active_profile_dict = dict(active_profile_dict, items=filtered_items)
+        allowed_ids = {str(it.get("id") or f"item-{index}") for index, it in enumerate(items) if isinstance(it, dict)}
+        if not isinstance(chosen_ids, list) or not chosen_ids or len(set(chosen_ids)) != len(chosen_ids) or any(item_id not in allowed_ids for item_id in chosen_ids):
+            raise ValueError("Нет подтверждённых позиций для поиска поставщиков")
+        selected_ids = set(chosen_ids)
+        filtered_items = [it for index, it in enumerate(items) if isinstance(it, dict) and str(it.get("id") or f"item-{index}") in selected_ids]
+        active_profile_dict = dict(active_profile_dict, items=filtered_items)
     try:
         discovery_coro = discover_suppliers(
             settings,
@@ -1332,6 +1580,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
             multi_item_mode=multi_item_mode,
             delivery_city=getattr(job, "delivery_city", "") or "",
             geo_radius_km=getattr(job, "geo_radius_km", None),
+            geo_scope=getattr(job, "geo_scope", GEO_SCOPE_RU) or GEO_SCOPE_RU,
         )
     except TypeError:
         discovery_coro = discover_suppliers(
@@ -1355,7 +1604,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     persisted_rows = accepted or fallback_rows
     _persist_supplier_rows(db, job, persisted_rows)
     job.verified_count = len(persisted_rows)
-    y_reqs, y_cost = extract_yandex_job_metrics(evidence, getattr(settings, "yandex_search_price_per_request", 0.04))
+    y_reqs, y_cost = extract_yandex_job_metrics(evidence, getattr(settings, "yandex_search_price_per_request", 0.0305))
     job.yandex_requests_count = y_reqs
     job.yandex_cost_rub = y_cost
     _set_job(db, job, status="running", progress=97, message="Формирую Excel и проверочные данные")
@@ -1583,9 +1832,63 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
     db.commit()
 
 
+async def prepare_job_product_positions(settings: SystemSettings, context: str, input_files=None) -> list[dict]:
+    """Semantic AI product extraction for selection and monitoring workflows (Rule 14).
+    Understands arbitrary documents (Word, Excel, PDF, text, tables, or unstructured text)
+    without rigid column constraints, exactly like supplier_search.
+    """
+    # 1. Primary: Semantic AI extraction (understands any document structure, tables, KTRU, smetas)
+    positions = await prepare_exact_product_positions(settings, context, input_files=input_files)
+    if positions:
+        return positions
+
+    # 2. Secondary fallback only if AI produced nothing (offline / test mocks / provider outage):
+    from .product_inventory import extract_structured_product_inventory
+    structured = extract_structured_product_inventory(input_files or [], context=context)
+    if structured:
+        return structured
+
+    return []
+
+
 def _process_exact_product(db: Session, job: Job, settings: SystemSettings, context: str) -> None:
-    _check_cancelled(job.id)
+    _check_cancelled(job.id, db=db, job=job)
     _populate_job_ai_metadata(job, settings, job.mode)
+    selection = read_selection(job)
+    if not selection.get("confirmed"):
+        if not selection.get("items"):
+            _set_job(db, job, progress=20, message="Разбираю список товаров для выбора")
+            input_files = [Path(file.stored_path) for file in job.files if Path(file.stored_path).is_file()]
+            items = asyncio.run(_run_supplier_discovery_with_cancellation(
+                job.id, prepare_job_product_positions(settings, context, input_files=input_files)))
+            if not items:
+                raise ValueError("Не удалось выделить товары. Добавьте наименования и характеристики позиций.")
+            reserve = db.query(BillingTransaction).filter_by(job_id=job.id, kind=KIND_EXACT_PRODUCT, operation="reserve").first()
+            price = int(reserve.amount_kopeks or 0) if reserve else effective_job_unit_price_kopeks(db, job.client, KIND_EXACT_PRODUCT, job=job)
+            snapshot = json.loads(build_selection_snapshot(items, price_kopeks=price))
+            if getattr(job, "is_admin_rerun", False):
+                from .exact_product.models import MAX_EXACT_POSITIONS_PER_JOB
+                snapshot["selected_ids"] = [it["id"] for it in snapshot.get("items", [])[:MAX_EXACT_POSITIONS_PER_JOB]]
+                snapshot["confirmed"] = True
+                job.position_selection_json = json.dumps(snapshot, ensure_ascii=False)
+                selection = snapshot
+            else:
+                job.position_selection_json = json.dumps(snapshot, ensure_ascii=False)
+                _set_job(db, job, status=AWAITING_EXACT_SELECTION, progress=25,
+                         message="Выберите позиции для подбора модели и аналогов. Поиск начнётся после подтверждения.")
+                return
+        elif getattr(job, "is_admin_rerun", False):
+            from .exact_product.models import MAX_EXACT_POSITIONS_PER_JOB
+            selection["selected_ids"] = [it["id"] for it in selection.get("items", [])[:MAX_EXACT_POSITIONS_PER_JOB]]
+            selection["confirmed"] = True
+            job.position_selection_json = json.dumps(selection, ensure_ascii=False)
+        else:
+            _set_job(db, job, status=AWAITING_EXACT_SELECTION, progress=25,
+                     message="Выберите позиции для подбора модели и аналогов. Поиск начнётся после подтверждения.")
+            return
+    chosen_positions = selected_positions(job)
+    if not chosen_positions:
+        raise ValueError("Выбранные позиции не найдены. Создайте новый подбор.")
     _set_job(db, job, progress=15, message="Интеллектуальный анализ ТЗ и планирование поиска (ИИ)")
     subject = job.title or "Спецификация ТЗ"
 
@@ -1593,15 +1896,16 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
         _check_cancelled(job.id, db=db, job=job)
         _set_job(db, job, progress=progress, message=message)
 
-    report = asyncio.run(
-        analyze_exact_product(
+    report = asyncio.run(_run_supplier_discovery_with_cancellation(
+        job.id, analyze_exact_product(
             settings,
             context,
             procurement_title=job.title,
             progress_callback=_progress_callback,
+            selected_positions=chosen_positions,
         )
-    )
-    _check_cancelled(job.id)
+    ))
+    _check_cancelled(job.id, db=db, job=job)
     _set_job(db, job, progress=85, message="Формирую официальный отчёт в формате Word (характеристики и аналоги)")
     extracted_subj = (
         report.procurement_title
@@ -1643,26 +1947,67 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
     job.evidence_path = str(evidence_path)
     job.result_path = str(docx_path)
-    job.verified_count = report.total_positions
+    job.verified_count = sum(1 for position in report.positions if is_exact_position_resolved(position))
     job.yandex_requests_count = report.yandex_requests_count
     job.yandex_cost_rub = report.yandex_cost_rub
     _set_customer_job_title_from_subject(job, subject)
-    charge_job_reservation(db, job, note="Подбор товара и аналогов завершен")
-    _set_job(db, job, status="completed", progress=100, message=f"Готово: выявлено {report.total_positions} поз. с аналогами")
+    if job.verified_count == report.total_positions:
+        job.message = f"Подбор завершён: подобрано {job.verified_count} из {report.total_positions} выбранных позиций"
+    else:
+        job.message = f"Подбор завершён: подобрано {job.verified_count} из {report.total_positions} выбранных позиций; остальные требуют уточнения"
+    if getattr(job, "is_admin_rerun", False):
+        finalize_internal_exact_product_job(db, job)
+    else:
+        settle_exact_product_job(db, job, confirmed_count=job.verified_count)
+    _set_job(db, job, status="completed", progress=100, message=job.message)
     job.completed_at = now_utc()
     db.commit()
 
 
 def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, context: str) -> None:
-    _check_cancelled(job.id)
+    _check_cancelled(job.id, db=db, job=job)
+    settled = db.query(BillingTransaction).filter_by(job_id=job.id, kind=KIND_PRICE_MONITORING, operation="charge").first()
+    if settled:
+        if not job.result_path or not Path(job.result_path).is_file() or not job.evidence_path or not Path(job.evidence_path).is_file():
+            raise BillingError("Эта задача уже оплачена, но файлы недоступны. Обратитесь в поддержку; повторного списания нет.")
+        _set_job(db, job, status="completed", progress=100, message=f"Результат восстановлен: найдено цен для {settled.units} позиций; повторного списания нет")
+        return
     _populate_job_ai_metadata(job, settings, job.mode)
     _set_job(db, job, progress=10, message="Загружаю спецификацию для мониторинга цен...")
 
-    input_dir = job_dir(job.id) / "input"
-    input_files = list(input_dir.iterdir()) if input_dir.exists() else []
-
-    from .price_monitoring.cleaner import extract_items_from_files_or_text
-    items = extract_items_from_files_or_text(input_files, context=context, settings=settings)
+    selection = read_selection(job)
+    if not selection.get("confirmed"):
+        if not selection.get("items"):
+            input_files = [Path(file.stored_path) for file in job.files if Path(file.stored_path).is_file()]
+            positions = asyncio.run(_run_supplier_discovery_with_cancellation(
+                job.id, prepare_job_product_positions(settings, context, input_files=input_files)))
+            if not positions:
+                raise ValueError("Не удалось выделить товары. Добавьте список наименований с количеством и единицами измерения.")
+            price = effective_job_unit_price_kopeks(db, job.client, KIND_PRICE_MONITORING, job=job)
+            snapshot = json.loads(build_selection_snapshot(positions, price_kopeks=price, mode=MODE_PRICE_MONITORING))
+            limit = max(1, int(getattr(settings, "price_monitoring_max_positions", 1000) or 1000))
+            snapshot["max_positions"] = min(len(positions), limit)
+            if getattr(job, "is_admin_rerun", False):
+                snapshot["selected_ids"] = [it["id"] for it in snapshot.get("items", [])[:limit]]
+                snapshot["confirmed"] = True
+                job.position_selection_json = json.dumps(snapshot, ensure_ascii=False)
+                selection = snapshot
+            else:
+                job.position_selection_json = json.dumps(snapshot, ensure_ascii=False)
+                _set_job(db, job, status=AWAITING_POSITION_SELECTION, progress=20,
+                         message="Проверьте распознанные товары и выберите позиции для мониторинга. Поиск и резервирование начнутся после подтверждения.")
+                return
+        elif getattr(job, "is_admin_rerun", False):
+            limit = max(1, int(getattr(settings, "price_monitoring_max_positions", 1000) or 1000))
+            selection["selected_ids"] = [it["id"] for it in selection.get("items", [])[:limit]]
+            selection["confirmed"] = True
+            job.position_selection_json = json.dumps(selection, ensure_ascii=False)
+        else:
+            _set_job(db, job, status=AWAITING_POSITION_SELECTION, progress=20,
+                     message="Проверьте распознанные товары и выберите позиции для мониторинга. Поиск и резервирование начнутся после подтверждения.")
+            return
+    chosen = selected_positions(job)
+    items = [(str(row.get("name") or ""), extract_unit_and_quantity_from_position(row)[0] or "шт") for row in chosen]
 
     if not items:
         _set_job(
@@ -1690,8 +2035,15 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
     wb.save(buf)
     file_bytes = buf.getvalue()
 
-    price_kopeks = effective_price_kopeks(db, job.client, KIND_PRICE_MONITORING)
+    price_kopeks = 0 if getattr(job, "is_admin_rerun", False) else (
+        int(selection.get("price_kopeks")) if "price_kopeks" in selection
+        else effective_job_unit_price_kopeks(db, job.client, KIND_PRICE_MONITORING, job=job)
+    )
     price_rub = round(price_kopeks / 100, 2)
+    # An expert rerun is an internal quality-control job.  It must never make
+    # the original customer's balance a precondition for a fresh market run.
+    if not getattr(job, "is_admin_rerun", False):
+        reserve_price_monitoring_job(db, job, total_positions=len(items), price_per_item_kopeks=price_kopeks)
 
     out_dir = job_dir(job.id) / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1734,10 +2086,13 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
     cluster_ratio = float(getattr(settings, "price_monitoring_cluster_ratio", 1.4) or 1.4)
     delivery_city = str(getattr(job, "delivery_city", "") or "").strip()
     geo_radius_km = getattr(job, "geo_radius_km", None)
+    geo_scope = getattr(job, "geo_scope", "ru") or "ru"
+    if geo_scope == "world":
+        filter_foreign = False
 
     try:
-        batch_res = asyncio.run(
-            run_price_monitoring_pipeline(
+        batch_res = asyncio.run(_run_supplier_discovery_with_cancellation(
+            job.id, run_price_monitoring_pipeline(
                 file_bytes=file_bytes,
                 settings=settings,
                 output_excel_path=str(out_file),
@@ -1751,24 +2106,19 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
                 filter_foreign=filter_foreign,
                 max_variation_pct=max_variation_pct,
                 items=items,
+                source_positions=chosen,
                 delivery_city=delivery_city,
                 geo_radius_km=geo_radius_km,
+                geo_scope=geo_scope,
             )
-        )
+        ))
     except Exception as exc:
         logger.error("Price monitoring failed for job %s: %s", job.id, exc, exc_info=True)
-        _set_job(db, job, status="failed", progress=100, message=f"Ошибка обработки: {exc}", error=str(exc))
-        job.completed_at = now_utc()
-        db.commit()
-        return
+        # The outer worker handler owns rollback and reservation release.
+        # Swallowing this error here leaves the monitoring maximum reserved.
+        raise
 
-    _check_cancelled(job.id)
-    charged_kopeks = charge_price_monitoring_job(
-        db,
-        job,
-        found_count=batch_res.found_positions,
-        price_per_item_kopeks=price_kopeks,
-    )
+    _check_cancelled(job.id, db=db, job=job)
 
     output_files = [
         _output_artifact("price_monitoring", "Цены поставщиков", out_file, KIND_PRICE_MONITORING),
@@ -1779,20 +2129,42 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
         "total_positions": batch_res.total_positions,
         "found_positions": batch_res.found_positions,
         "price_per_position_rub": price_rub,
-        "charged_rub": round(charged_kopeks / 100, 2),
+        "charged_rub": round(batch_res.found_positions * price_kopeks / 100, 2),
         "yandex_requests_count": batch_res.yandex_requests_count,
         "yandex_cost_rub": batch_res.yandex_cost_rub,
+        "selected_positions": chosen,
+        "item_search_diagnostics": [
+            {
+                "row_number": item.row_number,
+                "position_id": item.position_id,
+                "source_position_no": item.source_position_no,
+                "source_file": item.source_file,
+                "source_sheet": item.source_sheet,
+                "source_row": item.source_row,
+                "quantity": item.quantity,
+                "requirements": item.requirements,
+                "status": item.status,
+                "not_found_reason": item.not_found_reason,
+                "search_diagnostics": item.search_diagnostics,
+            }
+            for item in batch_res.items
+        ],
         "output_files": output_files,
     }
     evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
     job.evidence_path = str(evidence_path)
     job.result_path = str(out_file)
     job.verified_count = batch_res.found_positions
-    job.file_count = batch_res.total_positions
+    job.file_count = len(job.files)
     job.yandex_requests_count = batch_res.yandex_requests_count
     job.yandex_cost_rub = batch_res.yandex_cost_rub
-
+    _check_cancelled(job.id, db=db, job=job)
     msg = f"Готово: найдено цен для {batch_res.found_positions} из {batch_res.total_positions} позиций"
+    job.message = msg
+    if getattr(job, "is_admin_rerun", False):
+        finalize_internal_price_monitoring_job(db, job)
+    else:
+        charge_price_monitoring_job(db, job, found_count=batch_res.found_positions, price_per_item_kopeks=price_kopeks)
     _set_job(db, job, status="completed", progress=100, message=msg)
     job.completed_at = now_utc()
     db.commit()
@@ -1881,12 +2253,15 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
 
     multi_item_mode = getattr(job, "multi_item_mode", "balanced") or "balanced"
     active_profile_dict = dobor_ctx.get("procurement_profile")
-    if multi_item_mode == "per_item" and active_profile_dict and dobor_ctx.get("selected_item_ids"):
-        selected_ids = set(dobor_ctx.get("selected_item_ids") or [])
+    if active_profile_dict and dobor_ctx.get("selected_item_ids") is not None:
+        chosen_ids = dobor_ctx["selected_item_ids"]
         items = active_profile_dict.get("items") or []
-        filtered_items = [it for it in items if str(it.get("id")) in selected_ids]
-        if filtered_items:
-            active_profile_dict = dict(active_profile_dict, items=filtered_items)
+        allowed_ids = {str(it.get("id") or f"item-{index}") for index, it in enumerate(items) if isinstance(it, dict)}
+        if not isinstance(chosen_ids, list) or not chosen_ids or len(set(chosen_ids)) != len(chosen_ids) or any(item_id not in allowed_ids for item_id in chosen_ids):
+            raise ValueError("Нет подтверждённых позиций для поиска поставщиков")
+        selected_ids = set(chosen_ids)
+        filtered_items = [it for index, it in enumerate(items) if isinstance(it, dict) and str(it.get("id") or f"item-{index}") in selected_ids]
+        active_profile_dict = dict(active_profile_dict, items=filtered_items)
 
     async def progress_callback(progress: int, message: str) -> None:
         _check_cancelled(job.id)
@@ -1904,6 +2279,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             multi_item_mode=multi_item_mode,
             delivery_city=getattr(job, "delivery_city", "") or "",
             geo_radius_km=getattr(job, "geo_radius_km", None),
+            geo_scope=getattr(job, "geo_scope", GEO_SCOPE_RU) or GEO_SCOPE_RU,
         )
     except TypeError:
         discovery_coro = discover_suppliers(
@@ -1926,7 +2302,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     persisted_rows = accepted or fallback_rows
     _persist_supplier_rows(db, job, persisted_rows)
     job.verified_count = len(persisted_rows)
-    y_reqs, y_cost = extract_yandex_job_metrics(supplier_evidence, getattr(settings, "yandex_search_price_per_request", 0.04))
+    y_reqs, y_cost = extract_yandex_job_metrics(supplier_evidence, getattr(settings, "yandex_search_price_per_request", 0.0305))
     job.yandex_requests_count = y_reqs
     job.yandex_cost_rub = y_cost
     out_dir = job_dir(job.id) / "output"
@@ -2275,13 +2651,16 @@ def cleanup_expired_jobs(db: Session, settings=None) -> int:
         .all()
     )
     for job in expired:
+        jid = job.id
         release_job_reservation(db, job, note="Резерв возвращён: истёк срок хранения задачи")
-        db.query(BillingTransaction).filter(BillingTransaction.job_id == job.id).update(
+        db.query(BillingTransaction).filter(BillingTransaction.job_id == jid).update(
             {BillingTransaction.job_id: None},
             synchronize_session=False,
         )
-        shutil.rmtree(job_dir(job.id), ignore_errors=True)
-        db.delete(job)
+        shutil.rmtree(job_dir(jid), ignore_errors=True)
+        existing_job = db.get(Job, jid)
+        if existing_job is not None:
+            db.delete(existing_job)
     if expired:
         db.commit()
     return len(expired)
@@ -2291,7 +2670,7 @@ def clear_storage() -> None:
     shutil.rmtree(config.storage_path, ignore_errors=True)
     config.storage_path.mkdir(parents=True, exist_ok=True)
 
-def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float = 0.04) -> tuple[int, float]:
+def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float = 0.0305) -> tuple[int, float]:
     if not isinstance(evidence, dict):
         return 0, 0.0
     if not evidence.get("search") and isinstance(evidence.get("supplier_search"), dict):
@@ -2319,6 +2698,6 @@ def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float =
             q_len = len(queries) if isinstance(queries, list) else 0
             pages_per_q = 2.0 if added > 50 else 1.5
             req_count = int(q_len * pages_per_q)
-    unit_price = float(price_per_request) if price_per_request else 0.04
+    unit_price = float(price_per_request) if price_per_request else 0.0305
     cost_rub = round(req_count * unit_price, 2)
     return req_count, cost_rub

@@ -22,7 +22,7 @@ def new_id() -> str:
 class OutreachSearchTask(Base):
     __tablename__ = "outreach_search_tasks"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(255), default="Поиск контактов")
     prompt: Mapped[str] = mapped_column(Text, default="")
     target_count: Mapped[int] = mapped_column(Integer, default=500)
@@ -89,8 +89,8 @@ class OutreachSearchTask(Base):
 class OutreachLead(Base):
     __tablename__ = "outreach_leads"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    task_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     wave_index: Mapped[int] = mapped_column(Integer, default=1, index=True)
     email: Mapped[str] = mapped_column(String(255), index=True)
     company_name: Mapped[str] = mapped_column(String(255), default="")
@@ -98,7 +98,7 @@ class OutreachLead(Base):
     website: Mapped[str] = mapped_column(String(255), default="")
     inn: Mapped[str] = mapped_column(String(20), default="")
     category: Mapped[str] = mapped_column(String(100), default="Общая", index=True)
-    activity_profile: Mapped[str] = mapped_column(String(255), default="")
+    activity_profile: Mapped[str] = mapped_column(Text, default="")
     relevance_score: Mapped[int] = mapped_column(Integer, default=100)
     city: Mapped[str] = mapped_column(String(100), default="")
     source: Mapped[str] = mapped_column(String(100), default="search")
@@ -140,13 +140,13 @@ class OutreachLead(Base):
 class OutreachCampaign(Base):
     __tablename__ = "outreach_campaigns"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(255), default="Новая рассылка")
     subject: Mapped[str] = mapped_column(Text, default="")
     body_text: Mapped[str] = mapped_column(Text, default="")
     body_html: Mapped[str] = mapped_column(Text, default="")
     category_filter: Mapped[str] = mapped_column(String(100), default="")
-    task_id_filter: Mapped[str] = mapped_column(String(32), default="", index=True)
+    task_id_filter: Mapped[str] = mapped_column(String(64), default="", index=True)
     audience_type: Mapped[str] = mapped_column(String(40), default="new")  # new, all, unanswered, follow_up, selected
     selected_lead_ids: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(40), default="draft", index=True)  # draft, running, paused, completed, stopped
@@ -189,7 +189,7 @@ class OutreachCampaign(Base):
 class OutreachSendLog(Base):
     __tablename__ = "outreach_send_logs"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
     campaign_id: Mapped[str | None] = mapped_column(ForeignKey("outreach_campaigns.id", ondelete="CASCADE"), nullable=True, index=True)
     lead_id: Mapped[str | None] = mapped_column(ForeignKey("outreach_leads.id", ondelete="SET NULL"), nullable=True, index=True)
     recipient_email: Mapped[str] = mapped_column(String(255), index=True)
@@ -218,7 +218,7 @@ class OutreachSendLog(Base):
 class OutreachIncomingEmail(Base):
     __tablename__ = "outreach_inbox"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
     message_id: Mapped[str] = mapped_column(String(255), index=True, default="")
     sender_email: Mapped[str] = mapped_column(String(255), index=True)
     sender_name: Mapped[str] = mapped_column(String(255), default="")

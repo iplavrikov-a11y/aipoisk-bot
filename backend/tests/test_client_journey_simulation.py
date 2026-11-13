@@ -235,8 +235,8 @@ class ClientJourneySimulationTests(unittest.IsolatedAsyncioTestCase):
         # Test /start link_<token> deep link flow
         link_msg = self.FakeMessage(text="/start link_testtoken123", chat_id=chat_id)
         command_obj = SimpleNamespace(args="link_testtoken123")
-        fake_client = SimpleNamespace(id=1, email="buyer@tenderlex.ru", web_balance=10)
-        with patch.object(bot_module, "consume_web_to_telegram_token", return_value=SimpleNamespace(client_id=1)):
+        fake_client = SimpleNamespace(id="1", email="buyer@tenderlex.ru", web_balance=10)
+        with patch.object(bot_module, "consume_web_to_telegram_token", return_value=SimpleNamespace(client_id="1")):
             with patch.object(bot_module, "get_or_create_trial_client_by_telegram_id", return_value=(fake_client, None)):
                 with patch.object(bot_module, "_record_telegram_event"):
                     await bot_module.start(link_msg, command=command_obj)
@@ -262,7 +262,7 @@ class ClientJourneySimulationTests(unittest.IsolatedAsyncioTestCase):
             created_jobs.append(job_mock)
             return job_mock
 
-        fake_client = SimpleNamespace(id=1, is_active=True, runs_left=10, trial_runs_left=0)
+        fake_client = SimpleNamespace(id="1", is_active=True, runs_left=10, trial_runs_left=0)
         with patch.object(bot_module, "get_or_create_trial_client_by_telegram_id", return_value=(fake_client, None)):
             with patch.object(bot_module, "client_access_error", return_value=None):
                 with patch.object(bot_module, "create_job", side_effect=mock_create_job):

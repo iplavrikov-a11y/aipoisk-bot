@@ -85,6 +85,7 @@ with sync_playwright() as p:
     page.locator('form button[type="submit"]').click()
     page.wait_for_function("window.__analyticsTestCalls.some(x => x[2] === 'registration_success')")
     assert state["register_requests"] == 1
+    page.get_by_role("tab").filter(has_text="Поиск поставщиков").click()
     page.locator("textarea").first.fill("PRIVATE TECHNICAL REQUIREMENTS — do not send to analytics")
     page.locator('form button[type="submit"]').last.click()
     page.wait_for_function("window.__analyticsTestCalls.some(x => x[2] === 'task_started')")
