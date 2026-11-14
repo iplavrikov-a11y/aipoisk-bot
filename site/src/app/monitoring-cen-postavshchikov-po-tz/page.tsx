@@ -3,12 +3,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import {
   Coins,
-  CheckCircle2,
   FileSpreadsheet,
   Search,
   ArrowRight,
-  TrendingDown,
-  Building2,
   ShieldCheck,
   Percent,
   Sliders,
@@ -25,10 +22,11 @@ import {
   type FaqItem,
 } from "@/lib/seo";
 
+const pageDescription = "Соберите цены поставщиков по спецификации. Сравните найденные предложения в таблице со ссылками на источники и отметками по позициям без цены.";
+
 export const metadata: Metadata = {
   title: { absolute: "Мониторинг цен поставщиков по спецификациям (44-ФЗ, 223-ФЗ) — TenderLex" },
-  description:
-    "Пакетный поиск цен поставщиков по спецификациям за 3 минуты. Консенсусная кластеризация, расчет коэффициента вариации по Приказу Минэкономразвития № 567, отсечение маркетплейсов и готовый Excel-отчет.",
+  description: pageDescription,
   keywords: [
     "мониторинг цен поставщиков",
     "поиск цен по спецификации",
@@ -48,8 +46,7 @@ export const metadata: Metadata = {
     type: "website",
     url: "/monitoring-cen-postavshchikov-po-tz",
     title: "Мониторинг цен поставщиков по спецификациям (44-ФЗ, 223-ФЗ) — TenderLex",
-    description:
-      "Пакетный поиск цен поставщиков по спецификациям за 3 минуты. Консенсусная кластеризация, расчет коэффициента вариации по Приказу Минэкономразвития № 567, отсечение маркетплейсов и готовый Excel-отчет.",
+    description: pageDescription,
     siteName: "TenderLex",
     images: [
       {
@@ -63,8 +60,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "Мониторинг цен поставщиков по спецификациям | TenderLex",
-    description:
-      "Пакетный сбор цен поставщиков, консенсусная кластеризация и автоматический расчет вариации по 44-ФЗ в готовом Excel.",
+    description: pageDescription,
   },
 };
 
@@ -79,27 +75,27 @@ const faqItems: FaqItem[] = [
   {
     question: "Как рассчитывается коэффициент вариации по Приказу Минэкономразвития № 567?",
     answer:
-      "Приказ № 567 регламентирует расчет НМЦК методом сопоставимых рыночных цен. Совокупность цен считается однородной, если коэффициент вариации не превышает 33%. Модуль TenderLex автоматически применяет математическую кластеризацию к найденным ценам, фильтрует нерелевантные значения и сразу считает среднюю цену и вариацию в формулах Excel.",
+      "В методических рекомендациях, утверждённых Приказом № 567, порог 33% используется для оценки однородности ценовой выборки. TenderLex рассчитывает среднюю цену и коэффициент вариации по собранным данным при достаточном числе цен. Сопоставимость характеристик и условий поставки проверяется отдельно.",
   },
   {
     question: "Исключаются ли розничные маркетплейсы и зарубежные дропшипперы?",
     answer:
-      "Да. По умолчанию в алгоритме включены фильтры розничных маркетплейсов (Ozon, Wildberries, Авито и др.) и зарубежных перекупщиков (AliExpress, Taobao, форвардеры). Это гарантирует, что цены собираются именно с официальных сайтов оптовых поставщиков и производителей в РФ.",
+      "Поиск применяет фильтры розничных маркетплейсов и зарубежных площадок. Проверьте найденные страницы, условия продажи и принадлежность организации производителю или дистрибьютору.",
   },
   {
     question: "В каком формате формируется итоговый отчет?",
     answer:
-      "Отчет формируется в виде структурированной таблицы Excel (.xlsx) с «живыми» формулами (МИН, СРЗНАЧ, вариация), колонками поставщиков, прямыми кликабельными ссылками на первоисточники цен, ИНН и контактами компаний для оперативного запроса счета.",
+      "Отчёт содержит найденные цены и ссылки на страницы источников. В таблице также могут быть реквизиты и контакты поставщиков, если они доступны. Строки, по которым цену найти не удалось, отмечены отдельно.",
   },
   {
     question: "Сколько позиций можно проверить за один раз?",
     answer:
-      "Оптимальный объем одного пакета — до 1 000 позиций спецификации. Система использует многопоточную параллельную обработку с контролем устойчивости к WAF и защитой от перерасхода баланса (списание происходит только за успешно найденные позиции).",
+      "Загрузите спецификацию и выберите нужные строки. Для большого файла можно запустить поиск по частям. Текущие условия и стоимость видны в кабинете перед запуском.",
   },
   {
     question: "Подходит ли результат для официального обоснования НМЦК?",
     answer:
-      "Результат служит аналитической базой: вы получаете проверенные источники, ориентиры цен и прямые ссылки на поставщиков. Перед включением в официальное обоснование закупки заказчик или участник запрашивает и подшивает оригинальные коммерческие предложения (КП) от найденных организаций.",
+      "Отчёт помогает собрать исходные данные. Перед расчётом НМЦК проверьте применимые правила, сопоставимость цен, комплектность, доставку и НДС. Если опубликованных данных недостаточно, запросите подтверждение у поставщика.",
   },
 ];
 
@@ -137,6 +133,16 @@ const samplePriceRows = [
     varPct: "2.3%",
     status: "Однородно (V ≤ 33%)",
   },
+  {
+    item: "Редуктор по чертежу заказчика",
+    unit: "шт",
+    p1: "—",
+    p2: "—",
+    p3: "—",
+    avg: "—",
+    varPct: "—",
+    status: "Цены не найдены",
+  },
 ];
 
 export default async function MonitoringCenPostavshchikovPage() {
@@ -148,7 +154,7 @@ export default async function MonitoringCenPostavshchikovPage() {
 
   const schemaService = buildServiceJsonLd({
     name: "Мониторинг цен поставщиков по спецификациям",
-    description: "Пакетный поиск актуальных рыночных цен B2B поставщиков, консенсусная кластеризация и расчет вариации по 44-ФЗ и 223-ФЗ.",
+    description: pageDescription,
     path: pagePath,
   });
 
@@ -194,7 +200,7 @@ export default async function MonitoringCenPostavshchikovPage() {
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-3xl mx-auto font-normal leading-relaxed">
-              Загрузите таблицу спецификации — TenderLex автоматически найдет актуальные цены у проверенных B2B-поставщиков, исключит выбросы и маркетплейсы, рассчитает коэффициент вариации по Приказу № 567 и выгрузит готовый Excel с прямыми ссылками.
+              Загрузите спецификацию. TenderLex соберёт доступные цены со ссылками на источники и покажет, по каким позициям цены не найдены. Срок и полнота поиска зависят от состава спецификации и доступности данных.
             </p>
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
@@ -259,7 +265,7 @@ export default async function MonitoringCenPostavshchikovPage() {
                 Почему профессионалы выбирают TenderLex для сбора цен
               </h2>
               <p className="text-slate-600 text-sm sm:text-base">
-                Ручной обзвон десятков поставщиков и сбор прайсов занимает дни. Автоматизированный мониторинг ускоряет предварительный расчет в десятки раз.
+                Соберите исходные данные для предварительного расчёта и определите, по каким позициям нужно запросить цены у поставщиков.
               </p>
             </div>
 
@@ -270,7 +276,7 @@ export default async function MonitoringCenPostavshchikovPage() {
                 </div>
                 <h3 className="font-extrabold text-base text-slate-900">Вариация по 44-ФЗ</h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Автоматический расчет коэффициента вариации по Приказу Минэкономразвития № 567 с подтверждением однородности цен (V ≤ 33%).
+                  Сервис рассчитывает коэффициент вариации для оценки разброса найденных цен. Проверьте сопоставимость товаров и коммерческих условий по источникам.
                 </p>
               </div>
 
@@ -280,7 +286,7 @@ export default async function MonitoringCenPostavshchikovPage() {
                 </div>
                 <h3 className="font-extrabold text-base text-slate-900">Консенсусная кластеризация</h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Алгоритм группирует рыночные цены и отсекает аномальные выбросы, защищая расчет от искажений завышенных или демпинговых ценников.
+                  Алгоритм группирует близкие цены и отсекает выбросы. Итоговую выборку можно сверить с исходными предложениями.
                 </p>
               </div>
 
@@ -290,7 +296,7 @@ export default async function MonitoringCenPostavshchikovPage() {
                 </div>
                 <h3 className="font-extrabold text-base text-slate-900">Фильтр розницы и маркетплейсов</h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Исключение Ozon, Wildberries, Avito и зарубежных перекупщиков. В выборку попадают только реальные оптовые склады и дистрибьюторы.
+                  Фильтры помогают исключить известные розничные и зарубежные площадки. Тип поставщика и условия продажи проверяются по найденной странице.
                 </p>
               </div>
 
@@ -300,7 +306,7 @@ export default async function MonitoringCenPostavshchikovPage() {
                 </div>
                 <h3 className="font-extrabold text-base text-slate-900">Excel с прямыми ссылками</h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Каждая позиция содержит 3–5 цен с прямыми URL источников, ИНН и контактами поставщика для моментальной отправки запроса КП.
+                  В таблице указаны найденные цены со ссылками на источники и статус поиска по каждой позиции. Если сведений недостаточно, можно запросить КП вручную.
                 </p>
               </div>
             </div>
@@ -312,10 +318,10 @@ export default async function MonitoringCenPostavshchikovPage() {
           <div className="container max-w-5xl mx-auto px-4 sm:px-6">
             <div className="text-center max-w-2xl mx-auto mb-10 space-y-2">
               <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900">
-                Пример структуры итогового отчета
+                Как выглядит таблица мониторинга
               </h2>
               <p className="text-slate-600 text-sm">
-                Формат Excel готов для согласования, расчета себестоимости и проверки по 44-ФЗ.
+                Учебный пример с условными ценами. Последняя строка показывает позицию, для которой поиск не нашёл цены.
               </p>
             </div>
 
@@ -343,12 +349,7 @@ export default async function MonitoringCenPostavshchikovPage() {
                       <td className="py-3 px-3 text-right font-mono text-slate-700">{row.p3}</td>
                       <td className="py-3 px-3 text-right font-mono font-bold text-teal-800">{row.avg}</td>
                       <td className="py-3 px-3 text-right font-mono font-bold text-emerald-700">{row.varPct}</td>
-                      <td className="py-3 px-4">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                          <CheckCircle2 size={12} />
-                          {row.status}
-                        </span>
-                      </td>
+                      <td className="py-3 px-4 font-semibold">{row.status}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -356,7 +357,7 @@ export default async function MonitoringCenPostavshchikovPage() {
             </div>
 
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500 px-1">
-              <span>* Формулы в Excel рассчитываются динамически с учетом всех собранных цен и отсечения выбросов.</span>
+              <span>В рабочем отчёте рядом с найденными ценами указаны ссылки на источники.</span>
               <a
                 href="/cabinet?scenario=price_monitoring"
                 className="text-teal-700 font-bold hover:underline inline-flex items-center gap-1"
@@ -407,7 +408,7 @@ export default async function MonitoringCenPostavshchikovPage() {
                 </div>
                 <h3 className="font-extrabold text-sm text-slate-900">Поиск и кластеризация</h3>
                 <p className="text-xs text-slate-600">
-                  Многопоточный поиск собирает цены по B2B-рынку РФ, исключает маркетплейсы и отсекает аномальные выбросы.
+                  Поиск собирает доступные цены, фильтрует известные розничные площадки и выделяет ценовые выбросы.
                 </p>
               </div>
 
@@ -417,7 +418,7 @@ export default async function MonitoringCenPostavshchikovPage() {
                 </div>
                 <h3 className="font-extrabold text-sm text-slate-900">Скачивание Excel</h3>
                 <p className="text-xs text-slate-600">
-                  Получите готовую таблицу с формулами, прямыми ссылками на источники, реквизитами поставщиков и коэффициентом вариации.
+                  Скачайте таблицу. Проверьте ссылки на источники и отдельно просмотрите позиции, по которым цена не найдена.
                 </p>
               </div>
             </div>
@@ -464,7 +465,7 @@ export default async function MonitoringCenPostavshchikovPage() {
               Готовы рассчитать цены по вашей спецификации?
             </h2>
             <p className="text-slate-600 text-sm sm:text-base max-w-2xl mx-auto">
-              Зарегистрируйтесь за 15 секунд — дарим стартовый баланс для бесплатного тестирования на ваших спецификациях без привязки карты.
+              Откройте мониторинг в кабинете и загрузите свою спецификацию.
             </p>
             <div className="flex flex-col sm:flex-row justify-center gap-4">
               <a

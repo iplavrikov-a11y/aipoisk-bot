@@ -248,18 +248,26 @@ def fetch_google_analytics(days: int = 28, site_url: str = DEFAULT_SITE_URL, lag
         result["daily_period"] = {**daily_period, "available_start_date": min(by_date, default=None), "available_end_date": max(by_date, default=None)}
         result["first_incomplete_date"] = marker
         result["component_status"]["daily_dynamics"] = "available" if len(errors) == daily_error_count else "error"
-        anomaly_days = [
-            {"date": row["date"], "clicks": row["clicks"], "shows": row["shows"], "avg_position": row["avg_position"]}
-            for row in result["daily_dynamics"]
-            if (row.get("clicks") or 0) >= 20 and (row.get("avg_position") or 0) >= 20.0
-            and period["start_date"] <= row["date"] <= period["end_date"]
-        ]
+        anomaly_days = []
+        for row in final_rows:
+            day = _date_key(row)
+            if not day or not period["start_date"] <= day <= period["end_date"]:
+                continue
+            try:
+                metrics = _metric_row(row)
+            except (ValueError, TypeError):
+                continue
+            if metrics["clicks"] >= 20 and (metrics["avg_position"] or 0) >= 20:
+                anomaly_days.append({"date": day, "clicks": metrics["clicks"],
+                                     "shows": metrics["impressions"], "avg_position": metrics["avg_position"]})
         anomaly_clicks = sum(item["clicks"] for item in anomaly_days)
         total_clicks = result["property_totals"].get("clicks")
         result["click_anomalies"] = {
             "anomaly_days": anomaly_days,
             "anomaly_clicks": anomaly_clicks,
-            "estimated_organic_clicks": max(0, total_clicks - anomaly_clicks) if isinstance(total_clicks, int) else None,
+            "clicks_excluding_flagged_days": (
+                total_clicks - anomaly_clicks if isinstance(total_clicks, int) and total_clicks >= anomaly_clicks else None
+            ),
         }
         try:
             sitemaps = service.sitemaps().list(siteUrl=active_site).execute().get("sitemap", [])

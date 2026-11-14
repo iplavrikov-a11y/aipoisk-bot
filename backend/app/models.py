@@ -310,6 +310,19 @@ class WebSession(Base):
     user: Mapped[WebUser] = relationship(back_populates="sessions")
 
 
+class SeoEntry(Base):
+    __tablename__ = "seo_entries"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("web_users.id", ondelete="CASCADE"), unique=True, nullable=True)
+    source: Mapped[str] = mapped_column(String(12))
+    landing: Mapped[str] = mapped_column(String(200))
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    registered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_task_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_result_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class WebPasswordResetRequest(Base):
     __tablename__ = "web_password_reset_requests"
 

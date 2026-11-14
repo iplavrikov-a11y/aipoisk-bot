@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { SeoFunnelPanel } from './SeoFunnelPanel'
 import './seo-dashboard.css'
 
 type Data = Record<string, unknown>
@@ -54,6 +55,13 @@ const stamp = (value: unknown) => {
 }
 const percent = (value: unknown) =>
   number(value) === null ? '—' : `${shown(value, 1)}%`
+function ReportFreshness({ value }: { value: unknown }) {
+  const report = object(value)
+  if (report.status === 'stale') {
+    return <p className="seo-notice">Последний успешный сбор: {stamp(report.collected_at)}. Период: {period(report.period)}. Данные устарели.</p>
+  }
+  return null
+}
 const dayInZone = (zone: string) => {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: zone,
@@ -192,6 +200,9 @@ function Source({
   google?: boolean
 }) {
   const components = object(source.component_status)
+  const freshness = object(source.freshness)
+  const anomaly = object(source.click_anomalies)
+  const querySample = object(source.query_sample)
   const unavailable = google
     ? !['active', 'partial'].includes(text(source.status))
     : !Object.keys(source).length ||
@@ -227,11 +238,13 @@ function Source({
       <div className="seo-panel-heading">
         <h2>{name}</h2>
         <span
-          className={`seo-badge ${unavailable || source.status === 'partial' ? 'warning' : ''}`}
+          className={`seo-badge ${unavailable || source.status === 'partial' || freshness.status === 'stale' ? 'warning' : ''}`}
         >
           {unavailable
             ? 'Данные недоступны'
-            : source.status === 'partial'
+            : freshness.status === 'stale'
+              ? 'Данные устарели'
+              : source.status === 'partial'
               ? 'Частичные данные'
               : 'Данные получены'}
         </span>
@@ -242,6 +255,14 @@ function Source({
           ? 'America/Los_Angeles · завершённые данные'
           : 'Период популярных запросов задан Вебмастером'}
       </p>
+      {!google && Object.keys(freshness).length > 0 && (
+        <p className={freshness.status === 'stale' ? 'seo-notice' : 'seo-caption'}>
+          {freshness.status === 'stale' && 'Данные Вебмастера устарели. '}
+          Последняя отметка истории индекса: {stamp(freshness.index_observed_at)}.
+          {' '}Чтение карты: {stamp(freshness.sitemap_downloaded_at)} ({shown(freshness.sitemap_urls)} URL).
+          {' '}Последняя ненулевая статистика запросов: {date(freshness.query_activity_through)}.
+        </p>
+      )}
       {google ? (
         <div className="seo-stats compact">
           <Card
@@ -342,6 +363,9 @@ function Source({
           ? 'Источник не предоставил доступную выборку запросов.'
           : `Показано ${Math.min(queries.length, 20)} из ${queries.length} фраз полученной выборки.`}{' '}
         Это не полный список поискового спроса.
+        {google && number(querySample.impression_coverage_percent) !== null && (
+          <> Выборка покрывает {percent(querySample.impression_coverage_percent)} показов ресурса.</>
+        )}
       </p>
       {queries.length ? (
         <Table labels={['Запрос', 'Показы', 'Клики', 'Средняя позиция']}>
@@ -363,19 +387,12 @@ function Source({
           Видимые запросы не предоставлены источником.
         </p>
       )}
-      {google && number(object(source.click_anomalies).anomaly_clicks) ? (
+      {google && number(anomaly.anomaly_clicks) ? (
         <p className="seo-caption">
-          Аналитическая пометка: зафиксирован всплеск из{' '}
-          {shown(object(source.click_anomalies).anomaly_clicks)} кликов с
-          глубоких позиций (&gt;20) за{' '}
-          {rows(object(source.click_anomalies).anomaly_days)
-            .map((d) => date(d.date))
-            .join(', ')}
-          . Оценка живых органических кликов без учёта парсерных пиков:{' '}
-          <strong>
-            {shown(object(source.click_anomalies).estimated_organic_clicks)}
-          </strong>
-          .
+          На отмеченные дни ({rows(anomaly.anomaly_days).map((d) => date(d.date)).join(', ')}) пришлось{' '}
+          {shown(anomaly.anomaly_clicks)} кликов. Клики без отмеченных дней —{' '}
+          <strong>{shown(anomaly.clicks_excluding_flagged_days ?? anomaly.estimated_organic_clicks)}</strong>.
+          {' '}Причина всплесков не установлена. Они входят в итоги ресурса выше.
         </p>
       ) : null}
       <h3>Точки роста CTR (позиции 3–20)</h3>
@@ -401,6 +418,7 @@ function Source({
       {google && rows(source.top_pages).length ? (
         <>
           <h3>Топ посадочных страниц в Google (GSC)</h3>
+          <p className="seo-caption">Данные сгруппированы по страницам. Google считает показы и позиции в этом отчёте отдельно от итогов ресурса и выборки запросов.</p>
           <Table labels={['Страница', 'Клики', 'Показы', 'CTR', 'Средняя позиция']}>
             {rows(source.top_pages)
               .slice(0, 15)
@@ -419,11 +437,11 @@ function Source({
     </section>
   )
 }
-function Conversion({ conversion }: { conversion: Data }) {
+function Conversion({ conversion, freshness }: { conversion: Data; freshness: Data }) {
   const organic = object(conversion.organic)
-  const valid = conversion.status === 'available'
+  const valid = ['available', 'stale'].includes(text(conversion.status))
+  const organicValid = ['available', 'stale', ''].includes(text(organic.status))
   const rate = (scope: Data) =>
-    valid &&
     number(scope.visits) !== null &&
     number(scope.visits)! > 0 &&
     number(scope.goal_visits) !== null &&
@@ -440,13 +458,17 @@ function Conversion({ conversion }: { conversion: Data }) {
           : 'Учтены визиты с успешной регистрацией; повторные достижения цели не суммируются.'
   return (
     <section className="seo-panel">
-      <h2>Подтверждённые регистрации</h2>
+      <h2>Визиты с регистрацией · Яндекс.Метрика</h2>
       <p className="seo-caption">
         {period(conversion.period)} · отдельный период после включения
         измерений. Он может отличаться от общего отчёта посещаемости.
       </p>
+      <ReportFreshness value={freshness.registration_all} />
+      {object(freshness.registration_organic).status === 'stale' && (
+        <ReportFreshness value={freshness.registration_organic} />
+      )}
       <div className="seo-stats compact">
-        <Card title="Конверсия всех визитов" value={percent(rate(conversion))}>
+        <Card title="Конверсия всех визитов" value={percent(valid ? rate(conversion) : null)}>
           {valid
             ? `${shown(conversion.goal_visits)} из ${shown(conversion.visits)} визитов`
             : 'Данные недоступны'}
@@ -454,10 +476,10 @@ function Conversion({ conversion }: { conversion: Data }) {
         <Card
           title="Конверсия из поиска"
           value={percent(
-            organic.status === 'unavailable' ? null : rate(organic),
+            organicValid ? rate(organic) : null,
           )}
         >
-          {valid && organic.status !== 'unavailable'
+          {organicValid && number(organic.visits) !== null
             ? `${shown(organic.goal_visits)} из ${shown(organic.visits)} органических визитов`
             : 'Данные недоступны'}
         </Card>
@@ -536,6 +558,8 @@ export function SeoTrafficView() {
     }
   }, [])
   const metrika = object(data?.metrika)
+  const freshness = object(metrika.component_freshness)
+  const totalsPeriod = object(object(freshness.totals).period ?? metrika.period)
   const conversion = object(metrika.primary_conversion)
   const duration = number(metrika.avg_duration_seconds)
   const collected = new Date(text(data?.updated_at)).getTime()
@@ -554,14 +578,16 @@ export function SeoTrafficView() {
             требуются.
           </p>
         </div>
-        <span className={`seo-badge ${error || stale ? 'warning' : ''}`}>
+        <span className={`seo-badge ${error || stale || data?.collection_status === 'partial' ? 'warning' : ''}`}>
           {loading
             ? 'Проверка данных…'
             : error
               ? 'Обновление недоступно'
               : stale
                 ? 'Снимок требует обновления'
-                : 'Данные загружены'}
+                : data?.collection_status === 'partial'
+                  ? 'Часть отчётов недоступна'
+                  : 'Данные загружены'}
         </span>
         <p className="seo-caption">
           Сбор источников: {stamp(data?.updated_at)}. Проверка панели:{' '}
@@ -595,9 +621,10 @@ export function SeoTrafficView() {
           ) : null}
           <section className="seo-panel">
             <h2>Посещаемость сайта · Яндекс.Метрика</h2>
+            <ReportFreshness value={freshness.totals} />
             <p className="seo-caption">
-              {period(metrika.period)} ·{' '}
-              {text(object(metrika.period).timezone) ||
+              {period(totalsPeriod)} ·{' '}
+              {text(totalsPeriod.timezone) ||
                 'Часовой пояс не предоставлен'}
             </p>
             <div className="seo-stats">
@@ -624,7 +651,8 @@ export function SeoTrafficView() {
               </p>
             ) : null}
           </section>
-          <Conversion conversion={conversion} />
+          <Conversion conversion={conversion} freshness={freshness} />
+          <SeoFunnelPanel />
           <div className="seo-sources">
             <Source name="Яндекс.Вебмастер" source={object(data.webmaster)} />
             <Source
@@ -636,6 +664,7 @@ export function SeoTrafficView() {
           <div className="seo-sources">
             <section className="seo-panel">
               <h2>Источники визитов</h2>
+              <ReportFreshness value={freshness.sources} />
               {rows(metrika.sources).length ? (
                 <Table labels={['Источник', 'Визиты', 'Посетители']}>
                   {rows(metrika.sources).map((row, i) => (
@@ -654,6 +683,7 @@ export function SeoTrafficView() {
             </section>
             <section className="seo-panel">
               <h2>Посещаемые страницы</h2>
+              <ReportFreshness value={freshness.pages} />
               {rows(metrika.top_pages).length ? (
                 <Table labels={['Страница', 'Визиты', 'Посетители', 'Отказы']}>
                   {rows(metrika.top_pages).map((row, i) => (
@@ -672,6 +702,7 @@ export function SeoTrafficView() {
           </div>
           <section className="seo-panel">
             <h2>Достижения целей Метрики</h2>
+            <ReportFreshness value={freshness.goals} />
             <p className="seo-caption">
               Число достижений цели может включать повторные действия. Это не
               число регистраций или оплат.

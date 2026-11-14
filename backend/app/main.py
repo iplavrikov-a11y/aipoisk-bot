@@ -139,6 +139,7 @@ from .models import (
     JobFile,
     JobSource,
     OnboardingReminder,
+    SeoEntry,
     SupplierResult,
     SystemSettings,
     TariffPackage,
@@ -157,6 +158,7 @@ from .models import (
     parse_json_list,
 )
 from .procurement_sources import source_label, source_payloads_from_text
+from .seo_funnel import ENTRY_COOKIE, RETENTION_DAYS, attach_registration, create_entry, delete_entry, entry_exists, funnel_report, prune_entries
 from .repository import (
     client_access_error,
     commercial_jobs_query,
@@ -188,6 +190,8 @@ from .schemas import (
     YooKassaTestRequest,
     LoginRequest,
     ManualJobCreate,
+    SeoEntryRequest,
+    SeoRecrawlRequest,
     SettingsPatch,
     TariffPackageCreate,
     TariffPackagePatch,
@@ -296,6 +300,47 @@ def _mark_no_store(response: Response) -> None:
     response.headers["Expires"] = "0"
 
 
+def _require_seo_entry_origin(request: Request) -> None:
+    origin = request.headers.get("origin", "")
+    if origin != "https://tenderlex.ru" or request.headers.get("sec-fetch-site", "same-origin") != "same-origin":
+        raise HTTPException(status_code=403, detail="Invalid analytics origin")
+
+
+@app.post("/api/customer/seo-entry", status_code=204)
+def create_seo_entry_api(request: Request, response: Response, data: SeoEntryRequest, db: Session = Depends(db_session)) -> None:
+    _require_seo_entry_origin(request)
+    _mark_no_store(response)
+    now = now_utc()
+    if entry_exists(db, request.cookies.get(ENTRY_COOKIE, ""), now):
+        return
+    if token := create_entry(db, data.source, data.landing, now):
+        db.commit()
+        response.set_cookie(ENTRY_COOKIE, token, max_age=RETENTION_DAYS * 86400, httponly=True,
+                            secure=True, samesite="lax", path="/api/customer")
+
+
+@app.delete("/api/customer/seo-entry", status_code=204)
+def clear_seo_entry_api(request: Request, response: Response, db: Session = Depends(db_session)) -> None:
+    _require_seo_entry_origin(request)
+    _mark_no_store(response)
+    token = request.cookies.get(ENTRY_COOKIE, "")
+    if token and delete_entry(db, token, None):
+        db.commit()
+    response.delete_cookie(ENTRY_COOKIE, path="/api/customer", httponly=True, secure=True, samesite="lax")
+
+
+def _link_seo_registration(db: Session, request: Request, user: WebUser) -> bool:
+    token = request.cookies.get(ENTRY_COOKIE, "")
+    if not token or not user.created_at:
+        return False
+    try:
+        with db.begin_nested():
+            return attach_registration(db, token, user)
+    except Exception as exc:
+        logger.warning("Search entry attribution was skipped: %s", type(exc).__name__)
+        return False
+
+
 @app.on_event("startup")
 async def startup() -> None:
     config.storage_path.mkdir(parents=True, exist_ok=True)
@@ -338,6 +383,32 @@ async def startup() -> None:
         db.close()
     for job_id in recovered_job_ids:
         enqueue_job(job_id)
+    app.state.seo_entry_pruner = asyncio.create_task(_prune_seo_entries_loop())
+
+
+@app.on_event("shutdown")
+async def stop_seo_entry_pruner() -> None:
+    task = getattr(app.state, "seo_entry_pruner", None)
+    if task is not None:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+def _prune_seo_entries() -> None:
+    from .db import SessionLocal
+
+    with SessionLocal() as db:
+        if prune_entries(db, now_utc()):
+            db.commit()
+
+
+async def _prune_seo_entries_loop() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(_prune_seo_entries)
+        except Exception as exc:
+            logger.warning("Search entry retention cleanup failed: %s", type(exc).__name__)
+        await asyncio.sleep(3600)
 
 
 async def _background_imap_loop() -> None:
@@ -534,6 +605,7 @@ def customer_register_api(
                     )
             except Exception as ref_err:
                 logger.warning("referral_link_on_register_error", extra={"error": str(ref_err)})
+        _link_seo_registration(db, request, user)
         db.commit()
         db.refresh(user)
     except ValueError as exc:
@@ -665,6 +737,8 @@ def customer_yandex_callback_api(
         clear_yandex_oauth_state_cookie(resp)
         return resp
 
+    if is_new and _link_seo_registration(db, request, user):
+        db.commit()
     token, csrf_token, session = create_web_session(db, user, request=request)
     success_fragment = "registration_success" if is_new else "login_success"
     resp = RedirectResponse(url=f"/cabinet#{success_fragment}", status_code=303)
@@ -734,6 +808,8 @@ def customer_telegram_callback_api(
             url=f"{target_error_url}user_creation_failed", status_code=303
         )
 
+    if is_new and _link_seo_registration(db, request, user):
+        db.commit()
     token, csrf_token, session = create_web_session(db, user, request=request)
     success_fragment = "registration_success" if is_new else "login_success"
     resp = RedirectResponse(url=f"/cabinet#{success_fragment}", status_code=303)
@@ -788,6 +864,8 @@ def customer_telegram_verify_api(
         logger.error("telegram_auth_user_creation_error", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    if is_new and _link_seo_registration(db, request, user):
+        db.commit()
     token, csrf_token, session = create_web_session(db, user, request=request)
     set_customer_session_cookie(response, token)
     return {
@@ -3190,6 +3268,12 @@ def seo_analytics_api(response: Response, refresh: bool = False) -> dict:
     return get_cached_or_fresh_analytics(force_refresh=refresh)
 
 
+@app.get("/api/seo-analytics/funnel", dependencies=[Depends(require_admin)])
+def seo_funnel_api(response: Response, db: Session = Depends(db_session)) -> dict:
+    _mark_no_store(response)
+    return funnel_report(db, now_utc())
+
+
 @app.post("/api/seo-analytics/send-digest", dependencies=[Depends(require_admin)])
 async def send_seo_digest_api() -> dict:
     from app.yandex_seo import send_seo_telegram_digest
@@ -3197,9 +3281,9 @@ async def send_seo_digest_api() -> dict:
 
 
 @app.post("/api/seo-analytics/recrawl", dependencies=[Depends(require_admin)])
-def seo_recrawl_api() -> dict:
+def seo_recrawl_api(data: SeoRecrawlRequest | None = None) -> dict:
     from app.yandex_seo import submit_sitemap_recrawl
-    return submit_sitemap_recrawl()
+    return submit_sitemap_recrawl(data.urls if data else None)
 
 
 @app.post("/api/seo-analytics/recommendations/{rec_id}/action", dependencies=[Depends(require_admin)])
@@ -3795,6 +3879,7 @@ def _force_delete_client(db: Session, client: Client) -> None:
     web_users = db.query(WebUser).filter(WebUser.client_id == client.id).all()
     web_user_ids = [wu.id for wu in web_users]
     if web_user_ids:
+        db.query(SeoEntry).filter(SeoEntry.user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(YooKassaPayment).filter(YooKassaPayment.user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(WebSession).filter(WebSession.user_id.in_(web_user_ids)).delete(synchronize_session=False)
         db.query(WebPasswordResetRequest).filter(WebPasswordResetRequest.user_id.in_(web_user_ids)).delete(synchronize_session=False)
@@ -4097,6 +4182,7 @@ def delete_client_web_user(client_id: str, user_id: str, db: Session = Depends(d
     if not user or user.client_id != client_id:
         raise HTTPException(status_code=404, detail="Web user not found")
 
+    delete_entry(db, "", user.id)
     db.query(WebSession).filter(WebSession.user_id == user.id).delete(synchronize_session=False)
     db.query(WebPasswordResetRequest).filter(WebPasswordResetRequest.user_id == user.id).delete(synchronize_session=False)
     db.query(WebEmailVerificationToken).filter(WebEmailVerificationToken.user_id == user.id).delete(synchronize_session=False)

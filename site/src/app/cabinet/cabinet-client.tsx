@@ -3,9 +3,10 @@
 import "./cabinet-redesign.css";
 
 import Image from "next/image";
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent, type MouseEvent } from "react";
 import { TelegramLoginWidget } from "@/components/telegram-login-widget";
 import { trackGoal } from "@/lib/analytics";
+import { pendingSeoEntry } from "@/lib/seo-funnel";
 import {
   AlertTriangle,
   ArrowRight,
@@ -2265,7 +2266,7 @@ export function CabinetClient() {
       }
 
       if (data?.confirmation_url) {
-        trackGoal("cabinet_click");
+        trackGoal("checkout_started");
         window.location.href = data.confirmation_url;
       } else {
         throw new Error("Не получена ссылка для перехода на оплату");
@@ -2813,6 +2814,7 @@ export function CabinetClient() {
         setMessage(payload.message || "Мы отправили ссылку для сброса пароля на ваш email.");
         return;
       }
+      if (authMode === "register") await pendingSeoEntry();
       const response = await fetch(`/api/customer/auth/${authMode}`, {
         method: "POST",
         credentials: "same-origin",
@@ -2841,6 +2843,15 @@ export function CabinetClient() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function waitForSearchEntryBeforeOAuth(event: MouseEvent<HTMLAnchorElement>) {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    const pending = pendingSeoEntry();
+    if (!pending) return;
+    event.preventDefault();
+    const destination = event.currentTarget.href;
+    void pending.then(() => window.location.assign(destination));
   }
 
   function handleSwitchAuthMode(mode: "login" | "register" | "reset") {
@@ -3570,6 +3581,7 @@ export function CabinetClient() {
               <div className="space-y-2.5 pt-1">
                 <a
                   href="/api/customer/auth/telegram/login"
+                  onClick={waitForSearchEntryBeforeOAuth}
                   className="w-full min-h-[46px] py-2.5 px-4 bg-[#24A1DE] hover:bg-[#1f93cc] active:bg-[#1a83b7] text-white rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center text-center gap-3 cursor-pointer select-none group"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0" aria-hidden="true">
@@ -3581,6 +3593,7 @@ export function CabinetClient() {
 
                 <a
                   href="/api/customer/auth/yandex/login"
+                  onClick={waitForSearchEntryBeforeOAuth}
                   className="w-full min-h-[46px] py-2.5 px-4 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-800 hover:text-slate-950 border border-slate-300 rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center text-center gap-3 cursor-pointer select-none group"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0" aria-hidden="true">

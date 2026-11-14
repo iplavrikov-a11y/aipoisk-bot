@@ -13,7 +13,8 @@ from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "data" / "seo_growth"
-PERIOD_FIELDS = ("start_date", "end_date", "timezone", "period_days", "is_closed", "data_state", "instrumented_from", "full_days_from")
+PERIOD_FIELDS = ("start_date", "end_date", "timezone", "period_days", "is_closed", "data_state", "instrumented_from",
+                 "full_days_from", "measurement_regime", "is_comparable")
 SAMPLING_FIELDS = ("sampled", "sample_share", "sample_size", "sample_space")
 
 
@@ -30,8 +31,8 @@ def clean_sampling(value):
 
 
 def source(status, period, metrics, *, sampling=None, annotation=None, observed_at=None):
-    available = status in {"available", "partial"}
-    result = {"status": status if status in {"available", "partial", "not_ready"} else "unavailable",
+    available = status in {"available", "partial", "stale"}
+    result = {"status": status if status in {"available", "partial", "stale", "not_ready"} else "unavailable",
               "period": clean_period(period),
               "metrics": {key: number(value) if available else None for key, value in metrics.items()}}
     if sampling is not None:
@@ -111,6 +112,14 @@ def summarize(snapshot):
     metrika = snapshot.get("metrika", {})
     primary = metrika.get("primary_conversion", {})
     organic = primary.get("organic", {})
+    wm_freshness = webmaster.get("freshness") or {}
+    wm_status = webmaster.get("component_status") or {}
+    metrika_totals = (metrika.get("component_freshness") or {}).get("totals") or {}
+    totals_status = metrika_totals.get("status")
+    if totals_status is None:
+        totals_status = "available" if not metrika.get("error") and metrika.get("visits") is not None else "unavailable"
+    if totals_status == "available" and (metrika.get("sampling") or {}).get("sampled") is True:
+        totals_status = "partial"
     updated = datetime.fromisoformat(snapshot["updated_at"].replace("Z", "+00:00"))
     if updated.tzinfo is None:
         raise ValueError("Snapshot must have an explicit collection timezone")
@@ -127,15 +136,23 @@ def summarize(snapshot):
     sources = {
         "google": source("available" if google.get("totals_status") == "available" else "unavailable", google.get("period"),
                          {key: totals.get(key) for key in ("impressions", "clicks", "ctr_percent", "avg_position")}),
-        "yandex_index": source("available" if not webmaster.get("error") and webmaster.get("searchable_pages") is not None else "unavailable",
+        "yandex_index": source(("stale" if wm_freshness.get("status") == "stale" or wm_status.get("summary") == "stale"
+                               else "available" if wm_status.get("summary", "available") == "available" else "unavailable")
+                               if webmaster.get("searchable_pages") is not None else "unavailable",
                                None, {key: webmaster.get(key) for key in ("searchable_pages", "excluded_pages", "sqi")},
-                               annotation="Point-in-time index observation; it has no traffic period.", observed_at=updated.isoformat()),
-        "yandex_popular_query_sample": source("available" if not webmaster.get("error") and top_queries else "unavailable",
+                               annotation="Point-in-time index observation; it has no traffic period.",
+                               observed_at=wm_freshness.get("index_observed_at") if wm_freshness else updated.isoformat()),
+        "yandex_popular_query_sample": source(("stale" if wm_freshness.get("status") == "stale" or wm_status.get("query_sample") == "stale"
+                                               else "available" if wm_status.get("query_sample", "available") == "available" else "unavailable")
+                                               if top_queries else "unavailable",
                                                webmaster.get("period"),
                                                {"impressions": summed_query_metric("shows"), "clicks": summed_query_metric("clicks"),
                                                 "visible_query_rows": len(top_queries)}, annotation=popular_annotation),
-        "metrika": source(("partial" if (metrika.get("sampling") or {}).get("sampled") is True else "available") if not metrika.get("error") and metrika.get("visits") is not None else "unavailable",
-                          metrika.get("period"), {key: metrika.get(key) for key in ("visits", "users", "pageviews", "bounce_rate", "avg_duration_seconds")}, sampling=metrika.get("sampling")),
+        "metrika": source(totals_status,
+                          metrika_totals.get("period") or metrika.get("period"),
+                          {key: metrika.get(key) for key in ("visits", "users", "pageviews", "bounce_rate", "avg_duration_seconds")},
+                          sampling=metrika.get("sampling"),
+                          annotation={"last_success_at": metrika_totals.get("collected_at")} if metrika_totals else None),
         "registration_all": registration(primary),
         "registration_organic": registration(organic),
     }
@@ -143,7 +160,7 @@ def summarize(snapshot):
     organic_period = organic.get("period") or {}
     ready = (organic.get("status") == "available" and (number(organic.get("visits")) or 0) >= 300
              and organic_period.get("period_days") == 28 and sampled is False
-             and organic_period.get("is_closed") is True)
+             and organic_period.get("is_closed") is True and organic_period.get("is_comparable") is True)
     funnel = snapshot.get("funnel", {})
     for segment in ("all", "organic"):
         value = funnel.get(segment, {})
@@ -153,7 +170,7 @@ def summarize(snapshot):
         sources[f"task_goals_{segment}"] = source(funnel_status, value.get("period"),
             {key: (value.get("metrics") or {}).get(key) for key in ("visits", "task_started_visits", "result_downloaded_visits")},
             sampling=clean_sampling(value) if value.get("sampled") is not None else None)
-    base_sources_complete = all(sources[name]["status"] in {"available", "partial"} for name in ("google", "yandex_index", "metrika"))
+    base_sources_complete = all(sources[name]["status"] in {"available", "partial", "stale"} for name in ("google", "yandex_index", "metrika"))
     funnel_expected = any(sources[f"task_goals_{segment}"]["status"] != "not_ready" for segment in ("all", "organic"))
     funnel_complete = all(sources[f"task_goals_{segment}"]["status"] in {"available", "partial"} for segment in ("all", "organic"))
     registration_expected = updated.astimezone(ZoneInfo("Europe/Moscow")).date() >= date(2026, 10, 2)
@@ -182,6 +199,9 @@ def compare_source(current, previous):
                    for key in ("sampled", "sample_share"))):
         return invalid
     a, b = current.get("period") or {}, previous.get("period") or {}
+    if (a.get("measurement_regime") != b.get("measurement_regime") or a.get("is_comparable") is False
+            or b.get("is_comparable") is False):
+        return invalid
     try:
         a_start, a_end = date.fromisoformat(a["start_date"]), date.fromisoformat(a["end_date"])
         b_start, b_end = date.fromisoformat(b["start_date"]), date.fromisoformat(b["end_date"])
@@ -243,7 +263,7 @@ def render_report(summary, comparisons):
         window = (f"наблюдение {item['observed_at']}" if item.get("observed_at") else
                   f"{p.get('start_date', '—')} — {p.get('end_date', '—')}; {p.get('timezone', '—')}")
         measurements = "; ".join(f"{metric_labels.get(key, key)}: {value if value is not None else 'нет данных'}" for key, value in item["metrics"].items())
-        status_label = "есть данные" if item["status"] == "available" else "частичная выборка" if item["status"] == "partial" else "нет данных"
+        status_label = {"available": "есть данные", "partial": "частичная выборка", "stale": "устаревшие данные"}.get(item["status"], "нет данных")
         suffix = "; выборка неполная" if (item.get("sampling") or {}).get("sampled") is True else ""
         lines.append(f"| {labels[name]} ({status_label}) | {window} | {measurements}{suffix} |")
     lines.extend(["", "## Сопоставимые периоды", ""])
@@ -254,7 +274,7 @@ def render_report(summary, comparisons):
             lines.append(f"- {labels[name]}: " + "; ".join(f"{key} {value['previous']} → {value['current']} (изменение {value['delta']:+})"
                                                                for key, value in result["changes"].items()))
     lines.extend(["", "## Ограничения", "", "- Согласие на аналитику, блокировщики и фильтры счётчика ограничивают полноту Метрики.",
-                  "- Первый полный день новых регистрационных целей — 1 октября 2026 года.",
+                  "- Учёт Метрики восстановлен 8 ноября 2026 года. Первый полный день измерения с явным согласием — 15 ноября. Смешанные периоды не сравниваются.",
                   "- Небольшая выборка не позволяет уверенно выбирать победителя по конверсии.",
                   "- Визиты с регистрацией, запуском и скачиванием считаются отдельно; это не подтверждение последовательности действий одного посетителя.",
                   "- 300 органических визитов — рабочий ориентир, не доказательство значимости.",

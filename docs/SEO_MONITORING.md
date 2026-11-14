@@ -60,3 +60,9 @@ sudo systemctl enable --now tenderlex-seo-monitor.timer
 - **Yandex Metrika:** available and consent-gated; counter IDs come from `TENDERLEX_YANDEX_METRIKA_ID` or `YANDEX_METRIKA_COUNTER_ID`. The SDK is intentionally absent until the visitor allows analytics.
 - The monitor can still fail when Webmaster is unreachable. Treat `collection_complete=false` as a provider/network signal, not as proof that the site is broken.
 - IndexNow is configured separately and may be used manually for changed URLs; it does not replace Webmaster query data.
+
+## Update on 14 November 2026 (Moscow)
+
+- Webmaster APIs respond, but their newest index-history observation was 7 October, and the sitemap report still showed 8 October and 91 URLs at the time of verification. The Moscow gateway recorded verified Yandex crawler requests to the sitemap and commercial pages in November. Monitor the provider dates and the gateway separately.
+- The dashboard retains the most recent successful Metрика report for each component and labels it with its original period when the next request fails. Measurements resumed on 8 November. The first full Moscow day under explicit analytics consent is 15 November. Mixed measurement periods are excluded from comparisons.
+- Notify search engines about changed URLs by passing `--changed-url` once per address to `scripts/reindex_all_search_engines.py`. Add `--submit-sitemap` only when the sitemap itself needs to be sent to Search Console. Successful submissions record an acceptance response. Check index status separately.

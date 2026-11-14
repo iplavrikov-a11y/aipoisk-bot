@@ -188,6 +188,26 @@ def test_coverage_marker_mismatch_refuses_comparison():
     assert monitor.compare_source(current, previous)["status"] == "not_comparable"
 
 
+def test_measurement_break_prevents_a_comparison_even_when_periods_are_adjacent():
+    previous = {"status": "available", "period": {**period(), "is_comparable": False}, "metrics": {"clicks": 3}}
+    current = {"status": "available", "period": {**period("2026-09-29", "2026-10-26"), "is_comparable": False},
+               "metrics": {"clicks": 9}}
+    assert monitor.compare_source(current, previous)["status"] == "not_comparable"
+
+
+def test_report_uses_last_successful_totals_period_and_provider_index_date():
+    data = snapshot()
+    data["metrika"]["component_freshness"] = {"totals": {"status": "stale", "period": period(), "collected_at": "2026-09-29T05:00:00+00:00"}}
+    data["metrika"]["period"] = period("2026-09-02", "2026-09-29")
+    data["webmaster"]["freshness"] = {"status": "stale", "index_observed_at": "2026-09-10T17:00:00+03:00"}
+    sources = monitor.summarize(data)["sources"]
+    assert sources["metrika"]["status"] == "stale"
+    assert sources["metrika"]["period"]["end_date"] == "2026-09-28"
+    assert sources["metrika"]["metrics"]["visits"] == 31
+    assert sources["yandex_index"]["status"] == "stale"
+    assert sources["yandex_index"]["observed_at"] == "2026-09-10T17:00:00+03:00"
+
+
 def test_yandex_popular_sample_is_annotated_and_index_has_observed_at():
     data = snapshot()
     data["webmaster"]["top_queries"] = [{"shows": 10, "clicks": 2}, {"shows": 5, "clicks": 1}]

@@ -1,4 +1,6 @@
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 import pytest
 
 from app.google_seo import fetch_google_analytics
@@ -166,6 +168,29 @@ def test_valid_empty_query_response_is_real_zero_with_available_status():
     assert data["query_sample"]["status"] == "available"
     assert data["query_sample"]["clicks"] == 0
     assert data["query_sample"]["row_count"] == 0
+
+
+def test_click_spikes_use_final_days_and_preserve_reported_clicks():
+    service = _gsc_fixture()
+    day = (datetime.now(ZoneInfo("America/Los_Angeles")).date() - timedelta(days=5)).isoformat()
+
+    def response_for(body):
+        if body["dimensions"] == []:
+            return {"rows": [{"clicks": 35, "impressions": 200, "position": 26}]}
+        if body["dimensions"] == ["date"]:
+            count = 25 if body["dataState"] == "final" else 99
+            return {"rows": [{"keys": [day], "clicks": count, "impressions": 100, "position": 25}]}
+        return {"rows": []}
+
+    query = service.searchanalytics().query
+    query.return_value.execute.side_effect = lambda: response_for(query.call_args.kwargs["body"])
+    with patch("app.google_seo.get_gsc_service", return_value=service):
+        data = fetch_google_analytics()
+
+    assert data["property_totals"]["clicks"] == 35
+    assert data["click_anomalies"]["anomaly_clicks"] == 25
+    assert data["click_anomalies"]["clicks_excluding_flagged_days"] == 10
+    assert "estimated_organic_clicks" not in data["click_anomalies"]
 
 
 def test_incomplete_property_row_is_error_not_available_with_zero_totals():

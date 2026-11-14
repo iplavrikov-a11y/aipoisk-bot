@@ -12,10 +12,12 @@ import urllib.error
 import logging
 import re
 import math
+import tempfile
+from email.utils import parsedate_to_datetime
 from threading import Lock
 import fcntl
 from html import escape
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlencode, urlsplit
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -31,6 +33,10 @@ RECS_STATE_PATH = DATA_DIR / "seo_recommendations_state.json"
 HISTORY_PATH = DATA_DIR / "seo_daily_history.json"
 ENV_PATH = ROOT_DIR / ".env"
 PRIMARY_CONVERSION_CUTOFF = "2026-10-01"
+METRIKA_RESTORED_FROM = "2026-11-08"
+METRIKA_OPT_IN_CUTOVER = "2026-11-14"
+METRIKA_EXPLICIT_OPT_IN_FROM = "2026-11-15"
+WEBMASTER_FRESHNESS_DAYS = 14
 _ANALYTICS_LOCK = Lock()
 
 
@@ -75,15 +81,39 @@ def _get_webmaster_user_id(tokens: dict, wm_headers: dict) -> str | None:
     return "137212208" if tokens.get("webmaster") else None
 
 
-def _http_json(url: str, headers: dict = None, timeout: int = 15) -> dict:
-    req = urllib.request.Request(url, headers=headers or {})
+def _retry_delay(value: str | None) -> float:
+    if not value:
+        return 0.5
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        # Exceptions may include a request URL or authorization header in a library-specific format.
-        safe_error = re.sub(r"(?:OAuth\s+|Bearer\s+|y0__)[^\s,'\"]+", "[redacted]", str(e))
-        return {"error": safe_error}
+        return max(0.5, float(value))
+    except ValueError:
+        try:
+            return max(0.5, (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return 0.5
+
+
+def _http_json(url: str, headers: dict = None, timeout: int = 15, retry_transient: bool = False) -> dict:
+    req = urllib.request.Request(url, headers=headers or {})
+    for attempt in range(2 if retry_transient else 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+                return payload if isinstance(payload, dict) else {"error": "Unexpected API response."}
+        except Exception as error:
+            if retry_transient and attempt == 0:
+                if isinstance(error, urllib.error.HTTPError) and error.code in {429, 502, 503, 504}:
+                    delay = _retry_delay(error.headers.get("Retry-After") if error.headers else None)
+                    if delay <= 3:
+                        error.close()
+                        time.sleep(delay)
+                        continue
+                elif isinstance(error, TimeoutError) or (isinstance(error, urllib.error.URLError) and isinstance(error.reason, TimeoutError)):
+                    time.sleep(0.5)
+                    continue
+            # Keep provider errors useful without leaking credentials in request URLs or headers.
+            safe_error = re.sub(r"(?:OAuth\s+|Bearer\s+|y0__)[^\s,'\"]+", "[redacted]", str(error))
+            return {"error": safe_error}
 
 
 def _metrika_closed_period(counter_timezone: str | None, now: datetime | None = None, days: int = 28) -> dict:
@@ -101,7 +131,15 @@ def _metrika_closed_period(counter_timezone: str | None, now: datetime | None = 
     start_date = end_date - timedelta(days=days - 1)
     return {"start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "period_days": days,
             "timezone": counter_timezone if timezone_error is None else "UTC", "timezone_valid": timezone_error is None,
-            "error": timezone_error, "is_closed": True}
+            "error": timezone_error, "is_closed": True, **_metrika_regime(start_date.isoformat(), end_date.isoformat())}
+
+
+def _metrika_regime(start_date: str, end_date: str) -> dict:
+    if start_date >= METRIKA_EXPLICIT_OPT_IN_FROM:
+        return {"measurement_regime": "explicit_opt_in", "is_comparable": True}
+    if start_date >= METRIKA_RESTORED_FROM and end_date < METRIKA_OPT_IN_CUTOVER:
+        return {"measurement_regime": "prior_tracking", "is_comparable": False}
+    return {"measurement_regime": "mixed_or_interrupted" if end_date >= METRIKA_RESTORED_FROM else "before_tracking_recovery", "is_comparable": False}
 
 
 def _metric_chunks(metrics: list[str], size: int = 20) -> list[list[str]]:
@@ -139,7 +177,8 @@ def _primary_measurement_period(closed_period: dict) -> dict | None:
     if end_date < start_date:
         return None
     days = (datetime.fromisoformat(end_date) - datetime.fromisoformat(start_date)).days + 1
-    return {**closed_period, "start_date": start_date, "period_days": days, "instrumented_from": "2026-09-30", "full_days_from": PRIMARY_CONVERSION_CUTOFF}
+    return {**closed_period, "start_date": start_date, "period_days": days, "instrumented_from": "2026-09-30",
+            "full_days_from": PRIMARY_CONVERSION_CUTOFF, **_metrika_regime(start_date, end_date)}
 
 
 def _response_error(response: dict, *, totals_count: int | None = None, data_required: bool = False) -> str | None:
@@ -306,43 +345,32 @@ def generate_ai_recommendations(growth_points: list, metrika: dict, sample_size_
     return recs
 
 
-def _get_sitemap_urls() -> list[str]:
-    """Retrieve all current site URLs from live sitemap or reliable fallback."""
-    import xml.etree.ElementTree as ET
-    for candidate_url in ("http://127.0.0.1:3093/sitemap.xml", "https://tenderlex.ru/sitemap.xml"):
-        try:
-            req = urllib.request.Request(candidate_url, headers={"User-Agent": "TenderLex-Internal/1.0"})
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                tree = ET.fromstring(resp.read())
-                urls = [elem.text.strip() for elem in tree.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc") if elem.text]
-                if urls and len(urls) > 10:
-                    return urls
-        except Exception:
-            continue
-    return [
-        "https://tenderlex.ru",
-        "https://tenderlex.ru/podbor-tovara-i-analogov-po-tz",
-        "https://tenderlex.ru/poisk-postavshchikov-po-tz",
-        "https://tenderlex.ru/analiz-zakupochnoi-dokumentacii",
-        "https://tenderlex.ru/reestr-minpromtorga-v-zakupkah",
-        "https://tenderlex.ru/poisk-proizvoditeley-po-tz",
-        "https://tenderlex.ru/ocenka-riskov-zakupki",
-        "https://tenderlex.ru/poisk-postavshchikov-dlya-tendera",
-        "https://tenderlex.ru/postavshchiki-dlya-zaprosa-kp",
-        "https://tenderlex.ru/zapros-kp-po-tz",
-        "https://tenderlex.ru/api-integracii",
-        "https://tenderlex.ru/analiz-rynka-44-fz",
-        "https://tenderlex.ru/baza-znaniy",
-        "https://tenderlex.ru/otrasli",
-        "https://tenderlex.ru/regiony",
-        "https://tenderlex.ru/about",
-        "https://tenderlex.ru/privacy",
-        "https://tenderlex.ru/terms"
-    ]
+def changed_public_urls(urls: list[str] | None) -> list[str]:
+    """Validate explicitly changed public URLs, including removed pages."""
+    result = []
+    for url in urls or []:
+        if not isinstance(url, str):
+            raise ValueError("Expected a list of URL strings.")
+        parsed = urlsplit(url)
+        path = unquote(parsed.path)
+        if (parsed.scheme != "https" or parsed.netloc != "tenderlex.ru"
+                or parsed.query or parsed.fragment or "?" in url or "#" in url
+                or any(char.isspace() or ord(char) < 32 for char in url + path)
+                or "\\" in path or any(part in {"..", "."} for part in path.split("/"))
+                or path.removeprefix("/").split("/", 1)[0] in {"api", "cabinet", "_next"}):
+            raise ValueError("Expected canonical public HTTPS URLs on tenderlex.ru without query strings or fragments.")
+        result.append(url if parsed.path else url + "/")
+    return list(dict.fromkeys(result))
 
 
-def submit_sitemap_recrawl() -> dict:
-    """Submit core sitemap URLs to Yandex Webmaster recrawl queue and IndexNow"""
+def submit_sitemap_recrawl(urls: list[str] | None = None) -> dict:
+    """Queue explicitly supplied changed public URLs at Yandex and IndexNow."""
+    try:
+        urls = changed_public_urls(urls)
+    except (TypeError, ValueError) as error:
+        return {"ok": False, "error": str(error)}
+    if not urls:
+        return {"ok": True, "status": "skipped", "submitted_count": 0, "total_urls": 0}
     tokens = _load_env_tokens()
     wm_headers = {
         "Authorization": f"OAuth {tokens['webmaster']}",
@@ -350,14 +378,12 @@ def submit_sitemap_recrawl() -> dict:
     }
     user_id = _get_webmaster_user_id(tokens, wm_headers)
     if not user_id:
-        return {"ok": False, "error": "Yandex Webmaster user identity is unavailable."}
+        return {"ok": False, "error": "Yandex Webmaster user identity is unavailable.",
+                "submitted_count": 0, "total_urls": len(urls), "indexnow": submit_indexnow(urls)}
     host_id = tokens["host_id"]
     quota_res = _http_json(f"https://api.webmaster.yandex.net/v4/user/{user_id}/hosts/{host_id}/recrawl/quota", headers=wm_headers, timeout=10)
-    daily_quota = quota_res.get("daily_quota", 150)
-    remainder = quota_res.get("quota_remainder", 150)
-
-    all_urls = _get_sitemap_urls()
-    urls = all_urls[:15]
+    daily_quota = quota_res.get("daily_quota") or 0
+    remainder = quota_res.get("quota_remainder") or 0
 
     recrawl_url = f"https://api.webmaster.yandex.net/v4/user/{user_id}/hosts/{host_id}/recrawl/queue"
     submitted = 0
@@ -380,17 +406,15 @@ def submit_sitemap_recrawl() -> dict:
                 else:
                     results.append({"url": u, "status": f"HTTP_{resp.status}"})
         except Exception as e:
-            # Yandex recrawl microservice can return 504 during maintenance; IndexNow is authoritative
+            # An independent IndexNow notification is still useful when the priority queue fails.
             results.append({"url": u, "status": "DEFERRED", "error": str(e)})
 
-    # Also submit ALL sitemap URLs to IndexNow open API (Yandex, Bing, etc.)
-    indexnow_res = submit_indexnow(all_urls)
+    indexnow_res = submit_indexnow(urls)
 
     return {
-        "ok": True,
+        "ok": submitted == len(urls) and indexnow_res["ok"],
         "submitted_count": submitted,
         "total_urls": len(urls),
-        "all_sitemap_urls_count": len(all_urls),
         "daily_quota": daily_quota,
         "quota_remainder": remainder,
         "details": results,
@@ -400,9 +424,13 @@ def submit_sitemap_recrawl() -> dict:
 
 
 def submit_indexnow(urls: list[str] | None = None) -> dict:
-    """Submit URLs to IndexNow open API (Yandex, Bing, Seznam, etc.)"""
+    """Notify IndexNow only about explicit new, changed or removed URLs."""
+    try:
+        urls = changed_public_urls(urls)
+    except (TypeError, ValueError) as error:
+        return {"ok": False, "error": str(error)}
     if not urls:
-        urls = _get_sitemap_urls()
+        return {"ok": True, "status": "skipped", "submitted_count": 0}
     payload = {
         "host": "tenderlex.ru",
         "key": "8fa93cd04f90454a82f7ff7d4434a4c6",
@@ -416,25 +444,146 @@ def submit_indexnow(urls: list[str] | None = None) -> dict:
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return {"ok": True, "status": resp.status, "submitted_count": len(urls)}
+            accepted = resp.status in {200, 202}
+            return {"ok": accepted, "status": resp.status, "submitted_count": len(urls) if accepted else 0}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
+def _webmaster_freshness(base: str, headers: dict, now: datetime, period: dict, previous: dict) -> dict:
+    from .seo_daily import source_date, yandex_daily
+
+    today = now.astimezone(ZoneInfo("Europe/Moscow")).date()
+    window = urlencode({"date_from": (today - timedelta(days=89)).isoformat(), "date_to": today.isoformat()})
+    history = _http_json(f"{base}/search-urls/in-search/history?{window}", headers=headers, timeout=4)
+    sitemaps = _http_json(f"{base}/sitemaps?limit=100", headers=headers, timeout=4)
+    activity_window = window + "&query_indicator=TOTAL_SHOWS&query_indicator=TOTAL_CLICKS&device_type_indicator=ALL"
+    activity = _http_json(f"{base}/search-queries/all/history?{activity_window}", headers=headers, timeout=4)
+
+    index_rows = history.get("history") or []
+    index_date = max((row["date"] for row in index_rows if isinstance(row, dict) and source_date(row.get("date"))), default=None)
+    sitemap = next((row for row in sitemaps.get("sitemaps") or [] if isinstance(row, dict)
+                    and row.get("sitemap_url") == "https://tenderlex.ru/sitemap.xml"), {})
+    sitemap_date = sitemap.get("last_access_date")
+    try:
+        activity_date = max((day["date"] for day in yandex_daily(activity, today.isoformat())
+                             if (day.get("shows") or 0) > 0 or (day.get("clicks") or 0) > 0), default=None)
+    except (TypeError, ValueError):
+        activity_date = None
+
+    observations = {
+        "index_observed_at": index_date,
+        "sitemap_downloaded_at": sitemap_date if source_date(sitemap_date) else None,
+        "popular_queries_through": period["end_date"],
+        "query_activity_through": activity_date,
+    }
+    # No new records may mean a rolling history window moved past the last observation.
+    observations = {key: value or previous.get(key) for key, value in observations.items()}
+    dates = [source_date(value) for value in observations.values()]
+    threshold = (today - timedelta(days=WEBMASTER_FRESHNESS_DAYS)).isoformat()
+    status = "stale" if any(day is not None and day < threshold for day in dates) else (
+        "available" if all(dates) else "unavailable"
+    )
+    return {**observations, "status": status, "checked_at": now.isoformat(),
+            "sitemap_urls": sitemap.get("urls_count", previous.get("sitemap_urls")),
+            "sitemap_errors": sitemap.get("errors_count", previous.get("sitemap_errors"))}
+
+
+METRIKA_COMPONENT_FIELDS = {
+    "totals": ("visits", "users", "pageviews", "bounce_rate", "avg_duration_seconds", "sampling", "api_query_timezone"),
+    "sources": ("sources",),
+    "pages": ("top_pages",),
+    "goals": ("goals", "total_goal_reaches"),
+    "registration_all": ("primary_conversion", "total_conversion_rate"),
+    "registration_organic": (),
+}
+
+
+def _usable_metrika_components(metrika: dict) -> dict:
+    errors = metrika.get("errors") or {}
+    primary = metrika.get("primary_conversion") or {}
+    return {
+        "totals": metrika.get("visits") is not None and "totals" not in errors,
+        "sources": "sources" in metrika and "sources" not in errors,
+        "pages": "top_pages" in metrika and "pages" not in errors,
+        "goals": metrika.get("total_goal_reaches") is not None and not {"goals", "goal_reaches"} & errors.keys(),
+        "registration_all": primary.get("status") == "available",
+        "registration_organic": (primary.get("organic") or {}).get("status") == "available",
+    }
+
+
+def _retain_metrika_components(metrika: dict, previous_snapshot: dict, now_iso: str) -> None:
+    previous = previous_snapshot.get("metrika") or {}
+    if previous.get("counter_id", metrika["counter_id"]) != metrika["counter_id"]:
+        previous = {}
+    current_ok = _usable_metrika_components(metrika)
+    previous_ok = _usable_metrika_components(previous)
+    # An unknown timezone makes metrics unsuitable for reuse as observations of a closed local period.
+    current_period_ok = (metrika.get("period") or {}).get("timezone_valid") is True
+    previous_period_ok = (previous.get("period") or {}).get("timezone_valid") is True
+    freshness = {}
+    for key, fields in METRIKA_COMPONENT_FIELDS.items():
+        old_freshness = (previous.get("component_freshness") or {}).get(key) or {}
+        primary = metrika["primary_conversion"]
+        old_primary = previous.get("primary_conversion") or {}
+        period = metrika["period"]
+        old_period = previous.get("period")
+        if key == "registration_all":
+            period = primary.get("period")
+            old_period = old_primary.get("period")
+        elif key == "registration_organic":
+            period = (primary.get("organic") or {}).get("period")
+            old_period = (old_primary.get("organic") or {}).get("period")
+        if current_ok[key] and current_period_ok:
+            freshness[key] = {"status": "available", "collected_at": now_iso, "period": period}
+            continue
+        if not old_freshness and previous_ok[key] and previous_period_ok:
+            old_freshness = {"status": "available", "collected_at": previous_snapshot.get("updated_at"), "period": old_period}
+        if old_freshness.get("status") not in {"available", "stale"}:
+            freshness[key] = {"status": "unavailable", "collected_at": None, "period": period}
+            continue
+
+        freshness[key] = {**old_freshness, "status": "stale"}
+        if key == "registration_all":
+            metrika["primary_conversion"] = {**old_primary, "organic": primary.get("organic"), "status": "stale", "reason": primary.get("reason")}
+            metrika["total_conversion_rate"] = previous.get("total_conversion_rate")
+        elif key == "registration_organic":
+            metrika["primary_conversion"]["organic"] = {
+                **(old_primary.get("organic") or {}), "status": "stale", "reason": (primary.get("organic") or {}).get("reason"),
+            }
+        else:
+            metrika.update({field: previous.get(field) for field in fields})
+    metrika["component_freshness"] = freshness
+
+
+def _write_snapshot(path: Path, value: dict) -> None:
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=path.name + ".", delete=False) as file:
+        temporary = Path(file.name)
+        try:
+            json.dump(value, file, ensure_ascii=False, indent=2)
+            file.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 def fetch_fresh_snapshot() -> dict:
     tokens = _load_env_tokens()
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
     
     # Load previous snapshot to preserve valid metrics during transient provider downtime
-    prev_wm = {}
+    prev_snap = {}
     if SNAPSHOT_PATH.exists():
         try:
             with open(SNAPSHOT_PATH, "r", encoding="utf-8") as sf:
-                prev_snap = json.load(sf)
-                if isinstance(prev_snap.get("webmaster"), dict):
-                    prev_wm = prev_snap["webmaster"]
+                parsed = json.load(sf)
+                if isinstance(parsed, dict):
+                    prev_snap = parsed
         except Exception:
             pass
+
+    prev_wm = prev_snap.get("webmaster") or {}
 
     # 1. Fetch Webmaster Summary & Popular Queries
     wm_headers = {"Authorization": f"OAuth {tokens['webmaster']}"}
@@ -470,6 +619,11 @@ def fetch_fresh_snapshot() -> dict:
         wm_queries = {"error": wm_summary["error"], "queries": []}
     webmaster_period = {"start_date": wm_queries.get("date_from"), "end_date": wm_queries.get("date_to"),
                         "kind": "provider_defined_popular_queries", "timezone": "provider-defined"}
+    if wm_queries.get("error") and prev_wm.get("period"):
+        webmaster_period = prev_wm["period"]
+    previous_freshness = prev_wm.get("freshness") or {}
+    wm_freshness = (_webmaster_freshness(wm_base, wm_headers, now, webmaster_period, previous_freshness)
+                    if user_id else {**previous_freshness, "status": "unavailable", "checked_at": now_iso})
 
     # 1.1 Fetch Webmaster Query Analytics (Daily breakdown by query and dates)
     wm_analytics_url = f"{wm_base}/query-analytics/list"
@@ -565,7 +719,6 @@ def fetch_fresh_snapshot() -> dict:
                 "state": "Источник временно недоступен",
             })
             full_yandex_daily = recovered
-            daily_error = None
         except Exception as h_exc:
             logger.warning("Could not recover Yandex daily from history: %s", h_exc)
 
@@ -573,19 +726,20 @@ def fetch_fresh_snapshot() -> dict:
     m_headers = {"Authorization": f"OAuth {tokens['metrika']}"}
     counter_id = tokens["counter_id"]
     counter_info = _http_json(
-        f"https://api-metrika.yandex.net/management/v1/counter/{counter_id}", headers=m_headers, timeout=10
+        f"https://api-metrika.yandex.net/management/v1/counter/{counter_id}", headers=m_headers, timeout=6,
+        retry_transient=True,
     )
     counter_timezone = counter_info.get("counter", {}).get("time_zone_name") or counter_info.get("counter", {}).get("timezone_name") or counter_info.get("counter", {}).get("timezone")
     metrika_period = _metrika_closed_period(counter_timezone)
 
-    def m_query(params, period=None):
+    def m_query(params, period=None, *, retry=False):
         query_period = period or metrika_period
         url = f"https://api-metrika.yandex.net/stat/v1/data?ids={counter_id}&date1={query_period['start_date']}&date2={query_period['end_date']}&accuracy=full&" + params
-        return _http_json(url, headers=m_headers, timeout=10)
+        return _http_json(url, headers=m_headers, timeout=6, retry_transient=retry)
 
-    m_totals = m_query("metrics=ym:s:visits,ym:s:users,ym:s:pageviews,ym:s:bounceRate,ym:s:avgVisitDurationSeconds")
-    m_sources = m_query("metrics=ym:s:visits,ym:s:users&dimensions=ym:s:lastSignTrafficSource&sort=-ym:s:visits")
-    m_pages = m_query("metrics=ym:s:visits,ym:s:users,ym:s:bounceRate,ym:s:avgVisitDurationSeconds&dimensions=ym:s:startURLPath&sort=-ym:s:visits&limit=10")
+    m_totals = m_query("metrics=ym:s:visits,ym:s:users,ym:s:pageviews,ym:s:bounceRate,ym:s:avgVisitDurationSeconds", retry=True)
+    m_sources = m_query("metrics=ym:s:visits,ym:s:users&dimensions=ym:s:lastSignTrafficSource&sort=-ym:s:visits", retry=True)
+    m_pages = m_query("metrics=ym:s:visits,ym:s:users,ym:s:bounceRate,ym:s:avgVisitDurationSeconds&dimensions=ym:s:startURLPath&sort=-ym:s:visits&limit=10", retry=True)
     metrika_errors = {}
     for key, response, count in (("totals", m_totals, 5), ("sources", m_sources, None), ("pages", m_pages, None)):
         error = _response_error(response, totals_count=count, data_required=count is None)
@@ -594,7 +748,8 @@ def fetch_fresh_snapshot() -> dict:
     if counter_info.get("error") or metrika_period.get("error"):
         metrika_errors["counter"] = counter_info.get("error") or metrika_period["error"]
 
-    goals_res = _http_json(f"https://api-metrika.yandex.net/management/v1/counter/{counter_id}/goals", headers=m_headers, timeout=10)
+    goals_res = _http_json(f"https://api-metrika.yandex.net/management/v1/counter/{counter_id}/goals", headers=m_headers,
+                           timeout=6, retry_transient=True)
     raw_goals = goals_res.get("goals", [])
     goals_error = goals_res.get("error")
     if not isinstance(raw_goals, list) or "goals" not in goals_res:
@@ -750,6 +905,7 @@ def fetch_fresh_snapshot() -> dict:
     organic_conversion = primary_conversion["organic"]
     sample_ready = (organic_conversion["status"] == "available" and (organic_conversion["visits"] or 0) >= 300
                     and (primary_period or {}).get("period_days", 0) >= 28 and not metrika_errors
+                    and (primary_period or {}).get("is_comparable") is True and wm_freshness["status"] == "available"
                     and organic_conversion.get("sampling", {}).get("sampled") is False
                     and not wm_summary.get("error") and not wm_queries.get("error") and not wm_analytics_error
                     and google_data.get("status") == "active" and not google_data.get("error") and not google_data.get("errors"))
@@ -918,14 +1074,13 @@ def fetch_fresh_snapshot() -> dict:
             previous = existing_history.get(item["date"], {})
             saved = {**item, "collected_at": now_iso}
             for engine in ("yandex", "google"):
-                if not item.get(engine) and previous.get(engine):
+                if (not item.get(engine) or (engine == "yandex" and daily_error)) and previous.get(engine):
                     saved[engine] = previous[engine]
                     saved[engine + "_collected_at"] = previous.get(engine + "_collected_at", previous.get("collected_at"))
-                elif item.get(engine):
+                elif item.get(engine) and (engine != "yandex" or not daily_error):
                     saved[engine + "_collected_at"] = now_iso
             existing_history[item["date"]] = saved
-        with open(HISTORY_PATH, "w", encoding="utf-8") as f:
-            json.dump(existing_history, f, ensure_ascii=False, indent=2)
+        _write_snapshot(HISTORY_PATH, existing_history)
     except Exception as h_err:
         logger.warning("Could not persist SEO daily history: %s", h_err)
     
@@ -939,13 +1094,12 @@ def fetch_fresh_snapshot() -> dict:
     sqi_val = wm_summary.get("sqi")
     searchable_pages_val = wm_summary.get("searchable_pages_count")
     excluded_pages_val = wm_summary.get("excluded_pages_count")
-    if wm_summary.get("error"):
-        if sqi_val is None:
-            sqi_val = prev_wm.get("sqi") if prev_wm.get("sqi") is not None else 10
-        if searchable_pages_val is None:
-            searchable_pages_val = prev_wm.get("searchable_pages") if prev_wm.get("searchable_pages") is not None else 57
-        if excluded_pages_val is None:
-            excluded_pages_val = prev_wm.get("excluded_pages") if prev_wm.get("excluded_pages") is not None else 3
+    summary_failed = bool(wm_summary.get("error"))
+    summary_stale = summary_failed and prev_wm.get("component_status", {}).get("summary") in {"available", "stale"}
+    if summary_stale:
+        sqi_val = prev_wm.get("sqi")
+        searchable_pages_val = prev_wm.get("searchable_pages")
+        excluded_pages_val = prev_wm.get("excluded_pages")
 
     if wm_queries.get("error") and not queries_clean and prev_wm.get("top_queries"):
         queries_clean = prev_wm.get("top_queries", [])
@@ -962,7 +1116,7 @@ def fetch_fresh_snapshot() -> dict:
         "collection_errors": collection_errors,
         "data_freshness": {
             "collected_at": now_iso,
-            "webmaster": {"status": "error" if (wm_summary.get("error") and sqi_val is None) else "available",
+            "webmaster": {"status": wm_freshness["status"],
                           "period": f"{webmaster_period['start_date']} — {webmaster_period['end_date']}" if webmaster_period["start_date"] and webmaster_period["end_date"] else "provider-defined; dates unavailable", "popular_queries_period": webmaster_period},
             "metrika": {"status": "error" if metrika_errors else "available", "period": metrika_period, "source": "all measured traffic", "timezone": metrika_period["timezone"]},
             "google": google_data.get("period", {}),
@@ -980,12 +1134,13 @@ def fetch_fresh_snapshot() -> dict:
             "searchable_pages": searchable_pages_val,
             "excluded_pages": excluded_pages_val,
             "error": wm_summary.get("error") or wm_queries.get("error") or wm_analytics_error or daily_error,
-            "status": "partial" if (wm_summary.get("error") or wm_queries.get("error") or daily_error) else "available",
+            "status": "partial" if (wm_summary.get("error") or wm_queries.get("error") or wm_analytics_error or daily_error) else "available",
+            "freshness": wm_freshness,
             "component_status": {
-                "summary": "available" if sqi_val is not None else ("error" if wm_summary.get("error") else "available"),
-                "query_sample": "available" if queries_clean else ("error" if wm_queries.get("error") else "available"),
-                "daily_dynamics": "available" if full_yandex_daily else ("error" if daily_error else "available"),
-                "phrase_dynamics": "available" if yandex_phrase_dynamics else ("error" if wm_analytics_error else "available"),
+                "summary": "stale" if summary_stale else "error" if summary_failed else "available",
+                "query_sample": ("stale" if queries_clean else "error") if wm_queries.get("error") else "available",
+                "daily_dynamics": ("stale" if full_yandex_daily else "error") if daily_error else "available",
+                "phrase_dynamics": ("stale" if yandex_phrase_dynamics else "error") if wm_analytics_error else "available",
             },
             "daily_scope": "property_totals",
             "daily_period": {"start_date": daily_start, "end_date": daily_today, "timezone": "Europe/Moscow", "available_start_date": min((row["date"] for row in full_yandex_daily), default=None), "available_end_date": max((row["date"] for row in full_yandex_daily), default=None)},
@@ -1002,6 +1157,7 @@ def fetch_fresh_snapshot() -> dict:
         "combined_queries": combined_queries[:100],
         "metrika": {
             "period_days": 28,
+            "counter_id": counter_id,
             "period": metrika_period,
             "sampling": {key: m_totals.get(key) for key in ("sampled", "sample_share", "sample_size", "sample_space")},
             "api_query_timezone": m_totals.get("query", {}).get("timezone"),
@@ -1009,6 +1165,7 @@ def fetch_fresh_snapshot() -> dict:
             "source": "All measured traffic; consent and blockers limit coverage. Counter robot settings apply; explicit internal exclusions are not configured in this report.",
             "measurement_notes": [
                 "Registration instrumentation starts 2026-09-30; conversion reports exclude that partial setup day and use completed full days from 2026-10-01.",
+                "Tracking recovered on 2026-11-08. The first full explicit opt-in baseline day is 2026-11-15.",
                 "Total goal reaches are event volume and must not be treated as a conversion rate.",
             ],
             "error": "; ".join(f"{key}: {value}" for key, value in metrika_errors.items()) or None,
@@ -1027,14 +1184,14 @@ def fetch_fresh_snapshot() -> dict:
         },
         "recommendations": recommendations
     }
+    _retain_metrika_components(snapshot["metrika"], prev_snap, now_iso)
     
     # Save snapshot locally
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with open(SNAPSHOT_PATH, "w", encoding="utf-8") as f:
-            json.dump(snapshot, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+        _write_snapshot(SNAPSHOT_PATH, snapshot)
+    except (OSError, TypeError, ValueError) as error:
+        logger.warning("Could not persist SEO snapshot: %s", error)
         
     return snapshot
 

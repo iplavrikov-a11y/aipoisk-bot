@@ -1,7 +1,6 @@
 import { PublicSiteLink } from "@/components/public-site-link";
 import type { Metadata } from "next";
-import Link from "next/link";
-import { FileText, CheckCircle2, Send, Building2, Sparkles } from "lucide-react";
+import { FileText, Send } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
@@ -14,16 +13,17 @@ import {
   type FaqItem,
 } from "@/lib/seo";
 
+const pageTitle = "Составить запрос КП поставщикам по ТЗ — TenderLex";
+const pageDescription = "Загрузите спецификацию, чтобы получить редактируемый черновик запроса КП и контакты найденных поставщиков. Проверьте письмо и отправьте его из своей почты.";
+
 export const metadata: Metadata = {
-  title: { absolute: "Автоматизация запроса КП по ТЗ и расчет НМЦК за 3 минуты — TenderLex" },
-  description:
-    "Автоматическое составление официального запроса КП и расчет НМЦК по спецификации ТЗ за 3 минуты. Таблица номенклатуры, ГОСТы, дедлайн и рассылка поставщикам.",
+  title: { absolute: pageTitle },
+  description: pageDescription,
   keywords: [
     "запрос КП по ТЗ",
     "генератор запроса коммерческого предложения",
     "составить запрос коммерческого предложения по спецификации",
     "шаблон запроса цен поставщикам",
-    "расчет нмцк по 44 фз онлайн",
     "запрос цен для нмцк",
     "TenderLex",
   ],
@@ -33,9 +33,8 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     url: "/zapros-kp-po-tz",
-    title: "Автоматизация запроса КП по ТЗ и расчет НМЦК за 3 минуты — TenderLex",
-    description:
-      "Автоматическое составление официального запроса КП и расчет НМЦК по спецификации ТЗ за 3 минуты. Таблица номенклатуры, ГОСТы, дедлайн и рассылка поставщикам.",
+    title: pageTitle,
+    description: pageDescription,
     siteName: "TenderLex",
     images: [
       {
@@ -48,9 +47,8 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Автоматизация запроса КП по ТЗ и расчет НМЦК за 3 минуты — TenderLex",
-    description:
-      "Автоматическое составление официального запроса КП и расчет НМЦК по спецификации ТЗ за 3 минуты. Таблица номенклатуры, ГОСТы, дедлайн и рассылка поставщикам.",
+    title: pageTitle,
+    description: pageDescription,
   },
 };
 
@@ -205,12 +203,12 @@ export default function ZaprosKpPoTzPage() {
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
-              Преобразуйте сырую спецификацию или проект в структурированное деловое письмо с таблицей номенклатуры, объемами и требованиями к сертификатам.
+              Загрузите спецификацию. TenderLex подготовит черновик запроса с перечнем позиций и соберёт контакты найденных поставщиков. Вы сможете проверить письмо и отправить его из своей почты.
             </p>
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
               <a
-                href="/cabinet"
+                href="/cabinet?scenario=supplier_search"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
                 <span>Сформировать запрос КП</span>
@@ -235,7 +233,7 @@ export default function ZaprosKpPoTzPage() {
               <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
                 <h3 className="text-lg font-black text-slate-900">Без ручного набора</h3>
                 <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                  Исключение ошибок в маркировках сталей, ГОСТах и типоразмерах.
+                  Сервис переносит номенклатуру из спецификации. Перед отправкой сверьте маркировки, ГОСТы и типоразмеры с исходным ТЗ.
                 </p>
               </div>
 

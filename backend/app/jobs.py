@@ -2607,6 +2607,8 @@ def _validated_output_items(job: Job, files: list[dict]) -> list[dict]:
 
 
 def cleanup_expired_jobs(db: Session, settings=None) -> int:
+    from .seo_funnel import preserve_expired_job
+
     settings = settings or get_or_create_settings(db)
     now = now_utc()
     completed_cutoff = now - timedelta(days=max(1, int(settings.completed_job_retention_days or 1)))
@@ -2652,6 +2654,7 @@ def cleanup_expired_jobs(db: Session, settings=None) -> int:
     )
     for job in expired:
         jid = job.id
+        preserve_expired_job(db, job)
         release_job_reservation(db, job, note="Резерв возвращён: истёк срок хранения задачи")
         db.query(BillingTransaction).filter(BillingTransaction.job_id == jid).update(
             {BillingTransaction.job_id: None},

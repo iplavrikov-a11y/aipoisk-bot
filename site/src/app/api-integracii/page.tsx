@@ -391,11 +391,14 @@ export default function ApiIntegrationsPage() {
                 <span>Примеры интеграции</span>
               </div>
               <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-                Подключение за несколько минут на любом стеке
+                Примеры запросов к API TenderLex
               </h2>
               <p className="text-sm text-slate-300">
                 Выберите язык программирования или скопируйте готовый запрос для cURL, Python, Node.js или внешней обработки 1С:Предприятие.
               </p>
+              <Link href="/baza-znaniy/avtomatizaciya-zakupok-cherez-api-1c" className="inline-block text-sm font-semibold text-teal-300 underline">
+                Как подключить TenderLex к 1С и встроить результаты в процесс закупок
+              </Link>
             </div>
 
             <ApiCodeTabs />

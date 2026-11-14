@@ -38,7 +38,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: `${siteUrl}/monitoring-cen-postavshchikov-po-tz`,
-      lastModified: day("2026-11-02"),
+      lastModified: day("2026-11-14"),
       changeFrequency: "weekly",
       priority: 0.95,
     },
@@ -62,7 +62,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: `${siteUrl}/zapros-kp-po-tz`,
-      lastModified: day("2026-10-27"),
+      lastModified: day("2026-11-14"),
       changeFrequency: "weekly",
       priority: 0.8,
     },
@@ -74,7 +74,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: `${siteUrl}/api-integracii`,
-      lastModified: day("2026-10-24"),
+      lastModified: day("2026-11-14"),
       changeFrequency: "weekly",
       priority: 0.9,
     },
@@ -218,7 +218,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: `${siteUrl}/privacy`,
-      lastModified: day("2026-11-05"),
+      lastModified: day("2026-11-14"),
       changeFrequency: "monthly",
       priority: 0.3,
     },

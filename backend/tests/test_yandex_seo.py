@@ -10,6 +10,7 @@ def forbid_network(monkeypatch):
     monkeypatch.setattr(seo.urllib.request, "urlopen", forbidden)
 
 from app.yandex_seo import (
+    _http_json,
     _metric_chunks,
     _metrika_closed_period,
     build_primary_conversion,
@@ -233,6 +234,124 @@ def test_missing_aggregate_totals_remain_null(tmp_path, monkeypatch):
     assert snapshot["metrika"]["visits"] is None
     assert snapshot["metrika"]["bounce_rate"] is None
     assert snapshot["collection_status"] == "partial"
+
+
+def test_metrika_totals_keep_last_successful_period_across_repeated_failure(tmp_path, monkeypatch):
+    seo, _ = _mock_snapshot(tmp_path, monkeypatch)
+    initial = seo.fetch_fresh_snapshot()
+    first_observation = initial["metrika"]["component_freshness"]["totals"]
+    clock = seo.datetime
+
+    class NextDay(clock):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 3, 12, tzinfo=timezone.utc).astimezone(tz or timezone.utc)
+
+    fake_http = seo._http_json
+
+    def outage(url, **kwargs):
+        if "metrics=ym:s:visits,ym:s:users,ym:s:pageviews" in url:
+            return {"error": "HTTP Error 503: Service unavailable"}
+        return fake_http(url, **kwargs)
+
+    monkeypatch.setattr(seo, "datetime", NextDay)
+    monkeypatch.setattr(seo, "_http_json", outage)
+    for _ in range(2):
+        report = seo.fetch_fresh_snapshot()
+        assert report["collection_status"] == "partial"
+        assert report["metrika"]["visits"] == 500
+        assert report["metrika"]["period"]["end_date"] == "2026-10-02"
+        assert report["metrika"]["component_freshness"]["totals"] == {**first_observation, "status": "stale"}
+        assert report["metrika"]["component_freshness"]["pages"]["period"]["end_date"] == "2026-10-02"
+
+
+def test_webmaster_freshness_uses_source_dates_and_keeps_summary_unknown_on_failure(tmp_path, monkeypatch):
+    seo, _ = _mock_snapshot(tmp_path, monkeypatch)
+    fake_http = seo._http_json
+
+    def provider(url, **kwargs):
+        if url.endswith("/summary"):
+            return {"error": "temporary outage"}
+        if "/in-search/history?" in url:
+            return {"history": [{"date": "2026-09-06T17:00:00+03:00", "value": 54}]}
+        if "/sitemaps?" in url:
+            return {"sitemaps": [{"sitemap_url": "https://tenderlex.ru/sitemap.xml", "urls_count": 89,
+                                  "last_access_date": "2026-09-08T21:00:00+03:00"}]}
+        return fake_http(url, **kwargs)
+
+    monkeypatch.setattr(seo, "_http_json", provider)
+    result = seo.fetch_fresh_snapshot()
+    assert result["webmaster"]["searchable_pages"] is None
+    freshness = result["webmaster"]["freshness"]
+    assert freshness["index_observed_at"] == "2026-09-06T17:00:00+03:00"
+    assert freshness["sitemap_downloaded_at"] == "2026-09-08T21:00:00+03:00"
+    assert freshness["sitemap_urls"] == 89
+    assert freshness["popular_queries_through"] == "2026-09-27"
+    assert freshness["checked_at"] == result["updated_at"]
+
+
+def test_indexnow_empty_or_off_origin_request_sends_nothing(monkeypatch):
+    import pytest
+    from app import yandex_seo as seo
+
+    monkeypatch.setattr(seo.urllib.request, "urlopen", lambda *args, **kwargs: pytest.fail("unexpected request"))
+    assert seo.submit_indexnow()["submitted_count"] == 0
+    assert seo.submit_indexnow(["https://elsewhere.test/path"])["ok"] is False
+    assert seo.submit_indexnow(["https://tenderlex.ru/api/private"])["ok"] is False
+    assert seo.submit_sitemap_recrawl()["submitted_count"] == 0
+
+
+def test_indexnow_sends_only_supplied_unique_urls_including_removed_page(monkeypatch):
+    import json
+    from app import yandex_seo as seo
+
+    class Response:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    requests = []
+
+    def receive(request, **kwargs):
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setattr(seo.urllib.request, "urlopen", receive)
+    removed = "https://tenderlex.ru/old-page"
+    assert seo.submit_indexnow([removed, removed]) == {"ok": True, "status": 202, "submitted_count": 1}
+    assert len(requests) == 1
+    assert json.loads(requests[0].data)["urlList"] == [removed]
+
+
+def test_retry_once_with_backoff_and_respects_provider_retry_after(monkeypatch):
+    from urllib.error import HTTPError
+    from app import yandex_seo as seo
+
+    retries = []
+    monkeypatch.setattr(seo.time, "sleep", retries.append)
+    attempts = []
+
+    def unavailable(request, **kwargs):
+        attempts.append(request)
+        raise HTTPError(request.full_url, 503, "Service unavailable", {"Retry-After": "1"}, None)
+
+    monkeypatch.setattr(seo.urllib.request, "urlopen", unavailable)
+    assert "503" in _http_json("https://example.com", retry_transient=True)["error"]
+    assert len(attempts) == 2
+    assert retries == [1]
+
+    def throttled(request, **kwargs):
+        attempts.append(request)
+        raise HTTPError(request.full_url, 429, "Too Many Requests", {"Retry-After": "60"}, None)
+
+    monkeypatch.setattr(seo.urllib.request, "urlopen", throttled)
+    assert "429" in _http_json("https://example.com", retry_transient=True)["error"]
+    assert len(attempts) == 3
+    assert retries == [1]
 
 
 def test_wordstat_forecast_cannot_leak_into_new_digest():

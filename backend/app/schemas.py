@@ -97,6 +97,15 @@ class WebLoginRequest(BaseModel):
     link_token: str = Field(default="", max_length=128)
 
 
+class SeoEntryRequest(BaseModel):
+    source: str = Field(max_length=12)
+    landing: str = Field(max_length=200)
+
+
+class SeoRecrawlRequest(BaseModel):
+    urls: list[str] = Field(default_factory=list, max_length=100)
+
+
 class WebPasswordResetRequestCreate(BaseModel):
     email: str = Field(min_length=3, max_length=255)
 

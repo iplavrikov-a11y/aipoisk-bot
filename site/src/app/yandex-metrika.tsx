@@ -4,74 +4,55 @@ import Script from "next/script";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { ANALYTICS_CONSENT_KEY, configureAnalytics, safeAnalyticsUrl, trackGoal } from "@/lib/analytics";
+import { clearSeoLanding, recordSeoLanding, rememberSeoEntry } from "@/lib/seo-funnel";
 
 type Consent = "unknown" | "granted" | "denied";
+const legacyConsentKey = "tenderlex_analytics_consent";
 
 export function YandexMetrika({ counterId }: { counterId?: string }) {
   const pathname = usePathname();
   const [consent, setConsent] = useState<Consent>("unknown");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const initialized = useRef(false);
+  const pendingSdk = useRef<Window["ym"]>(undefined);
   const lastPage = useRef("");
   const allowed = Boolean(counterId && /^\d+$/.test(counterId) && pathname && !/^\/api(?:\/|$)/.test(pathname));
 
   useEffect(() => {
-    let stored: string | null = null;
+    rememberSeoEntry();
     try {
-      stored = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
-      setConsent(stored === "granted" || stored === "denied" ? stored : "unknown");
+      const stored = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
+      if (stored === "granted" || stored === "denied") {
+        setConsent(stored);
+      } else if (window.localStorage.getItem(legacyConsentKey) === "denied") {
+        setConsent("denied");
+      }
     } catch {
       setConsent("unknown");
     }
 
-    if (stored === "denied") return;
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const handleEngagement = () => {
-      try {
-        const current = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
-        if (current === "denied") return;
-        window.localStorage.setItem(ANALYTICS_CONSENT_KEY, "granted");
-      } catch { /* Local storage may fail in private mode. */ }
-      configureAnalytics(counterId, true);
-      setConsent("granted");
-      cleanupEngagement();
-    };
-
-    const cleanupEngagement = () => {
-      if (timer) clearTimeout(timer);
-      window.removeEventListener("scroll", handleEngagement);
-      window.removeEventListener("pointerdown", handleEngagement);
-      window.removeEventListener("keydown", handleEngagement);
-    };
-
-    if (stored !== "granted") {
-      timer = setTimeout(handleEngagement, 3000);
-      window.addEventListener("scroll", handleEngagement, { passive: true, once: true });
-      window.addEventListener("pointerdown", handleEngagement, { passive: true, once: true });
-      window.addEventListener("keydown", handleEngagement, { passive: true, once: true });
-    }
-
     function sync(event: StorageEvent) {
-      if (event.key !== ANALYTICS_CONSENT_KEY) return;
+      if (event.key !== ANALYTICS_CONSENT_KEY && event.key !== null) return;
       const next = event.newValue === "granted" || event.newValue === "denied" ? event.newValue : "unknown";
       configureAnalytics(counterId, next === "granted");
       setConsent(next);
-      if (next === "denied") {
-        cleanupEngagement();
-      }
+      if (next !== "granted") clearSeoLanding();
     }
     window.addEventListener("storage", sync);
-    return () => {
-      cleanupEngagement();
-      window.removeEventListener("storage", sync);
-    };
+    return () => window.removeEventListener("storage", sync);
   }, [counterId]);
+
+  useEffect(() => {
+    if (allowed && consent === "granted") recordSeoLanding();
+  }, [allowed, consent]);
 
   useEffect(() => {
     const enabled = allowed && consent === "granted";
     configureAnalytics(counterId, enabled);
     if (!enabled || !counterId) {
-      if (initialized.current && window.ym && counterId) {
+      if (pendingSdk.current && window.ym === pendingSdk.current) {
+        pendingSdk.current.a = [];
+      } else if (initialized.current && window.ym && counterId) {
         try { window.ym(Number(counterId), "destruct"); } catch { /* SDK may be blocked. */ }
       }
       initialized.current = false;
@@ -88,6 +69,7 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
       } as unknown as NonNullable<Window["ym"]>;
       stub.l = Date.now();
       window.ym = stub;
+      pendingSdk.current = stub;
     }
     try {
       if (!initialized.current) {
@@ -127,13 +109,15 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
   function choose(next: Exclude<Consent, "unknown">) {
     try { window.localStorage.setItem(ANALYTICS_CONSENT_KEY, next); } catch { /* Choice remains valid for this page. */ }
     configureAnalytics(counterId, next === "granted");
+    if (next === "denied") clearSeoLanding();
     setConsent(next);
+    setSettingsOpen(false);
   }
 
   return <>
-    {consent === "unknown" ? (
+    {consent === "unknown" || settingsOpen ? (
       <aside className="cookie-consent" aria-label="Настройки аналитики">
-        <p>TenderLex использует cookie и аналитику для сохранения истории проверок ТЗ и корректной работы сервиса. С вашего разрешения Яндекс Метрика учитывает посещения и действия, чтобы улучшать сервис. <a href="/privacy#cookies">Подробнее</a></p>
+        <p>Необходимые cookie помогают работать сайту и кабинету. С вашего разрешения мы измеряем посещения и действия, чтобы улучшать сервис. <a href="/privacy#cookies">Подробнее</a></p>
         <div>
           <button type="button" className="cookie-secondary" onClick={() => choose("denied")}>Только необходимые</button>
           <button type="button" className="cookie-primary" onClick={() => choose("granted")}>Разрешить аналитику</button>
@@ -141,6 +125,6 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
       </aside>
     ) : null}
     {consent === "granted" ? <Script id="tenderlex-metrika-sdk" src={`https://mc.yandex.ru/metrika/tag.js?id=${counterId}`} strategy="afterInteractive" /> : null}
-    {consent !== "unknown" ? <button type="button" className="cookie-settings" onClick={() => { configureAnalytics(counterId, false); setConsent("unknown"); }}>Настройки аналитики</button> : null}
+    {consent !== "unknown" && !settingsOpen ? <button type="button" className="cookie-settings" onClick={() => setSettingsOpen(true)}>Настройки аналитики</button> : null}
   </>;
 }

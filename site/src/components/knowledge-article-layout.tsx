@@ -26,6 +26,7 @@ export interface KnowledgeArticleLayoutProps {
   readTime?: string;
   publishedDate?: string;
   updatedDate?: string;
+  heroDownload?: { href: string; label: string; description: string };
   steps?: { name: string; text: string }[];
   faq?: { question: string; answer: string }[];
   toc?: { id: string; title: string }[];
@@ -50,6 +51,7 @@ export async function KnowledgeArticleLayout({
   readTime = "Краткий материал",
   publishedDate,
   updatedDate,
+  heroDownload,
   steps,
   faq,
   toc,
@@ -136,6 +138,13 @@ export async function KnowledgeArticleLayout({
               <p className="text-base sm:text-xl text-[#2f3f3d] font-medium leading-relaxed max-w-3xl">
                 {subtitle}
               </p>
+
+              {heroDownload && (
+                <div>
+                  <a href={heroDownload.href} download className="inline-flex rounded-xl bg-[#075b63] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#06464c]">{heroDownload.label}</a>
+                  <p className="mt-2 text-sm text-[#2f3f3d]">{heroDownload.description}</p>
+                </div>
+              )}
 
               {/* AUTHOR / E-E-A-T BADGE */}
               <div className="pt-2 flex items-center gap-3 text-xs text-[#697a77]">

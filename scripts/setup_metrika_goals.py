@@ -19,6 +19,7 @@ GOALS = {
     "email_verified": "TenderLex: подтверждение email",
     "task_started": "TenderLex: задача принята",
     "result_downloaded": "TenderLex: результат скачан",
+    "checkout_started": "TenderLex: переход на оплату",
 }
 
 def existing_action_ids(goals):
@@ -38,6 +39,7 @@ def read_config():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="Create missing goals; otherwise report only")
+    parser.add_argument("--event", choices=GOALS, action="append", help="Only check or create the selected events")
     parser.add_argument("--evidence-dir", type=Path)
     args = parser.parse_args()
     config = read_config()
@@ -57,8 +59,9 @@ def main():
         evidence = args.evidence_dir / "metrika-goals-before.json"
         if not evidence.exists(): evidence.write_text(json.dumps(before, ensure_ascii=False, indent=2))
     created = []
+    selected = set(args.event or GOALS)
     for event, label in GOALS.items():
-        if event in ids or not args.apply: continue
+        if event not in selected or event in ids or not args.apply: continue
         data = request({"goal": {"name": label, "type": "action",
                          "conditions": [{"type": "exact", "url": event}]}})
         ids[event] = data["goal"]["id"]
@@ -66,7 +69,7 @@ def main():
     after = request() if args.apply else before
     verified = existing_action_ids(after.get("goals", []))
     result = {"counter_id": counter, "created": created, "goal_ids": verified,
-              "missing": sorted(set(GOALS) - set(verified)), "primary_goal_id": verified.get("registration_success")}
+              "missing": sorted(selected - set(verified)), "primary_goal_id": verified.get("registration_success")}
     if args.evidence_dir:
         (args.evidence_dir / "metrika-goals-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
     print(json.dumps(result, ensure_ascii=False))

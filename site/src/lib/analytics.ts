@@ -1,9 +1,9 @@
 // Only coarse events are accepted. Documents, contacts, auth tokens, job IDs
 // and free text must never be sent to a third party.
-export const ANALYTICS_CONSENT_KEY = "tenderlex_analytics_consent";
+export const ANALYTICS_CONSENT_KEY = "tenderlex_analytics_consent_v2";
 export const ANALYTICS_GOALS = [
   "cabinet_click", "telegram_click", "whatsapp_click", "max_click", "phone_click", "email_click",
-  "registration_success", "login_success", "email_verified", "task_started", "result_downloaded",
+  "registration_success", "login_success", "email_verified", "task_started", "result_downloaded", "checkout_started",
 ] as const;
 export type AnalyticsGoal = typeof ANALYTICS_GOALS[number];
 type MetrikaFunction = ((...args: unknown[]) => void) & { a?: unknown[][]; l?: number };

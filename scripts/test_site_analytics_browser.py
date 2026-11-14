@@ -10,7 +10,7 @@ parser.add_argument("--base", default="http://127.0.0.1:3093")
 parser.add_argument("--evidence-dir", type=Path)
 args = parser.parse_args()
 base = args.base.rstrip("/")
-sdk = """window.__analyticsTestCalls = [...(window.ym && window.ym.a || [])];
+sdk = """window.__analyticsTestCalls = Array.from(window.ym && window.ym.a || [], args => Array.from(args));
 window.ym = function(){ window.__analyticsTestCalls.push(Array.from(arguments)); };"""
 results = []
 
@@ -22,7 +22,7 @@ with sync_playwright() as p:
         context = browser.new_context(**kwargs)
         if consent:
             context.add_init_script("localStorage.setItem('tenderlex_analytics_consent', " + json.dumps(consent) + ");")
-        state = {"authenticated": authenticated, "sdk_requests": 0, "register_requests": 0, "job_requests": 0}
+        state = {"authenticated": authenticated, "sdk_requests": 0, "register_requests": 0, "job_requests": 0, "seo_requests": []}
         def route(request):
             url = request.request.url
             if "mc.yandex.ru" in url:
@@ -35,6 +35,10 @@ with sync_playwright() as p:
             if "/api/chat/" in path:
                 request.fulfill(status=500 if request.request.method == "POST" else 200, content_type="application/json", body=json.dumps({"messages": []}))
             elif "/api/customer/" in path:
+                if path.endswith("/seo-entry"):
+                    state["seo_requests"].append((request.request.method, request.request.post_data_json))
+                    request.fulfill(status=204)
+                    return
                 if path.endswith("/auth/register"):
                     state["authenticated"] = True
                     state["register_requests"] += 1
@@ -61,6 +65,9 @@ with sync_playwright() as p:
         context, state = make_context(consent, ua)
         page = context.new_page()
         page.goto(base + "/cabinet", wait_until="networkidle")
+        page.mouse.wheel(0, 240)
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(3200)
         assert state["sdk_requests"] == 0, label
         assert page.evaluate("typeof window.ym === 'undefined'"), label
         results.append({"check": label + "_loads_no_analytics", "status": "passed"})
@@ -69,6 +76,8 @@ with sync_playwright() as p:
     context, state = make_context("granted")
     page = context.new_page()
     page.goto(base + "/cabinet?private=SECRET#private@example.org", wait_until="networkidle")
+    assert state["sdk_requests"] == 0, "legacy grants require a new explicit choice"
+    page.get_by_role("button", name="Разрешить аналитику", exact=True).click()
     page.wait_for_function("window.__analyticsTestCalls && window.__analyticsTestCalls.some(x => x[1] === 'hit')")
     calls = page.evaluate("window.__analyticsTestCalls")
     assert state["sdk_requests"] == 1
@@ -79,10 +88,14 @@ with sync_playwright() as p:
     page.get_by_role("button", name="Регистрация", exact=True).click()
     page.get_by_placeholder("Ваше имя").fill("Тест")
     page.get_by_placeholder("name@company.ru").fill("private@example.org")
-    page.get_by_placeholder("••••••••").fill("Private-Password-123")
-    page.locator('form input[type="checkbox"]').nth(0).check()
-    page.locator('form input[type="checkbox"]').nth(1).check()
-    page.locator('form button[type="submit"]').click()
+    page.get_by_placeholder("Не менее 10 символов").fill("Private-Password-123")
+    page.get_by_placeholder("Повторите пароль").fill("Private-Password-123")
+    for checkbox in page.locator('.tl-cabinet-auth-form input[type="checkbox"]').all():
+        checkbox.focus()
+        checkbox.press("Space")
+        assert checkbox.is_checked()
+    with page.expect_response(lambda response: response.url.endswith("/auth/register"), timeout=6000):
+        page.locator('.tl-cabinet-auth-form button[type="submit"]').click()
     page.wait_for_function("window.__analyticsTestCalls.some(x => x[2] === 'registration_success')")
     assert state["register_requests"] == 1
     page.get_by_role("tab").filter(has_text="Поиск поставщиков").click()
@@ -99,11 +112,16 @@ with sync_playwright() as p:
     page.get_by_role("button", name="Настройки аналитики", exact=True).click()
     page.get_by_role("button", name="Только необходимые", exact=True).click()
     page.wait_for_timeout(150)
-    assert any(call[1] == "destruct" for call in page.evaluate("window.__analyticsTestCalls")[before:])
+    assert [call[1] for call in page.evaluate("window.__analyticsTestCalls")[before:]] == ["destruct"]
+    page.evaluate("window.ym && document.querySelector('a[href^=\"tel:\"]')?.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}))")
+    assert [call[1] for call in page.evaluate("window.__analyticsTestCalls")[before:]] == ["destruct"]
+    page.reload(wait_until="networkidle")
+    assert state["sdk_requests"] == 1, "revocation survives reload"
     results.append({"check": "consent_can_be_revoked", "status": "passed"})
     context.close()
 
-    context, state = make_context("granted", authenticated=True)
+    context, state = make_context(authenticated=True)
+    context.add_init_script("if (!localStorage.getItem('tenderlex_analytics_consent_v2')) localStorage.setItem('tenderlex_analytics_consent_v2', 'granted')")
     page = context.new_page()
     page.goto(base + "/cabinet#registration_success", wait_until="networkidle")
     page.wait_for_function("window.__analyticsTestCalls.some(x => x[2] === 'registration_success')")
@@ -111,6 +129,21 @@ with sync_playwright() as p:
     page.reload(wait_until="networkidle")
     assert not any(call[2:3] == ["registration_success"] for call in page.evaluate("window.__analyticsTestCalls"))
     results.append({"check": "oauth_goal_once_after_authenticated_session", "status": "passed"})
+    context.close()
+
+    context, state = make_context()
+    page = context.new_page()
+    page.goto(base + "/?private=SECRET", referer="https://www.google.com/search?q=private", wait_until="networkidle")
+    page.wait_for_timeout(3200)
+    assert not state["seo_requests"]
+    page.get_by_role("button", name="Разрешить аналитику", exact=True).click()
+    page.wait_for_function("window.__analyticsTestCalls && window.__analyticsTestCalls.some(x => x[1] === 'hit')")
+    assert state["seo_requests"] == [("POST", {"source": "google", "landing": "/"})]
+    page.get_by_role("button", name="Настройки аналитики", exact=True).click()
+    with page.expect_response(lambda response: response.url.endswith("/seo-entry") and response.request.method == "DELETE"):
+        page.get_by_role("button", name="Только необходимые", exact=True).click()
+    assert state["seo_requests"][-1] == ("DELETE", None)
+    results.append({"check": "search_attribution_is_consent_gated_and_removable", "status": "passed"})
     context.close()
 
     for scenario in ["supplier_search", "exact_product", "procurement_report", "analysis_and_suppliers", "doc_analysis"]:
@@ -128,17 +161,15 @@ with sync_playwright() as p:
 
     context, _ = make_context("denied")
     page = context.new_page()
-    page.goto(base + "/", wait_until="networkidle")
-    page.evaluate("Object.defineProperty(navigator, 'clipboard', {value: {writeText: async text => {window.__copiedText = text;}}, configurable: true})")
-    page.get_by_role("button", name="Скопировать текст КП", exact=True).click()
-    page.get_by_role("button", name="Скопировано!", exact=True).wait_for()
-    assert "5 000" in page.evaluate("window.__copiedText")
-    page.evaluate("window.dispatchEvent(new Event('open_tenderlex_chat'))")
-    page.get_by_placeholder("Напишите сообщение администратору...").fill("TEST — delivery failure fixture")
-    page.locator("form").last.locator('button[type="submit"]').click()
-    page.get_by_role("alert").filter(has_text="Сообщение не отправлено").wait_for()
-    assert page.get_by_placeholder("Напишите сообщение администратору...").input_value().startswith("TEST")
-    results.append({"check": "rfq_copies_actual_text_and_chat_http_error_is_visible", "status": "passed"})
+    page.goto(base + "/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku", wait_until="networkidle")
+    template = page.locator('main a[href="/materialy/shablon-zaprosa-kp.docx"]').first
+    assert template.is_visible()
+    downloaded = page.request.get(base + template.get_attribute("href"))
+    assert downloaded.ok and downloaded.body().startswith(b"PK")
+    page.goto(base + "/zapros-kp-po-tz", wait_until="networkidle")
+    call_to_action = page.get_by_role("link", name="Сформировать запрос КП", exact=True)
+    assert call_to_action.get_attribute("href") == "/cabinet?scenario=supplier_search"
+    results.append({"check": "rfq_word_template_downloads_and_landing_opens_supplier_search", "status": "passed"})
     context.close()
 
     context, _ = make_context(viewport={"width": 390, "height": 844})

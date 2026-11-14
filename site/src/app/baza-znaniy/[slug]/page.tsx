@@ -99,7 +99,7 @@ export default async function KnowledgeArticleDynamicPage({ params }: Props) {
     title: article.title,
     description: article.description,
     path: `/baza-znaniy/${article.slug}`,
-    datePublished: article.publishedDate || article.updatedDate || "2026-10-01",
+    datePublished: article.publishedDate,
     dateModified: article.updatedDate,
     category: article.categoryLabel,
   });
@@ -123,6 +123,7 @@ export default async function KnowledgeArticleDynamicPage({ params }: Props) {
       readTime={article.readTime}
       publishedDate={article.publishedDate}
       updatedDate={article.updatedDate ? new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(article.updatedDate)) : undefined}
+      heroDownload={article.downloads?.find((download) => download.href === article.featuredDownload)}
       steps={article.steps}
       faq={article.faq}
       toc={article.toc}
@@ -176,6 +177,12 @@ export default async function KnowledgeArticleDynamicPage({ params }: Props) {
               </div>
             )}
 
+            {section.links?.map((link) => (
+              <a key={link.href} href={link.href} className="block text-sm font-semibold text-[#075b63] underline underline-offset-4">
+                {link.label}
+              </a>
+            ))}
+
             {section.list && section.list.length > 0 && (
               <ul className="space-y-2 list-disc pl-5 text-[#2f3f3d] text-sm sm:text-base">
                 {section.list.map((item, lIdx) => (
@@ -203,6 +210,9 @@ export default async function KnowledgeArticleDynamicPage({ params }: Props) {
             <h2 className="text-lg font-black text-[#172120]">Применить к своей задаче</h2>
             <p className="mt-2 text-sm leading-relaxed text-[#2f3f3d]">Сопоставьте выводы статьи с исходными документами и проверьте результат перед принятием закупочного решения.</p>
             <a className="mt-4 inline-flex rounded-xl bg-[#075b63] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#06464c]" href={article.moduleLink.href}>{article.moduleLink.label}</a>
+            {article.moduleLink.href === "/zapros-kp-po-tz" && (
+              <a className="mt-3 block text-sm font-semibold text-[#075b63] underline underline-offset-4" href="/monitoring-cen-postavshchikov-po-tz">Собрать цены по спецификации для НМЦК</a>
+            )}
           </aside>
         )}
         {article.downloads && article.downloads.length > 0 && (

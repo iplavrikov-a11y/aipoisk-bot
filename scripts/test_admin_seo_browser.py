@@ -3,12 +3,16 @@
 import json
 import mimetypes
 import re
+from argparse import ArgumentParser
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
+parser = ArgumentParser(description=__doc__)
+parser.add_argument('--dist', type=Path, default=ROOT / 'frontend/dist')
+dist = parser.parse_args().dist
 PERIOD = {'start_date': '2026-09-01', 'end_date': '2026-09-28', 'timezone': 'Europe/Moscow'}
 SNAPSHOT = {
     'schema_version': 2, 'updated_at': '2026-10-04T01:00:00+00:00', 'collection_status': 'active',
@@ -19,10 +23,16 @@ SNAPSHOT = {
                  'period': {'start_date': '2026-10-01', 'end_date': '2026-10-03'},
                  'organic': {'visits': 0, 'goal_visits': 0, 'rate_percent': None}}},
     'webmaster': {'sqi': 10, 'searchable_pages': 60, 'period': PERIOD,
+                 'freshness': {'status': 'stale', 'index_observed_at': '2026-09-28',
+                               'sitemap_downloaded_at': '2026-09-29T12:00:00Z', 'sitemap_urls': 90,
+                               'query_activity_through': '2026-09-28'},
                  'top_queries': [{'text': 'поиск поставщиков', 'shows': 40, 'clicks': 0, 'avg_position': 7}],
                  'daily_dynamics': [{'date': '2026-09-28', 'shows': 40, 'clicks': 0, 'avg_position': 7}]},
     'google': {'status': 'active', 'period': PERIOD, 'totals_status': 'available',
                'property_totals': {'impressions': 892, 'clicks': 11, 'avg_position': 15, 'ctr_percent': 1.23},
+               'query_sample': {'status': 'available', 'impression_coverage_percent': 3.4},
+               'click_anomalies': {'anomaly_clicks': 5, 'clicks_excluding_flagged_days': 6,
+                                   'anomaly_days': [{'date': '2026-09-28'}]},
                'top_queries': [{'text': 'подбор аналогов', 'impressions': 30, 'clicks': 1, 'position': 15}],
                'daily_dynamics': [{'date': '2026-09-28', 'shows': 34, 'clicks': 1, 'avg_position': 15}]},
     'recommendations': [{'id': 'test', 'status': 'pending', 'title': 'Проверка', 'description': 'Тест'}],
@@ -38,6 +48,10 @@ with sync_playwright() as p:
             for key in ['visits','users','pageviews','avg_duration_seconds','bounce_rate']: fixture['metrika'][key]=None
             fixture['google']['status']='unavailable';fixture['google']['property_totals']=dict.fromkeys(fixture['google']['property_totals']);fixture['google']['top_queries']=[];fixture['google']['daily_dynamics']=[]
         if mode=='malformed': fixture={'metrika':None,'webmaster':None,'google':None}
+        if mode=='stale':
+            fixture['metrika']['component_freshness'] = {
+                'totals': {'status': 'stale', 'collected_at': '2026-10-02T01:00:00Z', 'period': PERIOD},
+            }
         context=browser.new_context(viewport={'width':width,'height':950})
         def intercept(route):
             path=urlparse(route.request.url).path
@@ -47,6 +61,11 @@ with sync_playwright() as p:
                     if mode=='network': return route.abort('timedout')
                     status = 503 if mode=='error' or (mode=='recovery' and len(requests)==1) or (mode=='stale' and len(requests)>1) else 401 if mode=='unauthorized' else 200
                     return route.fulfill(status=status,content_type='application/json',body=json.dumps(fixture))
+                if path=='/api/seo-analytics/funnel':
+                    data={'period': PERIOD, 'observed_at': '2026-10-04T01:00:00Z',
+                          'totals': {'entries': 3, 'registrations': 2, 'task_started': 2,
+                                     'result_ready': 1, 'first_payment': 1}, 'rows': []}
+                    return route.fulfill(status=200,content_type='application/json',body=json.dumps(data))
                 if path=='/api/auth/session': data={'ok':mode!='login'}
                 elif path=='/api/auth/login': data={'ok':True,'username':'test'}
                 elif path=='/api/dashboard': data=dict.fromkeys(['clients','active_clients','jobs','running_jobs','completed_jobs','failed_jobs','suppliers'],0)
@@ -55,7 +74,7 @@ with sync_playwright() as p:
                 else:data=[]
                 route.fulfill(status=200,content_type='application/json',body=json.dumps(data))
             else:
-                asset=ROOT/'frontend/dist'/path.lstrip('/') if path.startswith('/assets/') else ROOT/'frontend/dist/index.html'
+                asset=dist/path.lstrip('/') if path.startswith('/assets/') else dist/'index.html'
                 route.fulfill(status=200,content_type=mimetypes.guess_type(str(asset))[0] or 'application/octet-stream',body=asset.read_bytes())
         context.route('**/*',intercept); page=context.new_page();page.clock.install(time=datetime(2026, 10, 4, 1, tzinfo=timezone.utc));page.on('pageerror',lambda e:errors.append(str(e)))
         page.goto('http://tenderlex.test/#seo',wait_until='networkidle')
@@ -75,7 +94,14 @@ with sync_playwright() as p:
         text=page.locator('main').inner_text()
         assert not re.search(r'Согласовать|Отклонить|Согласование владельцем|No visits|Today values|Позиции растут|Снижение позиций',text),text[-1000:]
         if mode in ['available','mobile']:
+            funnel = page.get_by_role('region', name='Воронка поискового трафика')
+            assert funnel.count() == 1
+            assert 'Входы из поиска\n3' in funnel.inner_text()
+            assert 'Подтверждённые оплаты\n1' in funnel.inner_text()
             assert '892' in text and '11' in text
+            assert 'Данные Вебмастера устарели' in text
+            assert 'Клики без отмеченных дней — 6' in text and 'живых органических кликов' not in text
+            assert '3,4% показов ресурса' in text
             assert 'Переходы по ссылкам' in text and 'Link traffic' not in text
             if width==1440:
                 assert page.locator('.seo-table-scroll').evaluate_all('(tables)=>tables.every(t=>t.scrollWidth <= t.clientWidth+1)'), 'Desktop SEO columns must be visible without horizontal scrolling'
@@ -88,7 +114,9 @@ with sync_playwright() as p:
             assert 'Не удалось обновить данные' in text
             assert len(requests)==(2 if mode=='stale' else 1),'No request loop on failure'
         if mode=='recovery': assert '892' in text and 'Не удалось обновить данные' not in text
-        if mode=='stale': assert '892' in text, 'Keep last known snapshot during failure'
+        if mode=='stale':
+            assert '892' in text, 'Keep last known snapshot during failure'
+            assert 'Последний успешный сбор:' in text and 'Данные устарели.' in text
         if mode=='unavailable': assert 'В выборке 0 видимых фраз' not in text, 'Unavailable query count must not look like zero'
         if mode=='unauthorized': assert 'Сессия завершилась' in text
         assert requests and all(method=='GET' for method in requests)
