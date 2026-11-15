@@ -15,6 +15,7 @@ Channels synchronized through a single DB ledger (`JobChatMessage` + `SupportDia
 from __future__ import annotations
 
 import html
+import ipaddress
 import json
 import logging
 import os
@@ -25,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from .admin_alerts import is_pytest
@@ -36,11 +37,14 @@ from .models import (
     ClientTelegramAccount,
     Job,
     JobChatMessage,
+    SupportBlockedActor,
     SupportDialogState,
     SupportGuestSession,
     SupportTelegramMessageMap,
     SupportTelegramSession,
     SystemSettings,
+    WebSession,
+    WebUser,
     new_id,
     now_utc,
 )
@@ -210,6 +214,134 @@ def extract_guest_session_id(client_id: str | None) -> str:
         if GUEST_SESSION_RE.match(sid):
             return sid
     return ""
+
+
+def normalize_dialog_key(client_id: str | None) -> tuple[str, str, str]:
+    """Return (dialog_key, normalized_client_id, guest_session_id) for client or guest:<sid>."""
+    raw = str(client_id or "").strip()
+    sid = extract_guest_session_id(raw)
+    if sid:
+        normalized_client_id = f"{GUEST_CLIENT_PREFIX}{sid}"
+        return f"guest:{sid}", normalized_client_id, sid
+    return f"client:{raw}", raw, ""
+
+
+def is_blockable_ip(raw_ip: str | None) -> str:
+    """Normalize a public/client IP string, returning empty string for local/invalid addresses."""
+    raw = str(raw_ip or "").strip().split(",")[0].strip()[:64]
+    if not raw or raw.lower() == "unknown":
+        return ""
+    try:
+        ip_obj = ipaddress.ip_address(raw)
+    except ValueError:
+        return ""
+    if ip_obj.is_loopback or ip_obj.is_unspecified or ip_obj.is_link_local or ip_obj.is_multicast:
+        return ""
+    return str(ip_obj)
+
+
+def is_ip_blocked(db: Session, raw_ip: str | None) -> bool:
+    clean_ip = is_blockable_ip(raw_ip)
+    if not clean_ip:
+        return False
+    return bool(
+        db.query(SupportBlockedActor.id)
+        .filter(
+            SupportBlockedActor.actor_type == "ip",
+            SupportBlockedActor.actor_value == clean_ip,
+        )
+        .first()
+    )
+
+
+def is_guest_chat_blocked(
+    db: Session,
+    *,
+    session_id: str = "",
+    client_ip: str = "",
+    guest: SupportGuestSession | None = None,
+) -> bool:
+    clean_sid = str(session_id or "").strip()
+    clean_ip = is_blockable_ip(client_ip)
+    if guest is not None and getattr(guest, "status", "") == "blocked":
+        return True
+    conditions = []
+    if clean_sid:
+        conditions.append(
+            and_(
+                SupportBlockedActor.actor_type == "guest_session",
+                SupportBlockedActor.actor_value == clean_sid,
+            )
+        )
+        if clean_sid.startswith("tg_") and TELEGRAM_ID_RE.match(clean_sid[3:]):
+            conditions.append(
+                and_(
+                    SupportBlockedActor.actor_type == "telegram",
+                    SupportBlockedActor.actor_value == clean_sid[3:],
+                )
+            )
+    if clean_ip:
+        conditions.append(
+            and_(
+                SupportBlockedActor.actor_type == "ip",
+                SupportBlockedActor.actor_value == clean_ip,
+            )
+        )
+    if conditions and db.query(SupportBlockedActor.id).filter(or_(*conditions)).first():
+        return True
+    if guest is None and clean_sid:
+        row = (
+            db.query(SupportGuestSession.status)
+            .filter(SupportGuestSession.session_id == clean_sid)
+            .first()
+        )
+        if row and row[0] == "blocked":
+            return True
+    return False
+
+
+def is_telegram_user_blocked(db: Session, tg_user_id: int | str | None) -> bool:
+    uid = str(tg_user_id or "").strip()
+    if not uid:
+        return False
+    blocked = (
+        db.query(SupportBlockedActor.id)
+        .filter(
+            or_(
+                and_(
+                    SupportBlockedActor.actor_type == "telegram",
+                    SupportBlockedActor.actor_value == uid,
+                ),
+                and_(
+                    SupportBlockedActor.actor_type == "guest_session",
+                    SupportBlockedActor.actor_value == f"tg_{uid}",
+                ),
+            )
+        )
+        .first()
+    )
+    if blocked:
+        return True
+    guest_row = (
+        db.query(SupportGuestSession.status)
+        .filter(SupportGuestSession.session_id == f"tg_{uid}")
+        .first()
+    )
+    if guest_row and guest_row[0] == "blocked":
+        return True
+    client_existing, _ = get_client_by_telegram_id(db, uid)
+    if client_existing is not None and not getattr(client_existing, "is_active", True):
+        return True
+    return False
+
+
+def get_blocked_dialog_keys(db: Session) -> set[str]:
+    rows = (
+        db.query(SupportBlockedActor.dialog_key)
+        .filter(SupportBlockedActor.dialog_key != "")
+        .all()
+    )
+    return {str(r[0]) for r in rows if r and r[0]}
 
 
 def check_guest_chat_rate_limits(
@@ -484,6 +616,8 @@ def ensure_legacy_guest_sessions_imported(
         clean_sid = str(session_id).strip()
         if not GUEST_SESSION_RE.match(clean_sid):
             return
+        if _LEGACY_BULK_IMPORTED and json_path is None:
+            return
         exists = db.query(SupportGuestSession.id).filter(SupportGuestSession.session_id == clean_sid).first()
         if exists:
             return
@@ -509,14 +643,20 @@ def ensure_legacy_guest_sessions_imported(
         raw = json.loads(target_file.read_text(encoding="utf-8") or "{}")
         if not isinstance(raw, dict):
             return
+        existing_sids = {
+            str(row[0])
+            for row in db.query(SupportGuestSession.session_id).all()
+            if row and row[0]
+        }
         changed = False
         for sid, payload in raw.items():
             if not isinstance(sid, str) or not isinstance(payload, dict):
                 continue
             if _should_skip_legacy_session(sid, payload):
                 continue
-            if not db.query(SupportGuestSession.id).filter(SupportGuestSession.session_id == sid).first():
+            if sid not in existing_sids:
                 if _import_single_legacy_session(db, sid, payload):
+                    existing_sids.add(sid)
                     changed = True
         if changed:
             db.commit()
@@ -536,8 +676,10 @@ def get_or_create_guest_session(
     client_ip: str = "",
 ) -> SupportGuestSession:
     clean_sid = validate_guest_session_id(session_id)
-    ensure_legacy_guest_sessions_imported(db, session_id=clean_sid)
     guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == clean_sid).first()
+    if not guest:
+        ensure_legacy_guest_sessions_imported(db, session_id=clean_sid)
+        guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == clean_sid).first()
     clean_contact = str(contact or "").strip()[:255]
     if not guest:
         guest = SupportGuestSession(
@@ -561,7 +703,8 @@ def get_or_create_guest_session(
         clean_ip = str(client_ip or "").strip()[:64]
         if clean_ip and not guest.client_ip:
             guest.client_ip = clean_ip
-        guest.status = "open"
+        if guest.status != "blocked":
+            guest.status = "open"
         guest.updated_at = now_utc()
     return guest
 
@@ -1553,12 +1696,19 @@ async def deliver_client_telegram_message(
     if not clean_text and not atts:
         raise ValueError("Укажите сообщение или прикрепите файл.")
 
+    if not is_admin_telegram_user(db, tg_user_id) and is_telegram_user_blocked(db, tg_user_id):
+        raise PermissionError("Доступ к поддержке ограничен администратором.")
+
     client, guest = resolve_or_create_client_for_tg_user(
         db,
         tg_user_id=str(tg_user_id),
         username=username,
         full_name=full_name,
     )
+    if client is not None and not getattr(client, "is_active", True):
+        raise PermissionError("Аккаунт отключён администратором.")
+    if guest is not None and getattr(guest, "status", "") == "blocked":
+        raise PermissionError("Доступ к поддержке ограничен администратором.")
     resolved_client_id = client.id if client else f"{GUEST_CLIENT_PREFIX}{guest.session_id}"
     resolved_guest_sid = guest.session_id if guest else ""
 
@@ -1651,6 +1801,295 @@ async def close_support_dialog(
             {"chat_id": group_id, "message_thread_id": int(state.telegram_thread_id)},
             allow_in_test=allow_in_test,
         )
+
+
+def _upsert_blocked_actor(
+    db: Session,
+    *,
+    actor_type: str,
+    actor_value: str,
+    dialog_key: str,
+    reason: str = "",
+    blocked_by: str = "admin",
+) -> None:
+    clean_val = str(actor_value or "").strip()[:128]
+    if not clean_val:
+        return
+    existing = (
+        db.query(SupportBlockedActor)
+        .filter(
+            SupportBlockedActor.actor_type == actor_type,
+            SupportBlockedActor.actor_value == clean_val,
+        )
+        .first()
+    )
+    if existing:
+        existing.dialog_key = dialog_key
+        if reason:
+            existing.reason = reason
+        if blocked_by:
+            existing.blocked_by = blocked_by
+        return
+    db.add(
+        SupportBlockedActor(
+            id=new_id(),
+            actor_type=actor_type,
+            actor_value=clean_val,
+            dialog_key=dialog_key,
+            reason=reason,
+            blocked_by=blocked_by or "admin",
+        )
+    )
+
+
+async def block_support_dialog(
+    db: Session,
+    *,
+    client_id: str,
+    reason: str = "",
+    blocked_by: str = "admin",
+    allow_in_test: bool = False,
+) -> dict[str, Any]:
+    """Block a dialog participant across web guest chat, cabinet login/chat, IP, and Telegram bot."""
+    dialog_key, normalized_client_id, guest_sid = normalize_dialog_key(client_id)
+    if not normalized_client_id:
+        raise ValueError("Не указан идентификатор диалога.")
+
+    topic_title = dialog_key
+    guest: SupportGuestSession | None = None
+    client: Client | None = None
+
+    if guest_sid:
+        guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == guest_sid).first()
+        if not guest:
+            guest = SupportGuestSession(
+                id=new_id(),
+                session_id=guest_sid,
+                visitor_name=f"Гость сайта ({guest_sid[-6:]})",
+                status="blocked",
+            )
+            db.add(guest)
+            db.flush()
+        else:
+            guest.status = "blocked"
+            guest.updated_at = now_utc()
+        topic_title = (guest.visitor_contact or guest.visitor_name or dialog_key)[:120]
+        _upsert_blocked_actor(
+            db,
+            actor_type="guest_session",
+            actor_value=guest_sid,
+            dialog_key=dialog_key,
+            reason=reason,
+            blocked_by=blocked_by,
+        )
+        clean_ip = is_blockable_ip(getattr(guest, "client_ip", ""))
+        if clean_ip:
+            _upsert_blocked_actor(
+                db,
+                actor_type="ip",
+                actor_value=clean_ip,
+                dialog_key=dialog_key,
+                reason=reason,
+                blocked_by=blocked_by,
+            )
+        if guest_sid.startswith("tg_") and TELEGRAM_ID_RE.match(guest_sid[3:]):
+            _upsert_blocked_actor(
+                db,
+                actor_type="telegram",
+                actor_value=guest_sid[3:],
+                dialog_key=dialog_key,
+                reason=reason,
+                blocked_by=blocked_by,
+            )
+    else:
+        client = db.query(Client).filter(Client.id == normalized_client_id).first()
+        if not client:
+            has_messages = bool(
+                db.query(JobChatMessage.id).filter(JobChatMessage.client_id == normalized_client_id).first()
+            )
+            has_state = bool(
+                db.query(SupportDialogState.id).filter(SupportDialogState.dialog_key == dialog_key).first()
+            )
+            if not has_messages and not has_state:
+                raise ValueError("Диалог или клиент не найден.")
+        else:
+            client.is_active = False
+            topic_title = (client.name or dialog_key)[:120]
+            _upsert_blocked_actor(
+                db,
+                actor_type="client",
+                actor_value=client.id,
+                dialog_key=dialog_key,
+                reason=reason,
+                blocked_by=blocked_by,
+            )
+            tg_ids: set[str] = set()
+            if getattr(client, "telegram_id", "") and TELEGRAM_ID_RE.match(str(client.telegram_id).strip()):
+                tg_ids.add(str(client.telegram_id).strip())
+            for row in db.query(ClientTelegramAccount.telegram_id).filter(ClientTelegramAccount.client_id == client.id).all():
+                if row and row[0] and TELEGRAM_ID_RE.match(str(row[0]).strip()):
+                    tg_ids.add(str(row[0]).strip())
+            for tg_id in tg_ids:
+                _upsert_blocked_actor(
+                    db,
+                    actor_type="telegram",
+                    actor_value=tg_id,
+                    dialog_key=dialog_key,
+                    reason=reason,
+                    blocked_by=blocked_by,
+                )
+
+            web_user_ids = [
+                r[0] for r in db.query(WebUser.id).filter(WebUser.client_id == client.id).all()
+            ]
+            candidate_ips: list[str] = []
+            if getattr(client, "registration_ip", ""):
+                candidate_ips.append(str(client.registration_ip))
+            if web_user_ids:
+                db.query(WebSession).filter(
+                    WebSession.user_id.in_(web_user_ids),
+                    WebSession.revoked_at.is_(None),
+                ).update({"revoked_at": now_utc()}, synchronize_session=False)
+                sess_ips = (
+                    db.query(WebSession.ip_address)
+                    .filter(WebSession.user_id.in_(web_user_ids), WebSession.ip_address != "")
+                    .order_by(WebSession.created_at.desc())
+                    .limit(5)
+                    .all()
+                )
+                for row in sess_ips:
+                    if row and row[0]:
+                        candidate_ips.append(str(row[0]))
+            for raw_ip in candidate_ips[:5]:
+                clean_ip = is_blockable_ip(raw_ip)
+                if clean_ip:
+                    _upsert_blocked_actor(
+                        db,
+                        actor_type="ip",
+                        actor_value=clean_ip,
+                        dialog_key=dialog_key,
+                        reason=reason,
+                        blocked_by=blocked_by,
+                    )
+
+    state = get_or_create_dialog_state(
+        db,
+        client_id=normalized_client_id,
+        guest_session_id=guest_sid,
+        topic_title=topic_title,
+    )
+    state.status = "blocked"
+    state.updated_at = now_utc()
+
+    db.query(SupportTelegramSession).filter(
+        SupportTelegramSession.dialog_key == dialog_key,
+        SupportTelegramSession.is_active == True,
+    ).update({"is_active": False, "updated_at": now_utc()}, synchronize_session=False)
+
+    marked_read = (
+        db.query(JobChatMessage)
+        .filter(
+            JobChatMessage.client_id == normalized_client_id,
+            JobChatMessage.sender_role == "client",
+            JobChatMessage.is_read_by_admin == False,
+        )
+        .update({"is_read_by_admin": True}, synchronize_session=False)
+    )
+    db.commit()
+
+    group_id = get_configured_support_group_id(db)
+    if group_id and state.telegram_group_id == group_id and int(state.telegram_thread_id or 0) > 0:
+        await _tg_api_post(
+            "closeForumTopic",
+            {"chat_id": group_id, "message_thread_id": int(state.telegram_thread_id)},
+            allow_in_test=allow_in_test,
+        )
+
+    return {
+        "ok": True,
+        "client_id": normalized_client_id,
+        "dialog_key": dialog_key,
+        "is_blocked": True,
+        "marked_read": int(marked_read or 0),
+    }
+
+
+async def unblock_support_dialog(
+    db: Session,
+    *,
+    client_id: str,
+    allow_in_test: bool = False,
+) -> dict[str, Any]:
+    """Remove blocks for a dialog participant and restore access across channels."""
+    dialog_key, normalized_client_id, guest_sid = normalize_dialog_key(client_id)
+    if not normalized_client_id:
+        raise ValueError("Не указан идентификатор диалога.")
+
+    db.query(SupportBlockedActor).filter(SupportBlockedActor.dialog_key == dialog_key).delete(
+        synchronize_session=False
+    )
+
+    if guest_sid:
+        db.query(SupportBlockedActor).filter(
+            SupportBlockedActor.actor_type == "guest_session",
+            SupportBlockedActor.actor_value == guest_sid,
+        ).delete(synchronize_session=False)
+        if guest_sid.startswith("tg_") and TELEGRAM_ID_RE.match(guest_sid[3:]):
+            db.query(SupportBlockedActor).filter(
+                SupportBlockedActor.actor_type == "telegram",
+                SupportBlockedActor.actor_value == guest_sid[3:],
+            ).delete(synchronize_session=False)
+        guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == guest_sid).first()
+        if guest:
+            clean_ip = is_blockable_ip(getattr(guest, "client_ip", ""))
+            if clean_ip:
+                db.query(SupportBlockedActor).filter(
+                    SupportBlockedActor.actor_type == "ip",
+                    SupportBlockedActor.actor_value == clean_ip,
+                ).delete(synchronize_session=False)
+            if guest.status == "blocked":
+                guest.status = "open"
+                guest.updated_at = now_utc()
+    else:
+        db.query(SupportBlockedActor).filter(
+            SupportBlockedActor.actor_type == "client",
+            SupportBlockedActor.actor_value == normalized_client_id,
+        ).delete(synchronize_session=False)
+        client = db.query(Client).filter(Client.id == normalized_client_id).first()
+        if client:
+            client.is_active = True
+            tg_ids: set[str] = set()
+            if getattr(client, "telegram_id", ""):
+                tg_ids.add(str(client.telegram_id).strip())
+            for row in db.query(ClientTelegramAccount.telegram_id).filter(ClientTelegramAccount.client_id == client.id).all():
+                if row and row[0]:
+                    tg_ids.add(str(row[0]).strip())
+            if tg_ids:
+                db.query(SupportBlockedActor).filter(
+                    SupportBlockedActor.actor_type == "telegram",
+                    SupportBlockedActor.actor_value.in_(list(tg_ids)),
+                ).delete(synchronize_session=False)
+
+    state = db.query(SupportDialogState).filter(SupportDialogState.dialog_key == dialog_key).first()
+    if state and state.status == "blocked":
+        state.status = "open"
+        state.updated_at = now_utc()
+    db.commit()
+
+    group_id = get_configured_support_group_id(db)
+    if group_id and state and state.telegram_group_id == group_id and int(state.telegram_thread_id or 0) > 0:
+        await _tg_api_post(
+            "reopenForumTopic",
+            {"chat_id": group_id, "message_thread_id": int(state.telegram_thread_id)},
+            allow_in_test=allow_in_test,
+        )
+
+    return {
+        "ok": True,
+        "client_id": normalized_client_id,
+        "dialog_key": dialog_key,
+        "is_blocked": False,
+    }
 
 
 def list_recent_dialogs_for_bot(db: Session, *, limit: int = 8) -> list[dict[str, Any]]:

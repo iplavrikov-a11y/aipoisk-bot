@@ -10,9 +10,17 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Invalid sessionId" }, { status: 400 });
     }
 
+    const forwardedFor = req.headers.get("x-forwarded-for") || "";
+    const realIp = req.headers.get("x-real-ip") || "";
     const upstream = await fetch(
       `${getInternalApiBaseUrl()}/api/public/guest-chat/messages?sessionId=${encodeURIComponent(sessionId)}`,
-      { cache: "no-store" }
+      {
+        cache: "no-store",
+        headers: {
+          ...(forwardedFor ? { "X-Forwarded-For": forwardedFor } : {}),
+          ...(realIp ? { "X-Real-IP": realIp } : {}),
+        },
+      }
     );
     const data = await upstream.json().catch(() => ({ messages: [] }));
     if (!upstream.ok) {

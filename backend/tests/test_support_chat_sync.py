@@ -15,7 +15,11 @@ from app.db import Base
 from app.main import (
     admin_client_chat_get,
     admin_client_chat_post,
+    admin_dialog_block,
+    admin_dialog_unblock,
     admin_dialogs_list,
+    admin_dialogs_mark_all_read,
+    clients_sync_check,
     customer_chat_post_route,
     customer_job_chat_route,
     dashboard,
@@ -27,6 +31,7 @@ from app.models import (
     ClientTelegramAccount,
     Job,
     JobChatMessage,
+    SupportBlockedActor,
     SupportDialogState,
     SupportGuestSession,
     SupportTelegramMessageMap,
@@ -573,3 +578,146 @@ async def test_guest_chat_ip_and_session_rate_limits(test_env):
             db=db,
         )
     assert exc_ip.value.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_mark_all_dialogs_read_and_block_unblock_guest_and_client(test_env):
+    from fastapi import HTTPException
+    from app.web_auth import authenticate_web_user, create_web_session, create_web_user, get_web_session_by_token
+
+    db = test_env.db
+
+    # Create two unread dialogs: one guest (with public IP) and one registered web+TG client
+    req_guest = SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1"),
+        headers={"x-forwarded-for": "203.0.113.88"},
+    )
+    await public_guest_chat_send(
+        request=req_guest,
+        payload={"sessionId": "sess_spam_guest_1", "text": "spam message 1"},
+        db=db,
+    )
+
+    user = create_web_user(
+        db,
+        email="spammer@example.com",
+        password="Password123!",
+        name="Spam Client",
+        commit=True,
+    )
+    client = user.client
+    client.telegram_id = "77889900"
+    db.add(
+        ClientTelegramAccount(
+            client_id=client.id,
+            telegram_id="77889900",
+            username="spammer_tg",
+            is_active=True,
+        )
+    )
+    db.commit()
+    token, _csrf, _sess = create_web_session(db, user, request=req_guest)
+
+    await sc.deliver_client_telegram_message(
+        db,
+        tg_user_id="77889900",
+        username="spammer_tg",
+        full_name="Spam Client",
+        text="client unread message",
+        allow_in_test=False,
+    )
+
+    listed_before = admin_dialogs_list(db=db)
+    assert listed_before["total_unread_admin"] == 2
+    assert len(listed_before["dialogs"]) == 2
+    assert all(d["is_blocked"] is False for d in listed_before["dialogs"])
+
+    # 1. Mark all dialogs read in one click
+    read_all_res = admin_dialogs_mark_all_read(db=db)
+    assert read_all_res["ok"] is True
+    assert read_all_res["marked_count"] == 2
+    assert read_all_res["total_unread_admin"] == 0
+
+    listed_after_read = admin_dialogs_list(db=db)
+    assert listed_after_read["total_unread_admin"] == 0
+    assert all(d["unread_admin_count"] == 0 for d in listed_after_read["dialogs"])
+    assert clients_sync_check(db=db)["unread_dialogs_count"] == 0
+
+    # 2. Block website guest (blocks session AND IP, even across rotated sessionId)
+    block_guest_res = await admin_dialog_block("guest:sess_spam_guest_1", payload={}, db=db)
+    assert block_guest_res["ok"] is True
+    assert block_guest_res["is_blocked"] is True
+    assert db.query(SupportBlockedActor).filter(SupportBlockedActor.actor_value == "203.0.113.88").first() is not None
+
+    guest_poll = public_guest_chat_messages(sessionId="sess_spam_guest_1", request=req_guest, db=db)
+    assert guest_poll["status"] == "blocked"
+    assert guest_poll["is_blocked"] is True
+
+    with pytest.raises(HTTPException) as exc_same_sid:
+        await public_guest_chat_send(
+            request=req_guest,
+            payload={"sessionId": "sess_spam_guest_1", "text": "more spam"},
+            db=db,
+        )
+    assert exc_same_sid.value.status_code == 403
+
+    with pytest.raises(HTTPException) as exc_rotated_sid:
+        await public_guest_chat_send(
+            request=req_guest,
+            payload={"sessionId": "sess_spam_guest_rotated_2", "text": "evade block"},
+            db=db,
+        )
+    assert exc_rotated_sid.value.status_code == 403
+
+    guest_chat_detail = admin_client_chat_get("guest:sess_spam_guest_1", db=db)
+    assert guest_chat_detail["client"]["is_blocked"] is True
+
+    # 3. Unblock guest -> restores access immediately
+    unblock_guest_res = await admin_dialog_unblock("guest:sess_spam_guest_1", db=db)
+    assert unblock_guest_res["ok"] is True
+    assert unblock_guest_res["is_blocked"] is False
+
+    ok_after_unblock = await public_guest_chat_send(
+        request=req_guest,
+        payload={"sessionId": "sess_spam_guest_1", "text": "sorry, legitimate question"},
+        db=db,
+    )
+    assert ok_after_unblock["success"] is True
+
+    # 4. Block registered client -> disables client, revokes web session, rejects login & TG support
+    block_client_res = await admin_dialog_block(client.id, payload={}, db=db)
+    assert block_client_res["ok"] is True
+    assert block_client_res["is_blocked"] is True
+
+    db.expire_all()
+    assert get_web_session_by_token(db, token) is None
+    assert authenticate_web_user(db, "spammer@example.com", "Password123!") is None
+    with pytest.raises(PermissionError):
+        await sc.deliver_client_telegram_message(
+            db,
+            tg_user_id="77889900",
+            username="spammer_tg",
+            full_name="Spam Client",
+            text="blocked tg spam",
+            allow_in_test=False,
+        )
+
+    client_chat_detail = admin_client_chat_get(client.id, db=db)
+    assert client_chat_detail["client"]["is_blocked"] is True
+
+    # 5. Unblock registered client -> restores login & TG support
+    unblock_client_res = await admin_dialog_unblock(client.id, db=db)
+    assert unblock_client_res["ok"] is True
+    assert unblock_client_res["is_blocked"] is False
+    db.expire_all()
+    assert authenticate_web_user(db, "spammer@example.com", "Password123!") is not None
+    tg_ok = await sc.deliver_client_telegram_message(
+        db,
+        tg_user_id="77889900",
+        username="spammer_tg",
+        full_name="Spam Client",
+        text="restored tg message",
+        allow_in_test=False,
+    )
+    assert tg_ok["client_id"] == client.id
+

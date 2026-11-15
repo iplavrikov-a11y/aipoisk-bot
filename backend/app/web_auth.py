@@ -186,6 +186,8 @@ def authenticate_web_user(db: Session, email: str, password: str) -> WebUser | N
     user = db.query(WebUser).filter(WebUser.email == normalized_email).first()
     if not user or not user.is_active:
         return None
+    if not user.client or not user.client.is_active:
+        return None
     if not verify_password(password, user.password_hash):
         return None
     return user

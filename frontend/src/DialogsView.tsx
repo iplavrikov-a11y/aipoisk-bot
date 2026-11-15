@@ -6,6 +6,8 @@ import {
   Paperclip,
   Check,
   CheckCheck,
+  Ban,
+  ShieldCheck,
   ExternalLink,
   User,
   Phone,
@@ -41,6 +43,7 @@ export interface DialogItem {
   last_channel?: string
   topic_linked?: boolean
   dialog_status?: string
+  is_blocked?: boolean
   last_message: string
   last_message_at: string | null
   last_sender_role: 'admin' | 'client'
@@ -138,8 +141,10 @@ function formatRelativeTime(iso?: string | null): string {
 
 export function DialogsView({
   onOpenJob,
+  onUnreadCountChange,
 }: {
   onOpenJob?: (jobId: string) => void
+  onUnreadCountChange?: (count: number) => void
 }) {
   const [dialogs, setDialogs] = useState<DialogItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -156,41 +161,75 @@ export function DialogsView({
   const [files, setFiles] = useState<File[]>([])
   const [notifyTelegram, setNotifyTelegram] = useState(true)
   const [sending, setSending] = useState(false)
+  const [markingAllRead, setMarkingAllRead] = useState(false)
+  const [blockingAction, setBlockingAction] = useState(false)
   const [error, setError] = useState('')
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const dialogsInFlightRef = useRef(false)
+  const hasLoadedDialogsRef = useRef(false)
+  const selectedClientIdRef = useRef<string | null>(null)
+  const messagesAbortRef = useRef<AbortController | null>(null)
+  const messagesReqSeqRef = useRef(0)
+  const lastScrollKeyRef = useRef('')
 
   const token = localStorage.getItem('tenderlex_admin_token') || sessionStorage.getItem('tenderlex_admin_token') || ''
   const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
 
+  selectedClientIdRef.current = selectedClientId
+
   async function loadDialogs(selectFirst = false, silent = false) {
+    if (silent && dialogsInFlightRef.current) return
+    dialogsInFlightRef.current = true
     try {
       if (!silent) setLoading(true)
       const res = await fetch('/api/admin/dialogs', { credentials: 'same-origin', headers: authHeaders })
       if (res.ok) {
         const data = await res.json()
         const list: DialogItem[] = data.dialogs || []
+        hasLoadedDialogsRef.current = true
         setDialogs(list)
-        if (selectFirst && list.length > 0 && !selectedClientId) {
+        if (typeof data.total_unread_admin === 'number') {
+          onUnreadCountChange?.(data.total_unread_admin)
+        }
+        if (selectFirst && list.length > 0 && !selectedClientIdRef.current) {
           setSelectedClientId(list[0].client_id)
         }
       }
     } catch (err) {
       if (!silent) console.error('Failed to load dialogs:', err)
     } finally {
+      dialogsInFlightRef.current = false
       if (!silent) setLoading(false)
     }
   }
 
   async function loadChatMessages(clientId: string, silent = false) {
+    if (silent && messagesAbortRef.current) return
+    if (!silent && messagesAbortRef.current) {
+      messagesAbortRef.current.abort()
+    }
+    const controller = new AbortController()
+    messagesAbortRef.current = controller
+    const reqSeq = ++messagesReqSeqRef.current
     try {
       if (!silent) {
         setLoadingMessages(true)
         setError('')
       }
-      const res = await fetch(`/api/admin/clients/${encodeURIComponent(clientId)}/chat`, { credentials: 'same-origin', headers: authHeaders })
+      const res = await fetch(`/api/admin/clients/${encodeURIComponent(clientId)}/chat`, {
+        credentials: 'same-origin',
+        headers: authHeaders,
+        signal: controller.signal,
+      })
+      if (reqSeq !== messagesReqSeqRef.current || selectedClientIdRef.current !== clientId) {
+        return
+      }
       if (res.ok) {
         const data = await res.json()
+        if (reqSeq !== messagesReqSeqRef.current || selectedClientIdRef.current !== clientId) {
+          return
+        }
         setActiveMessages(data.messages || [])
         const jobs: DialogJobSummary[] = data.jobs || []
         setClientJobs(jobs)
@@ -200,48 +239,99 @@ export function DialogsView({
           setActiveJobFilter('all')
         }
 
-        // Update local dialog unread badge to 0
+        const serverBlocked = typeof data.client?.is_blocked === 'boolean' ? data.client.is_blocked : undefined
+        // Update local dialog unread badge to 0 and sync block state
         setDialogs(prev =>
-          prev.map(d => (d.client_id === clientId ? { ...d, unread_admin_count: 0 } : d))
+          prev.map(d =>
+            d.client_id === clientId
+              ? {
+                  ...d,
+                  unread_admin_count: 0,
+                  ...(serverBlocked !== undefined
+                    ? { is_blocked: serverBlocked, dialog_status: serverBlocked ? 'blocked' : (d.dialog_status === 'blocked' ? 'open' : d.dialog_status) }
+                    : {}),
+                }
+              : d
+          )
         )
       } else if (!silent) {
         const errText = await res.text()
         setError(errText || 'Не удалось загрузить историю переписки')
       }
     } catch (err: any) {
-      if (!silent) setError(err.message || 'Ошибка загрузки переписки')
+      if (err?.name === 'AbortError') return
+      if (!silent && reqSeq === messagesReqSeqRef.current) {
+        setError(err.message || 'Ошибка загрузки переписки')
+      }
     } finally {
-      if (!silent) setLoadingMessages(false)
+      if (messagesAbortRef.current === controller) {
+        messagesAbortRef.current = null
+      }
+      if (!silent && reqSeq === messagesReqSeqRef.current) {
+        setLoadingMessages(false)
+      }
     }
   }
 
   useEffect(() => {
-    loadDialogs(true)
+    void loadDialogs(true)
+    return () => {
+      messagesAbortRef.current?.abort()
+    }
   }, [])
 
   useEffect(() => {
     if (selectedClientId) {
-      loadChatMessages(selectedClientId)
+      void loadChatMessages(selectedClientId)
     } else {
+      messagesAbortRef.current?.abort()
       setActiveMessages([])
       setClientJobs([])
+      setLoadingMessages(false)
     }
   }, [selectedClientId])
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (document.hidden) return
-      void loadDialogs(false, true)
-      if (selectedClientId) {
-        void loadChatMessages(selectedClientId, true)
-      }
-    }, 4500)
-    return () => window.clearInterval(timer)
-  }, [selectedClientId])
+    let cancelled = false
+    let timerId: number | null = null
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [activeMessages, activeJobFilter])
+    const runPoll = async () => {
+      if (cancelled) return
+      if (!document.hidden) {
+        const activeId = selectedClientIdRef.current
+        await Promise.all([
+          loadDialogs(false, true),
+          activeId ? loadChatMessages(activeId, true) : Promise.resolve(),
+        ])
+      }
+      if (!cancelled) {
+        timerId = window.setTimeout(() => {
+          void runPoll()
+        }, 5000)
+      }
+    }
+
+    timerId = window.setTimeout(() => {
+      void runPoll()
+    }, 5000)
+
+    const onVisibilityChange = () => {
+      if (!document.hidden && !cancelled) {
+        const activeId = selectedClientIdRef.current
+        void loadDialogs(false, true)
+        if (activeId) {
+          void loadChatMessages(activeId, true)
+        }
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
+    return () => {
+      cancelled = true
+      if (timerId !== null) window.clearTimeout(timerId)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [])
 
   const selectedDialog = dialogs.find(d => d.client_id === selectedClientId)
 
@@ -268,6 +358,85 @@ export function DialogsView({
     if (activeJobFilter === 'general') return !m.job_id
     return m.job_id === activeJobFilter
   })
+
+  useEffect(() => {
+    const lastId = displayedMessages.length > 0 ? displayedMessages[displayedMessages.length - 1].id : ''
+    const scrollKey = `${selectedClientId || ''}:${activeJobFilter}:${lastId}:${displayedMessages.length}`
+    if (scrollKey === lastScrollKeyRef.current) return
+    const prevClient = lastScrollKeyRef.current.split(':')[0]
+    lastScrollKeyRef.current = scrollKey
+    if (displayedMessages.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: prevClient === (selectedClientId || '') ? 'smooth' : 'auto' })
+    }
+  }, [selectedClientId, activeJobFilter, displayedMessages.length])
+
+  async function handleMarkAllRead() {
+    if (markingAllRead) return
+    setMarkingAllRead(true)
+    setError('')
+    try {
+      const res = await fetch('/api/admin/dialogs/read-all', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: authHeaders,
+      })
+      if (!res.ok) {
+        const errText = await res.text()
+        throw new Error(errText || 'Не удалось отметить диалоги прочитанными')
+      }
+      setDialogs(prev => prev.map(d => ({ ...d, unread_admin_count: 0 })))
+      setActiveMessages(prev => prev.map(m => (m.sender_role === 'client' ? { ...m, is_read_by_admin: true } : m)))
+      onUnreadCountChange?.(0)
+    } catch (err: any) {
+      setError(err.message || 'Не удалось отметить все диалоги прочитанными')
+    } finally {
+      setMarkingAllRead(false)
+    }
+  }
+
+  async function handleToggleBlock() {
+    if (!selectedDialog || blockingAction) return
+    const currentlyBlocked = Boolean(selectedDialog.is_blocked)
+    const endpoint = currentlyBlocked
+      ? `/api/admin/dialogs/${encodeURIComponent(selectedDialog.client_id)}/unblock`
+      : `/api/admin/dialogs/${encodeURIComponent(selectedDialog.client_id)}/block`
+
+    setBlockingAction(true)
+    setError('')
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: currentlyBlocked ? undefined : JSON.stringify({}),
+      })
+      if (!res.ok) {
+        const errText = await res.text()
+        throw new Error(errText || 'Не удалось изменить статус блокировки')
+      }
+      const data = await res.json()
+      const nextBlocked = Boolean(data.is_blocked)
+      setDialogs(prev =>
+        prev.map(d =>
+          d.client_id === selectedDialog.client_id
+            ? {
+                ...d,
+                is_blocked: nextBlocked,
+                dialog_status: nextBlocked ? 'blocked' : 'open',
+                unread_admin_count: nextBlocked ? 0 : d.unread_admin_count,
+              }
+            : d
+        )
+      )
+      if (nextBlocked) {
+        setActiveMessages(prev => prev.map(m => (m.sender_role === 'client' ? { ...m, is_read_by_admin: true } : m)))
+      }
+    } catch (err: any) {
+      setError(err.message || 'Ошибка изменения статуса блокировки')
+    } finally {
+      setBlockingAction(false)
+    }
+  }
 
   async function handleSendReply(e?: React.FormEvent) {
     if (e) e.preventDefault()
@@ -322,6 +491,12 @@ export function DialogsView({
   }
 
   const totalUnread = dialogs.reduce((sum, d) => sum + (d.unread_admin_count || 0), 0)
+
+  useEffect(() => {
+    if (hasLoadedDialogsRef.current) {
+      onUnreadCountChange?.(totalUnread)
+    }
+  }, [totalUnread])
 
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 120px)', minHeight: 520, gap: 14, background: '#f8fafc', padding: '12px 14px', borderRadius: 10, border: '1px solid #e2e8f0' }}>
@@ -400,6 +575,32 @@ export function DialogsView({
               Непрочитанные ({totalUnread})
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => void handleMarkAllRead()}
+            disabled={markingAllRead || totalUnread === 0}
+            title="Отметить все входящие сообщения во всех диалогах как прочитанные"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+              width: '100%',
+              padding: '5px 8px',
+              fontSize: 11,
+              fontWeight: 600,
+              borderRadius: 5,
+              border: totalUnread > 0 ? '1px solid #99f6e4' : '1px solid #e2e8f0',
+              background: totalUnread > 0 ? '#f0fdfa' : '#f8fafc',
+              color: totalUnread > 0 ? '#0f766e' : '#94a3b8',
+              cursor: markingAllRead || totalUnread === 0 ? 'default' : 'pointer',
+              opacity: markingAllRead ? 0.7 : 1,
+            }}
+          >
+            {markingAllRead ? <Loader2 size={12} className="spin" /> : <CheckCheck size={13} />}
+            <span>{totalUnread > 0 ? `Отметить все прочитанными (${totalUnread})` : 'Все диалоги прочитаны'}</span>
+          </button>
         </div>
 
         {/* Scrollable list */}
@@ -440,6 +641,11 @@ export function DialogsView({
 
                   {/* Client Subtext / Contacts & Job Chips */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 4 }}>
+                    {d.is_blocked && (
+                      <span style={{ fontSize: 10, fontWeight: 700, background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', padding: '1px 5px', borderRadius: 3 }}>
+                        🚫 Заблокирован
+                      </span>
+                    )}
                     {d.is_guest && (
                       <span style={{ fontSize: 10, fontWeight: 700, background: '#f1f5f9', color: '#475569', padding: '1px 5px', borderRadius: 3 }}>
                         🌐 Гость сайта
@@ -517,6 +723,11 @@ export function DialogsView({
                       Клиент #{selectedDialog.client_number}
                     </span>
                   )}
+                  {selectedDialog.is_blocked && (
+                    <span style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 4 }}>
+                      Заблокирован
+                    </span>
+                  )}
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, fontSize: 11, color: '#64748b', flexWrap: 'wrap' }}>
@@ -540,31 +751,14 @@ export function DialogsView({
                 </div>
               </div>
 
-              {/* Job filter chips */}
-              {clientJobs.length > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 10.5, color: '#64748b', fontWeight: 600 }}>Фильтр:</span>
-                  <button
-                    type="button"
-                    onClick={() => setActiveJobFilter('all')}
-                    style={{
-                      border: 'none',
-                      fontSize: 10.5,
-                      fontWeight: 600,
-                      padding: '3px 7px',
-                      borderRadius: 4,
-                      cursor: 'pointer',
-                      background: activeJobFilter === 'all' ? '#0d9488' : '#f1f5f9',
-                      color: activeJobFilter === 'all' ? '#fff' : '#475569',
-                    }}
-                  >
-                    Все ({activeMessages.length})
-                  </button>
-                  {clientJobs.map(j => (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {/* Job filter chips */}
+                {clientJobs.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 10.5, color: '#64748b', fontWeight: 600 }}>Фильтр:</span>
                     <button
-                      key={j.job_id}
                       type="button"
-                      onClick={() => setActiveJobFilter(j.job_id)}
+                      onClick={() => setActiveJobFilter('all')}
                       style={{
                         border: 'none',
                         fontSize: 10.5,
@@ -572,33 +766,93 @@ export function DialogsView({
                         padding: '3px 7px',
                         borderRadius: 4,
                         cursor: 'pointer',
-                        background: activeJobFilter === j.job_id ? '#0284c7' : '#f1f5f9',
-                        color: activeJobFilter === j.job_id ? '#fff' : '#475569',
+                        background: activeJobFilter === 'all' ? '#0d9488' : '#f1f5f9',
+                        color: activeJobFilter === 'all' ? '#fff' : '#475569',
                       }}
-                      title={j.job_title}
                     >
-                      #{j.job_number || j.job_id.slice(0, 4)}
+                      Все ({activeMessages.length})
                     </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => setActiveJobFilter('general')}
-                    style={{
-                      border: 'none',
-                      fontSize: 10.5,
-                      fontWeight: 600,
-                      padding: '3px 7px',
-                      borderRadius: 4,
-                      cursor: 'pointer',
-                      background: activeJobFilter === 'general' ? '#64748b' : '#f1f5f9',
-                      color: activeJobFilter === 'general' ? '#fff' : '#475569',
-                    }}
-                  >
-                    Общие
-                  </button>
-                </div>
-              )}
+                    {clientJobs.map(j => (
+                      <button
+                        key={j.job_id}
+                        type="button"
+                        onClick={() => setActiveJobFilter(j.job_id)}
+                        style={{
+                          border: 'none',
+                          fontSize: 10.5,
+                          fontWeight: 600,
+                          padding: '3px 7px',
+                          borderRadius: 4,
+                          cursor: 'pointer',
+                          background: activeJobFilter === j.job_id ? '#0284c7' : '#f1f5f9',
+                          color: activeJobFilter === j.job_id ? '#fff' : '#475569',
+                        }}
+                        title={j.job_title}
+                      >
+                        #{j.job_number || j.job_id.slice(0, 4)}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setActiveJobFilter('general')}
+                      style={{
+                        border: 'none',
+                        fontSize: 10.5,
+                        fontWeight: 600,
+                        padding: '3px 7px',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        background: activeJobFilter === 'general' ? '#64748b' : '#f1f5f9',
+                        color: activeJobFilter === 'general' ? '#fff' : '#475569',
+                      }}
+                    >
+                      Общие
+                    </button>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => void handleToggleBlock()}
+                  disabled={blockingAction}
+                  title={
+                    selectedDialog.is_blocked
+                      ? 'Снять блокировку и восстановить доступ пользователю'
+                      : 'Заблокировать пользователя (чат на сайте, кабинет, бот и IP)'
+                  }
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    padding: '5px 10px',
+                    borderRadius: 6,
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    cursor: blockingAction ? 'default' : 'pointer',
+                    opacity: blockingAction ? 0.7 : 1,
+                    border: selectedDialog.is_blocked ? '1px solid #86efac' : '1px solid #fecaca',
+                    background: selectedDialog.is_blocked ? '#f0fdf4' : '#fef2f2',
+                    color: selectedDialog.is_blocked ? '#15803d' : '#dc2626',
+                  }}
+                >
+                  {blockingAction ? (
+                    <Loader2 size={13} className="spin" />
+                  ) : selectedDialog.is_blocked ? (
+                    <ShieldCheck size={13} />
+                  ) : (
+                    <Ban size={13} />
+                  )}
+                  <span>{selectedDialog.is_blocked ? 'Разблокировать' : 'Заблокировать'}</span>
+                </button>
+              </div>
             </div>
+
+            {selectedDialog.is_blocked && (
+              <div style={{ padding: '7px 16px', background: '#fef2f2', borderBottom: '1px solid #fecaca', color: '#991b1b', fontSize: 11.5, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Ban size={13} />
+                <span>Пользователь заблокирован: отправка сообщений с сайта, вход в кабинет и обращения в бота ограничены.</span>
+              </div>
+            )}
 
             {/* Messages Thread */}
             <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, background: '#f8fafc' }}>

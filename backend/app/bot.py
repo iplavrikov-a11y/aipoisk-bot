@@ -165,6 +165,7 @@ from .support_chat import (
     get_or_create_guest_session,
     is_admin_telegram_user,
     is_support_group_chat,
+    is_telegram_user_blocked,
     list_recent_dialogs_for_bot,
     lookup_tg_reply_target,
     lookup_topic_dialog,
@@ -2622,6 +2623,9 @@ async def start(message: Message, command: CommandObject | None = None) -> None:
     first_use = False
     db = SessionLocal()
     try:
+        if not is_admin_telegram_user(db, telegram_id) and is_telegram_user_blocked(db, telegram_id):
+            await message.answer("⛔ Доступ ограничен администратором.")
+            return
         link_token = ""
         ref_code = ""
         command_args = str(getattr(command, "args", "") or "").strip()
@@ -6131,6 +6135,11 @@ async def handle_client_support_callback(callback: CallbackQuery) -> None:
             )
             return
 
+        if not is_admin_telegram_user(db, uid) and is_telegram_user_blocked(db, uid):
+            clear_active_tg_session(db, tg_user_id=uid, role_scope="client_dm")
+            await callback.answer("⛔ Доступ ограничен администратором.", show_alert=True)
+            return
+
         job_id = ""
         if action == "reply" and arg:
             state = db.get(SupportDialogState, arg)
@@ -6466,6 +6475,9 @@ async def _handle_support_private_message(message: Message, bot: Bot | None = No
                     )
                     return True
                 if mapped.direction == "client_dm_reply":
+                    if not is_admin and is_telegram_user_blocked(db, tg_uid):
+                        await message.answer("⛔ Доступ к поддержке ограничен администратором.")
+                        return True
                     try:
                         atts = await _download_bot_support_attachments(
                             message,
@@ -6478,15 +6490,19 @@ async def _handle_support_private_message(message: Message, bot: Bot | None = No
                     except ValueError as exc:
                         await message.answer(f"⚠️ {exc}")
                         return True
-                    await deliver_client_telegram_message(
-                        db,
-                        tg_user_id=tg_uid,
-                        username=username,
-                        full_name=full_name,
-                        text=text_raw,
-                        attachments=atts,
-                        job_id=mapped.job_id,
-                    )
+                    try:
+                        await deliver_client_telegram_message(
+                            db,
+                            tg_user_id=tg_uid,
+                            username=username,
+                            full_name=full_name,
+                            text=text_raw,
+                            attachments=atts,
+                            job_id=mapped.job_id,
+                        )
+                    except PermissionError as exc:
+                        await message.answer(f"⛔ {exc}")
+                        return True
                     await message.answer(
                         "✅ Ваше сообщение передано специалисту TenderLex. Как только появится ответ — я сразу пришлю его сюда!",
                         reply_markup=_inline_menu_for_message(message),
@@ -6561,6 +6577,10 @@ async def _handle_support_private_message(message: Message, bot: Bot | None = No
         # 4. Persistent Client Support DM session ("Написать в поддержку")
         client_sess = get_active_tg_session(db, tg_user_id=tg_uid, role_scope="client_dm")
         if client_sess:
+            if not is_admin and is_telegram_user_blocked(db, tg_uid):
+                clear_active_tg_session(db, tg_user_id=tg_uid, role_scope="client_dm")
+                await message.answer("⛔ Доступ к поддержке ограничен администратором.")
+                return True
             try:
                 atts = await _download_bot_support_attachments(
                     message,
@@ -6571,15 +6591,19 @@ async def _handle_support_private_message(message: Message, bot: Bot | None = No
             except ValueError as exc:
                 await message.answer(f"⚠️ {exc}")
                 return True
-            await deliver_client_telegram_message(
-                db,
-                tg_user_id=tg_uid,
-                username=username,
-                full_name=full_name,
-                text=text_raw,
-                attachments=atts,
-                job_id=client_sess.job_id,
-            )
+            try:
+                await deliver_client_telegram_message(
+                    db,
+                    tg_user_id=tg_uid,
+                    username=username,
+                    full_name=full_name,
+                    text=text_raw,
+                    attachments=atts,
+                    job_id=client_sess.job_id,
+                )
+            except PermissionError as exc:
+                await message.answer(f"⛔ {exc}")
+                return True
             client_sess.expires_at = now_utc() + timedelta(hours=DEFAULT_CLIENT_SESSION_TTL_HOURS)
             db.commit()
             await message.answer(

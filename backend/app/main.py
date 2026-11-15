@@ -14,6 +14,7 @@ import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -27,7 +28,7 @@ import jwt
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, object_session, selectinload
 
 from .ai import call_llm, resolve_job_ai_info
@@ -142,6 +143,7 @@ from .models import (
     OnboardingReminder,
     SeoEntry,
     SupplierResult,
+    SupportBlockedActor,
     SupportDialogState,
     SupportGuestSession,
     SystemSettings,
@@ -165,18 +167,24 @@ from .seo_funnel import ENTRY_COOKIE, RETENTION_DAYS, attach_registration, creat
 from .support_chat import (
     GUEST_CLIENT_PREFIX,
     TELEGRAM_ID_RE,
+    block_support_dialog,
     build_guest_chat_frontend_message,
     check_guest_chat_rate_limits,
     deliver_admin_reply,
     ensure_legacy_guest_sessions_imported,
     extract_guest_session_id,
+    get_blocked_dialog_keys,
     get_or_create_guest_session,
+    is_guest_chat_blocked,
     is_guest_client_id,
+    is_ip_blocked,
+    is_telegram_user_blocked,
     notify_admins_of_incoming_message,
     parse_telegram_id_list,
     safe_chat_attachment_dir,
     save_attachment_bytes,
     test_support_group_connection,
+    unblock_support_dialog,
     unread_dialogs_count_for_admin,
     validate_guest_session_id,
 )
@@ -599,6 +607,12 @@ def customer_register_api(
             status_code=400,
             detail="Для регистрации необходимо принять оферту и согласие на обработку персональных данных.",
         )
+    if is_ip_blocked(db, _extract_request_ip(request, default="")):
+        _record_customer_registration_attempt(db, request, data.email, "blocked_ip")
+        raise HTTPException(
+            status_code=403,
+            detail="Регистрация с вашего адреса ограничена администратором.",
+        )
     _check_customer_registration_rate(db, request, data.email)
     key = _check_customer_auth_rate(request, data.email)
     try:
@@ -771,6 +785,11 @@ def customer_yandex_callback_api(
         clear_yandex_oauth_state_cookie(resp)
         return resp
 
+    if is_ip_blocked(db, _extract_request_ip(request, default="")):
+        resp = RedirectResponse(url=f"{target_error_url}account_blocked", status_code=303)
+        clear_yandex_oauth_state_cookie(resp)
+        return resp
+
     try:
         user, is_new = get_or_create_yandex_web_user(
             db,
@@ -781,6 +800,11 @@ def customer_yandex_callback_api(
     except Exception as exc:
         logger.error("yandex_oauth_user_creation_error", extra={"error": str(exc)})
         resp = RedirectResponse(url=f"{target_error_url}user_creation_failed", status_code=303)
+        clear_yandex_oauth_state_cookie(resp)
+        return resp
+
+    if not user.is_active or (user.client and not user.client.is_active):
+        resp = RedirectResponse(url=f"{target_error_url}account_blocked", status_code=303)
         clear_yandex_oauth_state_cookie(resp)
         return resp
 
@@ -840,6 +864,9 @@ def customer_telegram_callback_api(
             url=f"{target_error_url}telegram_invalid", status_code=303
         )
 
+    if is_telegram_user_blocked(db, auth_data["id"]) or is_ip_blocked(db, _extract_request_ip(request, default="")):
+        return RedirectResponse(url=f"{target_error_url}account_blocked", status_code=303)
+
     try:
         user, is_new = get_or_create_telegram_web_user(
             db,
@@ -854,6 +881,9 @@ def customer_telegram_callback_api(
         return RedirectResponse(
             url=f"{target_error_url}user_creation_failed", status_code=303
         )
+
+    if not user.is_active or (user.client and not user.client.is_active):
+        return RedirectResponse(url=f"{target_error_url}account_blocked", status_code=303)
 
     if is_new and _link_seo_registration(db, request, user):
         db.commit()
@@ -883,6 +913,12 @@ def customer_telegram_verify_api(
             detail="Неверная подпись данных Telegram или время сессии истекло.",
         )
 
+    if is_telegram_user_blocked(db, auth_data["id"]) or is_ip_blocked(db, _extract_request_ip(request, default="")):
+        raise HTTPException(
+            status_code=403,
+            detail="Доступ к аккаунту ограничен администратором.",
+        )
+
     try:
         user, is_new = get_or_create_telegram_web_user(
             db,
@@ -910,6 +946,12 @@ def customer_telegram_verify_api(
     except Exception as exc:
         logger.error("telegram_auth_user_creation_error", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if not user.is_active or (user.client and not user.client.is_active):
+        raise HTTPException(
+            status_code=403,
+            detail="Доступ к аккаунту ограничен администратором.",
+        )
 
     if is_new and _link_seo_registration(db, request, user):
         db.commit()
@@ -2297,12 +2339,17 @@ async def customer_chat_post_route(
     except Exception as exc:
         logger.warning("Error notifying admin about customer chat message: %s", exc)
 
-    job_map = {j.id: j for j in client.jobs} if client else {}
     msgs = (
         db.query(JobChatMessage)
         .filter(JobChatMessage.client_id == client_id)
         .order_by(JobChatMessage.created_at.asc())
         .all()
+    )
+    msg_job_ids = {m.job_id for m in msgs if m.job_id}
+    job_map = (
+        {j.id: j for j in db.query(Job).filter(Job.id.in_(msg_job_ids)).all()}
+        if (client and msg_job_ids)
+        else {}
     )
     return {"ok": True, "messages": [chat_message_to_dict(m, job_map=job_map) for m in msgs]}
 
@@ -2363,6 +2410,7 @@ def customer_chat_attachment_route(
 @app.get("/api/public/guest-chat/messages")
 def public_guest_chat_messages(
     sessionId: str = Query(...),
+    request: Request = None,
     db: Session = Depends(db_session),
 ) -> dict:
     try:
@@ -2370,18 +2418,23 @@ def public_guest_chat_messages(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    ensure_legacy_guest_sessions_imported(db, session_id=clean_sid)
     guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == clean_sid).first()
+    if not guest:
+        ensure_legacy_guest_sessions_imported(db, session_id=clean_sid)
+        guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == clean_sid).first()
     msgs = (
         db.query(JobChatMessage)
         .filter(JobChatMessage.client_id == f"guest:{clean_sid}")
         .order_by(JobChatMessage.created_at.asc())
         .all()
     )
+    client_ip = _extract_request_ip(request, default="") if request is not None else ""
+    blocked = is_guest_chat_blocked(db, session_id=clean_sid, client_ip=client_ip, guest=guest)
     return {
         "messages": [build_guest_chat_frontend_message(m) for m in msgs],
         "contact": guest.visitor_contact if (guest and guest.visitor_contact) else None,
-        "status": guest.status if guest else "open",
+        "status": "blocked" if blocked else (guest.status if guest else "open"),
+        "is_blocked": blocked,
     }
 
 
@@ -2405,6 +2458,9 @@ async def public_guest_chat_send(
     clean_contact = str(payload.get("contact") or "").strip()[:255]
     source_url = str(payload.get("sourceUrl") or "").strip()[:512]
     client_ip = _extract_request_ip(request, default="")
+
+    if is_guest_chat_blocked(db, session_id=clean_sid, client_ip=client_ip):
+        raise HTTPException(status_code=403, detail="Отправка сообщений ограничена администратором.")
 
     rate_err = check_guest_chat_rate_limits(db, session_id=clean_sid, client_ip=client_ip)
     if rate_err:
@@ -3885,51 +3941,85 @@ def list_clients(db: Session = Depends(db_session)) -> list[dict]:
 
 @app.get("/api/clients/sync-check", dependencies=[Depends(require_admin)])
 def clients_sync_check(db: Session = Depends(db_session)) -> dict:
-    clients_count, max_client_updated, max_client_created = (
-        db.query(
-            func.count(Client.id),
-            func.max(Client.updated_at),
-            func.max(Client.created_at),
-        ).one()
-    )
+    ensure_legacy_guest_sessions_imported(db)
+    stats_row = db.execute(
+        select(
+            select(func.count(Client.id)).scalar_subquery(),
+            select(func.max(Client.updated_at)).scalar_subquery(),
+            select(func.max(Client.created_at)).scalar_subquery(),
+            select(func.max(WebUser.updated_at)).scalar_subquery(),
+            select(func.max(BillingTransaction.created_at)).scalar_subquery(),
+            select(func.count(Job.id)).scalar_subquery(),
+            select(func.max(Job.updated_at)).scalar_subquery(),
+            select(func.count(JobChatMessage.id)).scalar_subquery(),
+            select(func.max(JobChatMessage.created_at)).scalar_subquery(),
+            select(func.count(func.distinct(JobChatMessage.client_id)))
+            .where(
+                JobChatMessage.sender_role == "client",
+                JobChatMessage.is_read_by_admin == False,
+                JobChatMessage.client_id != "",
+            )
+            .scalar_subquery(),
+        )
+    ).one()
+    (
+        clients_count,
+        max_client_updated,
+        max_client_created,
+        max_web_user_updated,
+        max_billing_created,
+        jobs_count,
+        max_job_updated,
+        chat_count,
+        max_chat_created,
+        unread_dialogs_count,
+    ) = stats_row
     clients_count = int(clients_count or 0)
-    max_web_user_updated = db.query(func.max(WebUser.updated_at)).scalar()
-    max_billing_created = db.query(func.max(BillingTransaction.created_at)).scalar()
-    jobs_count, max_job_updated = (
-        db.query(func.count(Job.id), func.max(Job.updated_at)).one()
-    )
     jobs_count = int(jobs_count or 0)
+    chat_count = int(chat_count or 0)
+    unread_dialogs_count = int(unread_dialogs_count or 0)
 
-    latest_client = (
-        db.query(Client)
-        .options(selectinload(Client.web_users), selectinload(Client.telegram_accounts))
+    latest_row = db.execute(
+        select(
+            Client.id,
+            Client.client_number,
+            Client.name,
+            Client.username,
+            Client.telegram_id,
+            Client.created_at,
+            select(WebUser.email)
+            .where(WebUser.client_id == Client.id)
+            .limit(1)
+            .scalar_subquery()
+            .label("web_email"),
+            select(ClientTelegramAccount.username)
+            .where(ClientTelegramAccount.client_id == Client.id)
+            .limit(1)
+            .scalar_subquery()
+            .label("tg_acc_username"),
+        )
         .order_by(Client.created_at.desc())
-        .first()
-    )
+        .limit(1)
+    ).first()
     latest_info = None
-    if latest_client:
-        email = latest_client.web_users[0].email if latest_client.web_users else ""
-        tg = latest_client.username or (latest_client.telegram_accounts[0].username if latest_client.telegram_accounts else "")
-        source = "web" if latest_client.web_users else "telegram"
-        contact = email or (f"@{tg}" if tg else (latest_client.telegram_id or ""))
+    if latest_row:
+        email = latest_row.web_email or ""
+        tg = latest_row.username or latest_row.tg_acc_username or ""
+        source = "web" if latest_row.web_email is not None else "telegram"
+        contact = email or (f"@{tg}" if tg else (latest_row.telegram_id or ""))
         latest_info = {
-            "id": latest_client.id,
-            "client_number": latest_client.client_number,
-            "name": latest_client.name or "Без имени",
+            "id": latest_row.id,
+            "client_number": latest_row.client_number,
+            "name": latest_row.name or "Без имени",
             "source": source,
             "contact": contact,
-            "created_at": latest_client.created_at.isoformat() if latest_client.created_at else "",
+            "created_at": latest_row.created_at.isoformat() if latest_row.created_at else "",
         }
 
     c_up = max_client_updated.isoformat() if max_client_updated else ""
     c_cr = max_client_created.isoformat() if max_client_created else ""
     w_up = max_web_user_updated.isoformat() if max_web_user_updated else ""
     b_cr = max_billing_created.isoformat() if max_billing_created else ""
-    chat_count, max_chat_created = (
-        db.query(func.count(JobChatMessage.id), func.max(JobChatMessage.created_at)).one()
-    )
-    chat_count = int(chat_count or 0)
-    unread_dialogs_count = unread_dialogs_count_for_admin(db)
     c_chat = max_chat_created.isoformat() if max_chat_created else ""
     version_key = f"{clients_count}:{c_up}:{c_cr}:{w_up}:{b_cr}:{jobs_count}:{chat_count}:{c_chat}:{unread_dialogs_count}"
 
@@ -5839,68 +5929,211 @@ def admin_dialogs_list(
     filter_unread: bool = False,
 ) -> dict:
     ensure_legacy_guest_sessions_imported(db)
-    chat_client_ids = [row[0] for row in db.query(JobChatMessage.client_id).distinct().all() if row[0]]
-    guest_sessions = db.query(SupportGuestSession).all()
-    guest_map = {f"{GUEST_CLIENT_PREFIX}{g.session_id}": g for g in guest_sessions}
-    comment_jobs = (
-        db.query(Job)
+    guest_rows = (
+        db.query(
+            SupportGuestSession.session_id,
+            SupportGuestSession.visitor_name,
+            SupportGuestSession.visitor_contact,
+            SupportGuestSession.status,
+        ).all()
+    )
+    guest_map = {f"{GUEST_CLIENT_PREFIX}{row.session_id}": row for row in guest_rows}
+
+    comment_client_ids = [
+        row[0]
+        for row in db.query(Job.client_id)
         .filter(
             or_(
                 func.coalesce(Job.admin_comment, "") != "",
                 func.coalesce(Job.admin_supplement_path, "") != "",
             ),
             Job.is_admin_rerun == False,
+            func.coalesce(Job.client_id, "") != "",
         )
+        .distinct()
         .all()
-    )
-    all_ids = list(dict.fromkeys(
-        chat_client_ids
-        + [j.client_id for j in comment_jobs if j.client_id]
-        + list(guest_map.keys())
-    ))
-    if not all_ids:
+        if row and row[0]
+    ]
+
+    def _load_msg_stats(target_cids: list[str] | None = None):
+        q = db.query(
+            JobChatMessage.client_id,
+            func.count(JobChatMessage.id).label("total_cnt"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                JobChatMessage.sender_role == "client",
+                                JobChatMessage.is_read_by_admin == False,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("unread_cnt"),
+        ).filter(JobChatMessage.client_id != "")
+        if target_cids is not None:
+            q = q.filter(JobChatMessage.client_id.in_(target_cids))
+        return {
+            row.client_id: (int(row.total_cnt or 0), int(row.unread_cnt or 0))
+            for row in q.group_by(JobChatMessage.client_id).all()
+        }
+
+    stats_by_client = _load_msg_stats()
+    missing_comment_cids = [
+        cid
+        for cid in comment_client_ids
+        if not is_guest_client_id(cid) and stats_by_client.get(cid, (0, 0))[0] == 0
+    ]
+    if missing_comment_cids:
+        seed_jobs = (
+            db.query(Job)
+            .filter(
+                Job.client_id.in_(missing_comment_cids),
+                Job.is_admin_rerun == False,
+            )
+            .all()
+        )
+        for j in seed_jobs:
+            get_job_chat_messages(db, j, auto_seed=True)
+        stats_by_client.update(_load_msg_stats(missing_comment_cids))
+
+    active_ids = [cid for cid, (cnt, _) in stats_by_client.items() if cnt > 0]
+    if not active_ids:
         return {"dialogs": [], "total_unread_admin": 0}
 
-    real_client_ids = [cid for cid in all_ids if not is_guest_client_id(cid)]
-    clients = (
-        db.query(Client)
-        .options(selectinload(Client.web_users), selectinload(Client.jobs))
-        .filter(Client.id.in_(real_client_ids))
-        .all()
-    ) if real_client_ids else []
-    client_map = {c.id: c for c in clients}
+    rn_sub = (
+        select(
+            JobChatMessage.client_id.label("client_id"),
+            JobChatMessage.message.label("message"),
+            JobChatMessage.channel.label("channel"),
+            JobChatMessage.sender_role.label("sender_role"),
+            JobChatMessage.attachments_json.label("attachments_json"),
+            JobChatMessage.created_at.label("created_at"),
+            func.row_number()
+            .over(
+                partition_by=JobChatMessage.client_id,
+                order_by=(JobChatMessage.created_at.desc(), JobChatMessage.id.desc()),
+            )
+            .label("rn"),
+        )
+        .where(JobChatMessage.client_id.in_(active_ids))
+        .subquery()
+    )
+    last_rows = db.execute(
+        select(
+            rn_sub.c.client_id,
+            rn_sub.c.message,
+            rn_sub.c.channel,
+            rn_sub.c.sender_role,
+            rn_sub.c.attachments_json,
+            rn_sub.c.created_at,
+        ).where(rn_sub.c.rn == 1)
+    ).all()
+    last_by_client = {row.client_id: row for row in last_rows}
 
-    dialog_states = db.query(SupportDialogState).filter(SupportDialogState.client_id.in_(all_ids)).all()
-    state_by_client = {s.client_id: s for s in dialog_states}
-
-    all_msgs = (
-        db.query(JobChatMessage)
-        .filter(JobChatMessage.client_id.in_(all_ids))
-        .order_by(JobChatMessage.created_at.asc())
+    blocked_keys = get_blocked_dialog_keys(db)
+    state_rows = (
+        db.query(
+            SupportDialogState.client_id,
+            SupportDialogState.status,
+            SupportDialogState.last_channel,
+            SupportDialogState.telegram_thread_id,
+        )
+        .filter(SupportDialogState.client_id.in_(active_ids))
         .all()
     )
-    msgs_by_client: dict[str, list[JobChatMessage]] = {}
-    for m in all_msgs:
-        msgs_by_client.setdefault(m.client_id, []).append(m)
+    state_by_client = {row.client_id: row for row in state_rows}
+
+    real_client_ids = [cid for cid in active_ids if not is_guest_client_id(cid)]
+    client_map: dict = {}
+    web_users_by_client: dict[str, list] = {}
+    jobs_by_client: dict[str, list[dict]] = {}
+    if real_client_ids:
+        client_rows = (
+            db.query(
+                Client.id,
+                Client.client_number,
+                Client.name,
+                Client.phone,
+                Client.telegram_id,
+                Client.is_active,
+            )
+            .filter(Client.id.in_(real_client_ids))
+            .all()
+        )
+        client_map = {row.id: row for row in client_rows}
+
+        for wu in (
+            db.query(WebUser.client_id, WebUser.email, WebUser.phone)
+            .filter(WebUser.client_id.in_(real_client_ids))
+            .all()
+        ):
+            web_users_by_client.setdefault(wu.client_id, []).append(wu)
+
+        job_rows = (
+            db.query(
+                Job.id,
+                Job.client_id,
+                Job.job_number,
+                Job.title,
+                Job.mode,
+                Job.status,
+                Job.created_at,
+                Job.result_path,
+                Job.is_admin_rerun,
+                Job.message,
+                Job.error,
+            )
+            .filter(Job.client_id.in_(real_client_ids), Job.is_admin_rerun == False)
+            .order_by(Job.job_number.desc())
+            .all()
+        )
+        for j in job_rows:
+            jobs_by_client.setdefault(j.client_id, []).append({
+                "job_id": j.id,
+                "job_number": j.job_number,
+                "job_title": fast_human_job_title_fields(
+                    title=j.title or "",
+                    mode=j.mode or "",
+                    result_path=j.result_path or "",
+                    is_admin_rerun=bool(j.is_admin_rerun),
+                    message=j.message or "",
+                    error=j.error or "",
+                ),
+                "job_mode": j.mode,
+                "job_mode_label": mode_label(j.mode),
+                "job_status": j.status,
+                "created_at": j.created_at.isoformat() if j.created_at else None,
+            })
 
     dialogs = []
     total_unread_admin = 0
 
-    for cid in all_ids:
-        msgs = msgs_by_client.get(cid) or []
+    for cid in active_ids:
+        total_cnt, unread_cnt = stats_by_client.get(cid, (0, 0))
+        last_m = last_by_client.get(cid)
+        if not total_cnt or not last_m:
+            continue
+
+        d_state = state_by_client.get(cid)
+        last_msg_text = last_m.message or ("📎 Прикреплены файлы" if (last_m.attachments_json or "[]") != "[]" else "")
+        last_msg_at = last_m.created_at.isoformat() if last_m.created_at else None
+
         if is_guest_client_id(cid):
             guest = guest_map.get(cid)
-            if not msgs and not guest:
-                continue
             sid = extract_guest_session_id(cid)
-            if not msgs:
-                continue
-            unread_cnt = sum(1 for m in msgs if m.sender_role == "client" and not m.is_read_by_admin)
+            is_blocked = bool(
+                f"guest:{sid}" in blocked_keys
+                or (guest and guest.status == "blocked")
+                or (d_state and d_state.status == "blocked")
+            )
             total_unread_admin += unread_cnt
             if filter_unread and unread_cnt == 0:
                 continue
-            last_m = msgs[-1]
-            d_state = state_by_client.get(cid)
             contact = (guest.visitor_contact if guest else "") or ""
             is_tg_guest = sid.startswith("tg_")
             dialogs.append({
@@ -5913,14 +6146,15 @@ def admin_dialogs_list(
                 "is_guest": True,
                 "guest_session_id": sid,
                 "telegram_id": sid[3:] if is_tg_guest else "",
-                "last_channel": (getattr(last_m, "channel", "") or (d_state.last_channel if d_state else "guest_web")),
+                "last_channel": (last_m.channel or (d_state.last_channel if d_state else "guest_web")),
                 "topic_linked": bool(d_state and int(d_state.telegram_thread_id or 0) > 0),
-                "dialog_status": (d_state.status if d_state else (guest.status if guest else "open")),
-                "last_message": last_m.message or ("📎 Прикреплены файлы" if last_m.attachments_json != "[]" else ""),
-                "last_message_at": last_m.created_at.isoformat() if last_m.created_at else None,
+                "dialog_status": "blocked" if is_blocked else (d_state.status if d_state else (guest.status if guest else "open")),
+                "is_blocked": is_blocked,
+                "last_message": last_msg_text,
+                "last_message_at": last_msg_at,
                 "last_sender_role": last_m.sender_role,
                 "unread_admin_count": unread_cnt,
-                "total_messages": len(msgs),
+                "total_messages": total_cnt,
                 "jobs": [],
                 "job_id": "",
                 "job_number": None,
@@ -5935,70 +6169,45 @@ def admin_dialogs_list(
         if not client:
             continue
 
-        if not msgs:
-            for j in client.jobs:
-                if not getattr(j, "is_admin_rerun", False):
-                    get_job_chat_messages(db, j, auto_seed=True)
-            msgs = (
-                db.query(JobChatMessage)
-                .filter(JobChatMessage.client_id == cid)
-                .order_by(JobChatMessage.created_at.asc())
-                .all()
-            )
-            if not msgs:
-                continue
-
-        unread_cnt = sum(1 for m in msgs if m.sender_role == "client" and not m.is_read_by_admin)
         total_unread_admin += unread_cnt
-
         if filter_unread and unread_cnt == 0:
             continue
 
-        last_m = msgs[-1]
-        d_state = state_by_client.get(cid)
-        client_name = client.name if client else ""
         client_email = ""
-        client_phone = getattr(client, "phone", "") or ""
-        if client and client.web_users:
-            for wu in client.web_users:
-                if wu.email and not client_email:
-                    client_email = wu.email
-                if getattr(wu, "phone", "") and not client_phone:
-                    client_phone = wu.phone
+        client_phone = client.phone or ""
+        for wu in web_users_by_client.get(cid, []):
+            if wu.email and not client_email:
+                client_email = wu.email
+            if wu.phone and not client_phone:
+                client_phone = wu.phone
 
-        client_jobs = []
-        for j in client.jobs:
-            if not getattr(j, "is_admin_rerun", False):
-                client_jobs.append({
-                    "job_id": j.id,
-                    "job_number": getattr(j, "job_number", None),
-                    "job_title": human_job_title(j),
-                    "job_mode": j.mode,
-                    "job_mode_label": mode_label(j.mode),
-                    "job_status": j.status,
-                    "created_at": j.created_at.isoformat() if j.created_at else None,
-                })
-        client_jobs.sort(key=lambda x: x.get("job_number") or 0, reverse=True)
+        client_jobs = jobs_by_client.get(cid, [])
         primary_job = client_jobs[0] if client_jobs else None
+        is_blocked = bool(
+            f"client:{client.id}" in blocked_keys
+            or not client.is_active
+            or (d_state and d_state.status == "blocked")
+        )
 
         dialogs.append({
             "client_id": client.id,
-            "client_number": getattr(client, "client_number", None),
-            "client_name": client_name or "Без названия",
+            "client_number": client.client_number,
+            "client_name": client.name or "Без названия",
             "client_email": client_email,
             "client_phone": client_phone,
             "visitor_contact": "",
             "is_guest": False,
             "guest_session_id": "",
-            "telegram_id": client.telegram_id if client else "",
-            "last_channel": (getattr(last_m, "channel", "") or (d_state.last_channel if d_state else "web")),
+            "telegram_id": client.telegram_id or "",
+            "last_channel": (last_m.channel or (d_state.last_channel if d_state else "web")),
             "topic_linked": bool(d_state and int(d_state.telegram_thread_id or 0) > 0),
-            "dialog_status": (d_state.status if d_state else "open"),
-            "last_message": last_m.message or ("📎 Прикреплены файлы" if last_m.attachments_json != "[]" else ""),
-            "last_message_at": last_m.created_at.isoformat() if last_m.created_at else None,
+            "dialog_status": "blocked" if is_blocked else (d_state.status if d_state else "open"),
+            "is_blocked": is_blocked,
+            "last_message": last_msg_text,
+            "last_message_at": last_msg_at,
             "last_sender_role": last_m.sender_role,
             "unread_admin_count": unread_cnt,
-            "total_messages": len(msgs),
+            "total_messages": total_cnt,
             "jobs": client_jobs,
             "job_id": primary_job["job_id"] if primary_job else "",
             "job_number": primary_job["job_number"] if primary_job else None,
@@ -6010,6 +6219,53 @@ def admin_dialogs_list(
 
     dialogs.sort(key=lambda d: d.get("last_message_at") or "", reverse=True)
     return {"dialogs": dialogs, "total_unread_admin": total_unread_admin}
+
+
+@app.post("/api/admin/dialogs/read-all", dependencies=[Depends(require_admin)])
+def admin_dialogs_mark_all_read(db: Session = Depends(db_session)) -> dict:
+    marked_count = (
+        db.query(JobChatMessage)
+        .filter(
+            JobChatMessage.sender_role == "client",
+            JobChatMessage.is_read_by_admin == False,
+        )
+        .update({"is_read_by_admin": True}, synchronize_session=False)
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "marked_count": int(marked_count or 0),
+        "total_unread_admin": 0,
+    }
+
+
+@app.post("/api/admin/dialogs/{client_id}/block", dependencies=[Depends(require_admin)])
+async def admin_dialog_block(
+    client_id: str,
+    payload: dict = Body(default={}),
+    db: Session = Depends(db_session),
+) -> dict:
+    reason = str(payload.get("reason") or "").strip()[:300] if isinstance(payload, dict) else ""
+    try:
+        return await block_support_dialog(
+            db,
+            client_id=client_id,
+            reason=reason,
+            blocked_by="admin",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/dialogs/{client_id}/unblock", dependencies=[Depends(require_admin)])
+async def admin_dialog_unblock(
+    client_id: str,
+    db: Session = Depends(db_session),
+) -> dict:
+    try:
+        return await unblock_support_dialog(db, client_id=client_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/admin/support/test-group", dependencies=[Depends(require_admin)])
@@ -6029,8 +6285,10 @@ async def admin_support_test_group(
 def admin_client_chat_get(client_id: str, db: Session = Depends(db_session)) -> dict:
     if is_guest_client_id(client_id):
         sid = extract_guest_session_id(client_id)
-        ensure_legacy_guest_sessions_imported(db, session_id=sid)
         guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == sid).first()
+        if not guest:
+            ensure_legacy_guest_sessions_imported(db, session_id=sid)
+            guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == sid).first()
         msgs = (
             db.query(JobChatMessage)
             .filter(JobChatMessage.client_id == client_id)
@@ -6039,13 +6297,24 @@ def admin_client_chat_get(client_id: str, db: Session = Depends(db_session)) -> 
         )
         if not guest and not msgs:
             raise HTTPException(status_code=404, detail="Гостевой диалог не найден.")
-        updated = False
-        for m in msgs:
-            if m.sender_role == "client" and not m.is_read_by_admin:
-                m.is_read_by_admin = True
-                updated = True
-        if updated:
+        unread_ids = [m.id for m in msgs if m.sender_role == "client" and not m.is_read_by_admin]
+        if unread_ids:
+            db.query(JobChatMessage).filter(JobChatMessage.id.in_(unread_ids)).update(
+                {"is_read_by_admin": True}, synchronize_session=False
+            )
             db.commit()
+            for m in msgs:
+                if m.sender_role == "client":
+                    m.is_read_by_admin = True
+        d_state_row = (
+            db.query(SupportDialogState.status)
+            .filter(SupportDialogState.dialog_key == f"guest:{sid}")
+            .first()
+        )
+        is_blocked = bool(
+            is_guest_chat_blocked(db, session_id=sid, client_ip=getattr(guest, "client_ip", ""), guest=guest)
+            or (d_state_row and d_state_row[0] == "blocked")
+        )
         contact = (guest.visitor_contact if guest else "") or ""
         return {
             "client": {
@@ -6058,12 +6327,24 @@ def admin_client_chat_get(client_id: str, db: Session = Depends(db_session)) -> 
                 "telegram_id": sid[3:] if sid.startswith("tg_") else "",
                 "is_guest": True,
                 "guest_session_id": sid,
+                "is_blocked": is_blocked,
             },
             "jobs": [],
             "messages": [chat_message_to_dict(m) for m in msgs],
         }
 
-    client = db.get(Client, client_id)
+    client = (
+        db.query(
+            Client.id,
+            Client.client_number,
+            Client.name,
+            Client.phone,
+            Client.telegram_id,
+            Client.is_active,
+        )
+        .filter(Client.id == client_id)
+        .first()
+    )
     if not client:
         raise HTTPException(status_code=404, detail="Клиент не найден.")
 
@@ -6075,16 +6356,38 @@ def admin_client_chat_get(client_id: str, db: Session = Depends(db_session)) -> 
         .all()
     )
 
+    light_jobs = (
+        db.query(
+            Job.id,
+            Job.job_number,
+            Job.title,
+            Job.mode,
+            Job.status,
+            Job.created_at,
+            Job.result_path,
+            Job.is_admin_rerun,
+            Job.parent_job_id,
+            Job.admin_comment,
+            Job.admin_supplement_path,
+            Job.message,
+            Job.error,
+        )
+        .filter(Job.client_id == client_id)
+        .order_by(Job.job_number.desc())
+        .all()
+    )
+
     # Only auto-seed if any job has admin comment/supplements and does not have chat messages yet
     existing_job_ids = {m.job_id for m in msgs}
-    candidates = [
-        j for j in client.jobs
-        if not getattr(j, "is_admin_rerun", False)
-        and resolve_chat_job_id(j) not in existing_job_ids
-        and (getattr(j, "admin_comment", "") or get_job_admin_supplements(j))
+    candidate_ids = [
+        j.id
+        for j in light_jobs
+        if not j.is_admin_rerun
+        and (j.parent_job_id if (j.is_admin_rerun and j.parent_job_id) else j.id) not in existing_job_ids
+        and (j.admin_comment or j.admin_supplement_path)
     ]
-    if candidates:
-        for j in candidates[:5]:
+    if candidate_ids:
+        for j in db.query(Job).filter(Job.id.in_(candidate_ids[:5])).all():
             get_job_chat_messages(db, j, auto_seed=True)
         msgs = (
             db.query(JobChatMessage)
@@ -6093,36 +6396,63 @@ def admin_client_chat_get(client_id: str, db: Session = Depends(db_session)) -> 
             .all()
         )
 
-    updated = False
-    for m in msgs:
-        if m.sender_role == "client" and not m.is_read_by_admin:
-            m.is_read_by_admin = True
-            updated = True
-    if updated:
+    unread_ids = [m.id for m in msgs if m.sender_role == "client" and not m.is_read_by_admin]
+    if unread_ids:
+        db.query(JobChatMessage).filter(JobChatMessage.id.in_(unread_ids)).update(
+            {"is_read_by_admin": True}, synchronize_session=False
+        )
         db.commit()
+        for m in msgs:
+            if m.sender_role == "client":
+                m.is_read_by_admin = True
 
-    job_map = {j.id: j for j in client.jobs}
-    client_jobs = []
-    for j in client.jobs:
-        if not getattr(j, "is_admin_rerun", False):
-            client_jobs.append({
-                "job_id": j.id,
-                "job_number": getattr(j, "job_number", None),
-                "job_title": human_job_title(j),
-                "job_mode": j.mode,
-                "job_mode_label": mode_label(j.mode),
-                "job_status": j.status,
-            })
-    client_jobs.sort(key=lambda x: x.get("job_number") or 0, reverse=True)
+    msg_job_ids = {m.job_id for m in msgs if m.job_id}
+    job_map = (
+        {j.id: j for j in db.query(Job).filter(Job.id.in_(msg_job_ids)).all()}
+        if msg_job_ids
+        else {}
+    )
+
+    client_jobs = [
+        {
+            "job_id": j.id,
+            "job_number": j.job_number,
+            "job_title": fast_human_job_title_fields(
+                title=j.title or "",
+                mode=j.mode or "",
+                result_path=j.result_path or "",
+                is_admin_rerun=bool(j.is_admin_rerun),
+                message=j.message or "",
+                error=j.error or "",
+            ),
+            "job_mode": j.mode,
+            "job_mode_label": mode_label(j.mode),
+            "job_status": j.status,
+        }
+        for j in light_jobs
+        if not j.is_admin_rerun
+    ]
 
     client_email = ""
-    client_phone = getattr(client, "phone", "") or ""
-    if client.web_users:
-        for wu in client.web_users:
-            if wu.email and not client_email:
-                client_email = wu.email
-            if getattr(wu, "phone", "") and not client_phone:
-                client_phone = wu.phone
+    client_phone = client.phone or ""
+    for wu in db.query(WebUser.email, WebUser.phone).filter(WebUser.client_id == client_id).all():
+        if wu.email and not client_email:
+            client_email = wu.email
+        if wu.phone and not client_phone:
+            client_phone = wu.phone
+
+    is_blocked = bool(
+        (not client.is_active)
+        or db.query(SupportBlockedActor.id)
+        .filter(SupportBlockedActor.dialog_key == f"client:{client.id}")
+        .first()
+        or db.query(SupportDialogState.id)
+        .filter(
+            SupportDialogState.dialog_key == f"client:{client.id}",
+            SupportDialogState.status == "blocked",
+        )
+        .first()
+    )
 
     return {
         "client": {
@@ -6132,6 +6462,7 @@ def admin_client_chat_get(client_id: str, db: Session = Depends(db_session)) -> 
             "email": client_email,
             "phone": client_phone,
             "telegram_id": client.telegram_id or "",
+            "is_blocked": is_blocked,
         },
         "jobs": client_jobs,
         "messages": [chat_message_to_dict(m, job_map=job_map) for m in msgs],
@@ -6216,12 +6547,17 @@ async def admin_client_chat_post(
         mirror_to_other_tg=True,
     )
 
-    job_map = {j.id: j for j in client.jobs} if client else {}
     msgs = (
         db.query(JobChatMessage)
         .filter(JobChatMessage.client_id == client_id)
         .order_by(JobChatMessage.created_at.asc())
         .all()
+    )
+    msg_job_ids = {m.job_id for m in msgs if m.job_id}
+    job_map = (
+        {j.id: j for j in db.query(Job).filter(Job.id.in_(msg_job_ids)).all()}
+        if (client and msg_job_ids)
+        else {}
     )
     return {"ok": True, "messages": [chat_message_to_dict(m, job_map=job_map) for m in msgs]}
 
@@ -8494,6 +8830,30 @@ def human_job_title(job: Job | object) -> str:
         return f"[Админ] {lbl}" if is_admin else lbl
     title = _customer_job_title_for_subject(mode, cleaned)
     return f"[Админ] {title}" if is_admin else title
+
+
+def fast_human_job_title_fields(
+    *,
+    title: str = "",
+    mode: str = "",
+    result_path: str = "",
+    is_admin_rerun: bool = False,
+    message: str = "",
+    error: str = "",
+) -> str:
+    """Resolve a human-readable job title from DB columns only, avoiding evidence.json disk reads."""
+    if is_internal_job_record(SimpleNamespace(title=title, message=message, error=error)):
+        return "Служебная проверка"
+    is_admin = bool(is_admin_rerun or str(title or "").startswith("[Админ]"))
+    raw = str(title or "").strip()
+    cleaned = _clean_customer_job_subject(raw) if raw else ""
+    if (not cleaned or _looks_like_hash(cleaned)) and result_path:
+        cleaned = _customer_subject_from_filename(Path(str(result_path)).name)
+    if cleaned and not _looks_like_hash(cleaned):
+        formatted = _customer_job_title_for_subject(mode, cleaned)
+        return f"[Админ] {formatted}" if is_admin else formatted
+    lbl = mode_label(mode)
+    return f"[Админ] {lbl}" if is_admin else lbl
 
 
 def _customer_job_subject_from_evidence(job: Job | object) -> str:

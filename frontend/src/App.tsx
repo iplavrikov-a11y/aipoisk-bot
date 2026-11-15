@@ -2036,6 +2036,9 @@ export function App() {
               onOpenJob={jobId => {
                 setView('jobs')
               }}
+              onUnreadCountChange={count => {
+                setDashboard(prev => (prev ? { ...prev, unread_dialogs_count: count } : prev))
+              }}
             />
           </AdminErrorBoundary>
         )}

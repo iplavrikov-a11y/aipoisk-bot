@@ -69,6 +69,7 @@ export function ChatWidget() {
   const [showContactModal, setShowContactModal] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState('');
+  const [isBlocked, setIsBlocked] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -322,6 +323,9 @@ export function ChatWidget() {
           const res = await fetch(`/api/chat/messages?sessionId=${sessionId}`, { signal: controller.signal });
           if (res.ok) {
             const data = await res.json();
+            if (!disposed) {
+              setIsBlocked(data.status === 'blocked' || Boolean(data.is_blocked));
+            }
             if (!disposed && Array.isArray(data.messages)) {
               mergeRemoteMessages(data.messages);
             }
@@ -357,7 +361,7 @@ export function ChatWidget() {
   // 4. Send Message Handler
   async function handleSend(textToSend?: string, presetLabel?: string) {
     const msgText = (textToSend || inputText).trim();
-    if (!msgText || isSending) return;
+    if (!msgText || isSending || isBlocked) return;
 
     setIsSending(true);
     setSendError('');
@@ -390,7 +394,13 @@ export function ChatWidget() {
           credentials: 'same-origin',
           body: formData,
         });
-        if (!response.ok) throw new Error('Message delivery failed');
+        if (!response.ok) {
+          const errData = await response.json().catch(() => null);
+          if (response.status === 403 || response.status === 401) {
+            setIsBlocked(true);
+          }
+          throw new Error(errData?.detail || errData?.error || 'Message delivery failed');
+        }
         const data = await response.json().catch(() => null);
         if (Array.isArray(data?.messages)) {
           const mapped: Message[] = data.messages.map((m: any) => ({
@@ -416,12 +426,21 @@ export function ChatWidget() {
             contact: savedContact || contactInput || null,
           }),
         });
-        if (!response.ok) throw new Error('Message delivery failed');
+        if (!response.ok) {
+          const errData = await response.json().catch(() => null);
+          if (response.status === 403) {
+            setIsBlocked(true);
+          }
+          throw new Error(errData?.detail || errData?.error || 'Message delivery failed');
+        }
         const data = await response.json().catch(() => null);
         if (isMessage(data?.message)) mergeRemoteMessages([data.message]);
       }
-    } catch {
-      setSendError('Сообщение не отправлено. Повторите отправку или свяжитесь с нами через контакты на сайте.');
+    } catch (err: any) {
+      const msg = err?.message && err.message !== 'Message delivery failed'
+        ? String(err.message)
+        : 'Сообщение не отправлено. Повторите отправку или свяжитесь с нами через контакты на сайте.';
+      setSendError(msg);
       setInputText(msgText);
       pendingMessageIdsRef.current.delete(userMsg.id);
       replaceMessages(messagesRef.current.filter((message) => message.id !== userMsg.id));
@@ -685,7 +704,13 @@ export function ChatWidget() {
             </div>
           )}
 
-          {sendError ? <p role="alert" className="px-3 py-2 text-xs text-rose-700 bg-rose-50">{sendError}</p> : null}
+          {isBlocked ? (
+            <p role="alert" className="px-3 py-2 text-xs text-rose-700 bg-rose-50 border-t border-rose-200">
+              Отправка сообщений ограничена администратором.
+            </p>
+          ) : sendError ? (
+            <p role="alert" className="px-3 py-2 text-xs text-rose-700 bg-rose-50">{sendError}</p>
+          ) : null}
 
           {/* Footer Input Form */}
           <form
@@ -697,14 +722,21 @@ export function ChatWidget() {
           >
             <input
               type="text"
-              placeholder={activeJobContext ? `Сообщение по задаче #${activeJobContext.jobNumber || ''}...` : 'Напишите сообщение специалисту...'}
+              disabled={isBlocked}
+              placeholder={
+                isBlocked
+                  ? 'Отправка сообщений ограничена'
+                  : activeJobContext
+                    ? `Сообщение по задаче #${activeJobContext.jobNumber || ''}...`
+                    : 'Напишите сообщение специалисту...'
+              }
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              className="flex-1 bg-slate-100 focus:bg-white text-slate-900 placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-transparent focus:border-teal-500 focus:outline-none transition-all"
+              className="flex-1 bg-slate-100 focus:bg-white disabled:opacity-60 text-slate-900 placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-transparent focus:border-teal-500 focus:outline-none transition-all"
             />
             <button
               type="submit"
-              disabled={!inputText.trim() || isSending}
+              disabled={isBlocked || !inputText.trim() || isSending}
               className="bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white p-2.5 rounded-xl transition-all shadow-xs shrink-0 cursor-pointer"
               aria-label="Отправить сообщение"
             >

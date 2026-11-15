@@ -135,6 +135,7 @@ def _ensure_schema() -> None:
             "support_dialog_states",
             "support_telegram_message_map",
             "support_telegram_sessions",
+            "support_blocked_actors",
         ):
             if support_table in Base.metadata.tables:
                 Base.metadata.tables[support_table].create(bind=connection, checkfirst=True)
@@ -561,6 +562,24 @@ def _ensure_schema() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_support_guest_client_ip_created "
                 "ON support_guest_sessions(client_ip, created_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_job_chat_client_created "
+                "ON job_chat_messages(client_id, created_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_job_chat_client_read_admin "
+                "ON job_chat_messages(client_id, sender_role, is_read_by_admin)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_support_blocked_type_val "
+                "ON support_blocked_actors(actor_type, actor_value)"
             )
         )
 

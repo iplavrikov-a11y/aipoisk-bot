@@ -986,4 +986,22 @@ class SupportTelegramSession(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
 
+class SupportBlockedActor(Base):
+    """Blocked support actors (guest session, IP, client account, or Telegram user)."""
+
+    __tablename__ = "support_blocked_actors"
+    __table_args__ = (
+        UniqueConstraint("actor_type", "actor_value", name="uq_support_blocked_actor_type_value"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    actor_type: Mapped[str] = mapped_column(String(24), index=True)  # guest_session | ip | client | telegram
+    actor_value: Mapped[str] = mapped_column(String(128), index=True)
+    dialog_key: Mapped[str] = mapped_column(String(128), default="", index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    blocked_by: Mapped[str] = mapped_column(String(64), default="admin")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+
 

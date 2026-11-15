@@ -1,5 +1,35 @@
 # TenderLex: Project Status
 
+## Актуальное состояние — 15 ноября 2026 (Москва, ч. 2) — Ускорение загрузки диалогов и `sync-check` (в 3.7x–5x), устранение зависания «Загрузка сообщений...», кнопка «Отметить все прочитанными» и 1-клик блокировка/разблокировка пользователей
+
+**Оптимизированы SQL-запросы и чтение диска в разделе «Диалоги с клиентами», убрано наслоение поллинга в админ-панели, добавлены массовая отметка прочитанным и 1-клик блокировка спамеров и злоупотреблений по всем каналам (чат сайта, IP, веб-кабинет, OAuth и Telegram-бот)**:
+
+1. **Ускорение загрузки диалогов и переписки через SSH-туннель к PostgreSQL (`backend/app/main.py`, `backend/app/support_chat.py`, `backend/app/db.py`)**:
+   * В `admin_dialogs_list` (`GET /api/admin/dialogs`) убрана полная выгрузка `Client.jobs` и `JobChatMessage`, а также массовое чтение `evidence.json` с диска для сотен задач: данные грузятся точечно по колонкам, статистика и последнее сообщение вычисляются в SQL (`row_number() over`), а названия задач строятся через `fast_human_job_title_fields()`.
+   * В `admin_client_chat_get`, `admin_client_chat_post` и `customer_chat_post_route` исключена ленивая загрузка всех задач клиента (для 340+ задач) и чтение `evidence.json` по непривязанным задачам; гостевая сессия проверяется до legacy-импорта, а `ensure_legacy_guest_sessions_imported` загружает существующие `session_id` одним запросом.
+   * `clients_sync_check` (`GET /api/clients/sync-check`) переведён с ~9 последовательных запросов на 2 компактных SQL-запроса.
+   * В `backend/app/db.py` добавлены индексы `ix_job_chat_client_created`, `ix_job_chat_client_read_admin` и `ix_support_blocked_type_val`.
+   * По замерам на живом `127.0.0.1:8088` после деплоя: `/api/admin/dialogs` ускорился с ~7.76 с до **1.55–1.77 с**, `/api/clients/sync-check` — с ~1.04 с до **0.28 с**, чат клиента с 340 задачами — с ~2.36 с до **1.07 с**, гостевой диалог — **0.50 с**.
+
+2. **Стабилизация опроса и переключения тредов в админ-панели (`frontend/src/DialogsView.tsx`, `frontend/src/App.tsx`)**:
+   * Заменён накладывающийся `setInterval(..., 4500)` на последовательный `setTimeout(..., 5000)` с флагами активных запросов (`dialogsInFlightRef`), остановкой в скрытой вкладке (`visibilitychange`), отменой устаревших загрузок через `AbortController` + порядковый номер запроса (`messagesReqSeqRef`) и автопрокруткой только при смене диалога или появлении новых сообщений.
+   * Через `onUnreadCountChange` счётчик непрочитанных диалогов в шапке/меню админ-панели обновляется мгновенно.
+
+3. **Кнопка «Отметить все прочитанными» (`frontend/src/DialogsView.tsx`, `backend/app/main.py`)**:
+   * В левой панели диалогов под фильтрами `Все` / `Непрочитанные` добавлена 1-клик кнопка **«Отметить все прочитанными»**, вызывающая `POST /api/admin/dialogs/read-all` и мгновенно обнуляющая бейджи непрочитанных.
+
+4. **1-клик блокировка и разблокировка пользователя по всем каналам (`backend/app/models.py`, `backend/app/db.py`, `backend/app/support_chat.py`, `backend/app/web_auth.py`, `backend/app/bot.py`, `backend/app/main.py`, `frontend/src/DialogsView.tsx`, `site/src/components/chat-widget.tsx`, `site/src/app/api/chat/messages/route.ts`)**:
+   * Добавлена таблица `SupportBlockedActor` (`support_blocked_actors`) и операции `block_support_dialog` / `unblock_support_dialog` + эндпоинты `POST /api/admin/dialogs/{client_id}/block` и `POST /api/admin/dialogs/{client_id}/unblock`.
+   * Кнопка **«Заблокировать» / «Разблокировать»** вынесена прямо в шапку диалога с бейджами `Заблокирован` и информационным баннером.
+   * При блокировке: непрочитанные сообщения диалога помечаются прочитанными и закрываются активные сессии ответа в боте; для гостей сайта блокируется `sessionId` и публичный IP (блокирует повторную отправку, смену `sessionId` и регистрацию с этого IP с кодом `403`); для клиентов отключается `Client.is_active = False`, отзываются активные `WebSession`, закрывается вход по паролю (`authenticate_web_user`) и Yandex/Telegram OAuth, а также сообщения и `/start` в Telegram-боте; связанный топик Telegram-форума закрывается (`closeForumTopic`) и восстанавливается (`reopenForumTopic`) при разблокировке.
+   * В публичном виджете `ChatWidget` (`site/src/components/chat-widget.tsx`) и прокси `site/src/app/api/chat/messages/route.ts` передаются IP-заголовки и при статусе `blocked` / `403` блокируется форма ввода.
+
+5. **Верификация и деплой**:
+   * В `backend/tests/test_support_chat_sync.py` добавлен тест `test_mark_all_dialogs_read_and_block_unblock_guest_and_client`.
+   * Пройдены все бэкенд-тесты (`PYTHONPATH=/root/projects/tenderlex/backend pytest backend/tests -q`: **1 457 passed, 54 subtests passed**), проверка типов сайта (`cd site && npm run typecheck`), сборка админки (`frontend/dist/assets/index-DFuw50FB.js`) и Next.js-сайта, а также живой деплой `./scripts/deploy_tenderlex_live.sh` (`tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site` — `active`, `127.0.0.1:8088` и `127.0.0.1:3093` → `200`).
+
+---
+
 ## Актуальное состояние — 15 ноября 2026 (Москва) — Единая двусторонняя синхронизация диалогов (Telegram-бот + админ-панель + веб-кабинет + чат сайта) и усиление защиты гостевого чата по IP
 
 **Полноценная синхронная переписка с клиентами и гостями сайта напрямую из Telegram-бота (`main_inline_keyboard` только для администраторов), единый реестр сообщений в БД (`JobChatMessage` + `support_*`), проксирование гостевого чата сайта через FastAPI API и защита от автоматических сканеров/флуда**:
