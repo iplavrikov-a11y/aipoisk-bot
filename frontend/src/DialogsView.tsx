@@ -34,7 +34,13 @@ export interface DialogItem {
   client_name: string
   client_email: string
   client_phone: string
+  visitor_contact?: string
+  is_guest?: boolean
+  guest_session_id?: string
   telegram_id: string
+  last_channel?: string
+  topic_linked?: boolean
+  dialog_status?: string
   last_message: string
   last_message_at: string | null
   last_sender_role: 'admin' | 'client'
@@ -62,6 +68,8 @@ export interface ChatMessage {
   id: string
   job_id: string
   client_id: string
+  guest_session_id?: string
+  channel?: string
   sender_role: 'admin' | 'client'
   message: string
   attachments: ChatAttachment[]
@@ -72,6 +80,27 @@ export interface ChatMessage {
   job_title?: string
   job_mode_label?: string
   job_info?: DialogJobSummary | null
+}
+
+function channelBadgeLabel(channel?: string): string {
+  switch (channel) {
+    case 'guest_web':
+      return '🌐 Чат на сайте'
+    case 'web':
+      return '🌐 Кабинет'
+    case 'tg_bot':
+      return '✈️ TG-бот'
+    case 'tg_dm':
+      return '💬 ЛС бота'
+    case 'tg_topic':
+      return '🗂 Группа TG'
+    case 'admin_web':
+      return '🖥 Админ-панель'
+    case 'system':
+      return '⚙️ Система'
+    default:
+      return ''
+  }
 }
 
 function formatDate(iso?: string | null): string {
@@ -134,10 +163,10 @@ export function DialogsView({
   const token = localStorage.getItem('tenderlex_admin_token') || sessionStorage.getItem('tenderlex_admin_token') || ''
   const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
 
-  async function loadDialogs(selectFirst = false) {
+  async function loadDialogs(selectFirst = false, silent = false) {
     try {
-      setLoading(true)
-      const res = await fetch('/api/admin/dialogs', { headers: authHeaders })
+      if (!silent) setLoading(true)
+      const res = await fetch('/api/admin/dialogs', { credentials: 'same-origin', headers: authHeaders })
       if (res.ok) {
         const data = await res.json()
         const list: DialogItem[] = data.dialogs || []
@@ -147,38 +176,42 @@ export function DialogsView({
         }
       }
     } catch (err) {
-      console.error('Failed to load dialogs:', err)
+      if (!silent) console.error('Failed to load dialogs:', err)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
-  async function loadChatMessages(clientId: string) {
+  async function loadChatMessages(clientId: string, silent = false) {
     try {
-      setLoadingMessages(true)
-      setError('')
-      const res = await fetch(`/api/admin/clients/${clientId}/chat`, { credentials: 'same-origin', headers: authHeaders })
+      if (!silent) {
+        setLoadingMessages(true)
+        setError('')
+      }
+      const res = await fetch(`/api/admin/clients/${encodeURIComponent(clientId)}/chat`, { credentials: 'same-origin', headers: authHeaders })
       if (res.ok) {
         const data = await res.json()
         setActiveMessages(data.messages || [])
         const jobs: DialogJobSummary[] = data.jobs || []
         setClientJobs(jobs)
-        // Reset reply context or default to latest job
-        setReplyJobId(jobs.length > 0 ? jobs[0].job_id : '')
-        setActiveJobFilter('all')
+        if (!silent) {
+          // Reset reply context or default to latest job on thread switch
+          setReplyJobId(jobs.length > 0 ? jobs[0].job_id : '')
+          setActiveJobFilter('all')
+        }
 
         // Update local dialog unread badge to 0
         setDialogs(prev =>
           prev.map(d => (d.client_id === clientId ? { ...d, unread_admin_count: 0 } : d))
         )
-      } else {
+      } else if (!silent) {
         const errText = await res.text()
         setError(errText || 'Не удалось загрузить историю переписки')
       }
     } catch (err: any) {
-      setError(err.message || 'Ошибка загрузки переписки')
+      if (!silent) setError(err.message || 'Ошибка загрузки переписки')
     } finally {
-      setLoadingMessages(false)
+      if (!silent) setLoadingMessages(false)
     }
   }
 
@@ -193,6 +226,17 @@ export function DialogsView({
       setActiveMessages([])
       setClientJobs([])
     }
+  }, [selectedClientId])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.hidden) return
+      void loadDialogs(false, true)
+      if (selectedClientId) {
+        void loadChatMessages(selectedClientId, true)
+      }
+    }, 4500)
+    return () => window.clearInterval(timer)
   }, [selectedClientId])
 
   useEffect(() => {
@@ -241,8 +285,9 @@ export function DialogsView({
       files.forEach(f => formData.append('files', f))
       if (files[0]) formData.append('file', files[0])
 
-      const res = await fetch(`/api/admin/clients/${selectedClientId}/chat`, {
+      const res = await fetch(`/api/admin/clients/${encodeURIComponent(selectedClientId)}/chat`, {
         method: 'POST',
+        credentials: 'same-origin',
         headers: authHeaders,
         body: formData,
       })
@@ -395,6 +440,16 @@ export function DialogsView({
 
                   {/* Client Subtext / Contacts & Job Chips */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 4 }}>
+                    {d.is_guest && (
+                      <span style={{ fontSize: 10, fontWeight: 700, background: '#f1f5f9', color: '#475569', padding: '1px 5px', borderRadius: 3 }}>
+                        🌐 Гость сайта
+                      </span>
+                    )}
+                    {d.topic_linked && (
+                      <span style={{ fontSize: 10, fontWeight: 600, background: '#ecfdf5', color: '#047857', padding: '1px 5px', borderRadius: 3 }}>
+                        🗂 TG-тема
+                      </span>
+                    )}
                     {d.client_phone && (
                       <span style={{ fontSize: 10.5, color: '#0f766e', fontWeight: 600, marginRight: 4 }}>
                         {d.client_phone}
@@ -452,6 +507,11 @@ export function DialogsView({
                   <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#1e293b' }}>
                     {selectedDialog.client_name}
                   </h4>
+                  {selectedDialog.is_guest && (
+                    <span style={{ background: '#e0f2fe', color: '#0369a1', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 4 }}>
+                      Гость сайта
+                    </span>
+                  )}
                   {selectedDialog.client_number && (
                     <span style={{ background: '#f1f5f9', color: '#475569', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 4 }}>
                       Клиент #{selectedDialog.client_number}
@@ -587,16 +647,28 @@ export function DialogsView({
                         </div>
                       )}
 
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, fontSize: 10.5, color: '#64748b' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, fontSize: 10.5, color: '#64748b', flexWrap: 'wrap' }}>
                         {isAdmin ? (
                           <>
                             <span style={{ fontWeight: 700, color: '#0d9488' }}>Вы (Эксперт TenderLex)</span>
+                            {msg.channel && channelBadgeLabel(msg.channel) && (
+                              <span style={{ fontSize: 10, color: '#475569', background: '#f1f5f9', padding: '0 5px', borderRadius: 4 }}>
+                                {channelBadgeLabel(msg.channel)}
+                              </span>
+                            )}
                             <span>·</span>
                             <span>{formatDate(msg.created_at)}</span>
                           </>
                         ) : (
                           <>
-                            <span style={{ fontWeight: 700, color: '#1e293b' }}>Клиент ({selectedDialog.client_name})</span>
+                            <span style={{ fontWeight: 700, color: '#1e293b' }}>
+                              {selectedDialog.is_guest ? `Гость (${selectedDialog.client_name})` : `Клиент (${selectedDialog.client_name})`}
+                            </span>
+                            {msg.channel && channelBadgeLabel(msg.channel) && (
+                              <span style={{ fontSize: 10, color: '#475569', background: '#f1f5f9', padding: '0 5px', borderRadius: 4 }}>
+                                {channelBadgeLabel(msg.channel)}
+                              </span>
+                            )}
                             <span>·</span>
                             <span>{formatDate(msg.created_at)}</span>
                           </>
@@ -736,7 +808,7 @@ export function DialogsView({
                         type="file"
                         multiple
                         style={{ display: 'none' }}
-                        accept=".xlsx,.xls,.docx,.doc,.pdf,.zip"
+                        accept=".xlsx,.xls,.docx,.doc,.pdf,.zip,.rar,.7z,.txt,.png,.jpg,.jpeg,.webp"
                         onChange={e => {
                           if (e.target.files) {
                             setFiles(Array.from(e.target.files))

@@ -70,6 +70,7 @@ type Dashboard = {
   completed_jobs: number
   failed_jobs: number
   suppliers: number
+  unread_dialogs_count?: number
 }
 
 type Client = {
@@ -131,6 +132,7 @@ type AdminSyncCheckResponse = {
   version_key: string
   clients_count: number
   jobs_count: number
+  unread_dialogs_count?: number
   latest_client?: {
     id: string
     client_number?: number | null
@@ -474,6 +476,9 @@ type SettingsPayload = {
   yookassa_secret_key?: string
   yookassa_return_url: string
   yookassa_send_receipt?: boolean
+  support_telegram_group_id?: string
+  support_admin_telegram_ids?: string
+  support_mirror_admin_replies_to_bot?: boolean
   supplier_search_ui: SupplierSearchUi
 }
 
@@ -1406,6 +1411,7 @@ export function App() {
   const [selectedClientIdForView, setSelectedClientIdForView] = useState<string>('')
   const lastSyncVersionKeyRef = useRef<string>('')
   const prevClientsCountRef = useRef<number>(-1)
+  const prevUnreadDialogsRef = useRef<number>(-1)
 
   const addToast = useCallback((toast: Omit<AdminToast, 'id' | 'createdAt'>) => {
     const id = Math.random().toString(36).slice(2, 9)
@@ -1713,6 +1719,9 @@ export function App() {
       if (syncData) {
         lastSyncVersionKeyRef.current = syncData.version_key
         prevClientsCountRef.current = syncData.clients_count
+        if (typeof syncData.unread_dialogs_count === 'number') {
+          prevUnreadDialogsRef.current = syncData.unread_dialogs_count
+        }
       }
       if (dData) setDashboard(dData)
       setLastClientsSyncAt(Date.now())
@@ -1743,8 +1752,22 @@ export function App() {
 
           if (isFirstCheck) {
             prevClientsCountRef.current = syncData.clients_count
+            if (typeof syncData.unread_dialogs_count === 'number') {
+              prevUnreadDialogsRef.current = syncData.unread_dialogs_count
+            }
           } else if (versionChanged) {
             prevClientsCountRef.current = syncData.clients_count
+            if (typeof syncData.unread_dialogs_count === 'number') {
+              const prevUnread = prevUnreadDialogsRef.current
+              prevUnreadDialogsRef.current = syncData.unread_dialogs_count
+              if (prevUnread >= 0 && syncData.unread_dialogs_count > prevUnread && view !== 'dialogs') {
+                addToast({
+                  type: 'info',
+                  title: 'Новое обращение в чате',
+                  message: `Непрочитанных диалогов: ${syncData.unread_dialogs_count}. Откройте раздел «Диалоги» или ответьте в Telegram.`,
+                })
+              }
+            }
 
             // If a new client was registered
             if (prevCount >= 0 && syncData.clients_count > prevCount && syncData.latest_client) {
@@ -1815,8 +1838,11 @@ export function App() {
   }, [view])
 
   const totalUnreadDialogs = useMemo(
-    () => jobs.reduce((sum, j) => sum + (j.unread_client_messages_count || 0), 0),
-    [jobs]
+    () =>
+      typeof dashboard?.unread_dialogs_count === 'number'
+        ? dashboard.unread_dialogs_count
+        : jobs.reduce((sum, j) => sum + (j.unread_client_messages_count || 0), 0),
+    [dashboard, jobs]
   )
 
   const nav = [
@@ -6579,6 +6605,8 @@ function SettingsView({
   const [yookassaSecretKey, setYookassaSecretKey] = useState('')
   const [testingYookassa, setTestingYookassa] = useState(false)
   const [yookassaTestResult, setYookassaTestResult] = useState('')
+  const [testingSupportGroup, setTestingSupportGroup] = useState(false)
+  const [supportGroupTestResult, setSupportGroupTestResult] = useState<{ ok?: boolean; text: string } | null>(null)
   const searchUi = draft.supplier_search_ui
   useEffect(() => setDraft(settings), [settings])
   useEffect(() => {
@@ -6630,6 +6658,75 @@ function SettingsView({
         </div>
         <p className="field-help">Telegram — основной контакт. MAX-кнопка работает только по ссылке.</p>
         <TextArea className="payment-textarea" label="Инструкция для пополнения" value={draft.payment_instructions} onChange={value => setDraft({ ...draft, payment_instructions: value })} />
+      </div>
+      <div className="form-panel full">
+        <h2>Telegram-поддержка и синхронизация чатов (Варианты A и B)</h2>
+        <div className="settings-grid compact-grid">
+          <TextField
+            label="ID группы поддержки Telegram (Вариант B, супергруппа с темами)"
+            value={draft.support_telegram_group_id || ''}
+            placeholder="-1001234567890"
+            onChange={value => setDraft({ ...draft, support_telegram_group_id: value })}
+          />
+          <TextField
+            label="Дополнительные Telegram ID админов (через запятую)"
+            value={draft.support_admin_telegram_ids || ''}
+            placeholder="123456789, 987654321"
+            onChange={value => setDraft({ ...draft, support_admin_telegram_ids: value })}
+          />
+        </div>
+        <div style={{ marginTop: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.9rem', flexWrap: 'wrap' }}>
+          <label className="switch-row" style={{ margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={draft.support_mirror_admin_replies_to_bot !== false}
+              onChange={e => setDraft({ ...draft, support_mirror_admin_replies_to_bot: e.target.checked })}
+            />
+            Синхронизировать ответы между админ-панелью, личным ботом (Вариант A) и темой в группе (Вариант B)
+          </label>
+          <button
+            type="button"
+            className="secondary-btn"
+            style={{ padding: '0.4rem 0.8rem', fontSize: '12px' }}
+            onClick={async () => {
+              setTestingSupportGroup(true)
+              setSupportGroupTestResult(null)
+              try {
+                const res = await api<{ ok: boolean; message?: string; error?: string }>('/api/admin/support/test-group', {
+                  method: 'POST',
+                  body: JSON.stringify({ group_id: draft.support_telegram_group_id || '' }),
+                })
+                setSupportGroupTestResult({
+                  ok: res.ok,
+                  text: res.ok ? (res.message || 'Группа подключена успешно!') : (res.error || 'Не удалось проверить группу'),
+                })
+              } catch (err: any) {
+                setSupportGroupTestResult({ ok: false, text: formatError(err) })
+              } finally {
+                setTestingSupportGroup(false)
+              }
+            }}
+            disabled={testingSupportGroup}
+          >
+            {testingSupportGroup ? 'Проверка группы...' : 'Проверить группу в Telegram'}
+          </button>
+        </div>
+        {supportGroupTestResult && (
+          <p
+            style={{
+              marginTop: '0.5rem',
+              fontSize: '12px',
+              fontWeight: 600,
+              color: supportGroupTestResult.ok ? '#059669' : '#dc2626',
+            }}
+          >
+            {supportGroupTestResult.text}
+          </p>
+        )}
+        <p className="field-help" style={{ marginTop: '0.5rem' }}>
+          <strong>Вариант A (ЛС бота)</strong> работает сразу для владельца и указанных Telegram ID админов: кнопка <strong>«💬 Диалоги с клиентами»</strong> появляется прямо в главном меню бота (только у админов), также можно отвечать через Reply на сообщение клиента или кнопку «Ответить этому клиенту».
+          <strong>Вариант B</strong> нужен только на будущее (если диалогов станет много): создайте одну закрытую группу, включите «Темы» (Topics), добавьте бота админом с правом «Управление темами», отправьте в группе <code>/support_setup</code>, вставьте ID (<code>-100...</code>) выше и сохраните — темы бот будет создавать сам автоматически при обращениях.
+        </p>
       </div>
       <div className="form-panel full">
         <h2>Приём онлайн-платежей (ЮKassa)</h2>
@@ -7479,8 +7576,8 @@ function ModelSelect({
   )
 }
 
-function TextField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return <label className="field"><span>{label}</span><input value={value || ''} onChange={e => onChange(e.target.value)} /></label>
+function TextField({ label, value, placeholder, onChange }: { label: string; value: string; placeholder?: string; onChange: (value: string) => void }) {
+  return <label className="field"><span>{label}</span><input value={value || ''} placeholder={placeholder} onChange={e => onChange(e.target.value)} /></label>
 }
 
 function SecretField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {

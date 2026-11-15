@@ -130,6 +130,14 @@ def _ensure_schema() -> None:
             Base.metadata.tables["yookassa_payments"].create(bind=connection, checkfirst=True)
         if "job_chat_messages" in Base.metadata.tables:
             Base.metadata.tables["job_chat_messages"].create(bind=connection, checkfirst=True)
+        for support_table in (
+            "support_guest_sessions",
+            "support_dialog_states",
+            "support_telegram_message_map",
+            "support_telegram_sessions",
+        ):
+            if support_table in Base.metadata.tables:
+                Base.metadata.tables[support_table].create(bind=connection, checkfirst=True)
         invoice_existing = _existing_columns(inspector, "invoices")
         for column, definition in {
             "settlement_mode": "VARCHAR(32) DEFAULT ''",
@@ -193,6 +201,11 @@ def _ensure_schema() -> None:
             "price_monitoring_access_mode": "VARCHAR(32) DEFAULT 'all'",
             "geo_radius_search_enabled_global": "BOOLEAN DEFAULT 0",
             "geo_radius_surcharge_pct": "REAL DEFAULT 30.0",
+            "support_telegram_group_id": "VARCHAR(64) DEFAULT ''",
+            "support_admin_telegram_ids": "TEXT DEFAULT ''",
+            "support_mirror_admin_replies_to_bot": (
+                "BOOLEAN DEFAULT TRUE" if connection.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"
+            ),
         }
         clients_existing = _existing_columns(inspector, "clients")
         client_additions = {
@@ -513,6 +526,43 @@ def _ensure_schema() -> None:
         for column, definition in tariff_package_additions.items():
             if tariff_packages_existing and column not in tariff_packages_existing:
                 connection.execute(text(f"ALTER TABLE tariff_packages ADD COLUMN {column} {definition}"))
+        job_chat_existing = _existing_columns(inspector, "job_chat_messages")
+        if job_chat_existing:
+            if "guest_session_id" not in job_chat_existing:
+                connection.execute(text("ALTER TABLE job_chat_messages ADD COLUMN guest_session_id VARCHAR(64) DEFAULT ''"))
+            if "channel" not in job_chat_existing:
+                connection.execute(text("ALTER TABLE job_chat_messages ADD COLUMN channel VARCHAR(24) DEFAULT 'web'"))
+            if connection.dialect.name == "postgresql":
+                for col_info in inspector.get_columns("job_chat_messages"):
+                    if col_info.get("name") == "client_id":
+                        col_len = getattr(col_info.get("type"), "length", None)
+                        if isinstance(col_len, int) and col_len < 80:
+                            connection.execute(text("ALTER TABLE job_chat_messages ALTER COLUMN client_id TYPE VARCHAR(80)"))
+                        break
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_job_chat_guest_session "
+                "ON job_chat_messages(guest_session_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_support_tg_map_chat_msg "
+                "ON support_telegram_message_map(tg_chat_id, tg_message_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_support_tg_session_user_scope "
+                "ON support_telegram_sessions(tg_user_id, role_scope, is_active)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_support_guest_client_ip_created "
+                "ON support_guest_sessions(client_ip, created_at)"
+            )
+        )
 
 
 def _existing_columns(inspector, table_name: str) -> set[str]:

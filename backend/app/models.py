@@ -99,6 +99,9 @@ class SystemSettings(Base):
     price_monitoring_access_mode: Mapped[str] = mapped_column(String(32), default="all")
     geo_radius_search_enabled_global: Mapped[bool] = mapped_column(Boolean, default=False)
     geo_radius_surcharge_pct: Mapped[float] = mapped_column(Float, default=30.0)
+    support_telegram_group_id: Mapped[str] = mapped_column(String(64), default="")
+    support_admin_telegram_ids: Mapped[str] = mapped_column(Text, default="")
+    support_mirror_admin_replies_to_bot: Mapped[bool] = mapped_column(Boolean, default=True)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
@@ -167,6 +170,9 @@ class SystemSettings(Base):
             "price_monitoring_filter_foreign": getattr(self, "price_monitoring_filter_foreign", True),
             "price_monitoring_max_variation_pct": getattr(self, "price_monitoring_max_variation_pct", 33.0),
             "price_monitoring_access_mode": getattr(self, "price_monitoring_access_mode", "all") or "all",
+            "support_telegram_group_id": getattr(self, "support_telegram_group_id", "") or "",
+            "support_admin_telegram_ids": getattr(self, "support_admin_telegram_ids", "") or "",
+            "support_mirror_admin_replies_to_bot": bool(getattr(self, "support_mirror_admin_replies_to_bot", True)),
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:
@@ -903,14 +909,81 @@ class JobChatMessage(Base):
     __tablename__ = "job_chat_messages"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    client_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    client_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    guest_session_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     job_id: Mapped[str] = mapped_column(String(32), default="", index=True)
     sender_role: Mapped[str] = mapped_column(String(20), default="admin", index=True)  # "admin" | "client"
+    channel: Mapped[str] = mapped_column(String(24), default="web")
     message: Mapped[str] = mapped_column(Text, default="")
     attachments_json: Mapped[str] = mapped_column(Text, default="[]")
     is_read_by_client: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     is_read_by_admin: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+class SupportGuestSession(Base):
+    __tablename__ = "support_guest_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    visitor_name: Mapped[str] = mapped_column(String(120), default="Гость сайта")
+    visitor_contact: Mapped[str] = mapped_column(String(255), default="")
+    source_url: Mapped[str] = mapped_column(String(512), default="")
+    client_ip: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(24), default="open", index=True)  # "open" | "closed"
+    linked_client_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, index=True)
+
+
+class SupportDialogState(Base):
+    __tablename__ = "support_dialog_states"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    dialog_key: Mapped[str] = mapped_column(String(96), unique=True, index=True)  # client:<id> | guest:<sid>
+    client_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    guest_session_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    telegram_group_id: Mapped[str] = mapped_column(String(64), default="")
+    telegram_thread_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    topic_title: Mapped[str] = mapped_column(String(160), default="")
+    status: Mapped[str] = mapped_column(String(24), default="open", index=True)
+    last_channel: Mapped[str] = mapped_column(String(24), default="web")
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class SupportTelegramMessageMap(Base):
+    __tablename__ = "support_telegram_message_map"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tg_chat_id: Mapped[str] = mapped_column(String(64), index=True)
+    tg_message_id: Mapped[int] = mapped_column(Integer, index=True)
+    tg_thread_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    dialog_key: Mapped[str] = mapped_column(String(96), default="", index=True)
+    client_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    guest_session_id: Mapped[str] = mapped_column(String(64), default="")
+    job_id: Mapped[str] = mapped_column(String(32), default="")
+    chat_message_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    direction: Mapped[str] = mapped_column(String(32), default="admin_dm_card")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+class SupportTelegramSession(Base):
+    __tablename__ = "support_telegram_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tg_user_id: Mapped[str] = mapped_column(String(64), index=True)
+    role_scope: Mapped[str] = mapped_column(String(24), default="admin_reply", index=True)  # admin_reply | client_dm
+    dialog_key: Mapped[str] = mapped_column(String(96), default="", index=True)
+    client_id: Mapped[str] = mapped_column(String(80), default="")
+    guest_session_id: Mapped[str] = mapped_column(String(64), default="")
+    job_id: Mapped[str] = mapped_column(String(32), default="")
+    dialog_label: Mapped[str] = mapped_column(String(160), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
 
 

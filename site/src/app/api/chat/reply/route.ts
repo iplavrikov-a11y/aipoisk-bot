@@ -1,51 +1,66 @@
+import crypto from "crypto";
 import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
+import { getInternalApiBaseUrl, isValidGuestSessionId } from "@/lib/guest-chat-proxy";
 
-const DATA_FILE = "/root/projects/tenderlex/data/chat_sessions.json";
 const ADMIN_TOKEN = process.env.AIPOISK_ADMIN_TOKEN || "";
+
+function safeTokenEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { sessionId, text, token } = body;
+    const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
+    const text = typeof body?.text === "string" ? body.text.trim() : "";
+    const token = typeof body?.token === "string" ? body.token : "";
 
-    if (!ADMIN_TOKEN || token !== ADMIN_TOKEN) {
+    if (!ADMIN_TOKEN || !token || !safeTokenEqual(token, ADMIN_TOKEN)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    if (!sessionId || !text) {
-      return NextResponse.json({ error: "sessionId and text required" }, { status: 400 });
+    if (!isValidGuestSessionId(sessionId) || !text) {
+      return NextResponse.json({ error: "Valid sessionId and text required" }, { status: 400 });
     }
 
-    if (!fs.existsSync(DATA_FILE)) {
-      return NextResponse.json({ error: "Session not found" }, { status: 404 });
+    const form = new FormData();
+    form.append("message", text);
+    form.append("notify_telegram", "true");
+
+    const upstream = await fetch(
+      `${getInternalApiBaseUrl()}/api/admin/clients/${encodeURIComponent(`guest:${sessionId}`)}/chat`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${ADMIN_TOKEN}`,
+        },
+        body: form,
+        cache: "no-store",
+      }
+    );
+
+    const data = await upstream.json().catch(() => ({ error: "Backend error" }));
+    if (!upstream.ok) {
+      return NextResponse.json(data, { status: upstream.status });
     }
-
-    let data: Record<string, any> = JSON.parse(fs.readFileSync(DATA_FILE, "utf8") || "{}");
-
-    if (!data[sessionId]) {
-      return NextResponse.json({ error: "Session not found" }, { status: 404 });
-    }
-
-    const replyMsg = {
-      id: "admin_" + Date.now(),
-      sender: "admin",
-      text,
-      timestamp: new Date().toISOString(),
-    };
-
-    data[sessionId].messages.push(replyMsg);
-    data[sessionId].updated = new Date().toISOString();
-
-    const dir = path.dirname(DATA_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const tmpFile = `${DATA_FILE}.tmp.${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), "utf8");
-    fs.renameSync(tmpFile, DATA_FILE);
-
-    return NextResponse.json({ success: true, message: replyMsg });
+    const msgs = Array.isArray(data?.messages) ? data.messages : [];
+    const last = msgs[msgs.length - 1] || null;
+    return NextResponse.json({
+      success: true,
+      message: last
+        ? {
+            id: last.id,
+            sender: "admin",
+            text: last.message,
+            timestamp: last.created_at,
+          }
+        : null,
+    });
   } catch (err) {
+    console.error("Guest chat reply proxy error:", err);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

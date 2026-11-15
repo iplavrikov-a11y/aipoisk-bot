@@ -59,6 +59,9 @@ class SettingsPatch(BaseModel):
     yookassa_secret_key: str | None = None
     yookassa_return_url: str | None = None
     yookassa_send_receipt: bool | None = None
+    support_telegram_group_id: str | None = None
+    support_admin_telegram_ids: str | None = None
+    support_mirror_admin_replies_to_bot: bool | None = None
 
 
 class CreateYooKassaPaymentRequest(BaseModel):

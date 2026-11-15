@@ -1,5 +1,31 @@
 # TenderLex: Project Status
 
+## Актуальное состояние — 15 ноября 2026 (Москва) — Единая двусторонняя синхронизация диалогов (Telegram-бот + админ-панель + веб-кабинет + чат сайта) и усиление защиты гостевого чата по IP
+
+**Полноценная синхронная переписка с клиентами и гостями сайта напрямую из Telegram-бота (`main_inline_keyboard` только для администраторов), единый реестр сообщений в БД (`JobChatMessage` + `support_*`), проксирование гостевого чата сайта через FastAPI API и защита от автоматических сканеров/флуда**:
+
+1. **Единый омниканальный мост поддержки (`backend/app/support_chat.py`, `backend/app/models.py`, `backend/app/db.py`, `backend/app/config.py`, `backend/app/schemas.py`)**:
+   * Введены таблицы `SupportGuestSession` (`support_guest_sessions`), `SupportDialogState` (`support_dialog_states`), `SupportTelegramMessageMap` (`support_telegram_message_map`) и `SupportTelegramSession` (`support_telegram_sessions`), а также поля `guest_session_id` и `channel` в `JobChatMessage` (`web`, `guest_web`, `tg_bot`, `tg_dm`, `tg_topic`, `admin_web`).
+   * Реализована функция `notify_admins_of_incoming_message` (экранирование всех полей через `html.escape` и мгновенная доставка уведомлений авторизованным администраторам в ЛС бота и, при настройке, в форум-группу) и `deliver_admin_reply` для двусторонней доставки ответов и вложений между Telegram, «Диалогами» админки, кабинетом и виджетом сайта.
+
+2. **Кнопочный интерфейс диалогов в Telegram-боте без слэш-команд (`backend/app/bot.py`)**:
+   * В главное меню `main_inline_keyboard` интегрирована кнопка **`💬 Диалоги с клиентами`**, видимая строго для авторизованных администраторов (`owner_telegram_id` и список админов поддержки).
+   * Ответ клиентам и гостям доступен в два клика через кнопки диалогов или нативный Telegram `Reply` на карточку входящего сообщения (текст, документы, фото), с кнопками «Завершить диалог» и возврата в меню без использования слэш-команд в UI.
+
+3. **Синхронизация с сайтом и админ-панелью (`site/src/app/api/chat/*`, `site/src/lib/guest-chat-proxy.ts`, `frontend/src/DialogsView.tsx`, `frontend/src/App.tsx`, `backend/app/main.py`)**:
+   * Маршруты сайта `/api/chat/send`, `/api/chat/messages` и `/api/chat/reply` переведены на единый прокси через `http://127.0.0.1:8088/api/public/guest-chat/*` со строгой проверкой `sessionId` (`^[A-Za-z0-9_-]{4,64}$`); устаревший `site/src/app/api/chat/webhook/route.ts` выведен из работы со статусом `410`.
+   * В админ-панели (`frontend/src/DialogsView.tsx`, `frontend/src/App.tsx`) поддержаны гостевые и клиентские диалоги с бейджами каналов (`🌐 Чат на сайте`, `🌐 Кабинет`, `💬 ЛС бота`, `🖥 Админ-панель`) и настройками уведомлений/админов поддержки.
+
+4. **Усиление защиты публичного гостевого чата от сканеров и флуда (`backend/app/support_chat.py`, `backend/app/main.py`, `site/src/app/api/chat/send/route.ts`)**:
+   * В `check_guest_chat_rate_limits` добавлены лимиты перед созданием сессии/сообщения и отправкой алертов в Telegram: до **8** сообщений за 60 сек на сессию (`429`), до **12** сообщений за 60 сек с одного IP по всем сессиям (`429`) и до **5** новых гостевых сессий за 10 минут с одного IP (`429`).
+   * В `main.py` (`_normalize_ip_token`, `_extract_request_ip`) унифицировано извлечение и валидация IP через `ipaddress`, прокси `site/src/app/api/chat/send/route.ts` передаёт `X-Real-IP` и `X-Forwarded-For`, а для ускорения проверок по IP добавлен индекс `ix_support_guest_client_ip_created`.
+
+5. **Верификация и деплой**:
+   * Покрытие сценариев синхронизации, меню и rate-limit проверено в `backend/tests/test_support_chat_sync.py`.
+   * Пройдены все бэкенд-тесты (`1 456 passed, 19 warnings, 54 subtests passed`), проверка типов сайта (`cd site && npm run typecheck`), сборка админ-панели и Next.js-сайта, а также живой деплой `./scripts/deploy_tenderlex_live.sh` (`tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site` — `active`, `127.0.0.1:8088/api/health/ready` → `200`, `127.0.0.1:3093/` → `200`).
+
+---
+
 ## Актуальное состояние — 13 ноября 2026 (Москва) — Устранение зависаний подтверждения позиций и стратегии (`multi_item_strategy`), авто-подтверждение для API/MCP, 1-клик продолжение в кабинете («без доплат») и разблокировка админки
 
 **Ликвидация причин отвала клиентов и зависания задач на этапе выбора позиций спецификации и стратегии поиска поставщиков, авто-подтверждение для автоматических API/MCP-задач, 1-клик запуск в веб-кабинете и админ-панели**:

@@ -1,31 +1,26 @@
 import { NextResponse } from "next/server";
-import fs from "fs";
-
-const DATA_FILE = "/root/projects/tenderlex/data/chat_sessions.json";
+import { getInternalApiBaseUrl, isValidGuestSessionId } from "@/lib/guest-chat-proxy";
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const sessionId = searchParams.get("sessionId");
+    const sessionId = (searchParams.get("sessionId") || "").trim();
 
-    if (!sessionId) {
-      return NextResponse.json({ error: "sessionId required" }, { status: 400 });
+    if (!isValidGuestSessionId(sessionId)) {
+      return NextResponse.json({ error: "Invalid sessionId" }, { status: 400 });
     }
 
-    if (!fs.existsSync(DATA_FILE)) {
-      return NextResponse.json({ messages: [] });
+    const upstream = await fetch(
+      `${getInternalApiBaseUrl()}/api/public/guest-chat/messages?sessionId=${encodeURIComponent(sessionId)}`,
+      { cache: "no-store" }
+    );
+    const data = await upstream.json().catch(() => ({ messages: [] }));
+    if (!upstream.ok) {
+      return NextResponse.json(data, { status: upstream.status });
     }
-
-    let data: Record<string, any> = {};
-    try {
-      data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8") || "{}");
-    } catch {
-      data = {};
-    }
-
-    const session = data[sessionId] || { messages: [] };
-    return NextResponse.json({ messages: session.messages || [], contact: session.contact || null });
+    return NextResponse.json(data);
   } catch (err) {
+    console.error("Guest chat messages proxy error:", err);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

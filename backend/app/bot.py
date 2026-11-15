@@ -101,7 +101,19 @@ from .legal import (
     TERMS_URL,
     record_legal_acceptance,
 )
-from .models import BillingTransaction, Client, Invoice, Job, SystemSettings, TariffPackage, YooKassaPayment, now_utc
+from .models import (
+    BillingTransaction,
+    Client,
+    Invoice,
+    Job,
+    JobChatMessage,
+    SupportDialogState,
+    SupportGuestSession,
+    SystemSettings,
+    TariffPackage,
+    YooKassaPayment,
+    now_utc,
+)
 from .dadata_client import enrich_company_by_inn
 from .invoice_service import (
     SELLER_ACCOUNT,
@@ -140,11 +152,36 @@ from .result_offers import (
     fail_job_result_offer_delivery,
     result_offer_to_dict,
 )
+from .support_chat import (
+    DEFAULT_ADMIN_SESSION_TTL_HOURS,
+    DEFAULT_CLIENT_SESSION_TTL_HOURS,
+    clear_active_tg_session,
+    close_support_dialog,
+    deliver_admin_reply,
+    deliver_client_telegram_message,
+    get_active_tg_session,
+    get_configured_support_group_id,
+    get_dialog_profile,
+    get_or_create_guest_session,
+    is_admin_telegram_user,
+    is_support_group_chat,
+    list_recent_dialogs_for_bot,
+    lookup_tg_reply_target,
+    lookup_topic_dialog,
+    save_attachment_bytes,
+    set_active_tg_session,
+    test_support_group_connection,
+    unread_dialogs_count_for_admin,
+    validate_guest_session_id,
+)
 
 router = Router(name="private_customer_bot")
+support_group_router = Router(name="support_group_forum")
 group_safety_router = Router(name="group_safety")
 router.message.filter(F.chat.type == ChatType.PRIVATE)
 router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
+support_group_router.message.filter(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
+support_group_router.callback_query.filter(F.message.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
 group_safety_router.message.filter(F.chat.type != ChatType.PRIVATE)
 group_safety_router.callback_query.filter(F.message.chat.type != ChatType.PRIVATE)
 logger = logging.getLogger(__name__)
@@ -365,29 +402,78 @@ def _supplier_policy_label(policy: str) -> str:
     return "Обычный поиск"
 
 
-def main_inline_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers")],
-            [InlineKeyboardButton(text="🎯 Подбор товара и аналогов", callback_data="scenario:exact_product")],
-            [InlineKeyboardButton(text="📄 Анализ закупки (44/223-ФЗ)", callback_data="scenario:report")],
-            [InlineKeyboardButton(text="📄🔎 Анализ + поиск поставщиков", callback_data="scenario:analysis_and_suppliers")],
-            [InlineKeyboardButton(text="🎁 Пригласить (+1 000 ₽)", callback_data="open_referral")],
-            [
-                InlineKeyboardButton(text="📊 Кабинет", callback_data="open_cabinet"),
-                InlineKeyboardButton(text="🕘 Задачи", callback_data="open_status"),
-            ],
-            [
-                InlineKeyboardButton(text="💳 Тарифы", callback_data="open_tariffs"),
-                InlineKeyboardButton(text="❓ Помощь", callback_data="open_help"),
-                InlineKeyboardButton(text="📞 Контакты", callback_data="open_contacts"),
-            ],
-        ]
-    )
+def _admin_menu_context(tg_user_id: str | int | None = None) -> tuple[bool, int]:
+    uid = str(tg_user_id or "").strip()
+    if not uid:
+        return False, 0
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            return False, 0
+        return True, unread_dialogs_count_for_admin(db)
+    except Exception:
+        return False, 0
+    finally:
+        db.close()
 
 
-def create_inline_keyboard() -> InlineKeyboardMarkup:
-    return main_inline_keyboard()
+def main_inline_keyboard(
+    tg_user_id: str | int | None = None,
+    *,
+    is_admin: bool | None = None,
+    unread_dialogs: int | None = None,
+) -> InlineKeyboardMarkup:
+    if is_admin is None:
+        is_admin, detected_unread = _admin_menu_context(tg_user_id)
+        if unread_dialogs is None:
+            unread_dialogs = detected_unread
+    unread_count = max(0, int(unread_dialogs or 0))
+    rows = [
+        [InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers")],
+        [InlineKeyboardButton(text="🎯 Подбор товара и аналогов", callback_data="scenario:exact_product")],
+        [InlineKeyboardButton(text="📄 Анализ закупки (44/223-ФЗ)", callback_data="scenario:report")],
+        [InlineKeyboardButton(text="📄🔎 Анализ + поиск поставщиков", callback_data="scenario:analysis_and_suppliers")],
+        [InlineKeyboardButton(text="🎁 Пригласить (+1 000 ₽)", callback_data="open_referral")],
+        [
+            InlineKeyboardButton(text="📊 Кабинет", callback_data="open_cabinet"),
+            InlineKeyboardButton(text="🕘 Задачи", callback_data="open_status"),
+        ],
+        [
+            InlineKeyboardButton(text="💳 Тарифы", callback_data="open_tariffs"),
+            InlineKeyboardButton(text="❓ Помощь", callback_data="open_help"),
+            InlineKeyboardButton(text="📞 Контакты", callback_data="open_contacts"),
+        ],
+    ]
+    if is_admin:
+        dialogs_label = (
+            f"💬 Диалоги с клиентами ({unread_count} новых)"
+            if unread_count > 0
+            else "💬 Диалоги с клиентами"
+        )
+        rows.append([InlineKeyboardButton(text=dialogs_label, callback_data="tg_chat:list")])
+    else:
+        rows.append([InlineKeyboardButton(text="💬 Написать в поддержку", callback_data="client_support:start")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def create_inline_keyboard(tg_user_id: str | int | None = None) -> InlineKeyboardMarkup:
+    return main_inline_keyboard(tg_user_id)
+
+
+def _inline_menu_for_message(message: Message) -> InlineKeyboardMarkup:
+    from_user = getattr(message, "from_user", None)
+    uid = getattr(from_user, "id", None)
+    if not uid:
+        uid = getattr(getattr(message, "chat", None), "id", None)
+    return main_inline_keyboard(uid)
+
+
+def _inline_menu_for_callback(callback: CallbackQuery) -> InlineKeyboardMarkup:
+    from_user = getattr(callback, "from_user", None)
+    uid = getattr(from_user, "id", None)
+    if not uid and getattr(callback, "message", None):
+        uid = getattr(getattr(callback.message, "chat", None), "id", None)
+    return main_inline_keyboard(uid)
 
 
 def supplier_policy_keyboard(
@@ -529,9 +615,11 @@ def help_inline_keyboard() -> InlineKeyboardMarkup:
 
 
 def contacts_inline_keyboard(telegram_url: str = "") -> InlineKeyboardMarkup:
-    rows = []
+    rows = [
+        [InlineKeyboardButton(text="💬 Написать в поддержку здесь", callback_data="client_support:start")]
+    ]
     if telegram_url:
-        rows.append([InlineKeyboardButton(text="💬 Написать в Telegram", url=telegram_url)])
+        rows.append([InlineKeyboardButton(text="✈️ Написать менеджеру в Telegram", url=telegram_url)])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2529,6 +2617,7 @@ def _record_telegram_terms_acceptance(db, telegram_id: str) -> None:
 @router.message(Command("start"))
 async def start(message: Message, command: CommandObject | None = None) -> None:
     telegram_id, username, name = _telegram_user_fields(message)
+    _clear_support_session_safe(telegram_id, role_scope=None)
     access_note = ""
     first_use = False
     db = SessionLocal()
@@ -2589,7 +2678,7 @@ async def start(message: Message, command: CommandObject | None = None) -> None:
         db.close()
     await message.answer(
         _start_text() + access_note,
-        reply_markup=main_inline_keyboard(),
+        reply_markup=_inline_menu_for_message(message),
         parse_mode=ParseMode.HTML,
     )
 
@@ -2640,7 +2729,7 @@ async def show_status(message: Message) -> None:
     try:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await message.answer(account_error, reply_markup=main_inline_keyboard())
+            await message.answer(account_error, reply_markup=_inline_menu_for_message(message))
             return
         if not client:
             await message.answer(
@@ -2722,7 +2811,7 @@ async def open_status_callback(callback: CallbackQuery) -> None:
     try:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await callback.message.answer(account_error, reply_markup=main_inline_keyboard())
+            await callback.message.answer(account_error, reply_markup=_inline_menu_for_callback(callback))
             return
         if not client:
             await callback.message.answer(
@@ -2801,7 +2890,7 @@ async def create_button(message: Message) -> None:
         "• 🎯 Подбор товара и аналогов — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты\n"
         "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
         "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
-        reply_markup=create_inline_keyboard(),
+        reply_markup=_inline_menu_for_message(message),
     )
 
 
@@ -2810,7 +2899,10 @@ async def open_create_menu_callback(callback: CallbackQuery) -> None:
     if not callback.message:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
+    if callback.from_user:
+        _clear_support_session_safe(str(callback.from_user.id), role_scope=None)
     await callback.answer()
+    menu_kb = _inline_menu_for_callback(callback)
     try:
         await callback.message.edit_text(
             "🚀 Создать задачу\n\n"
@@ -2819,7 +2911,7 @@ async def open_create_menu_callback(callback: CallbackQuery) -> None:
             "• 🎯 Подбор товара и аналогов — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты\n"
             "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
             "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
-            reply_markup=create_inline_keyboard(),
+            reply_markup=menu_kb,
         )
     except Exception:
         await callback.message.answer(
@@ -2829,7 +2921,7 @@ async def open_create_menu_callback(callback: CallbackQuery) -> None:
             "• 🎯 Подбор товара и аналогов — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты\n"
             "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
             "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
-            reply_markup=create_inline_keyboard(),
+            reply_markup=menu_kb,
         )
 
 
@@ -2838,6 +2930,8 @@ async def scenario_select_callback(callback: CallbackQuery) -> None:
     if not callback.message:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
+    if callback.from_user:
+        _clear_support_session_safe(str(callback.from_user.id), role_scope=None)
     target = str(callback.data or "").split(":", 1)[1]
     chat_id = int(callback.message.chat.id)
     if target == "suppliers":
@@ -3545,7 +3639,7 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
                 "📎 ТЗ не добавлено\n\n"
                 "Отправьте файл ТЗ/ООЗ, архив с несколькими файлами или текстовое описание объекта закупки."
             )
-        await message.answer(text, reply_markup=create_inline_keyboard())
+        await message.answer(text, reply_markup=_inline_menu_for_message(message))
         return
     _record_telegram_event(message, "launch_attempted", mode=pending.mode)
     BATCH_RUNNING_CHATS.add(chat_id)
@@ -3743,15 +3837,16 @@ async def batch_cancel_callback(callback: CallbackQuery) -> None:
     chat_id = int(callback.message.chat.id)
     _clear_pending_state(chat_id)
     await callback.answer("Материалы очищены.")
+    menu_kb = _inline_menu_for_callback(callback)
     try:
         await callback.message.edit_text(
             "🗑 Материалы очищены.\n\nВыберите новый сценарий для создания задачи:",
-            reply_markup=create_inline_keyboard(),
+            reply_markup=menu_kb,
         )
     except Exception:
         await callback.message.answer(
             "🗑 Материалы очищены.\n\nВыберите новый сценарий для создания задачи:",
-            reply_markup=create_inline_keyboard(),
+            reply_markup=menu_kb,
         )
 
 
@@ -4051,7 +4146,7 @@ async def _send_job_outputs_locked(
             else:
                 await message.answer(
                     "🚀 Что хотите сделать дальше?",
-                    reply_markup=main_inline_keyboard(),
+                    reply_markup=_inline_menu_for_message(message),
                 )
             return True
         if snapshot and snapshot.status not in BOT_TERMINAL_JOB_STATUSES:
@@ -4223,7 +4318,7 @@ async def access_button(message: Message) -> None:
         settings = get_or_create_settings(db)
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await message.answer(account_error, reply_markup=main_inline_keyboard())
+            await message.answer(account_error, reply_markup=_inline_menu_for_message(message))
             return
         if not client:
             await message.answer(
@@ -4284,7 +4379,7 @@ async def open_cabinet_callback(callback: CallbackQuery) -> None:
         settings = get_or_create_settings(db)
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await callback.message.answer(account_error, reply_markup=main_inline_keyboard())
+            await callback.message.answer(account_error, reply_markup=_inline_menu_for_callback(callback))
             return
         if not client:
             await callback.message.answer(
@@ -4977,7 +5072,7 @@ async def handle_nurturing_feedback(callback: CallbackQuery) -> None:
                     "🎉 <b>Рады, что результаты расчетов подошли!</b>\n\n"
                     "Если прямо сейчас в работе новые спецификации по 44-ФЗ / 223-ФЗ — просто отправьте файл ТЗ или номер ЕИС в чат в любое время.",
                     parse_mode=ParseMode.HTML,
-                    reply_markup=main_inline_keyboard(),
+                    reply_markup=_inline_menu_for_callback(callback),
                 )
             except Exception:
                 pass
@@ -5083,6 +5178,8 @@ async def handle_contact_received(message: Message) -> None:
 
 @router.message(F.text.in_({"❌ Отмена", "Отмена"}))
 async def handle_cancel_reply_keyboard(message: Message) -> None:
+    if message.from_user:
+        _clear_support_session_safe(str(message.from_user.id), role_scope=None)
     await message.answer("Действие отменено.", reply_markup=ReplyKeyboardRemove())
 
 
@@ -5217,7 +5314,7 @@ async def exact_suppliers_no_callback(callback: CallbackQuery) -> None:
             pass
         await callback.message.answer(
             "🚀 Что хотите сделать дальше?",
-            reply_markup=main_inline_keyboard(),
+            reply_markup=_inline_menu_for_callback(callback),
         )
     await callback.answer("Поиск отменён.")
 
@@ -5487,7 +5584,20 @@ async def handle_document(message: Message, bot: Bot) -> None:
         await _handle_document_locked(message, bot)
 
 
+@router.message(F.photo)
+async def handle_photo(message: Message, bot: Bot) -> None:
+    if await _handle_support_private_message(message, bot):
+        return
+    await message.answer(
+        "📷 Для поиска поставщиков или анализа закупки отправьте файл документом (.pdf, .docx, .xlsx) или текстом.\n"
+        "Чтобы отправить изображение в поддержку менеджеру, нажмите кнопку ниже.",
+        reply_markup=_inline_menu_for_message(message),
+    )
+
+
 async def _handle_document_locked(message: Message, bot: Bot) -> None:
+    if await _handle_support_private_message(message, bot):
+        return
     if await _reject_if_chat_processing(message):
         return
     scenario = _scenario_for_message(message)
@@ -5526,7 +5636,7 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
             await message.answer(
                 "⚠️ Формат файла не поддерживается.\n\n"
                 "Поддерживаются документы (.docx, .doc, .pdf, .xlsx, .xls, .rtf, .odt), архивы (.zip, .rar, .7z) и текст (.txt).",
-                reply_markup=main_inline_keyboard(),
+                reply_markup=_inline_menu_for_message(message),
             )
             return
         if document.file_size and document.file_size > max_mb * 1024 * 1024:
@@ -5702,7 +5812,7 @@ async def _handle_source_text(message: Message) -> bool:
         return False
 
     if not _scenario_accepts_source_links(scenario):
-        await message.answer(_source_link_rejection_text(), reply_markup=main_inline_keyboard())
+        await message.answer(_source_link_rejection_text(), reply_markup=_inline_menu_for_message(message))
         return True
     mode = _job_mode_for_scenario(scenario)
     db = SessionLocal()
@@ -5752,78 +5862,384 @@ async def _handle_source_text(message: Message) -> bool:
 
 
 
-# --- SITE CHAT OPERATOR RELAY HANDLERS ---
-CHAT_SESSIONS_FILE = "/root/projects/tenderlex/data/chat_sessions.json"
-OPERATOR_REPLY_SESSIONS: dict[int, str] = {}
-
-def _load_chat_sessions() -> dict:
-    for attempt in range(5):
-        try:
-            if not os.path.exists(CHAT_SESSIONS_FILE):
-                return {}
-            with open(CHAT_SESSIONS_FILE, "r", encoding="utf-8") as f:
-                raw = f.read().strip()
-                return json.loads(raw) if raw else {}
-        except Exception as e:
-            time.sleep(0.1)
-    return {}
-
-def _save_chat_sessions(data: dict) -> None:
+# --- OMNICHANNEL SUPPORT CHAT BRIDGE (Option A + Option B + Client Support) ---
+def _clear_support_session_safe(tg_user_id: str | int | None, *, role_scope: str | None = "client_dm") -> None:
+    uid = str(tg_user_id or "").strip()
+    if not uid:
+        return
+    db = SessionLocal()
     try:
-        d = os.path.dirname(CHAT_SESSIONS_FILE)
-        if not os.path.exists(d):
-            os.makedirs(d, exist_ok=True)
-        tmp_path = f"{CHAT_SESSIONS_FILE}.tmp.{os.getpid()}_{int(time.time() * 1000)}"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, CHAT_SESSIONS_FILE)
-    except Exception as e:
-        logger.error(f"Error saving chat sessions: {e}")
+        clear_active_tg_session(db, tg_user_id=uid, role_scope=role_scope)
+    except Exception:
+        rollback = getattr(db, "rollback", None)
+        if callable(rollback):
+            rollback()
+    finally:
+        db.close()
+
+
+def _support_session_active_kb(state_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👤 О клиенте", callback_data=f"tg_chat:info:{state_id}"),
+                InlineKeyboardButton(text="💬 Все диалоги", callback_data="tg_chat:list"),
+            ],
+            [
+                InlineKeyboardButton(text="🏠 Главное меню", callback_data="tg_chat:exit"),
+            ],
+        ]
+    )
+
+
+def _support_reply_sent_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💬 Все диалоги", callback_data="tg_chat:list"),
+                InlineKeyboardButton(text="🏠 Главное меню", callback_data="tg_chat:exit"),
+            ],
+        ]
+    )
+
+
+def _build_admin_dialogs_payload(db: Session, *, limit: int = 8) -> tuple[str, InlineKeyboardMarkup] | None:
+    dialogs = list_recent_dialogs_for_bot(db, limit=limit)
+    if not dialogs:
+        return None
+    rows = []
+    lines = ["💬 <b>Диалоги с клиентами</b>", "Выберите клиента, чтобы открыть переписку:", ""]
+    for item in dialogs:
+        badge = f"🔔{item['unread_count']} " if item["unread_count"] > 0 else ""
+        btn_label = f"{badge}{item['display_name']}"[:50]
+        rows.append([InlineKeyboardButton(text=btn_label, callback_data=f"tg_chat:enter:{item['state_id']}")])
+        lines.append(f"• {badge}<b>{html_escape(item['display_name'])}</b> — {html_escape(item['last_preview'])}")
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _download_bot_support_attachments(
+    message: Message,
+    bot: Bot | None,
+    *,
+    client_id: str = "",
+    guest_session_id: str = "",
+    job_id: str = "",
+    prefix: str = "tg",
+) -> list[dict]:
+    active_bot = bot or getattr(message, "bot", None)
+    if not active_bot:
+        return []
+    atts: list[dict] = []
+    if message.document:
+        doc = message.document
+        fname = sanitize_filename(doc.file_name or "document")
+        if doc.file_size and doc.file_size > 15 * 1024 * 1024:
+            raise ValueError(f"Файл {fname} превышает лимит 15 МБ.")
+        buf = io.BytesIO()
+        await active_bot.download(doc, destination=buf)
+        raw = buf.getvalue()
+        if raw:
+            atts.append(
+                save_attachment_bytes(
+                    filename=fname,
+                    content=raw,
+                    client_id=client_id,
+                    guest_session_id=guest_session_id,
+                    job_id=job_id,
+                    prefix=prefix,
+                    enforce_allowlist=True,
+                )
+            )
+    elif message.photo:
+        photo = message.photo[-1]
+        fname = f"photo_{int(time.time())}.jpg"
+        buf = io.BytesIO()
+        await active_bot.download(photo, destination=buf)
+        raw = buf.getvalue()
+        if raw:
+            atts.append(
+                save_attachment_bytes(
+                    filename=fname,
+                    content=raw,
+                    client_id=client_id,
+                    guest_session_id=guest_session_id,
+                    job_id=job_id,
+                    prefix=prefix,
+                    enforce_allowlist=True,
+                )
+            )
+    return atts
+
+
+def _format_dialog_card_text(db: Session, state: SupportDialogState) -> str:
+    profile = get_dialog_profile(db, client_id=state.client_id, guest_session_id=state.guest_session_id)
+    msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == state.client_id)
+        .order_by(JobChatMessage.created_at.desc())
+        .limit(6)
+        .all()
+    )
+    lines = [
+        f"👤 <b>{html_escape(profile['display_name'])}</b>",
+    ]
+    if profile["email"]:
+        lines.append(f"✉️ <b>Email:</b> {html_escape(profile['email'])}")
+    if profile["phone"]:
+        lines.append(f"📞 <b>Телефон:</b> {html_escape(profile['phone'])}")
+    if profile["tg_username"]:
+        lines.append(f"✈️ <b>Telegram:</b> {html_escape(profile['tg_username'])}")
+    if profile["is_guest"] and profile["guest_session_id"]:
+        lines.append(f"🌐 <b>Сессия:</b> <code>{html_escape(profile['guest_session_id'])}</code>")
+    if profile["jobs_summary"]:
+        lines.append("📋 <b>Задачи:</b> " + "; ".join(html_escape(j) for j in profile["jobs_summary"][:3]))
+    lines.append("")
+    if msgs:
+        lines.append("<b>Последние сообщения:</b>")
+        for m in reversed(msgs):
+            who = "👤 Клиент" if m.sender_role == "client" else "🛡 Вы"
+            body = (m.message or "📎 Вложение").replace("\n", " ")[:180]
+            lines.append(f"• <b>{who}:</b> {html_escape(body)}")
+    else:
+        lines.append("<i>Сообщений пока нет.</i>")
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith("tg_chat:"))
+async def handle_admin_tg_chat_callback(callback: CallbackQuery) -> None:
+    if not callback.message or not callback.from_user:
+        return
+    uid = str(callback.from_user.id)
+    parts = str(callback.data or "").split(":", 2)
+    action = parts[1] if len(parts) > 1 else ""
+    arg = parts[2] if len(parts) > 2 else ""
+
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            await callback.answer("Недостаточно прав.", show_alert=True)
+            return
+
+        if action == "exit":
+            clear_active_tg_session(db, tg_user_id=uid, role_scope="admin_reply")
+            await callback.answer("Главное меню")
+            await callback.message.answer(
+                "🏠 <b>Главное меню TenderLex</b>\n\n"
+                "Режим ответа клиенту выключен, переписка сохранена.\n"
+                "Вернуться к перепискам можно через кнопку <b>«💬 Диалоги с клиентами»</b> ниже.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_inline_menu_for_callback(callback),
+            )
+            return
+
+        if action == "list":
+            await callback.answer()
+            dialogs_payload = _build_admin_dialogs_payload(db, limit=8)
+            if not dialogs_payload:
+                await callback.message.answer(
+                    "Диалогов с клиентами пока нет.",
+                    reply_markup=_inline_menu_for_callback(callback),
+                )
+                return
+            dialogs_text, dialogs_kb = dialogs_payload
+            await callback.message.answer(
+                dialogs_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=dialogs_kb,
+            )
+            return
+
+        state = db.get(SupportDialogState, arg) if arg else None
+        if not state:
+            await callback.answer("Диалог не найден.", show_alert=True)
+            return
+
+        if action == "info":
+            await callback.answer()
+            await callback.message.answer(
+                _format_dialog_card_text(db, state),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_support_session_active_kb(state.id),
+            )
+            return
+
+        if action == "enter":
+            profile = get_dialog_profile(db, client_id=state.client_id, guest_session_id=state.guest_session_id)
+            set_active_tg_session(
+                db,
+                tg_user_id=uid,
+                role_scope="admin_reply",
+                dialog_key=profile["dialog_key"],
+                client_id=profile["client_id"],
+                guest_session_id=profile["guest_session_id"],
+                dialog_label=profile["display_name"],
+                ttl_hours=DEFAULT_ADMIN_SESSION_TTL_HOURS,
+            )
+            await callback.answer(f"Вы отвечаете: {profile['display_name'][:40]}")
+            await callback.message.answer(
+                _format_dialog_card_text(db, state)
+                + "\n\n✍️ <b>Вы в чате с этим клиентом.</b>\n"
+                "Отправляйте текст, фото или файлы — всё сразу уйдёт клиенту и сохранится в админке.\n"
+                "<i>Чтобы вернуться в меню бота, нажмите «🏠 Главное меню» ниже.</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_support_session_active_kb(state.id),
+            )
+            return
+
+        if action == "close":
+            from_u = callback.from_user
+            actor_name = " ".join(
+                p for p in [getattr(from_u, "first_name", "") or "", getattr(from_u, "last_name", "") or ""] if p
+            ).strip() or getattr(from_u, "username", "") or "Администратор"
+            clear_active_tg_session(db, tg_user_id=uid, role_scope="admin_reply")
+            await close_support_dialog(db, state=state, actor_name=actor_name)
+            await callback.answer("Диалог завершён")
+            try:
+                await callback.message.edit_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[InlineKeyboardButton(text="🔒 Диалог закрыт", callback_data="none")]]
+                    )
+                )
+            except Exception:
+                pass
+            await callback.message.answer(
+                f"🔒 Диалог <b>{html_escape(state.topic_title or state.client_id)}</b> завершён.",
+                parse_mode=ParseMode.HTML,
+            )
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data.startswith("client_support:"))
+async def handle_client_support_callback(callback: CallbackQuery) -> None:
+    if not callback.message or not callback.from_user:
+        return
+    uid = str(callback.from_user.id)
+    parts = str(callback.data or "").split(":", 2)
+    action = parts[1] if len(parts) > 1 else "start"
+    arg = parts[2] if len(parts) > 2 else ""
+
+    db = SessionLocal()
+    try:
+        if action == "cancel":
+            clear_active_tg_session(db, tg_user_id=uid, role_scope="client_dm")
+            await callback.answer("Вышли из чата поддержки")
+            await callback.message.answer(
+                "Вы вернулись в главное меню TenderLex.",
+                reply_markup=_inline_menu_for_callback(callback),
+            )
+            return
+
+        job_id = ""
+        if action == "reply" and arg:
+            state = db.get(SupportDialogState, arg)
+            if state and state.client_id:
+                latest_job_msg = (
+                    db.query(JobChatMessage)
+                    .filter(JobChatMessage.client_id == state.client_id, JobChatMessage.job_id != "")
+                    .order_by(JobChatMessage.created_at.desc())
+                    .first()
+                )
+                if latest_job_msg:
+                    job_id = latest_job_msg.job_id
+        set_active_tg_session(
+            db,
+            tg_user_id=uid,
+            role_scope="client_dm",
+            dialog_key=f"tg_client:{uid}",
+            job_id=job_id,
+            dialog_label="Поддержка TenderLex",
+            ttl_hours=DEFAULT_CLIENT_SESSION_TTL_HOURS,
+        )
+        await callback.answer("Напишите ваш вопрос")
+        await callback.message.answer(
+            "💬 <b>Связь со специалистом TenderLex</b>\n\n"
+            "Напишите ваш вопрос, прикрепите документ или скриншот — сообщение сразу поступит оператору, а ответ придёт прямо сюда в бот.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🏠 Вернуться в меню", callback_data="client_support:cancel")]]
+            ),
+        )
+    finally:
+        db.close()
+
 
 @router.callback_query(F.data.startswith("reply:"))
 async def handle_site_chat_reply_btn(callback: CallbackQuery) -> None:
-    if not callback.message:
+    if not callback.message or not callback.from_user:
         return
-    session_id = str(callback.data or "").split(":", 1)[1]
-    OPERATOR_REPLY_SESSIONS[callback.message.chat.id] = session_id
-    await callback.answer("Режим ответа активирован")
-    await callback.message.answer(
-        f"✍️ <b>Введите ответ для клиента</b> <code>{html_escape(session_id)}</code> <b>(просто отправьте текст ниже):</b>",
-        parse_mode="HTML",
-        reply_markup=ForceReply(input_field_placeholder=f"Ответ для {session_id}..."),
-    )
+    uid = str(callback.from_user.id)
+    raw_sid = str(callback.data or "").split(":", 1)[1].strip()
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            await callback.answer("Доступно только администратору.", show_alert=True)
+            return
+        try:
+            clean_sid = validate_guest_session_id(raw_sid)
+        except ValueError:
+            await callback.answer("Некорректная сессия.", show_alert=True)
+            return
+        get_or_create_guest_session(db, clean_sid)
+        profile = get_dialog_profile(db, guest_session_id=clean_sid)
+        state = profile["state"]
+        set_active_tg_session(
+            db,
+            tg_user_id=uid,
+            role_scope="admin_reply",
+            dialog_key=profile["dialog_key"],
+            client_id=profile["client_id"],
+            guest_session_id=clean_sid,
+            dialog_label=profile["display_name"],
+            ttl_hours=DEFAULT_ADMIN_SESSION_TTL_HOURS,
+        )
+        await callback.answer("Режим ответа активирован")
+        await callback.message.answer(
+            f"✍️ <b>Режим ответа клиенту на сайт:</b> <code>{html_escape(clean_sid)}</code>\n"
+            "Отправляйте сообщения ниже — чтобы вернуться, нажмите «🏠 Главное меню».",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_support_session_active_kb(state.id),
+        )
+    finally:
+        db.close()
+
 
 @router.callback_query(F.data.startswith("close:"))
 async def handle_site_chat_close_btn(callback: CallbackQuery) -> None:
-    if not callback.message:
+    if not callback.message or not callback.from_user:
         return
-    session_id = str(callback.data or "").split(":", 1)[1]
-    OPERATOR_REPLY_SESSIONS.pop(callback.message.chat.id, None)
-    
-    sessions = _load_chat_sessions()
-    if session_id in sessions:
-        sessions[session_id].setdefault("messages", []).append({
-            "id": "sys_" + str(int(time.time() * 1000)),
-            "sender": "system",
-            "text": "Диалог завершен администратором. Спасибо за обращение!",
-            "timestamp": now_utc().isoformat(),
-        })
-        _save_chat_sessions(sessions)
-        
-    await callback.answer("Диалог закрыт")
+    uid = str(callback.from_user.id)
+    raw_sid = str(callback.data or "").split(":", 1)[1].strip()
+    db = SessionLocal()
     try:
-        await callback.message.edit_reply_markup(
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔒 Диалог закрыт", callback_data="none")]
-            ])
+        if not is_admin_telegram_user(db, uid):
+            await callback.answer("Доступно только администратору.", show_alert=True)
+            return
+        try:
+            clean_sid = validate_guest_session_id(raw_sid)
+        except ValueError:
+            await callback.answer("Некорректная сессия.", show_alert=True)
+            return
+        get_or_create_guest_session(db, clean_sid)
+        profile = get_dialog_profile(db, guest_session_id=clean_sid)
+        clear_active_tg_session(db, tg_user_id=uid, role_scope="admin_reply")
+        await close_support_dialog(db, state=profile["state"])
+        await callback.answer("Диалог закрыт")
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🔒 Диалог закрыт", callback_data="none")]]
+                )
+            )
+        except Exception:
+            pass
+        await callback.message.answer(
+            f"🔒 <b>Диалог по сессии</b> <code>{html_escape(clean_sid)}</code> <b>закрыт.</b>",
+            parse_mode=ParseMode.HTML,
         )
-    except Exception:
-        pass
-    await callback.message.answer(
-        f"🔒 <b>Диалог по сессии</b> <code>{html_escape(session_id)}</code> <b>закрыт.</b>",
-        parse_mode="HTML",
-        reply_markup=main_inline_keyboard(),
-    )
+    finally:
+        db.close()
 
 
 @router.callback_query(F.data == "none")
@@ -5886,7 +6302,7 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
                     chat_id=int(client_tg),
                     text=notification_text,
                     parse_mode=ParseMode.HTML,
-                    reply_markup=main_inline_keyboard(),
+                    reply_markup=main_inline_keyboard(client_tg),
                 )
             except Exception as notify_err:
                 logger.warning("failed_to_notify_client_of_bonus", extra={"error": str(notify_err), "client_id": client.id})
@@ -5987,68 +6403,273 @@ async def handle_owner_check_yc_balance(callback: CallbackQuery) -> None:
     )
 
 
-async def _handle_operator_chat_message(message: Message) -> bool:
-    chat_id = message.chat.id
-    text = str(message.text or "").strip() if message.text else ""
-    if not text:
+async def _handle_support_private_message(message: Message, bot: Bot | None = None) -> bool:
+    bot = bot or getattr(message, "bot", None)
+    tg_uid, username, full_name = _telegram_user_fields(message)
+    if not tg_uid:
         return False
 
-    session_id = OPERATOR_REPLY_SESSIONS.get(chat_id)
-    if not session_id and message.reply_to_message and message.reply_to_message.text:
-        match = re.search(r"sess_[a-z0-9_]+", message.reply_to_message.text, re.IGNORECASE)
-        if match:
-            session_id = match.group(0)
+    text_raw = str(getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    if text_raw.startswith("/") and not text_raw.startswith("/reply "):
+        return False
 
-    if not session_id and text.startswith("/reply "):
-        parts = text.split(" ", 2)
-        if len(parts) >= 3:
-            session_id = parts[1]
-            text = parts[2]
+    has_media = bool(getattr(message, "document", None) or getattr(message, "photo", None))
+    if not text_raw and not has_media:
+        return False
 
-    if session_id:
-        session_id = session_id.strip("`'\" \t\r\n")
-        sessions = _load_chat_sessions()
-        matched_key = None
-        if session_id in sessions:
-            matched_key = session_id
-        else:
-            for k in sessions.keys():
-                if k.lower() == session_id.lower() or session_id.lower() in k.lower():
-                    matched_key = k
-                    break
-        
-        if not matched_key and session_id:
-            matched_key = session_id
-            sessions[matched_key] = {
-                "sessionId": session_id,
-                "created": now_utc().isoformat(),
-                "messages": [],
-                "updated": now_utc().isoformat(),
-            }
+    db = SessionLocal()
+    try:
+        is_admin = is_admin_telegram_user(db, tg_uid)
 
-        sessions[matched_key].setdefault("messages", []).append({
-            "id": "admin_" + str(int(time.time() * 1000)),
-            "sender": "admin",
-            "text": text,
-            "timestamp": now_utc().isoformat(),
-        })
-        sessions[matched_key]["updated"] = now_utc().isoformat()
-        _save_chat_sessions(sessions)
-        OPERATOR_REPLY_SESSIONS.pop(chat_id, None)
-        await message.answer(
-            f"✅ <b>Ответ успешно доставлен клиенту на сайт!</b>\n\n💬 <b>Текст:</b> {html_escape(text)}",
-            parse_mode="HTML",
-            reply_markup=main_menu(),
-        )
-        return True
+        # 1. Native Telegram Reply via exact message map (admin or client)
+        reply_to = getattr(message, "reply_to_message", None)
+        if reply_to:
+            mapped = lookup_tg_reply_target(
+                db,
+                tg_chat_id=message.chat.id,
+                reply_to_message_id=reply_to.message_id,
+            )
+            if mapped:
+                if mapped.direction in ("admin_dm_card", "admin_dm_echo", "topic_post", "topic_header") and is_admin:
+                    try:
+                        atts = await _download_bot_support_attachments(
+                            message,
+                            bot,
+                            client_id=mapped.client_id,
+                            guest_session_id=mapped.guest_session_id,
+                            job_id=mapped.job_id,
+                            prefix="adm_dm",
+                        )
+                    except ValueError as exc:
+                        await message.answer(f"⚠️ {exc}")
+                        return True
+                    res = await deliver_admin_reply(
+                        db,
+                        client_id=mapped.client_id,
+                        guest_session_id=mapped.guest_session_id,
+                        job_id=mapped.job_id,
+                        text=text_raw,
+                        attachments=atts,
+                        source_channel="tg_dm",
+                        actor_tg_user_id=tg_uid,
+                        actor_name=full_name or "Специалист TenderLex",
+                        notify_client_tg=True,
+                        mirror_to_other_tg=True,
+                    )
+                    state_id = res["state"].id
+                    await message.answer(
+                        f"✅ <b>Ответ отправлен → {html_escape(res['profile']['display_name'])}</b>",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[[InlineKeyboardButton(text="✍️ Продолжить чат с этим клиентом", callback_data=f"tg_chat:enter:{state_id}")]]
+                        ),
+                    )
+                    return True
+                if mapped.direction == "client_dm_reply":
+                    try:
+                        atts = await _download_bot_support_attachments(
+                            message,
+                            bot,
+                            client_id=mapped.client_id,
+                            guest_session_id=mapped.guest_session_id,
+                            job_id=mapped.job_id,
+                            prefix="cli_tg",
+                        )
+                    except ValueError as exc:
+                        await message.answer(f"⚠️ {exc}")
+                        return True
+                    await deliver_client_telegram_message(
+                        db,
+                        tg_user_id=tg_uid,
+                        username=username,
+                        full_name=full_name,
+                        text=text_raw,
+                        attachments=atts,
+                        job_id=mapped.job_id,
+                    )
+                    await message.answer(
+                        "✅ Ваше сообщение передано специалисту TenderLex. Как только появится ответ — я сразу пришлю его сюда!",
+                        reply_markup=_inline_menu_for_message(message),
+                    )
+                    return True
+
+        # 2. Legacy `/reply <guest_session_id> <text>` command for authorized admins
+        if is_admin and text_raw.startswith("/reply "):
+            parts = text_raw.split(" ", 2)
+            if len(parts) >= 3:
+                try:
+                    clean_sid = validate_guest_session_id(parts[1])
+                except ValueError as exc:
+                    await message.answer(f"⚠️ {exc}")
+                    return True
+                get_or_create_guest_session(db, clean_sid)
+                res = await deliver_admin_reply(
+                    db,
+                    guest_session_id=clean_sid,
+                    text=parts[2],
+                    source_channel="tg_dm",
+                    actor_tg_user_id=tg_uid,
+                    actor_name=full_name or "Специалист TenderLex",
+                    notify_client_tg=True,
+                    mirror_to_other_tg=True,
+                )
+                await message.answer(
+                    f"✅ <b>Ответ отправлен → {html_escape(res['profile']['display_name'])}</b>",
+                    parse_mode=ParseMode.HTML,
+                )
+                return True
+
+        # 3. Persistent Admin DM chat session (Option A: "Войти в чат")
+        if is_admin:
+            admin_sess = get_active_tg_session(db, tg_user_id=tg_uid, role_scope="admin_reply")
+            if admin_sess:
+                try:
+                    atts = await _download_bot_support_attachments(
+                        message,
+                        bot,
+                        client_id=admin_sess.client_id,
+                        guest_session_id=admin_sess.guest_session_id,
+                        job_id=admin_sess.job_id,
+                        prefix="adm_dm",
+                    )
+                except ValueError as exc:
+                    await message.answer(f"⚠️ {exc}")
+                    return True
+                res = await deliver_admin_reply(
+                    db,
+                    client_id=admin_sess.client_id,
+                    guest_session_id=admin_sess.guest_session_id,
+                    job_id=admin_sess.job_id,
+                    text=text_raw,
+                    attachments=atts,
+                    source_channel="tg_dm",
+                    actor_tg_user_id=tg_uid,
+                    actor_name=full_name or "Специалист TenderLex",
+                    notify_client_tg=True,
+                    mirror_to_other_tg=True,
+                )
+                state = res["state"]
+                admin_sess.expires_at = now_utc() + timedelta(hours=DEFAULT_ADMIN_SESSION_TTL_HOURS)
+                db.commit()
+                await message.answer(
+                    f"✅ Доставлено → <b>{html_escape(res['profile']['display_name'])}</b>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_support_reply_sent_kb(),
+                )
+                return True
+
+        # 4. Persistent Client Support DM session ("Написать в поддержку")
+        client_sess = get_active_tg_session(db, tg_user_id=tg_uid, role_scope="client_dm")
+        if client_sess:
+            try:
+                atts = await _download_bot_support_attachments(
+                    message,
+                    bot,
+                    client_id=tg_uid,
+                    prefix="cli_tg",
+                )
+            except ValueError as exc:
+                await message.answer(f"⚠️ {exc}")
+                return True
+            await deliver_client_telegram_message(
+                db,
+                tg_user_id=tg_uid,
+                username=username,
+                full_name=full_name,
+                text=text_raw,
+                attachments=atts,
+                job_id=client_sess.job_id,
+            )
+            client_sess.expires_at = now_utc() + timedelta(hours=DEFAULT_CLIENT_SESSION_TTL_HOURS)
+            db.commit()
+            await message.answer(
+                "✅ Сообщение передано в поддержку TenderLex. Можете отправить ещё детали/файлы или вернуться в меню.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🏠 Вернуться в меню", callback_data="client_support:cancel")]]
+                ),
+            )
+            return True
+    finally:
+        db.close()
 
     return False
-# --- END SITE CHAT HANDLERS ---
+
+
+@router.message(Command("dialogs"))
+async def cmd_admin_dialogs(message: Message) -> None:
+    uid = str(message.from_user.id if message.from_user else "")
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            await message.answer("Команда доступна только администратору.", reply_markup=_inline_menu_for_message(message))
+            return
+        dialogs_payload = _build_admin_dialogs_payload(db, limit=8)
+        if not dialogs_payload:
+            await message.answer("Активных диалогов пока нет.", reply_markup=_inline_menu_for_message(message))
+            return
+        dialogs_text, dialogs_kb = dialogs_payload
+        await message.answer(
+            dialogs_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=dialogs_kb,
+        )
+    finally:
+        db.close()
+
+
+@router.message(Command("exit_chat"))
+async def cmd_admin_exit_chat(message: Message) -> None:
+    uid = str(message.from_user.id if message.from_user else "")
+    db = SessionLocal()
+    try:
+        clear_active_tg_session(db, tg_user_id=uid, role_scope=None)
+    finally:
+        db.close()
+    await message.answer(
+        "🏠 <b>Главное меню TenderLex</b>\n\n"
+        "Режим ответа клиенту выключен, переписка сохранена.\n"
+        "Вернуться к перепискам можно через кнопку <b>«💬 Диалоги с клиентами»</b> ниже.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=_inline_menu_for_message(message),
+    )
+
+
+@router.message(Command("support_setup"))
+async def cmd_admin_support_setup_dm(message: Message) -> None:
+    uid = str(message.from_user.id if message.from_user else "")
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            await message.answer("Команда доступна только администратору.", reply_markup=_inline_menu_for_message(message))
+            return
+        gid = get_configured_support_group_id(db)
+        diag = await test_support_group_connection(db, send_test_ping=False) if gid else None
+    finally:
+        db.close()
+
+    group_status = (
+        f"✅ Подключена: <code>{html_escape(gid)}</code>"
+        if diag and diag.get("ok")
+        else (f"⚠️ {html_escape(gid)}: {html_escape(diag.get('error', ''))}" if gid and diag else "не настроена (работает режим ЛС бота — Вариант A)")
+    )
+    await message.answer(
+        "🛠 <b>Настройка поддержки в Telegram</b>\n\n"
+        f"• <b>Ваш Telegram Admin ID:</b> <code>{html_escape(uid)}</code>\n"
+        "• <b>Вариант A (ЛС этого бота):</b> ✅ работает сейчас через кнопку <b>«💬 Диалоги с клиентами»</b> в главном меню, кнопку <b>«✍️ Ответить этому клиенту»</b> под сообщением или обычный Reply.\n"
+        f"• <b>Вариант B (Группа с темами по клиентам, на будущее):</b> {group_status}\n\n"
+        "<b>Если позже захотите включить Вариант B:</b>\n"
+        "1. Создайте одну закрытую группу в Telegram и в её настройках включите <b>«Темы» (Topics)</b> (вручную темы создавать не нужно — бот сам создаст тему при обращении).\n"
+        "2. Добавьте этого бота в группу и назначьте <b>Администратором</b> с правом <b>«Управление темами»</b>.\n"
+        "3. Отправьте <code>/support_setup</code> прямо в этой группе — бот покажет её ID (вида <code>-100...</code>) и проверит права.\n"
+        "4. Вставьте полученный ID в Админ-панели -> «Настройки» -> «Telegram-поддержка» и нажмите «Сохранить».",
+        parse_mode=ParseMode.HTML,
+        reply_markup=_inline_menu_for_message(message),
+    )
 
 
 @router.message(F.text)
 async def unknown_text(message: Message) -> None:
-    if await _handle_operator_chat_message(message):
+    if await _handle_support_private_message(message, getattr(message, "bot", None)):
         return
     if await _handle_supplier_text_tz(message):
         return
@@ -6057,7 +6678,7 @@ async def unknown_text(message: Message) -> None:
     await message.answer(
         "ℹ️ Выберите действие кнопкой ниже\n\n"
         "Для поставщиков отправьте ТЗ/ООЗ. Для анализа документации можно добавить номер извещения, файлы или ссылку на закупку.",
-        reply_markup=main_inline_keyboard(),
+        reply_markup=_inline_menu_for_message(message),
     )
 
 
@@ -6066,8 +6687,136 @@ async def unsupported_message(message: Message) -> None:
     await message.answer(
         "⚠️ Этот тип сообщения не поддерживается.\n\n"
         "Отправьте документ, архив, текст ТЗ, номер извещения или ссылку на закупку.",
-        reply_markup=main_inline_keyboard(),
+        reply_markup=_inline_menu_for_message(message),
     )
+
+
+# --- OPTION B: ADMIN FORUM SUPERGROUP ROUTER ---
+@support_group_router.message(Command("support_setup", "id"))
+async def support_group_setup_command(message: Message) -> None:
+    uid = str(message.from_user.id if message.from_user else "")
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            await reject_group_message(message)
+            return
+        chat_id_str = str(message.chat.id)
+        diag = await test_support_group_connection(db, group_id_override=chat_id_str, send_test_ping=False)
+        configured = get_configured_support_group_id(db)
+    finally:
+        db.close()
+
+    status_line = (
+        f"✅ <b>Готово!</b> {html_escape(diag.get('message', ''))}"
+        if diag.get("ok")
+        else f"⚠️ <b>Требуется настройка:</b> {html_escape(diag.get('error', ''))}"
+    )
+    saved_note = (
+        "✅ Этот ID уже сохранён в настройках системы."
+        if configured == chat_id_str
+        else f"👉 Скопируйте <code>{html_escape(chat_id_str)}</code> в Админ-панель -> Настройки -> «ID группы поддержки Telegram» и сохраните."
+    )
+    await message.answer(
+        f"🛠 <b>Диагностика группы поддержки TenderLex</b>\n\n"
+        f"• <b>ID этой группы:</b> <code>{html_escape(chat_id_str)}</code>\n"
+        f"• {status_line}\n\n"
+        f"{saved_note}",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@support_group_router.message()
+async def support_group_message_handler(message: Message, bot: Bot) -> None:
+    if message.from_user and getattr(message.from_user, "is_bot", False):
+        return
+
+    uid = str(message.from_user.id if message.from_user else "")
+    full_name = _telegram_user_fields(message)[2] or "Специалист TenderLex"
+    db = SessionLocal()
+    try:
+        if not is_support_group_chat(db, message.chat.id):
+            await reject_group_message(message)
+            return
+
+        if not is_admin_telegram_user(db, uid):
+            return
+
+        thread_id = int(getattr(message, "message_thread_id", None) or 0)
+        text_raw = str(message.text or message.caption or "").strip()
+        has_media = bool(message.document or message.photo)
+        if not text_raw and not has_media:
+            return
+
+        if thread_id <= 0:
+            if text_raw.startswith("/dialogs"):
+                dialogs = list_recent_dialogs_for_bot(db, limit=10)
+                if not dialogs:
+                    await message.answer("Активных диалогов пока нет.")
+                    return
+                lines = ["📋 <b>Активные диалоги (откройте нужную тему слева):</b>", ""]
+                for item in dialogs:
+                    badge = f"🔔{item['unread_count']} " if item["unread_count"] > 0 else ""
+                    lines.append(f"• {badge}<b>{html_escape(item['display_name'])}</b> — {html_escape(item['last_preview'])}")
+                await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+            return
+
+        state = lookup_topic_dialog(db, tg_chat_id=message.chat.id, tg_thread_id=thread_id)
+        if not state:
+            return
+
+        if text_raw.startswith("/info"):
+            await message.answer(
+                _format_dialog_card_text(db, state),
+                parse_mode=ParseMode.HTML,
+                message_thread_id=thread_id,
+            )
+            return
+
+        if text_raw.startswith("/close"):
+            await close_support_dialog(db, state=state, actor_name=full_name)
+            await message.answer("🔒 Диалог и тема закрыты.", message_thread_id=thread_id)
+            return
+
+        try:
+            atts = await _download_bot_support_attachments(
+                message,
+                bot,
+                client_id=state.client_id,
+                guest_session_id=state.guest_session_id,
+                prefix="adm_topic",
+            )
+        except ValueError as exc:
+            await message.answer(f"⚠️ {exc}", message_thread_id=thread_id)
+            return
+
+        await deliver_admin_reply(
+            db,
+            client_id=state.client_id,
+            guest_session_id=state.guest_session_id,
+            text=text_raw,
+            attachments=atts,
+            source_channel="tg_topic",
+            actor_tg_user_id=uid,
+            actor_name=full_name,
+            notify_client_tg=True,
+            mirror_to_other_tg=True,
+        )
+    finally:
+        db.close()
+
+
+@support_group_router.callback_query()
+async def support_group_callback_handler(callback: CallbackQuery) -> None:
+    if not callback.message:
+        return
+    db = SessionLocal()
+    try:
+        if not is_support_group_chat(db, callback.message.chat.id):
+            await reject_group_callback(callback)
+            return
+    finally:
+        db.close()
+    await callback.answer()
 
 
 @group_safety_router.message()
@@ -6105,6 +6854,7 @@ async def run_bot() -> None:
         pass
     await configure_bot_profile(bot)
     dispatcher = Dispatcher()
+    dispatcher.include_router(support_group_router)
     dispatcher.include_router(group_safety_router)
     dispatcher.include_router(router)
     reminder_task = asyncio.create_task(_onboarding_reminder_loop(bot))

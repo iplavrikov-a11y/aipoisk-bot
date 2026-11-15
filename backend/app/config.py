@@ -23,6 +23,8 @@ class AppConfig(BaseSettings):
     customer_session_hours: int = 168
     bot_token: str = ""
     owner_telegram_id: str = ""
+    support_group_id: str = ""
+    support_admin_ids: str = ""
     default_custom_ai_providers_json: str = "[]"
     default_saved_models_json: str = "[]"
     default_ai_function_models_json: str = "{}"

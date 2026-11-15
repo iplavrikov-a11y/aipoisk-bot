@@ -1,12 +1,19 @@
 # TenderLex Bot
 
-Актуальный выпуск 13 ноября 2026: [Устранение зависаний подтверждения позиций и стратегии (`multi_item_strategy`), авто-подтверждение для API/MCP, 1-клик продолжение в кабинете («без доплат») и разблокировка админки](docs/PROJECT_STATUS.md).
+Актуальный выпуск 15 ноября 2026: [Единая двусторонняя синхронизация диалогов (Telegram-бот + админ-панель + веб-кабинет + чат сайта) и усиление защиты гостевого чата по IP](docs/PROJECT_STATUS.md).
 
-Серверный прогон выпуска 13 ноября: все бэкенд-тесты (`1 438 passed, 54 subtests passed`), проверка типов сайта (`cd site && npm run typecheck`), сборка админ-панели (`cd frontend && npm run build`) и продакшн-деплой (`./scripts/deploy_tenderlex_live.sh`, службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
+Серверный прогон выпуска 15 ноября: все бэкенд-тесты (`1 456 passed, 54 subtests passed`), проверка типов сайта (`cd site && npm run typecheck`), сборка админ-панели и сайта (`cd frontend && npm run build`, `cd site && npm run build`) и продакшн-деплой (`./scripts/deploy_tenderlex_live.sh`, службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site` — `active`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Unified Omnichannel Support Sync & Guest Chat IP Hardening (2026-11-15):
+  - **Unified Support DB Ledger & Bridge (`backend/app/support_chat.py`, `backend/app/models.py`, `backend/app/db.py`, `backend/app/config.py`, `backend/app/schemas.py`)**: added `SupportGuestSession`, `SupportDialogState`, `SupportTelegramMessageMap`, `SupportTelegramSession`, and `guest_session_id`/`channel` fields on `JobChatMessage`, with HTML-escaped incoming alerts (`notify_admins_of_incoming_message`) and synchronized two-way reply delivery (`deliver_admin_reply`).
+  - **Admin-Only Bot Dialogs UI (`backend/app/bot.py`)**: integrated button `💬 Диалоги с клиентами` directly into `main_inline_keyboard` (visible exclusively to authorized admins) with button-driven dialog switching, Telegram Reply support, text/document/photo forwarding, and dialog completion without slash-command prompts.
+  - **Site Guest Chat Proxy & Admin Dialogs (`site/src/app/api/chat/send/route.ts`, `site/src/app/api/chat/messages/route.ts`, `site/src/app/api/chat/reply/route.ts`, `site/src/lib/guest-chat-proxy.ts`, `frontend/src/DialogsView.tsx`, `frontend/src/App.tsx`)**: unified site chat API routes behind FastAPI `/api/public/guest-chat/*` with strict `sessionId` validation, retired the legacy Next.js webhook route (`410`), and surfaced per-channel dialog badges and support settings in the admin panel.
+  - **Guest Chat IP & Session Rate Limiting (`backend/app/support_chat.py`, `backend/app/main.py`, `site/src/app/api/chat/send/route.ts`)**: added `check_guest_chat_rate_limits` (enforcing `8` msgs/60s per session, `12` msgs/60s per IP, and `5` new guest sessions/600s per IP prior to DB writes and Telegram alerts), normalized IP extraction via `ipaddress` in `_extract_request_ip`, forwarded `X-Real-IP`, and indexed `ix_support_guest_client_ip_created`.
+  - **Tests & Live Deploy**: added regression tests in `backend/tests/test_support_chat_sync.py`; verified `pytest backend/tests -q` (**1,456 passed, 54 subtests passed**), `cd site && npm run typecheck`, `cd frontend && npm run build`, and `./scripts/deploy_tenderlex_live.sh` (`127.0.0.1:8088/api/health/ready` → `200`, `127.0.0.1:3093/` → `200`).
 
 - Supplier Strategy Confirmation Drop-off Elimination, Auto-Confirm for API/MCP, 1-Click Cabinet Continuation & Admin Panel Unblocking (2026-11-13):
   - **API & MCP Job Auto-Confirmation (`backend/app/main.py`, `backend/app/mcp_jobs_api.py`)**: added `auto_confirm_strategy: bool = Form(default=True)` in `create_queued_job` and initialized `dobor_context` with `{"multi_item_confirmed": True, "selected_item_ids": None}` for balanced supplier searches in `create_customer_job_api`. Completely prevents automated external AI agents/scripts (e.g. customer Dmitry Vasilyev #101 jobs #1092, #1093, #1094) from deadlocking in polling loops.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import hashlib
+import ipaddress
 from html import escape as html_escape
 import json
 import logging
@@ -141,6 +142,8 @@ from .models import (
     OnboardingReminder,
     SeoEntry,
     SupplierResult,
+    SupportDialogState,
+    SupportGuestSession,
     SystemSettings,
     TariffPackage,
     UserJourneyEvent,
@@ -159,6 +162,24 @@ from .models import (
 )
 from .procurement_sources import source_label, source_payloads_from_text
 from .seo_funnel import ENTRY_COOKIE, RETENTION_DAYS, attach_registration, create_entry, delete_entry, entry_exists, funnel_report, prune_entries
+from .support_chat import (
+    GUEST_CLIENT_PREFIX,
+    TELEGRAM_ID_RE,
+    build_guest_chat_frontend_message,
+    check_guest_chat_rate_limits,
+    deliver_admin_reply,
+    ensure_legacy_guest_sessions_imported,
+    extract_guest_session_id,
+    get_or_create_guest_session,
+    is_guest_client_id,
+    notify_admins_of_incoming_message,
+    parse_telegram_id_list,
+    safe_chat_attachment_dir,
+    save_attachment_bytes,
+    test_support_group_connection,
+    unread_dialogs_count_for_admin,
+    validate_guest_session_id,
+)
 from .repository import (
     client_access_error,
     commercial_jobs_query,
@@ -454,10 +475,39 @@ def public_site_api(db: Session = Depends(db_session)) -> dict:
     return public_site_payload(db)
 
 
+def _normalize_ip_token(raw: str | None) -> str:
+    candidate = str(raw or "").strip()
+    if not candidate:
+        return ""
+    try:
+        return str(ipaddress.ip_address(candidate))[:64]
+    except ValueError:
+        return ""
+
+
+def _extract_request_ip(request: Request, *, default: str = "") -> str:
+    """Resolve the visitor's validated IP from proxy headers or ASGI peer info."""
+    headers = getattr(request, "headers", None)
+    if headers:
+        forwarded_raw = str(headers.get("x-forwarded-for", "") or "").strip()
+        if forwarded_raw:
+            ips = [ip for part in forwarded_raw.split(",") if (ip := _normalize_ip_token(part))]
+            non_loopback = [ip for ip in ips if not ipaddress.ip_address(ip).is_loopback]
+            if non_loopback:
+                return non_loopback[0]
+            if ips:
+                return ips[0]
+        real_ip = _normalize_ip_token(headers.get("x-real-ip", ""))
+        if real_ip and not ipaddress.ip_address(real_ip).is_loopback:
+            return real_ip
+    client = getattr(request, "client", None)
+    peer_raw = str(getattr(client, "host", "") or "").strip() if client else ""
+    peer = _normalize_ip_token(peer_raw) or peer_raw[:64]
+    return peer or default
+
+
 def _customer_request_ip(request: Request) -> str:
-    forwarded = str(request.headers.get("x-forwarded-for", "") or "").split(",", 1)[0].strip()
-    client_ip = forwarded or (request.client.host if request.client else "unknown")
-    return client_ip[:80]
+    return _extract_request_ip(request, default="unknown")[:80]
 
 
 def _customer_auth_key(request: Request, email: str) -> str:
@@ -466,10 +516,7 @@ def _customer_auth_key(request: Request, email: str) -> str:
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = str(request.headers.get("x-forwarded-for") or "").strip()
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "127.0.0.1"
+    return _extract_request_ip(request, default="127.0.0.1")
 
 
 def _check_customer_auth_rate(request: Request, email: str) -> str:
@@ -1335,6 +1382,8 @@ def chat_message_to_dict(msg: JobChatMessage, job_map: dict[str, Job] | None = N
         "job_title": job_info["job_title"] if job_info else None,
         "job_mode_label": job_info["job_mode_label"] if job_info else None,
         "client_id": msg.client_id,
+        "guest_session_id": getattr(msg, "guest_session_id", "") or "",
+        "channel": getattr(msg, "channel", "web") or "web",
         "sender_role": msg.sender_role,
         "message": msg.message,
         "attachments": attachments,
@@ -1955,6 +2004,7 @@ async def customer_job_chat_route(
         job_id=root_id,
         client_id=job.client_id or "",
         sender_role="client",
+        channel="web",
         message=clean_message,
         attachments_json=json.dumps(attachments, ensure_ascii=False),
         is_read_by_client=True,
@@ -1971,6 +2021,19 @@ async def customer_job_chat_route(
 
     job.updated_at = now_utc()
     db.commit()
+
+    try:
+        await notify_admins_of_incoming_message(
+            db,
+            client_id=job.client_id or (context.user.client_id or ""),
+            job_id=root_id,
+            text=clean_message,
+            attachments=attachments,
+            chat_message_id=new_msg.id,
+            channel="web",
+        )
+    except Exception as exc:
+        logger.warning("Error notifying admin about customer job chat message: %s", exc)
 
     msgs = db.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).order_by(JobChatMessage.created_at.asc()).all()
     return {"ok": True, "messages": [chat_message_to_dict(m) for m in msgs]}
@@ -2200,6 +2263,7 @@ async def customer_chat_post_route(
         job_id=root_job_id or clean_job_id or "",
         client_id=client_id,
         sender_role="client",
+        channel="web",
         message=clean_message,
         attachments_json=json.dumps(attachments, ensure_ascii=False),
         is_read_by_client=True,
@@ -2219,22 +2283,17 @@ async def customer_chat_post_route(
         target_job.updated_at = now_utc()
     db.commit()
 
-    # Telegram notification to admin
+    # Unified omnichannel Telegram notification (Option A DM + Option B Forum Topic)
     try:
-        from .admin_alerts import send_telegram_admin_alert
-        client_label = client.name if (client and client.name) else (context.user.email or "Клиент")
-        job_label = f" по задаче #{target_job.job_number or target_job.id[:6]}" if target_job else ""
-        tg_text = (
-            f"📩 <b>Новое сообщение от клиента{job_label}!</b>\n\n"
-            f"👤 <b>Клиент:</b> {html_escape(client_label)}\n"
-            f"✉️ <b>Email:</b> {html_escape(context.user.email or '')}\n"
+        await notify_admins_of_incoming_message(
+            db,
+            client_id=client_id,
+            job_id=root_job_id or clean_job_id or "",
+            text=clean_message,
+            attachments=attachments,
+            chat_message_id=new_msg.id,
+            channel="web",
         )
-        phone_val = (getattr(client, "phone", "") if client else "") or getattr(context.user, "phone", "")
-        if phone_val:
-            tg_text += f"📞 <b>Телефон:</b> {html_escape(phone_val)}\n"
-        tg_text += f"💬 <b>Сообщение:</b> {html_escape(clean_message or '📎 Прикреплен файл')}\n\n"
-        tg_text += "👉 Ответить можно в панели администратора в разделе «Диалоги»."
-        await send_telegram_admin_alert(tg_text, deduplicate_key=f"chat_client_{client_id}", throttle_seconds=60)
     except Exception as exc:
         logger.warning("Error notifying admin about customer chat message: %s", exc)
 
@@ -2299,6 +2358,95 @@ def customer_chat_attachment_route(
         raise
     except Exception:
         raise HTTPException(status_code=404, detail="Не удалось прочитать вложение.")
+
+
+@app.get("/api/public/guest-chat/messages")
+def public_guest_chat_messages(
+    sessionId: str = Query(...),
+    db: Session = Depends(db_session),
+) -> dict:
+    try:
+        clean_sid = validate_guest_session_id(sessionId)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    ensure_legacy_guest_sessions_imported(db, session_id=clean_sid)
+    guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == clean_sid).first()
+    msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == f"guest:{clean_sid}")
+        .order_by(JobChatMessage.created_at.asc())
+        .all()
+    )
+    return {
+        "messages": [build_guest_chat_frontend_message(m) for m in msgs],
+        "contact": guest.visitor_contact if (guest and guest.visitor_contact) else None,
+        "status": guest.status if guest else "open",
+    }
+
+
+@app.post("/api/public/guest-chat/send")
+async def public_guest_chat_send(
+    request: Request,
+    payload: dict = Body(...),
+    db: Session = Depends(db_session),
+) -> dict:
+    try:
+        clean_sid = validate_guest_session_id(payload.get("sessionId"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    raw_text = str(payload.get("text") or "").strip()
+    raw_preset = str(payload.get("preset") or "").strip()
+    clean_text = (raw_text or raw_preset)[:4000]
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Сообщение не должно быть пустым.")
+
+    clean_contact = str(payload.get("contact") or "").strip()[:255]
+    source_url = str(payload.get("sourceUrl") or "").strip()[:512]
+    client_ip = _extract_request_ip(request, default="")
+
+    rate_err = check_guest_chat_rate_limits(db, session_id=clean_sid, client_ip=client_ip)
+    if rate_err:
+        raise HTTPException(status_code=429, detail=rate_err)
+
+    client_key = f"{GUEST_CLIENT_PREFIX}{clean_sid}"
+    guest = get_or_create_guest_session(
+        db,
+        clean_sid,
+        contact=clean_contact,
+        source_url=source_url,
+        client_ip=client_ip,
+    )
+    new_msg = JobChatMessage(
+        id=new_id(),
+        client_id=client_key,
+        guest_session_id=clean_sid,
+        job_id="",
+        sender_role="client",
+        channel="guest_web",
+        message=clean_text,
+        attachments_json="[]",
+        is_read_by_client=True,
+        is_read_by_admin=False,
+        created_at=now_utc(),
+    )
+    db.add(new_msg)
+    guest.updated_at = now_utc()
+    db.commit()
+
+    try:
+        await notify_admins_of_incoming_message(
+            db,
+            guest_session_id=clean_sid,
+            text=clean_text,
+            chat_message_id=new_msg.id,
+            channel="guest_web",
+        )
+    except Exception as exc:
+        logger.warning("Error notifying admin about guest chat message: %s", exc)
+
+    return {"success": True, "message": build_guest_chat_frontend_message(new_msg)}
 
 
 # ==============================================================================
@@ -3139,6 +3287,7 @@ def dashboard(db: Session = Depends(db_session)) -> dict:
         "failed_jobs": int(failed_jobs_week or 0),
         "failed_jobs_total": int(failed_jobs_total or 0),
         "suppliers": db.query(func.count(SupplierResult.id)).scalar() or 0,
+        "unread_dialogs_count": unread_dialogs_count_for_admin(db),
     }
 
 
@@ -3316,6 +3465,16 @@ def get_settings_keys(db: Session = Depends(db_session)) -> dict:
 def patch_settings(data: SettingsPatch, db: Session = Depends(db_session)) -> dict:
     settings = get_or_create_settings(db)
     payload = data.model_dump(exclude_unset=True)
+    if "support_telegram_group_id" in payload and payload["support_telegram_group_id"] is not None:
+        clean_gid = str(payload["support_telegram_group_id"]).strip()
+        if clean_gid and not TELEGRAM_ID_RE.match(clean_gid):
+            raise HTTPException(
+                status_code=400,
+                detail="Некорректный ID группы Telegram: укажите числовой ID супергруппы (например -1001234567890) или оставьте поле пустым.",
+            )
+        payload["support_telegram_group_id"] = clean_gid
+    if "support_admin_telegram_ids" in payload and payload["support_admin_telegram_ids"] is not None:
+        payload["support_admin_telegram_ids"] = ", ".join(parse_telegram_id_list(payload["support_admin_telegram_ids"]))
     for key, value in payload.items():
         if value is not None and hasattr(settings, key):
             setattr(settings, key, value)
@@ -3766,12 +3925,19 @@ def clients_sync_check(db: Session = Depends(db_session)) -> dict:
     c_cr = max_client_created.isoformat() if max_client_created else ""
     w_up = max_web_user_updated.isoformat() if max_web_user_updated else ""
     b_cr = max_billing_created.isoformat() if max_billing_created else ""
-    version_key = f"{clients_count}:{c_up}:{c_cr}:{w_up}:{b_cr}:{jobs_count}"
+    chat_count, max_chat_created = (
+        db.query(func.count(JobChatMessage.id), func.max(JobChatMessage.created_at)).one()
+    )
+    chat_count = int(chat_count or 0)
+    unread_dialogs_count = unread_dialogs_count_for_admin(db)
+    c_chat = max_chat_created.isoformat() if max_chat_created else ""
+    version_key = f"{clients_count}:{c_up}:{c_cr}:{w_up}:{b_cr}:{jobs_count}:{chat_count}:{c_chat}:{unread_dialogs_count}"
 
     return {
         "version_key": version_key,
         "clients_count": clients_count,
         "jobs_count": jobs_count,
+        "unread_dialogs_count": unread_dialogs_count,
         "latest_client": latest_info,
     }
 
@@ -5672,7 +5838,10 @@ def admin_dialogs_list(
     db: Session = Depends(db_session),
     filter_unread: bool = False,
 ) -> dict:
+    ensure_legacy_guest_sessions_imported(db)
     chat_client_ids = [row[0] for row in db.query(JobChatMessage.client_id).distinct().all() if row[0]]
+    guest_sessions = db.query(SupportGuestSession).all()
+    guest_map = {f"{GUEST_CLIENT_PREFIX}{g.session_id}": g for g in guest_sessions}
     comment_jobs = (
         db.query(Job)
         .filter(
@@ -5684,21 +5853,29 @@ def admin_dialogs_list(
         )
         .all()
     )
-    all_client_ids = list(dict.fromkeys(chat_client_ids + [j.client_id for j in comment_jobs if j.client_id]))
-    if not all_client_ids:
+    all_ids = list(dict.fromkeys(
+        chat_client_ids
+        + [j.client_id for j in comment_jobs if j.client_id]
+        + list(guest_map.keys())
+    ))
+    if not all_ids:
         return {"dialogs": [], "total_unread_admin": 0}
 
+    real_client_ids = [cid for cid in all_ids if not is_guest_client_id(cid)]
     clients = (
         db.query(Client)
         .options(selectinload(Client.web_users), selectinload(Client.jobs))
-        .filter(Client.id.in_(all_client_ids))
+        .filter(Client.id.in_(real_client_ids))
         .all()
-    )
+    ) if real_client_ids else []
     client_map = {c.id: c for c in clients}
+
+    dialog_states = db.query(SupportDialogState).filter(SupportDialogState.client_id.in_(all_ids)).all()
+    state_by_client = {s.client_id: s for s in dialog_states}
 
     all_msgs = (
         db.query(JobChatMessage)
-        .filter(JobChatMessage.client_id.in_(all_client_ids))
+        .filter(JobChatMessage.client_id.in_(all_ids))
         .order_by(JobChatMessage.created_at.asc())
         .all()
     )
@@ -5709,12 +5886,55 @@ def admin_dialogs_list(
     dialogs = []
     total_unread_admin = 0
 
-    for cid in all_client_ids:
+    for cid in all_ids:
+        msgs = msgs_by_client.get(cid) or []
+        if is_guest_client_id(cid):
+            guest = guest_map.get(cid)
+            if not msgs and not guest:
+                continue
+            sid = extract_guest_session_id(cid)
+            if not msgs:
+                continue
+            unread_cnt = sum(1 for m in msgs if m.sender_role == "client" and not m.is_read_by_admin)
+            total_unread_admin += unread_cnt
+            if filter_unread and unread_cnt == 0:
+                continue
+            last_m = msgs[-1]
+            d_state = state_by_client.get(cid)
+            contact = (guest.visitor_contact if guest else "") or ""
+            is_tg_guest = sid.startswith("tg_")
+            dialogs.append({
+                "client_id": cid,
+                "client_number": None,
+                "client_name": (guest.visitor_name if guest and guest.visitor_name else f"Гость сайта ({sid[-6:]})"),
+                "client_email": contact if "@" in contact and not contact.startswith("@") else "",
+                "client_phone": contact if contact and "@" not in contact else "",
+                "visitor_contact": contact,
+                "is_guest": True,
+                "guest_session_id": sid,
+                "telegram_id": sid[3:] if is_tg_guest else "",
+                "last_channel": (getattr(last_m, "channel", "") or (d_state.last_channel if d_state else "guest_web")),
+                "topic_linked": bool(d_state and int(d_state.telegram_thread_id or 0) > 0),
+                "dialog_status": (d_state.status if d_state else (guest.status if guest else "open")),
+                "last_message": last_m.message or ("📎 Прикреплены файлы" if last_m.attachments_json != "[]" else ""),
+                "last_message_at": last_m.created_at.isoformat() if last_m.created_at else None,
+                "last_sender_role": last_m.sender_role,
+                "unread_admin_count": unread_cnt,
+                "total_messages": len(msgs),
+                "jobs": [],
+                "job_id": "",
+                "job_number": None,
+                "job_title": "",
+                "job_mode": "",
+                "job_mode_label": "",
+                "job_status": "",
+            })
+            continue
+
         client = client_map.get(cid)
         if not client:
             continue
 
-        msgs = msgs_by_client.get(cid)
         if not msgs:
             for j in client.jobs:
                 if not getattr(j, "is_admin_rerun", False):
@@ -5735,6 +5955,7 @@ def admin_dialogs_list(
             continue
 
         last_m = msgs[-1]
+        d_state = state_by_client.get(cid)
         client_name = client.name if client else ""
         client_email = ""
         client_phone = getattr(client, "phone", "") or ""
@@ -5766,7 +5987,13 @@ def admin_dialogs_list(
             "client_name": client_name or "Без названия",
             "client_email": client_email,
             "client_phone": client_phone,
+            "visitor_contact": "",
+            "is_guest": False,
+            "guest_session_id": "",
             "telegram_id": client.telegram_id if client else "",
+            "last_channel": (getattr(last_m, "channel", "") or (d_state.last_channel if d_state else "web")),
+            "topic_linked": bool(d_state and int(d_state.telegram_thread_id or 0) > 0),
+            "dialog_status": (d_state.status if d_state else "open"),
             "last_message": last_m.message or ("📎 Прикреплены файлы" if last_m.attachments_json != "[]" else ""),
             "last_message_at": last_m.created_at.isoformat() if last_m.created_at else None,
             "last_sender_role": last_m.sender_role,
@@ -5785,8 +6012,57 @@ def admin_dialogs_list(
     return {"dialogs": dialogs, "total_unread_admin": total_unread_admin}
 
 
+@app.post("/api/admin/support/test-group", dependencies=[Depends(require_admin)])
+async def admin_support_test_group(
+    payload: dict = Body(default={}),
+    db: Session = Depends(db_session),
+) -> dict:
+    gid = payload.get("group_id") if isinstance(payload, dict) else None
+    return await test_support_group_connection(
+        db,
+        group_id_override=(str(gid).strip() if gid is not None else None),
+        send_test_ping=True,
+    )
+
+
 @app.get("/api/admin/clients/{client_id}/chat", dependencies=[Depends(require_admin)])
 def admin_client_chat_get(client_id: str, db: Session = Depends(db_session)) -> dict:
+    if is_guest_client_id(client_id):
+        sid = extract_guest_session_id(client_id)
+        ensure_legacy_guest_sessions_imported(db, session_id=sid)
+        guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == sid).first()
+        msgs = (
+            db.query(JobChatMessage)
+            .filter(JobChatMessage.client_id == client_id)
+            .order_by(JobChatMessage.created_at.asc())
+            .all()
+        )
+        if not guest and not msgs:
+            raise HTTPException(status_code=404, detail="Гостевой диалог не найден.")
+        updated = False
+        for m in msgs:
+            if m.sender_role == "client" and not m.is_read_by_admin:
+                m.is_read_by_admin = True
+                updated = True
+        if updated:
+            db.commit()
+        contact = (guest.visitor_contact if guest else "") or ""
+        return {
+            "client": {
+                "id": client_id,
+                "number": None,
+                "name": (guest.visitor_name if guest and guest.visitor_name else f"Гость сайта ({sid[-6:]})"),
+                "email": contact if "@" in contact and not contact.startswith("@") else "",
+                "phone": contact if contact and "@" not in contact else "",
+                "visitor_contact": contact,
+                "telegram_id": sid[3:] if sid.startswith("tg_") else "",
+                "is_guest": True,
+                "guest_session_id": sid,
+            },
+            "jobs": [],
+            "messages": [chat_message_to_dict(m) for m in msgs],
+        }
+
     client = db.get(Client, client_id)
     if not client:
         raise HTTPException(status_code=404, detail="Клиент не найден.")
@@ -5872,12 +6148,22 @@ async def admin_client_chat_post(
     file: UploadFile | None = File(default=None),
     db: Session = Depends(db_session),
 ) -> dict:
-    client = db.get(Client, client_id)
-    if not client:
+    is_guest = is_guest_client_id(client_id)
+    guest_sid = extract_guest_session_id(client_id) if is_guest else ""
+    client = None if is_guest else db.get(Client, client_id)
+    guest = None
+    if is_guest:
+        ensure_legacy_guest_sessions_imported(db, session_id=guest_sid)
+        guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == guest_sid).first()
+        if not guest:
+            has_msg = db.query(JobChatMessage.id).filter(JobChatMessage.client_id == client_id).first()
+            if not has_msg:
+                raise HTTPException(status_code=404, detail="Гостевой диалог не найден.")
+    elif not client:
         raise HTTPException(status_code=404, detail="Клиент не найден.")
 
     clean_message = str(message or "").strip()
-    clean_job_id = str(job_id or "").strip()
+    clean_job_id = str(job_id or "").strip() if not is_guest else ""
 
     all_uploads: list[UploadFile] = []
     if files and isinstance(files, (list, tuple)):
@@ -5890,82 +6176,47 @@ async def admin_client_chat_post(
 
     target_job = None
     root_job_id = ""
-    if clean_job_id:
+    if clean_job_id and client:
         target_job = db.get(Job, clean_job_id)
         if target_job and target_job.client_id == client_id:
             root_job_id = resolve_chat_job_id(target_job)
-            target_dir = job_dir(root_job_id) / "chat"
         else:
             clean_job_id = ""
 
-    if not clean_job_id:
-        target_dir = Path(config.storage_path) / "clients" / client_id / "chat"
-
-    target_dir.mkdir(parents=True, exist_ok=True)
     attachments: list[dict] = []
-    for uf in all_uploads:
+    for uf in all_uploads[:10]:
         if not uf.filename:
             continue
-        content = await uf.read()
-        if content:
-            safe_name = Path(uf.filename).name
-            dest = target_dir / f"{int(time.time())}_{safe_name}"
-            dest.write_bytes(content)
-            attachments.append({
-                "path": str(dest),
-                "name": safe_name,
-                "label": safe_name,
-                "size": len(content),
-            })
-
-    new_msg = JobChatMessage(
-        id=new_id(),
-        job_id=root_job_id or clean_job_id or "",
-        client_id=client_id,
-        sender_role="admin",
-        message=clean_message,
-        attachments_json=json.dumps(attachments, ensure_ascii=False),
-        is_read_by_admin=True,
-        is_read_by_client=False,
-        created_at=now_utc(),
-    )
-    db.add(new_msg)
-
-    if target_job:
-        if clean_message:
-            target_job.admin_comment = clean_message
-        target_job.admin_supplement_at = now_utc()
-        target_job.updated_at = now_utc()
-    db.commit()
-
-    if notify_telegram and client.telegram_id:
+        content = await uf.read(15 * 1024 * 1024 + 1)
+        if not content:
+            continue
         try:
-            from .bot import send_admin_supplement_telegram
-            if target_job:
-                supp_list = get_job_admin_supplements(target_job)
-                await send_admin_supplement_telegram(
-                    telegram_id=client.telegram_id,
-                    job_title=human_job_title(target_job) or target_job.title,
-                    job_id=target_job.id,
-                    comment=clean_message,
-                    files=supp_list,
+            attachments.append(
+                save_attachment_bytes(
+                    filename=uf.filename,
+                    content=content,
+                    client_id=client_id,
+                    guest_session_id=guest_sid,
+                    job_id=root_job_id or clean_job_id,
+                    enforce_allowlist=True,
                 )
-            else:
-                bot_token = (config.bot_token or os.getenv("AIPOISK_BOT_TOKEN") or "").strip()
-                if bot_token:
-                    async with httpx.AsyncClient(timeout=8.0) as http_client:
-                        await http_client.post(
-                            f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                            json={
-                                "chat_id": client.telegram_id,
-                                "text": f"💬 <b>Специалист TenderLex ответил вам:</b>\n\n{html_escape(clean_message)}",
-                                "parse_mode": "HTML",
-                            },
-                        )
-        except Exception as exc:
-            logger.warning("Error notifying telegram in admin client chat: %s", exc)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
-    job_map = {j.id: j for j in client.jobs}
+    await deliver_admin_reply(
+        db,
+        client_id=client_id,
+        guest_session_id=guest_sid,
+        job_id=root_job_id or clean_job_id,
+        text=clean_message,
+        attachments=attachments,
+        source_channel="admin_web",
+        notify_client_tg=bool(notify_telegram),
+        mirror_to_other_tg=True,
+    )
+
+    job_map = {j.id: j for j in client.jobs} if client else {}
     msgs = (
         db.query(JobChatMessage)
         .filter(JobChatMessage.client_id == client_id)
@@ -6041,59 +6292,36 @@ async def admin_job_chat_post(
 
     get_job_chat_messages(db, job, auto_seed=True)
 
-    target_dir = job_dir(root_id) / "chat"
-    target_dir.mkdir(parents=True, exist_ok=True)
     attachments: list[dict] = []
-    for uf in all_uploads:
+    for uf in all_uploads[:10]:
         if not uf.filename:
             continue
-        content = await uf.read()
-        if content:
-            safe_name = Path(uf.filename).name
-            dest = target_dir / f"{int(time.time())}_{safe_name}"
-            dest.write_bytes(content)
-            attachments.append({
-                "path": str(dest),
-                "name": safe_name,
-                "label": safe_name,
-                "size": len(content),
-            })
-
-    new_msg = JobChatMessage(
-        id=new_id(),
-        job_id=root_id,
-        client_id=job.client_id or "",
-        sender_role="admin",
-        message=clean_message,
-        attachments_json=json.dumps(attachments, ensure_ascii=False),
-        is_read_by_admin=True,
-        is_read_by_client=False,
-        created_at=now_utc(),
-    )
-    db.add(new_msg)
-
-    target_job = db.get(Job, root_id) or job
-    if clean_message:
-        target_job.admin_comment = clean_message
-    target_job.admin_supplement_at = now_utc()
-    target_job.updated_at = now_utc()
-    db.commit()
-
-    if notify_telegram:
-        target_tg_id = target_job.created_by_telegram_id or (target_job.client.telegram_id if target_job.client else "")
-        if target_tg_id:
-            try:
-                from .bot import send_admin_supplement_telegram
-                supp_list = get_job_admin_supplements(target_job)
-                await send_admin_supplement_telegram(
-                    telegram_id=target_tg_id,
-                    job_title=human_job_title(target_job) or target_job.title,
-                    job_id=target_job.id,
-                    comment=clean_message,
-                    files=supp_list,
+        content = await uf.read(15 * 1024 * 1024 + 1)
+        if not content:
+            continue
+        try:
+            attachments.append(
+                save_attachment_bytes(
+                    filename=uf.filename,
+                    content=content,
+                    client_id=job.client_id or "",
+                    job_id=root_id,
+                    enforce_allowlist=True,
                 )
-            except Exception as exc:
-                logger.warning("Error notifying telegram in admin chat: %s", exc)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    await deliver_admin_reply(
+        db,
+        client_id=job.client_id or "",
+        job_id=root_id,
+        text=clean_message,
+        attachments=attachments,
+        source_channel="admin_web",
+        notify_client_tg=bool(notify_telegram),
+        mirror_to_other_tg=True,
+    )
 
     msgs = db.query(JobChatMessage).filter(JobChatMessage.job_id == root_id).order_by(JobChatMessage.created_at.asc()).all()
     return {"ok": True, "messages": [chat_message_to_dict(m) for m in msgs]}
@@ -6122,6 +6350,8 @@ def admin_job_chat_attachment(
         raise
     except Exception:
         raise HTTPException(status_code=404, detail="Не удалось прочитать вложение.")
+
+
 def read_job_evidence_payload(job: Job, *, storage_root: Path | None = None) -> dict:
     evidence_path = str(getattr(job, "evidence_path", "") or "")
     root = (storage_root or config.storage_path).resolve()
