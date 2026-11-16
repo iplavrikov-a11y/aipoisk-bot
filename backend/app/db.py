@@ -207,6 +207,24 @@ def _ensure_schema() -> None:
             "support_mirror_admin_replies_to_bot": (
                 "BOOLEAN DEFAULT TRUE" if connection.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"
             ),
+            "support_work_hours_enabled": (
+                "BOOLEAN DEFAULT TRUE" if connection.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"
+            ),
+            "support_work_hours_start": "VARCHAR(8) DEFAULT '09:00'",
+            "support_work_hours_end": "VARCHAR(8) DEFAULT '20:00'",
+            "support_timezone_offset": "INTEGER DEFAULT 3",
+            "support_quiet_night_notifications": (
+                "BOOLEAN DEFAULT TRUE" if connection.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"
+            ),
+            "support_ai_antispam_enabled": (
+                "BOOLEAN DEFAULT TRUE" if connection.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"
+            ),
+            "support_ai_auto_reply_enabled": (
+                "BOOLEAN DEFAULT TRUE" if connection.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"
+            ),
+            "registration_block_disposable_email": (
+                "BOOLEAN DEFAULT TRUE" if connection.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"
+            ),
         }
         clients_existing = _existing_columns(inspector, "clients")
         client_additions = {
@@ -339,7 +357,8 @@ def _ensure_schema() -> None:
         added_settings_columns: set[str] = set()
         for column, definition in system_settings_additions.items():
             if column not in system_settings_existing:
-                connection.execute(text(f"ALTER TABLE system_settings ADD COLUMN {column} {definition}"))
+                if_not_exists = "IF NOT EXISTS " if connection.dialect.name == "postgresql" else ""
+                connection.execute(text(f"ALTER TABLE system_settings ADD COLUMN {if_not_exists}{column} {definition}"))
                 added_settings_columns.add(column)
         if "supplier_search_provider_order" in system_settings_existing:
             connection.execute(

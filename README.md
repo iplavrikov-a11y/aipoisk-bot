@@ -1,12 +1,19 @@
 # TenderLex Bot
 
-Актуальный выпуск 15 ноября 2026 (ч. 2): [Ускорение загрузки диалогов в 3.7x–5x, исправление зависаний поллинга, кнопка «Отметить все прочитанными» и 1-клик блокировка/разблокировка пользователей](docs/PROJECT_STATUS.md).
+Актуальный выпуск 16 ноября 2026: Усиленная защита регистрации и чата от спама и атак, тихий ночной режим в Telegram, AI-фильтр/помощник первой линии и вкладка «Безопасность» в админ-панели.
 
-Серверный прогон выпуска 15 ноября (ч. 2): все бэкенд-тесты (`1 457 passed, 54 subtests passed`), проверка типов сайта (`cd site && npm run typecheck`), сборка админ-панели и сайта (`cd frontend && npm run build`, `cd site && npm run build`) и продакшн-деплой (`./scripts/deploy_tenderlex_live.sh`, службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site` — `active`).
+Серверный прогон выпуска 16 ноября: все бэкенд-тесты (`100% pass`, включая `test_security_shield.py`), проверка типов сайта (`cd site && npm run typecheck`), сборка админ-панели и сайта (`cd frontend && npm run build`, `cd site && npm run build`) и продакшн-деплой (`./scripts/deploy_tenderlex_live.sh`, службы `tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site` — `active`).
 
 Исходный код выполненных исправлений сохранён в GitHub. Старые макеты, промежуточные сборки, БД, секреты и клиентские документы исключены.
 
 ## Production notes
+
+- Anti-Spam Shield, Registration Hardening, Quiet Night Mode, AI Triage & Admin Security Tab (2026-11-16):
+  - **Registration & Auth Hardening (`backend/app/security_shield.py`, `backend/app/main.py`, `backend/app/schemas.py`, `site/src/app/cabinet/cabinet-client.tsx`)**: added invisible HMAC-signed form challenge (`GET /api/public/auth/challenge`), automated `User-Agent` blocking (`curl`/scanners), SQLi/XSS/CLI payload detection on registration inputs (preserving legitimate company names like `ООО "Техно-Снаб"`), disposable/test email domain filtering, optional phone sanity checks, and IPv4 `/24` subnet rate limiting.
+  - **Support Chat Anti-Spam, Contact Validation & AI First-Line Triage (`backend/app/support_chat.py`, `backend/app/main.py`, `site/src/components/chat-widget.tsx`)**: added 60s/30s duplicate-message cooldown, guest preset burst limits, real contact validation (`phone`/`email`/`@telegram`), probing/injection blocking with auto-ban (`SupportBlockedActor`), and light-model AI spam classification + first-line Q&A auto-reply using live tariffs.
+  - **Support Working Hours & Quiet Night Mode (`backend/app/models.py`, `backend/app/db.py`, `backend/app/support_chat.py`, `site/src/components/chat-widget.tsx`)**: added configurable support hours (`09:00–20:00` MSK default) and quiet night Telegram notifications (silently logging to the forum topic without waking admin DMs at night) plus an off-hours notice in `ChatWidget`.
+  - **Admin «Безопасность» Tab (`frontend/src/SecurityView.tsx`, `frontend/src/App.tsx`, `backend/app/main.py`)**: added `SecurityEvent` (`security_events`), `/api/admin/security/overview|block|unblock|settings`, registration-attempt anomaly flags, 1-click IP blocking/unblocking, and live security/work-hours controls.
+  - **Tests & Live Deploy**: added `backend/tests/test_security_shield.py`; verified full backend test suite + `./scripts/deploy_tenderlex_live.sh` (`127.0.0.1:8088` and `127.0.0.1:3093` `200 OK`).
 
 - Admin Dialogs Performance Fix, 1-Click Mark All Read & User Blocking (2026-11-15):
   - **Dialogs & Sync Endpoint Speedup (`backend/app/main.py`, `backend/app/support_chat.py`, `backend/app/db.py`)**: eliminated SSH-tunnel full-ORM `Client.jobs` transfers and 500+ `evidence.json` disk reads in `admin_dialogs_list` (`fast_human_job_title_fields`, SQL `row_number() over` latest-message & count aggregation), avoided unrelated job loads/disk reads in `admin_client_chat_get` / `admin_client_chat_post` / `customer_chat_post_route`, consolidated `clients_sync_check` into 2 SQL queries, single-query preloaded existing IDs in `ensure_legacy_guest_sessions_imported`, and added `ix_job_chat_client_created`, `ix_job_chat_client_read_admin`, and `ix_support_blocked_type_val`. Measured live on `127.0.0.1:8088`: `/api/admin/dialogs` **1.55–1.77s** (was ~7.76s), `/api/clients/sync-check` **0.28s** (was ~1.04s), 340-job `/chat` **1.07s** (was ~2.36s), guest `/chat` **0.50s**.

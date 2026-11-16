@@ -59,8 +59,9 @@ import { PriceMonitoringView } from './PriceMonitoringView'
 import { CookiesView } from './CookiesView'
 import { InvoicesView } from './InvoicesView'
 import { DialogsView } from './DialogsView'
+import { SecurityView } from './SecurityView'
 
-type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'dialogs' | 'billing' | 'invoices' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring' | 'cookies'
+type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'dialogs' | 'security' | 'billing' | 'invoices' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring' | 'cookies'
 
 type Dashboard = {
   clients: number
@@ -741,6 +742,10 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   dialogs: {
     title: 'Диалоги с клиентами',
     description: 'Двусторонняя переписка по задачам, ответы клиентов и отправка экспертных материалов.',
+  },
+  security: {
+    title: 'Безопасность и антиспам',
+    description: 'Мониторинг атак, попыток регистрации, блокировки IP, ночной режим Telegram и AI-фильтр.',
   },
   billing: {
     title: 'Тарифы',
@@ -1851,6 +1856,7 @@ export function App() {
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
     { id: 'dialogs' as const, label: 'Диалоги', icon: MessageSquare, badge: totalUnreadDialogs },
+    { id: 'security' as const, label: 'Безопасность', icon: ShieldCheck },
     { id: 'outreach' as const, label: 'Лиды и Рассылка', icon: Mail },
     { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
     { id: 'invoices' as const, label: 'Счета и оплаты', icon: FileCheck },
@@ -2040,6 +2046,11 @@ export function App() {
                 setDashboard(prev => (prev ? { ...prev, unread_dialogs_count: count } : prev))
               }}
             />
+          </AdminErrorBoundary>
+        )}
+        {isReady && view === 'security' && (
+          <AdminErrorBoundary sectionName="Безопасность">
+            <SecurityView />
           </AdminErrorBoundary>
         )}
         {isReady && view === 'outreach' && <OutreachView />}

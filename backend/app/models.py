@@ -102,6 +102,14 @@ class SystemSettings(Base):
     support_telegram_group_id: Mapped[str] = mapped_column(String(64), default="")
     support_admin_telegram_ids: Mapped[str] = mapped_column(Text, default="")
     support_mirror_admin_replies_to_bot: Mapped[bool] = mapped_column(Boolean, default=True)
+    support_work_hours_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    support_work_hours_start: Mapped[str] = mapped_column(String(8), default="09:00")
+    support_work_hours_end: Mapped[str] = mapped_column(String(8), default="20:00")
+    support_timezone_offset: Mapped[int] = mapped_column(Integer, default=3)
+    support_quiet_night_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
+    support_ai_antispam_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    support_ai_auto_reply_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    registration_block_disposable_email: Mapped[bool] = mapped_column(Boolean, default=True)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
@@ -173,6 +181,14 @@ class SystemSettings(Base):
             "support_telegram_group_id": getattr(self, "support_telegram_group_id", "") or "",
             "support_admin_telegram_ids": getattr(self, "support_admin_telegram_ids", "") or "",
             "support_mirror_admin_replies_to_bot": bool(getattr(self, "support_mirror_admin_replies_to_bot", True)),
+            "support_work_hours_enabled": bool(getattr(self, "support_work_hours_enabled", True)),
+            "support_work_hours_start": getattr(self, "support_work_hours_start", "09:00") or "09:00",
+            "support_work_hours_end": getattr(self, "support_work_hours_end", "20:00") or "20:00",
+            "support_timezone_offset": int(getattr(self, "support_timezone_offset", 3) or 3),
+            "support_quiet_night_notifications": bool(getattr(self, "support_quiet_night_notifications", True)),
+            "support_ai_antispam_enabled": bool(getattr(self, "support_ai_antispam_enabled", True)),
+            "support_ai_auto_reply_enabled": bool(getattr(self, "support_ai_auto_reply_enabled", True)),
+            "registration_block_disposable_email": bool(getattr(self, "registration_block_disposable_email", True)),
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:
@@ -1001,6 +1017,24 @@ class SupportBlockedActor(Base):
     reason: Mapped[str] = mapped_column(Text, default="")
     blocked_by: Mapped[str] = mapped_column(String(64), default="admin")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class SecurityEvent(Base):
+    """Audit trail of blocked attacks, spam, probing, and AI-filtered messages."""
+
+    __tablename__ = "security_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    event_type: Mapped[str] = mapped_column(String(40), index=True)  # registration_attack | chat_spam | chat_probe | rate_limit | auto_blocked | ai_filtered
+    severity: Mapped[str] = mapped_column(String(16), default="medium", index=True)  # low | medium | high
+    ip_address: Mapped[str] = mapped_column(String(80), default="", index=True)
+    actor_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    user_agent: Mapped[str] = mapped_column(String(500), default="")
+    payload_preview: Mapped[str] = mapped_column(Text, default="")
+    reason: Mapped[str] = mapped_column(String(255), default="")
+    action_taken: Mapped[str] = mapped_column(String(40), default="blocked")  # blocked | silent_drop | ai_replied | logged
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
 
 
 

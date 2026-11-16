@@ -92,6 +92,7 @@ class WebRegisterRequest(BaseModel):
     legal_version: str = Field(default="", max_length=40)
     ref: str = Field(default="", max_length=64)
     phone: str = Field(default="", max_length=64)
+    challenge_token: str = Field(default="", max_length=256)
 
 
 class WebLoginRequest(BaseModel):

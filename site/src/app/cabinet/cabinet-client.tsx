@@ -1653,6 +1653,21 @@ export function CabinetClient() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [website, setWebsite] = useState("");
+  const [challengeToken, setChallengeToken] = useState("");
+
+  useEffect(() => {
+    if (authMode !== "register") return;
+    let cancelled = false;
+    fetch("/api/public/auth/challenge", { credentials: "same-origin" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.token) setChallengeToken(String(data.token));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [authMode]);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [personalDataConsent, setPersonalDataConsent] = useState(false);
   const [emailDraft, setEmailDraft] = useState("");
@@ -2825,6 +2840,7 @@ export function CabinetClient() {
           name,
           phone: authMode === "register" ? registerPhone : "",
           website: authMode === "register" ? website : "",
+          challenge_token: authMode === "register" ? challengeToken : "",
           ref: authMode === "register" ? (typeof window !== "undefined" ? localStorage.getItem("tenderlex_ref") || "" : "") : "",
           terms_accepted: termsAccepted,
           personal_data_consent: personalDataConsent,

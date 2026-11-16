@@ -71,6 +71,7 @@ export function ChatWidget() {
   const [sendError, setSendError] = useState('');
   const [isBlocked, setIsBlocked] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [workHours, setWorkHours] = useState<{ is_open: boolean; notice?: string } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messageFeedRef = useRef<HTMLDivElement>(null);
@@ -325,6 +326,9 @@ export function ChatWidget() {
             const data = await res.json();
             if (!disposed) {
               setIsBlocked(data.status === 'blocked' || Boolean(data.is_blocked));
+              if (data.work_hours && typeof data.work_hours.is_open === 'boolean') {
+                setWorkHours(data.work_hours);
+              }
             }
             if (!disposed && Array.isArray(data.messages)) {
               mergeRemoteMessages(data.messages);
@@ -434,7 +438,11 @@ export function ChatWidget() {
           throw new Error(errData?.detail || errData?.error || 'Message delivery failed');
         }
         const data = await response.json().catch(() => null);
+        if (data?.work_hours && typeof data.work_hours.is_open === 'boolean') {
+          setWorkHours(data.work_hours);
+        }
         if (isMessage(data?.message)) mergeRemoteMessages([data.message]);
+        if (isMessage(data?.ai_reply)) mergeRemoteMessages([data.ai_reply]);
       }
     } catch (err: any) {
       const msg = err?.message && err.message !== 'Message delivery failed'
@@ -451,12 +459,25 @@ export function ChatWidget() {
 
   // 5. Save contact handler
   function saveContactInfo() {
-    if (contactInput.trim()) {
-      setSavedContact(contactInput.trim());
-      localStorage.setItem('tenderlex_chat_contact', contactInput.trim());
-      setShowContactModal(false);
-      handleSend(`[Контакт сохранен]: ${contactInput.trim()}`);
+    const val = contactInput.trim();
+    if (!val) return;
+    const lower = val.toLowerCase();
+    const digits = val.replace(/\D+/g, '');
+    const hasEmail = val.includes('@') && val.split('@').pop()?.includes('.');
+    const hasTg = (val.startsWith('@') && val.length >= 4) || lower.includes('t.me/');
+    const hasPhone = digits.length >= 7 && new Set(digits.split('')).size > 2;
+    if (
+      ['admin', 'test', 'user', 'root', 'x', '123', 'qwerty'].includes(lower) ||
+      (!hasEmail && !hasTg && !hasPhone)
+    ) {
+      setSendError('Укажите реальный телефон (от 7 цифр), email или @username в Telegram.');
+      return;
     }
+    setSendError('');
+    setSavedContact(val);
+    localStorage.setItem('tenderlex_chat_contact', val);
+    setShowContactModal(false);
+    handleSend(`[Контакт сохранен]: ${val}`);
   }
 
   return (
@@ -560,6 +581,13 @@ export function ChatWidget() {
                   {p.label}
                 </button>
               ))}
+            </div>
+          )}
+
+          {/* Night / Off-hours Notice */}
+          {!isCustomerMode && workHours && !workHours.is_open && workHours.notice && (
+            <div className="bg-amber-50 border-b border-amber-200/80 px-3.5 py-2 text-[11px] leading-snug text-amber-900">
+              {workHours.notice}
             </div>
           )}
 

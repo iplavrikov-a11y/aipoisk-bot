@@ -141,6 +141,7 @@ from .models import (
     JobFile,
     JobSource,
     OnboardingReminder,
+    SecurityEvent,
     SeoEntry,
     SupplierResult,
     SupportBlockedActor,
@@ -163,6 +164,21 @@ from .models import (
     parse_json_list,
 )
 from .procurement_sources import source_label, source_payloads_from_text
+from .admin_alerts import is_pytest
+from .security_shield import (
+    classify_and_reply_support_message,
+    create_human_challenge,
+    detect_attack_payload,
+    get_support_work_hours_status,
+    ipv4_subnet_prefix,
+    is_automated_user_agent,
+    is_disposable_or_garbage_email,
+    maybe_auto_block_actor,
+    record_security_event,
+    validate_guest_contact,
+    validate_optional_phone,
+    verify_human_challenge,
+)
 from .seo_funnel import ENTRY_COOKIE, RETENTION_DAYS, attach_registration, create_entry, delete_entry, entry_exists, funnel_report, prune_entries
 from .support_chat import (
     GUEST_CLIENT_PREFIX,
@@ -253,6 +269,7 @@ from .security import (
     verify_admin_session,
 )
 from .web_auth import (
+    sanitize_display_name,
     CSRF_HEADER,
     YANDEX_OAUTH_COOKIE,
     WebAuthContext,
@@ -572,7 +589,36 @@ def _check_customer_registration_rate(db: Session, request: Request, email: str)
     )
     if hour_count >= CUSTOMER_REGISTRATION_HOUR_LIMIT or day_count >= CUSTOMER_REGISTRATION_DAY_LIMIT:
         _record_customer_registration_attempt(db, request, email, "rate_limited")
+        record_security_event(
+            db,
+            event_type="rate_limit",
+            severity="medium",
+            ip_address=ip_address,
+            actor_key=str(email or "").strip().lower()[:255],
+            user_agent=str(request.headers.get("user-agent", ""))[:500],
+            reason="registration_ip_rate_limit",
+        )
         raise HTTPException(status_code=429, detail="Слишком много регистраций. Попробуйте позже или напишите нам.")
+    subnet = ipv4_subnet_prefix(ip_address)
+    if subnet:
+        subnet_count = (
+            db.query(WebRegistrationAttempt.id)
+            .filter(WebRegistrationAttempt.ip_address.like(f"{subnet}%"))
+            .filter(WebRegistrationAttempt.created_at >= hour_cutoff)
+            .count()
+        )
+        if subnet_count >= CUSTOMER_REGISTRATION_HOUR_LIMIT * 2:
+            _record_customer_registration_attempt(db, request, email, "rate_limited")
+            record_security_event(
+                db,
+                event_type="rate_limit",
+                severity="medium",
+                ip_address=ip_address,
+                actor_key=str(email or "").strip().lower()[:255],
+                user_agent=str(request.headers.get("user-agent", ""))[:500],
+                reason="registration_subnet_rate_limit",
+            )
+            raise HTTPException(status_code=429, detail="Слишком много регистраций с вашей сети. Попробуйте позже.")
 
 
 def _send_customer_verification_email(db: Session, user: WebUser, request: Request) -> bool:
@@ -591,6 +637,11 @@ def _send_customer_verification_email(db: Session, user: WebUser, request: Reque
         return False
 
 
+@app.get("/api/public/auth/challenge")
+def public_auth_challenge_api() -> dict:
+    return create_human_challenge()
+
+
 @app.post("/api/customer/auth/register")
 def customer_register_api(
     data: WebRegisterRequest,
@@ -598,21 +649,96 @@ def customer_register_api(
     response: Response,
     db: Session = Depends(db_session),
 ) -> dict:
+    client_ip_raw = _extract_request_ip(request, default="")
+    ua = str((getattr(request, "headers", None) or {}).get("user-agent", "") or "")
     if str(data.website or "").strip():
         _record_customer_registration_attempt(db, request, data.email, "bot_blocked")
+        record_security_event(
+            db,
+            event_type="registration_attack",
+            severity="medium",
+            ip_address=client_ip_raw,
+            actor_key=str(data.email or "").strip().lower()[:255],
+            user_agent=ua,
+            reason="honeypot_filled",
+        )
         raise HTTPException(status_code=400, detail="Не удалось создать кабинет.")
+    if not is_pytest() and is_automated_user_agent(ua):
+        _record_customer_registration_attempt(db, request, data.email, "bot_blocked")
+        record_security_event(
+            db,
+            event_type="registration_attack",
+            severity="high",
+            ip_address=client_ip_raw,
+            actor_key=str(data.email or "").strip().lower()[:255],
+            user_agent=ua,
+            reason="automated_user_agent",
+        )
+        maybe_auto_block_actor(db, actor_type="ip", actor_value=client_ip_raw, reason="Автоматические запросы регистрации")
+        raise HTTPException(status_code=403, detail="Регистрация доступна только через браузер на сайте.")
+    if getattr(data, "challenge_token", ""):
+        ok_ch, ch_reason = verify_human_challenge(data.challenge_token)
+        if not ok_ch:
+            _record_customer_registration_attempt(db, request, data.email, "bot_blocked")
+            record_security_event(
+                db,
+                event_type="registration_attack",
+                severity="medium",
+                ip_address=client_ip_raw,
+                actor_key=str(data.email or "").strip().lower()[:255],
+                user_agent=ua,
+                reason=f"challenge_failed:{ch_reason}",
+            )
+            raise HTTPException(status_code=400, detail="Проверка формы не пройдена. Обновите страницу и попробуйте снова.")
     if not bool(data.terms_accepted) or not bool(data.personal_data_consent):
         _record_customer_registration_attempt(db, request, data.email, "rejected_consent")
         raise HTTPException(
             status_code=400,
             detail="Для регистрации необходимо принять оферту и согласие на обработку персональных данных.",
         )
-    if is_ip_blocked(db, _extract_request_ip(request, default="")):
+    if is_ip_blocked(db, client_ip_raw):
         _record_customer_registration_attempt(db, request, data.email, "blocked_ip")
         raise HTTPException(
             status_code=403,
             detail="Регистрация с вашего адреса ограничена администратором.",
         )
+    attack_reason = detect_attack_payload(sanitize_display_name(data.name)) or detect_attack_payload(data.email) or detect_attack_payload(data.phone)
+    if attack_reason:
+        _record_customer_registration_attempt(db, request, data.email, "bot_blocked")
+        record_security_event(
+            db,
+            event_type="registration_attack",
+            severity="high",
+            ip_address=client_ip_raw,
+            actor_key=str(data.email or "").strip().lower()[:255],
+            user_agent=ua,
+            payload_preview=f"name={str(data.name or '')[:120]} email={str(data.email or '')[:120]}",
+            reason=attack_reason,
+        )
+        maybe_auto_block_actor(db, actor_type="ip", actor_value=client_ip_raw, reason="Попытка инъекции при регистрации", threshold=2)
+        raise HTTPException(status_code=400, detail="Указаны недопустимые символы в имени или контактах.")
+    settings = get_or_create_settings(db)
+    if bool(getattr(settings, "registration_block_disposable_email", True)):
+        email_reason = is_disposable_or_garbage_email(data.email)
+        if email_reason:
+            _record_customer_registration_attempt(db, request, data.email, "bot_blocked")
+            record_security_event(
+                db,
+                event_type="registration_attack",
+                severity="medium",
+                ip_address=client_ip_raw,
+                actor_key=str(data.email or "").strip().lower()[:255],
+                user_agent=ua,
+                reason=email_reason,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Пожалуйста, используйте постоянный рабочий или личный email (одноразовые и тестовые адреса не принимаются).",
+            )
+    phone_err = validate_optional_phone(getattr(data, "phone", ""))
+    if phone_err:
+        _record_customer_registration_attempt(db, request, data.email, "failed")
+        raise HTTPException(status_code=400, detail=phone_err)
     _check_customer_registration_rate(db, request, data.email)
     key = _check_customer_auth_rate(request, data.email)
     try:
@@ -1994,6 +2120,33 @@ async def customer_job_chat_route(
     if not clean_message and not all_uploads:
         raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
 
+    if clean_message:
+        attack_reason = detect_attack_payload(clean_message)
+        if attack_reason:
+            record_security_event(
+                db,
+                event_type="chat_probe",
+                severity="high",
+                ip_address="",
+                actor_key=f"client:{context.user.client_id}",
+                payload_preview=clean_message[:300],
+                reason=attack_reason,
+                action_taken="blocked",
+            )
+            raise HTTPException(status_code=400, detail="Сообщение содержит недопустимые символы или команды.")
+        dup_msg = (
+            db.query(JobChatMessage.id)
+            .filter(
+                JobChatMessage.client_id == context.user.client_id,
+                JobChatMessage.sender_role == "client",
+                JobChatMessage.message == clean_message,
+                JobChatMessage.created_at >= now_utc() - timedelta(seconds=30),
+            )
+            .first()
+        )
+        if dup_msg:
+            raise HTTPException(status_code=429, detail="Это сообщение уже отправлено. Ожидайте ответа.")
+
     recent_chat_count = (
         db.query(func.count(JobChatMessage.id))
         .filter(
@@ -2242,6 +2395,33 @@ async def customer_chat_post_route(
     if not clean_message and not all_uploads:
         raise HTTPException(status_code=400, detail="Укажите текст сообщения или прикрепите файл.")
 
+    if clean_message:
+        attack_reason = detect_attack_payload(clean_message)
+        if attack_reason:
+            record_security_event(
+                db,
+                event_type="chat_probe",
+                severity="high",
+                ip_address="",
+                actor_key=f"client:{context.user.client_id}",
+                payload_preview=clean_message[:300],
+                reason=attack_reason,
+                action_taken="blocked",
+            )
+            raise HTTPException(status_code=400, detail="Сообщение содержит недопустимые символы или команды.")
+        dup_msg = (
+            db.query(JobChatMessage.id)
+            .filter(
+                JobChatMessage.client_id == context.user.client_id,
+                JobChatMessage.sender_role == "client",
+                JobChatMessage.message == clean_message,
+                JobChatMessage.created_at >= now_utc() - timedelta(seconds=30),
+            )
+            .first()
+        )
+        if dup_msg:
+            raise HTTPException(status_code=429, detail="Это сообщение уже отправлено. Ожидайте ответа.")
+
     recent_chat_count = (
         db.query(func.count(JobChatMessage.id))
         .filter(
@@ -2430,11 +2610,14 @@ def public_guest_chat_messages(
     )
     client_ip = _extract_request_ip(request, default="") if request is not None else ""
     blocked = is_guest_chat_blocked(db, session_id=clean_sid, client_ip=client_ip, guest=guest)
+    settings = get_or_create_settings(db)
+    work_hours = get_support_work_hours_status(settings)
     return {
         "messages": [build_guest_chat_frontend_message(m) for m in msgs],
         "contact": guest.visitor_contact if (guest and guest.visitor_contact) else None,
         "status": "blocked" if blocked else (guest.status if guest else "open"),
         "is_blocked": blocked,
+        "work_hours": work_hours,
     }
 
 
@@ -2458,13 +2641,76 @@ async def public_guest_chat_send(
     clean_contact = str(payload.get("contact") or "").strip()[:255]
     source_url = str(payload.get("sourceUrl") or "").strip()[:512]
     client_ip = _extract_request_ip(request, default="")
+    ua = str((getattr(request, "headers", None) or {}).get("user-agent", "") or "")
+
+    if not is_pytest() and is_automated_user_agent(ua):
+        record_security_event(
+            db,
+            event_type="chat_spam",
+            severity="high",
+            ip_address=client_ip,
+            actor_key=f"guest:{clean_sid}",
+            user_agent=ua,
+            payload_preview=clean_text[:200],
+            reason="automated_user_agent",
+        )
+        maybe_auto_block_actor(db, actor_type="ip", actor_value=client_ip, reason="Автоматический спам в чат")
+        raise HTTPException(status_code=403, detail="Отправка сообщений доступна только через браузер на сайте.")
 
     if is_guest_chat_blocked(db, session_id=clean_sid, client_ip=client_ip):
         raise HTTPException(status_code=403, detail="Отправка сообщений ограничена администратором.")
 
-    rate_err = check_guest_chat_rate_limits(db, session_id=clean_sid, client_ip=client_ip)
+    rate_err = check_guest_chat_rate_limits(
+        db,
+        session_id=clean_sid,
+        client_ip=client_ip,
+        message_text=clean_text,
+        is_preset=bool(raw_preset),
+    )
     if rate_err:
         raise HTTPException(status_code=429, detail=rate_err)
+
+    if clean_text.startswith("[Контакт сохранен]:"):
+        contact_val = clean_text.split(":", 1)[1].strip()
+        contact_err = validate_guest_contact(contact_val)
+        if contact_err:
+            record_security_event(
+                db,
+                event_type="chat_spam",
+                severity="low",
+                ip_address=client_ip,
+                actor_key=f"guest:{clean_sid}",
+                user_agent=ua,
+                payload_preview=clean_text[:200],
+                reason="invalid_contact_format",
+            )
+            raise HTTPException(status_code=400, detail=contact_err)
+    elif clean_contact:
+        contact_err = validate_guest_contact(clean_contact)
+        if contact_err:
+            raise HTTPException(status_code=400, detail=contact_err)
+
+    attack_reason = detect_attack_payload(clean_text)
+    if attack_reason:
+        record_security_event(
+            db,
+            event_type="chat_probe",
+            severity="high",
+            ip_address=client_ip,
+            actor_key=f"guest:{clean_sid}",
+            user_agent=ua,
+            payload_preview=clean_text[:300],
+            reason=attack_reason,
+        )
+        maybe_auto_block_actor(
+            db,
+            actor_type="guest_session",
+            actor_value=clean_sid,
+            dialog_key=f"guest:{clean_sid}",
+            reason="Попытка инъекции/пробинга в чате",
+            threshold=2,
+        )
+        raise HTTPException(status_code=400, detail="Сообщение содержит недопустимые символы или команды.")
 
     client_key = f"{GUEST_CLIENT_PREFIX}{clean_sid}"
     guest = get_or_create_guest_session(
@@ -2491,18 +2737,75 @@ async def public_guest_chat_send(
     guest.updated_at = now_utc()
     db.commit()
 
-    try:
-        await notify_admins_of_incoming_message(
-            db,
-            guest_session_id=clean_sid,
-            text=clean_text,
-            chat_message_id=new_msg.id,
-            channel="guest_web",
-        )
-    except Exception as exc:
-        logger.warning("Error notifying admin about guest chat message: %s", exc)
+    settings = get_or_create_settings(db)
+    work_hours = get_support_work_hours_status(settings)
+    triage = await classify_and_reply_support_message(
+        db,
+        text=clean_text,
+        is_guest=True,
+        is_work_hours=work_hours["is_open"],
+    )
 
-    return {"success": True, "message": build_guest_chat_frontend_message(new_msg)}
+    ai_reply_msg: JobChatMessage | None = None
+    if triage["category"] == "spam_or_probe":
+        record_security_event(
+            db,
+            event_type="ai_filtered",
+            severity="medium",
+            ip_address=client_ip,
+            actor_key=f"guest:{clean_sid}",
+            user_agent=ua,
+            payload_preview=clean_text[:300],
+            reason="ai_classified_spam_or_probe",
+            action_taken="silent_drop",
+        )
+        maybe_auto_block_actor(
+            db,
+            actor_type="guest_session",
+            actor_value=clean_sid,
+            dialog_key=f"guest:{clean_sid}",
+            reason="AI-антиспам: повторный спам в чате",
+            threshold=3,
+        )
+    else:
+        if triage.get("reply"):
+            ai_reply_msg = JobChatMessage(
+                id=new_id(),
+                client_id=client_key,
+                guest_session_id=clean_sid,
+                job_id="",
+                sender_role="admin",
+                channel="system",
+                message=f"🤖 {triage['reply']}",
+                attachments_json="[]",
+                is_read_by_client=True,
+                is_read_by_admin=True,
+                created_at=now_utc(),
+            )
+            db.add(ai_reply_msg)
+            guest.updated_at = now_utc()
+            db.commit()
+
+        if triage.get("need_human", True):
+            try:
+                await notify_admins_of_incoming_message(
+                    db,
+                    guest_session_id=clean_sid,
+                    text=clean_text,
+                    chat_message_id=new_msg.id,
+                    channel="guest_web",
+                )
+            except Exception as exc:
+                logger.warning("Error notifying admin about guest chat message: %s", exc)
+
+    resp_payload: dict[str, Any] = {
+        "success": True,
+        "message": build_guest_chat_frontend_message(new_msg),
+        "work_hours": work_hours,
+    }
+    if ai_reply_msg is not None:
+        resp_payload["ai_reply"] = build_guest_chat_frontend_message(ai_reply_msg)
+    return resp_payload
 
 
 # ==============================================================================
@@ -6279,6 +6582,219 @@ async def admin_support_test_group(
         group_id_override=(str(gid).strip() if gid is not None else None),
         send_test_ping=True,
     )
+
+
+@app.get("/api/admin/security/overview", dependencies=[Depends(require_admin)])
+def admin_security_overview(
+    limit: int = Query(default=60, ge=10, le=200),
+    db: Session = Depends(db_session),
+) -> dict:
+    now = now_utc()
+    cutoff_24h = now - timedelta(hours=24)
+    cutoff_7d = now - timedelta(days=7)
+
+    reg_rows = (
+        db.query(WebRegistrationAttempt)
+        .order_by(WebRegistrationAttempt.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    sec_rows = (
+        db.query(SecurityEvent)
+        .order_by(SecurityEvent.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    blocked_rows = (
+        db.query(SupportBlockedActor)
+        .order_by(SupportBlockedActor.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    blocked_ips = {b.actor_value for b in blocked_rows if b.actor_type == "ip"}
+
+    def _reg_flags(r: WebRegistrationAttempt) -> list[str]:
+        flags: list[str] = []
+        if is_automated_user_agent(r.user_agent):
+            flags.append("automated_ua")
+        if is_disposable_or_garbage_email(r.email):
+            flags.append("suspicious_email")
+        if detect_attack_payload(r.email):
+            flags.append("attack_payload")
+        if r.ip_address in blocked_ips:
+            flags.append("ip_blocked")
+        return flags
+
+    events_24h = db.query(func.count(SecurityEvent.id)).filter(SecurityEvent.created_at >= cutoff_24h).scalar() or 0
+    events_7d = db.query(func.count(SecurityEvent.id)).filter(SecurityEvent.created_at >= cutoff_7d).scalar() or 0
+    reg_blocked_7d = (
+        db.query(func.count(WebRegistrationAttempt.id))
+        .filter(
+            WebRegistrationAttempt.created_at >= cutoff_7d,
+            WebRegistrationAttempt.status.in_(["bot_blocked", "rate_limited", "blocked_ip"]),
+        )
+        .scalar()
+        or 0
+    )
+    settings = get_or_create_settings(db)
+    return {
+        "summary": {
+            "security_events_24h": int(events_24h),
+            "security_events_7d": int(events_7d),
+            "reg_blocked_7d": int(reg_blocked_7d),
+            "active_blocks": len(blocked_rows),
+        },
+        "work_hours": get_support_work_hours_status(settings),
+        "settings": {
+            "support_work_hours_enabled": bool(getattr(settings, "support_work_hours_enabled", True)),
+            "support_work_hours_start": getattr(settings, "support_work_hours_start", "09:00") or "09:00",
+            "support_work_hours_end": getattr(settings, "support_work_hours_end", "20:00") or "20:00",
+            "support_timezone_offset": int(getattr(settings, "support_timezone_offset", 3) or 3),
+            "support_quiet_night_notifications": bool(getattr(settings, "support_quiet_night_notifications", True)),
+            "support_ai_antispam_enabled": bool(getattr(settings, "support_ai_antispam_enabled", True)),
+            "support_ai_auto_reply_enabled": bool(getattr(settings, "support_ai_auto_reply_enabled", True)),
+            "registration_block_disposable_email": bool(getattr(settings, "registration_block_disposable_email", True)),
+        },
+        "registration_attempts": [
+            {
+                "id": r.id,
+                "email": r.email,
+                "ip_address": r.ip_address,
+                "status": r.status,
+                "user_agent": r.user_agent,
+                "flags": _reg_flags(r),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in reg_rows
+        ],
+        "security_events": [
+            {
+                "id": ev.id,
+                "event_type": ev.event_type,
+                "severity": ev.severity,
+                "ip_address": ev.ip_address,
+                "actor_key": ev.actor_key,
+                "user_agent": ev.user_agent,
+                "payload_preview": ev.payload_preview,
+                "reason": ev.reason,
+                "action_taken": ev.action_taken,
+                "is_ip_blocked": bool(ev.ip_address and ev.ip_address in blocked_ips),
+                "created_at": ev.created_at.isoformat() if ev.created_at else None,
+            }
+            for ev in sec_rows
+        ],
+        "blocked_actors": [
+            {
+                "id": b.id,
+                "actor_type": b.actor_type,
+                "actor_value": b.actor_value,
+                "dialog_key": b.dialog_key,
+                "reason": b.reason,
+                "blocked_by": b.blocked_by,
+                "created_at": b.created_at.isoformat() if b.created_at else None,
+            }
+            for b in blocked_rows
+        ],
+    }
+
+
+@app.post("/api/admin/security/block", dependencies=[Depends(require_admin)])
+def admin_security_block(
+    payload: dict = Body(...),
+    db: Session = Depends(db_session),
+) -> dict:
+    actor_type = str(payload.get("actor_type") or "ip").strip()
+    actor_value = str(payload.get("actor_value") or "").strip()
+    reason = str(payload.get("reason") or "Заблокировано администратором").strip()[:500]
+    if actor_type not in {"ip", "guest_session", "client", "telegram"}:
+        raise HTTPException(status_code=400, detail="Недопустимый тип блокировки.")
+    if not actor_value:
+        raise HTTPException(status_code=400, detail="Укажите значение для блокировки.")
+    existing = (
+        db.query(SupportBlockedActor)
+        .filter(
+            SupportBlockedActor.actor_type == actor_type,
+            SupportBlockedActor.actor_value == actor_value,
+        )
+        .first()
+    )
+    if not existing:
+        existing = SupportBlockedActor(
+            actor_type=actor_type,
+            actor_value=actor_value,
+            dialog_key=str(payload.get("dialog_key") or "")[:128],
+            reason=reason,
+            blocked_by="admin",
+        )
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+    return {"ok": True, "id": existing.id}
+
+
+@app.post("/api/admin/security/unblock", dependencies=[Depends(require_admin)])
+def admin_security_unblock(
+    payload: dict = Body(...),
+    db: Session = Depends(db_session),
+) -> dict:
+    block_id = str(payload.get("id") or "").strip()
+    if not block_id:
+        raise HTTPException(status_code=400, detail="Не указан идентификатор блокировки.")
+    row = db.query(SupportBlockedActor).filter(SupportBlockedActor.id == block_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Запись блокировки не найдена.")
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/admin/security/settings", dependencies=[Depends(require_admin)])
+def admin_security_settings_update(
+    payload: dict = Body(...),
+    db: Session = Depends(db_session),
+) -> dict:
+    settings = get_or_create_settings(db)
+    bool_fields = (
+        "support_work_hours_enabled",
+        "support_quiet_night_notifications",
+        "support_ai_antispam_enabled",
+        "support_ai_auto_reply_enabled",
+        "registration_block_disposable_email",
+    )
+    for field_name in bool_fields:
+        if field_name in payload:
+            setattr(settings, field_name, bool(payload[field_name]))
+    if "support_work_hours_start" in payload:
+        val = str(payload["support_work_hours_start"] or "").strip()
+        if re.match(r"^\d{1,2}:\d{2}$", val):
+            settings.support_work_hours_start = val.zfill(5)
+    if "support_work_hours_end" in payload:
+        val = str(payload["support_work_hours_end"] or "").strip()
+        if re.match(r"^\d{1,2}:\d{2}$", val):
+            settings.support_work_hours_end = val.zfill(5)
+    if "support_timezone_offset" in payload:
+        try:
+            tz = int(payload["support_timezone_offset"])
+            if -12 <= tz <= 14:
+                settings.support_timezone_offset = tz
+        except (TypeError, ValueError):
+            pass
+    db.commit()
+    db.refresh(settings)
+    return {
+        "ok": True,
+        "work_hours": get_support_work_hours_status(settings),
+        "settings": {
+            "support_work_hours_enabled": bool(settings.support_work_hours_enabled),
+            "support_work_hours_start": settings.support_work_hours_start,
+            "support_work_hours_end": settings.support_work_hours_end,
+            "support_timezone_offset": int(settings.support_timezone_offset),
+            "support_quiet_night_notifications": bool(settings.support_quiet_night_notifications),
+            "support_ai_antispam_enabled": bool(settings.support_ai_antispam_enabled),
+            "support_ai_auto_reply_enabled": bool(settings.support_ai_auto_reply_enabled),
+            "registration_block_disposable_email": bool(settings.registration_block_disposable_email),
+        },
+    }
 
 
 @app.get("/api/admin/clients/{client_id}/chat", dependencies=[Depends(require_admin)])

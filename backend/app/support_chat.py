@@ -349,8 +349,10 @@ def check_guest_chat_rate_limits(
     *,
     session_id: str,
     client_ip: str = "",
+    message_text: str = "",
+    is_preset: bool = False,
 ) -> str | None:
-    """Enforce per-session and per-IP burst/session-creation limits before persisting a guest message."""
+    """Enforce per-session, per-IP, duplicate-message, and preset-burst limits before persisting a guest message."""
     clean_sid = validate_guest_session_id(session_id)
     now = now_utc()
     cutoff_msg = now - timedelta(seconds=GUEST_CHAT_SESSION_WINDOW_SEC)
@@ -368,6 +370,37 @@ def check_guest_chat_rate_limits(
     )
     if session_recent_cnt >= GUEST_CHAT_SESSION_MAX_MESSAGES:
         return "Слишком много сообщений подряд. Подождите минуту."
+
+    clean_text = str(message_text or "").strip()
+    if clean_text:
+        dup_cutoff = now - timedelta(seconds=60)
+        dup_exists = (
+            db.query(JobChatMessage.id)
+            .filter(
+                JobChatMessage.client_id == client_key,
+                JobChatMessage.sender_role == "client",
+                JobChatMessage.message == clean_text,
+                JobChatMessage.created_at >= dup_cutoff,
+            )
+            .first()
+        )
+        if dup_exists:
+            return "Это сообщение уже отправлено. Ожидайте ответа или уточните детали."
+
+    if is_preset:
+        preset_cutoff = now - timedelta(seconds=120)
+        preset_msgs = (
+            db.query(JobChatMessage.id)
+            .filter(
+                JobChatMessage.client_id == client_key,
+                JobChatMessage.sender_role == "client",
+                JobChatMessage.created_at >= preset_cutoff,
+                JobChatMessage.message.like("Здравствуйте! %"),
+            )
+            .count()
+        )
+        if preset_msgs >= 2:
+            return "Обращение уже передано. Пожалуйста, опишите ваш вопрос текстом в одном сообщении."
 
     clean_ip = str(client_ip or "").strip()[:64]
     if not clean_ip or clean_ip.lower() == "unknown":
@@ -1373,8 +1406,12 @@ async def notify_admins_of_incoming_message(
     chat_message_id: str = "",
     channel: str = "web",
     allow_in_test: bool = False,
+    skip_dm: bool = False,
+    quiet_night: bool | None = None,
 ) -> dict[str, Any]:
     """Dispatch real-time notifications of an incoming client/guest message to Forum Topic + Admin Bot DMs."""
+    from .security_shield import get_support_work_hours_status
+
     profile = get_dialog_profile(
         db,
         client_id=client_id,
@@ -1387,7 +1424,20 @@ async def notify_admins_of_incoming_message(
     state.last_message_at = now_utc()
     db.flush()
 
-    summary: dict[str, Any] = {"topic_msg_id": None, "dm_sent": 0}
+    settings = get_system_settings(db)
+    work_status = get_support_work_hours_status(settings)
+    is_quiet_night = (
+        bool(quiet_night)
+        if quiet_night is not None
+        else (
+            not is_pytest()
+            and not work_status["is_open"]
+            and work_status["quiet_night"]
+            and not attachments
+        )
+    )
+    effective_skip_dm = bool(skip_dm or is_quiet_night)
+    summary: dict[str, Any] = {"topic_msg_id": None, "dm_sent": 0, "quiet_night": is_quiet_night}
 
     # Option B: Admin Forum Group Topic
     group_id = get_configured_support_group_id(db)
@@ -1399,6 +1449,8 @@ async def notify_admins_of_incoming_message(
             channel=channel,
             include_reply_hint=False,
         )
+        if is_quiet_night:
+            topic_html = "🌙 <i>Ночное обращение (без звука в ЛС)</i>\n" + topic_html
         topic_msg_id = await send_to_support_topic(
             db,
             group_id=group_id,
@@ -1411,6 +1463,10 @@ async def notify_admins_of_incoming_message(
             allow_in_test=allow_in_test,
         )
         summary["topic_msg_id"] = topic_msg_id
+
+    if effective_skip_dm:
+        db.commit()
+        return summary
 
     # Option A: Admin Personal DM with the Bot
     admin_ids = get_authorized_admin_telegram_ids(db)
