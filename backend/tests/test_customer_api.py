@@ -530,7 +530,7 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                 SystemSettings(
                     id=1,
                     trial_enabled=True,
-                    trial_supplier_search_limit=1,
+                    trial_supplier_search_limit=2,
                     trial_procurement_report_limit=1,
                     trial_file_limit=5,
                 )
@@ -538,10 +538,24 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             db.commit()
             user = create_web_user(db, email="buyer@example.com", password="StrongPass123", name="Buyer")
 
+            # First trial job is permitted before email verification to prevent SMTP-delay onboarding drop-off
+            first_job = await create_customer_job_api(
+                mode=MODE_SUPPLIER_SEARCH,
+                text="Нужно найти поставщиков сотового поликарбоната",
+                source_urls="",
+                target_suppliers=0,
+                files=[],
+                context=WebAuthContext(user=user, session=None),
+                db=db,
+            )
+            self.assertEqual(first_job["job"]["mode"], MODE_SUPPLIER_SEARCH)
+            self.assertEqual(db.query(Job).filter(Job.client_id == user.client_id).count(), 1)
+
+            # Second job requires email verification
             with self.assertRaises(HTTPException) as raised:
                 await create_customer_job_api(
                     mode=MODE_SUPPLIER_SEARCH,
-                    text="Нужно найти поставщиков сотового поликарбоната",
+                    text="Нужно найти поставщиков профильной трубы 40х20",
                     source_urls="",
                     target_suppliers=0,
                     files=[],
@@ -551,7 +565,7 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(raised.exception.status_code, 403)
             self.assertIn("Подтвердите email", str(raised.exception.detail))
-            self.assertEqual(db.query(Job).filter(Job.client_id == user.client_id).count(), 0)
+            self.assertEqual(db.query(Job).filter(Job.client_id == user.client_id).count(), 1)
         finally:
             db.close()
 

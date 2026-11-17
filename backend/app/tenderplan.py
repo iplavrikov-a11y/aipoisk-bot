@@ -188,8 +188,9 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
     if file_errors:
         file_error_text = f"Не получено файлов из общего сервиса: {len(file_errors)}"
         error = f"{error}; {file_error_text}" if error else file_error_text
+    has_usable_payload = bool(files) or bool(str(payload.get("context") or "").strip())
     return TenderplanFetchResult(
-        ok=bool(payload.get("success")) and not file_errors,
+        ok=bool(payload.get("success")) and (not file_errors or has_usable_payload),
         status=status,
         context=context,
         notice_number=str(payload.get("notice_number") or notice_number),
@@ -370,17 +371,17 @@ class TenderplanClient:
         except httpx.HTTPError as exc:
             if default is not None:
                 return default
-            raise TenderplanError(f"Запрос к источнику закупок не выполнен: {path}: {exc}") from exc
+            raise TenderplanError(f"Запрос к источнику закупок временно недоступен ({type(exc).__name__})") from exc
         if response.status_code >= 400:
             if default is not None:
                 return default
-            raise TenderplanError(f"Запрос к источнику закупок не выполнен: {path}: HTTP {response.status_code}")
+            raise TenderplanError(f"Запрос к источнику закупок не выполнен: HTTP {response.status_code}")
         try:
             return response.json()
         except ValueError as exc:
             if default is not None:
                 return default
-            raise TenderplanError(f"Источник закупок вернул некорректный JSON: {path}") from exc
+            raise TenderplanError("Источник закупок вернул некорректный ответ") from exc
 
     def tool_dictionary(self, name: str, *, force: bool = False) -> tuple[dict[str, str], str]:
         path, fallback = TENDERPLAN_TOOL_DICTIONARIES[name]
@@ -392,10 +393,10 @@ class TenderplanClient:
         api_labels = parse_tool_dictionary(payload)
         if api_labels:
             labels = {**fallback, **api_labels}
-            source = f"Tenderplan {path}"
+            source = "официальный справочник закупок"
         else:
             labels = dict(fallback)
-            source = "локальный fallback справочника Tenderplan"
+            source = "локальный справочник закупок"
         self._tool_dictionary_cache[name] = (now, labels, source)
         return labels, source
 
@@ -1057,7 +1058,7 @@ def download_tenderplan_attachments(
 
 
 def resolve_223_filestore_fallbacks(tender_href: str, attachments: list[TenderplanAttachment]) -> dict[str, str]:
-    if "notice223" not in str(tender_href or ""):
+    if "notice223" not in str(tender_href or "") or not is_allowed_download_url(tender_href):
         return {}
     old_downloads = [
         item
@@ -1227,6 +1228,10 @@ def filename_with_suffix(stem: str, suffix: str, *, max_bytes: int = 180) -> str
 
 
 def run_curl_download(url: str, output: Path) -> tuple[str, str]:
+    from .ssrf_guard import is_safe_public_http_url
+
+    if not is_allowed_download_url(url) or not is_safe_public_http_url(url):
+        return "000", "blocked_url"
     args = curl_base_args(output=output, referer="https://zakupki.gov.ru/")
     args.append(url)
     attempts = curl_retry_attempts()
@@ -1248,6 +1253,10 @@ def run_curl_download(url: str, output: Path) -> tuple[str, str]:
 
 
 def run_curl_fetch_text(url: str, *, referer: str = "https://zakupki.gov.ru/") -> tuple[str, str]:
+    from .ssrf_guard import is_safe_public_http_url
+
+    if not is_allowed_download_url(url) or not is_safe_public_http_url(url):
+        return "000", "blocked_url"
     with tempfile.TemporaryDirectory(prefix="aipoisk-eis-html-") as tmp:
         output = Path(tmp) / "page.html"
         args = curl_base_args(output=output, referer=referer)
@@ -1282,6 +1291,12 @@ def curl_base_args(*, output: Path, referer: str) -> list[str]:
     args = [
         "curl",
         "-L",
+        "--proto",
+        "=https,http",
+        "--proto-redir",
+        "=https,http",
+        "--max-redirs",
+        "5",
         "--max-time",
         str(max(5, int(config.tenderplan_download_timeout_seconds or 30))),
         "--connect-timeout",

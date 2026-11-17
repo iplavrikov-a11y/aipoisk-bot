@@ -39,6 +39,10 @@ export function normalizedSiteUrl() {
   return DEFAULT_SITE_URL;
 }
 
+export function safeJsonLd(schema: unknown): string {
+  return JSON.stringify(schema).replace(/</g, "\\u003c");
+}
+
 export function absoluteUrl(path: string) {
   if (/^https?:\/\//.test(path)) {
     return path;

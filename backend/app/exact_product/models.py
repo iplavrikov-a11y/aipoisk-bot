@@ -4,6 +4,19 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, List, Optional
 
 GISP_PRODUCT_REGISTRY_URL = "https://gisp.gov.ru/pp719v2/pub/prod/"
+
+_PLACEHOLDER_MODEL_VALUES = {
+    "", "-", "—", "none", "null", "unknown", "товар", "оборудование",
+    "материал", "изделие", "позиция", "не указано", "не определен", "не найден",
+}
+
+
+def _has_real_brand_or_model(brand: Any, model: Any) -> bool:
+    b = str(brand or "").strip().lower()
+    m = str(model or "").strip().lower()
+    b_ok = len(b) >= 2 and b not in _PLACEHOLDER_MODEL_VALUES and "не найден" not in b and "не определен" not in b
+    m_ok = len(m) >= 2 and m not in _PLACEHOLDER_MODEL_VALUES and "не найден" not in m and "не определен" not in m
+    return b_ok or m_ok
 MAX_EXACT_POSITIONS_PER_JOB: int = 100
 MAX_YANDEX_QUERIES_PER_JOB: int = 20
 
@@ -83,15 +96,15 @@ class ExactProductPosition:
 
     @property
     def is_resolved(self) -> bool:
+        if self.status == "error":
+            return False
         if self.status == "found":
             return True
-        if self.status in ("not_found", "error") and not self.identified_model and not self.alternative_brands:
+        if self.status == "not_found" and not _has_real_brand_or_model(self.identified_brand, self.identified_model) and not self.alternative_brands:
             return False
-        if bool((self.identified_model or "").strip() or (self.identified_brand or "").strip()):
+        if _has_real_brand_or_model(self.identified_brand, self.identified_model):
             return True
         if bool(self.alternative_brands):
-            return True
-        if self.gisp_match and getattr(self.gisp_match, "registry_number", None):
             return True
         return False
 

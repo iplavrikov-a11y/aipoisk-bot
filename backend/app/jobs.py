@@ -578,11 +578,38 @@ def _consume_finished_worker_tasks(tasks: set[asyncio.Task[None]]) -> None:
             logger.exception("Worker task failed")
 
 
+async def _job_heartbeat_loop(job_id: str, interval_seconds: float = 30.0) -> None:
+    while job_id in _RUNNING:
+        await asyncio.sleep(interval_seconds)
+        if job_id not in _RUNNING:
+            break
+        hb_db = SessionLocal()
+        try:
+            hb_db.query(Job).filter(Job.id == job_id, Job.status == "running").update(
+                {Job.updated_at: now_utc()},
+                synchronize_session=False,
+            )
+            hb_db.commit()
+        except Exception:
+            try:
+                hb_db.rollback()
+            except Exception:
+                pass
+        finally:
+            hb_db.close()
+
+
 async def worker_loop(*, poll_interval: float = WORKER_POLL_INTERVAL_SECONDS, concurrency: int | None = None) -> None:
     init_worker_database()
     db_startup = SessionLocal()
     try:
-        stuck_jobs = db_startup.query(Job).filter(Job.status == "running").all()
+        recover_interrupted_jobs(db_startup, stale_after=timedelta(seconds=0), limit=200)
+        stuck_jobs = (
+            db_startup.query(Job)
+            .filter(Job.status == "running")
+            .filter(~Job.created_by_telegram_id.startswith("api:"))
+            .all()
+        )
         for j in stuck_jobs:
             j.status = "pending"
             j.progress = 5
@@ -592,7 +619,10 @@ async def worker_loop(*, poll_interval: float = WORKER_POLL_INTERVAL_SECONDS, co
         if stuck_jobs:
             db_startup.commit()
     except Exception:
-        pass
+        try:
+            db_startup.rollback()
+        except Exception:
+            pass
     finally:
         db_startup.close()
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
@@ -635,11 +665,14 @@ async def process_job(job_id: str) -> None:
     if job_id in _RUNNING:
         return
     _RUNNING.add(job_id)
+    heartbeat_task = asyncio.create_task(_job_heartbeat_loop(job_id))
     try:
         await asyncio.to_thread(_process_job_sync, job_id)
     finally:
         _RUNNING.discard(job_id)
         _CANCELLED.discard(job_id)
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
 
 
 def cancel_running_job(job_id: str) -> None:
@@ -739,7 +772,44 @@ def _set_job(db: Session, job: Job, *, status: str | None = None, progress: int 
             except Exception:
                 pass
             if attempt == 2:
-                if status in ("completed", "failed", "cancelled"):
+                if status in ("completed", "needs_review", STATUS_AWAITING_CUSTOMER_CONFIRMATION, "failed", "cancelled"):
+                    fallback_db = SessionLocal()
+                    try:
+                        fresh_job = fallback_db.get(Job, str(job.id))
+                        if fresh_job is not None:
+                            fresh_job.status = status
+                            if progress is not None:
+                                fresh_job.progress = max(0, min(100, progress))
+                            if message is not None:
+                                fresh_job.message = document_parser.clean_surrogates(str(message))
+                            if error is not None:
+                                fresh_job.error = document_parser.clean_surrogates(str(error))
+                            for attr in (
+                                "result_path",
+                                "evidence_path",
+                                "verified_count",
+                                "yandex_requests_count",
+                                "yandex_cost_rub",
+                                "title",
+                                "confirmation_kind",
+                                "confirmation_outcome",
+                                "confirmation_offered_at",
+                                "confirmation_expires_at",
+                                "position_selection_json",
+                                "multi_item_mode",
+                            ):
+                                val = getattr(job, attr, None)
+                                if val not in (None, ""):
+                                    setattr(fresh_job, attr, val)
+                            if status in ("completed", "needs_review", "failed", "cancelled"):
+                                fresh_job.completed_at = getattr(job, "completed_at", None) or now_utc()
+                            fresh_job.updated_at = now_utc()
+                            fallback_db.commit()
+                            break
+                    except Exception as fb_exc:
+                        logger.error("Job %s fallback session commit failed: %s", job.id, fb_exc)
+                    finally:
+                        fallback_db.close()
                     logger.error("Job %s critical status %s commit failed after 3 attempts: %s", job.id, status, exc)
                     raise
                 else:
@@ -909,6 +979,49 @@ def _process_job_sync(job_id: str) -> None:
         if job and job.status in {"cancelled", "completed"}:
             return
         if job:
+            preserved_result_path = str(getattr(job, "result_path", "") or "")
+            preserved_evidence_path = str(getattr(job, "evidence_path", "") or "")
+            raw_exc_text = str(exc or "")
+            lowered_exc = raw_exc_text.lower()
+            is_db_internal = any(
+                marker in lowered_exc
+                for marker in (
+                    "psycopg",
+                    "sqlalchemy",
+                    "ssl syscall",
+                    "eof detected",
+                    "server closed the connection",
+                    "connection refused",
+                    "operationalerror",
+                    "[sql:",
+                )
+            )
+            safe_error_to_store = (
+                "Временный сбой соединения при сохранении результата. Повторите запуск задачи."
+                if is_db_internal
+                else raw_exc_text[:1000]
+            )
+            if preserved_result_path and Path(preserved_result_path).exists():
+                fresh_db = SessionLocal()
+                try:
+                    fresh_job = fresh_db.get(Job, job_id)
+                    if fresh_job and fresh_job.status not in {"cancelled", "completed"}:
+                        fresh_job.result_path = preserved_result_path
+                        if preserved_evidence_path and Path(preserved_evidence_path).exists():
+                            fresh_job.evidence_path = preserved_evidence_path
+                        fresh_job.status = "completed"
+                        fresh_job.progress = 100
+                        fresh_job.message = fresh_job.message or "Результат готов"
+                        fresh_job.error = ""
+                        fresh_job.completed_at = now_utc()
+                        fresh_job.updated_at = now_utc()
+                        charge_job_reservation(fresh_db, fresh_job, note="Результат сохранён при повторном подключении к БД")
+                        fresh_db.commit()
+                        return
+                except Exception as recover_exc:
+                    logger.warning("Job %s finalization recovery failed: %s", job_id, recover_exc)
+                finally:
+                    fresh_db.close()
             try:
                 release_job_reservation(db, job, note="Резерв возвращён: задача завершилась ошибкой")
             except Exception:
@@ -920,16 +1033,16 @@ def _process_job_sync(job_id: str) -> None:
             fail_msg = (
                 "В файле нет позиций для поиска"
                 if (
-                    "не найдены" in str(exc).lower()
-                    or "нет закупаемых позиций" in str(exc).lower()
-                    or "0 items" in str(exc).lower()
-                    or "пустой бланк" in str(exc).lower()
-                    or "пустая форма" in str(exc).lower()
+                    "не найдены" in lowered_exc
+                    or "нет закупаемых позиций" in lowered_exc
+                    or "0 items" in lowered_exc
+                    or "пустой бланк" in lowered_exc
+                    or "пустая форма" in lowered_exc
                 )
                 else "Ошибка обработки"
             )
             try:
-                _set_job(db, job, status="failed", progress=100, message=fail_msg, error=str(exc))
+                _set_job(db, job, status="failed", progress=100, message=fail_msg, error=safe_error_to_store)
                 job.completed_at = now_utc()
                 db.commit()
             except Exception:
@@ -1496,7 +1609,12 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     dobor_ctx = read_dobor_context(job)
     is_extend = str(getattr(job, "supplier_search_run_type", "") or "") == SUPPLIER_RUN_ADDITIONAL
     wave_idx = int(dobor_ctx.get("wave_index") or (2 if is_extend else 1))
-    is_confirmed = bool(dobor_ctx.get("multi_item_confirmed")) or is_extend or getattr(job, "is_admin_rerun", False)
+    is_confirmed = (
+        bool(dobor_ctx.get("multi_item_confirmed"))
+        or bool(dobor_ctx.get("auto_confirm_strategy"))
+        or is_extend
+        or getattr(job, "is_admin_rerun", False)
+    )
 
     # Pre-flight specification profile analysis & multi-item decision gate
     cached_profile_dict = dobor_ctx.get("procurement_profile")
@@ -1522,12 +1640,15 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
 
     if profile is not None and len(profile.items) > 1 and not is_confirmed:
         # Multi-item specification detected! Pause for customer choice.
+        now_ts = now_utc()
         job.status = STATUS_AWAITING_CUSTOMER_CONFIRMATION
         job.confirmation_kind = "multi_item_strategy"
         job.confirmation_outcome = "pending"
-        job.confirmation_offered_at = now_utc()
+        job.confirmation_offered_at = now_ts
+        job.confirmation_expires_at = now_ts + timedelta(hours=24)
         job.progress = 30
         job.message = f"В ТЗ обнаружено {len(profile.items)} позиций. Ожидает выбора стратегии поиска"
+        job.updated_at = now_ts
         db.commit()
         db.refresh(job)
         return
@@ -2176,13 +2297,24 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     _populate_job_ai_metadata(job, settings, job.mode)
     dobor_ctx = read_dobor_context(job)
     is_extend = str(getattr(job, "supplier_search_run_type", "") or "") == SUPPLIER_RUN_ADDITIONAL
-    is_confirmed = bool(dobor_ctx.get("multi_item_confirmed")) or is_extend or getattr(job, "is_admin_rerun", False)
+    is_confirmed = (
+        bool(dobor_ctx.get("multi_item_confirmed"))
+        or bool(dobor_ctx.get("auto_confirm_strategy"))
+        or is_extend
+        or getattr(job, "is_admin_rerun", False)
+    )
 
     cached_report_text = dobor_ctx.get("analysis_report_text")
     supplier_context = str(dobor_ctx.get("supplier_context") or "")
 
     if cached_report_text and supplier_context:
-        report = SimpleNamespace(report=cached_report_text)
+        report = SimpleNamespace(
+            report=cached_report_text,
+            ai_used=bool(dobor_ctx.get("report_ai_used", True)),
+            ai_model=str(dobor_ctx.get("report_ai_model") or getattr(job, "ai_model", "") or ""),
+            warning=str(dobor_ctx.get("report_warning") or ""),
+            verification=dobor_ctx.get("report_verification"),
+        )
     else:
         _set_job(db, job, progress=25, message="ИИ готовит анализ документации")
         report = asyncio.run(generate_procurement_report(settings, context))
@@ -2193,6 +2325,10 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         dobor_ctx = update_dobor_context_dict(job, {
             "analysis_report_text": report.report,
             "supplier_context": supplier_context,
+            "report_ai_used": bool(getattr(report, "ai_used", True)),
+            "report_ai_model": str(getattr(report, "ai_model", "") or ""),
+            "report_warning": str(getattr(report, "warning", "") or ""),
+            "report_verification": getattr(report, "verification", None),
         })
 
     # Pre-flight specification profile analysis & multi-item decision gate
@@ -2219,12 +2355,15 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
 
     if profile is not None and len(profile.items) > 1 and not is_confirmed:
         # Multi-item specification detected! Pause for customer choice.
+        now_ts = now_utc()
         job.status = STATUS_AWAITING_CUSTOMER_CONFIRMATION
         job.confirmation_kind = "multi_item_strategy"
         job.confirmation_outcome = "pending"
-        job.confirmation_offered_at = now_utc()
+        job.confirmation_offered_at = now_ts
+        job.confirmation_expires_at = now_ts + timedelta(hours=24)
         job.progress = 45
         job.message = f"В ТЗ обнаружено {len(profile.items)} позиций. Ожидает выбора стратегии поиска"
+        job.updated_at = now_ts
         db.commit()
         db.refresh(job)
         return
@@ -2351,10 +2490,10 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         "sources": _job_sources_evidence(job),
         "files": _job_files_evidence(job),
         "report": {
-            "ai_used": report.ai_used,
-            "ai_model": report.ai_model,
-            "warning": report.warning,
-            "verification": report.verification,
+            "ai_used": bool(getattr(report, "ai_used", True)),
+            "ai_model": str(getattr(report, "ai_model", "") or ""),
+            "warning": str(getattr(report, "warning", "") or ""),
+            "verification": getattr(report, "verification", None),
             "logistics_enabled": False,
             "ati_enabled": False,
         },
@@ -2364,7 +2503,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             "extracted_chars": len(supplier_context),
         },
         "ai_required": True,
-        "ai_used": bool(report.ai_used and supplier_evidence.get("ai_used")),
+        "ai_used": bool(getattr(report, "ai_used", True) and supplier_evidence.get("ai_used")),
     }
     delivery_city = getattr(job, "delivery_city", "") or ""
     geo_radius_km = getattr(job, "geo_radius_km", None)
@@ -2430,7 +2569,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
                 f"вне реестра найдено и проверено: {len(fallback_rows)}. Можно получить этот вариант отдельно."
                 + browser_failure_note
             ),
-            error=" ".join(item for item in (str(report.warning or "").strip(), browser_failure_error) if item),
+            error=" ".join(item for item in (str(getattr(report, "warning", "") or "").strip(), browser_failure_error) if item),
         )
         job.completed_at = now_utc()
         db.commit()
@@ -2451,14 +2590,14 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             message="Анализ готов, поставщики не подтверждены" + browser_failure_note,
             error=browser_failure_error or "Поиск не сформировал XLSX, потому что нет ни одного подтверждённого поставщика.",
         )
-    elif report.warning:
+    elif getattr(report, "warning", ""):
         _set_job(
             db,
             job,
             status="needs_review",
             progress=100,
             message="Анализ и поставщики готовы, нужна проверка ИИ-настроек" + browser_failure_note,
-            error=" ".join(item for item in (str(report.warning or "").strip(), browser_failure_error) if item),
+            error=" ".join(item for item in (str(getattr(report, "warning", "") or "").strip(), browser_failure_error) if item),
         )
     elif len(accepted) >= job.target_suppliers or len(accepted) >= 20 or _is_registry_only_supplier_search(job):
         _set_job(db, job, status="completed", progress=100, message=_supplier_count_message("Анализ готов", len(accepted), job.target_suppliers), error="")

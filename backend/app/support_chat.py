@@ -14,6 +14,8 @@ Channels synchronized through a single DB ledger (`JobChatMessage` + `SupportDia
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import html
 import ipaddress
 import json
@@ -27,6 +29,7 @@ from typing import Any
 
 import httpx
 from sqlalchemy import and_, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from .admin_alerts import is_pytest
@@ -49,6 +52,11 @@ from .models import (
     now_utc,
 )
 from .repository import get_client_by_telegram_id, get_or_create_trial_client_by_telegram_id
+from .security_shield import (
+    PROTECTED_INFRASTRUCTURE_IPS,
+    get_protected_infrastructure_ips,
+    normalize_blockable_ip,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,11 +121,66 @@ _CHANNEL_LABELS = {
 }
 
 _LEGACY_BULK_IMPORTED = False
+_LEGACY_CHECKED_SIDS: set[str] = set()
+
+GUEST_CHAT_COOKIE = "tenderlex_guest_chat"
+
+
+def _guest_chat_signing_secret() -> bytes:
+    secret = (
+        getattr(config, "session_secret", "")
+        or getattr(config, "admin_token", "")
+        or os.getenv("AIPOISK_SESSION_SECRET", "")
+        or "tenderlex-guest-chat-secret"
+    ).strip()
+    return secret.encode("utf-8")
+
+
+def sign_guest_chat_cookie(session_id: str) -> str:
+    clean_sid = validate_guest_session_id(session_id)
+    sig = hmac.new(
+        _guest_chat_signing_secret(),
+        f"guest_chat:{clean_sid}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{clean_sid}.{sig}"
+
+
+def verify_guest_chat_cookie(cookie_val: str | None, session_id: str) -> bool:
+    raw = str(cookie_val or "").strip()
+    if not raw or "." not in raw:
+        return False
+    try:
+        clean_sid = validate_guest_session_id(session_id)
+    except ValueError:
+        return False
+    expected = sign_guest_chat_cookie(clean_sid)
+    return hmac.compare_digest(raw, expected)
+
+
+def set_guest_chat_cookie(response: Any, session_id: str) -> None:
+    if response is None or not hasattr(response, "set_cookie"):
+        return
+    try:
+        signed = sign_guest_chat_cookie(session_id)
+    except ValueError:
+        return
+    secure_cookie = not is_pytest() and str(os.getenv("AIPOISK_COOKIE_SECURE", "1")).strip() not in ("0", "false", "False")
+    response.set_cookie(
+        key=GUEST_CHAT_COOKIE,
+        value=signed,
+        max_age=30 * 24 * 3600,
+        httponly=True,
+        samesite="lax",
+        secure=secure_cookie,
+        path="/",
+    )
 
 
 def reset_legacy_import_cache_for_tests() -> None:
     global _LEGACY_BULK_IMPORTED
     _LEGACY_BULK_IMPORTED = False
+    _LEGACY_CHECKED_SIDS.clear()
 
 
 def get_bot_token() -> str:
@@ -227,17 +290,8 @@ def normalize_dialog_key(client_id: str | None) -> tuple[str, str, str]:
 
 
 def is_blockable_ip(raw_ip: str | None) -> str:
-    """Normalize a public/client IP string, returning empty string for local/invalid addresses."""
-    raw = str(raw_ip or "").strip().split(",")[0].strip()[:64]
-    if not raw or raw.lower() == "unknown":
-        return ""
-    try:
-        ip_obj = ipaddress.ip_address(raw)
-    except ValueError:
-        return ""
-    if ip_obj.is_loopback or ip_obj.is_unspecified or ip_obj.is_link_local or ip_obj.is_multicast:
-        return ""
-    return str(ip_obj)
+    """Normalize a public untrusted client IP string, returning empty string for local/private/protected addresses."""
+    return normalize_blockable_ip(raw_ip)
 
 
 def is_ip_blocked(db: Session, raw_ip: str | None) -> bool:
@@ -395,7 +449,6 @@ def check_guest_chat_rate_limits(
                 JobChatMessage.client_id == client_key,
                 JobChatMessage.sender_role == "client",
                 JobChatMessage.created_at >= preset_cutoff,
-                JobChatMessage.message.like("Здравствуйте! %"),
             )
             .count()
         )
@@ -649,18 +702,26 @@ def ensure_legacy_guest_sessions_imported(
         clean_sid = str(session_id).strip()
         if not GUEST_SESSION_RE.match(clean_sid):
             return
-        if _LEGACY_BULK_IMPORTED and json_path is None:
+        if json_path is None and (_LEGACY_BULK_IMPORTED or clean_sid in _LEGACY_CHECKED_SIDS):
             return
         exists = db.query(SupportGuestSession.id).filter(SupportGuestSession.session_id == clean_sid).first()
         if exists:
+            if json_path is None:
+                _LEGACY_CHECKED_SIDS.add(clean_sid)
             return
         if not target_file.is_file():
+            if json_path is None:
+                _LEGACY_BULK_IMPORTED = True
             return
         try:
             raw = json.loads(target_file.read_text(encoding="utf-8") or "{}")
             if isinstance(raw, dict) and isinstance(raw.get(clean_sid), dict):
                 _import_single_legacy_session(db, clean_sid, raw[clean_sid])
                 db.commit()
+            if json_path is None:
+                if len(_LEGACY_CHECKED_SIDS) > 4096:
+                    _LEGACY_CHECKED_SIDS.clear()
+                _LEGACY_CHECKED_SIDS.add(clean_sid)
         except Exception as exc:
             db.rollback()
             logger.warning("Failed single legacy guest chat import for %s: %s", clean_sid, exc)
@@ -724,8 +785,14 @@ def get_or_create_guest_session(
             client_ip=str(client_ip or "").strip()[:64],
             status="open",
         )
-        db.add(guest)
-        db.flush()
+        try:
+            with db.begin_nested():
+                db.add(guest)
+                db.flush()
+        except IntegrityError:
+            guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == clean_sid).first()
+            if not guest:
+                raise
     else:
         if clean_contact and clean_contact != guest.visitor_contact:
             guest.visitor_contact = clean_contact
@@ -2124,6 +2191,32 @@ async def unblock_support_dialog(
                 db.query(SupportBlockedActor).filter(
                     SupportBlockedActor.actor_type == "telegram",
                     SupportBlockedActor.actor_value.in_(list(tg_ids)),
+                ).delete(synchronize_session=False)
+            client_ips: set[str] = set()
+            reg_ip = is_blockable_ip(getattr(client, "registration_ip", ""))
+            if reg_ip:
+                client_ips.add(reg_ip)
+            user_ids = [
+                str(r[0])
+                for r in db.query(WebUser.id).filter(WebUser.client_id == client.id).all()
+                if r and r[0]
+            ]
+            if user_ids:
+                for row in (
+                    db.query(WebSession.ip_address)
+                    .filter(WebSession.user_id.in_(user_ids))
+                    .order_by(WebSession.created_at.desc())
+                    .limit(50)
+                    .all()
+                ):
+                    if row and row[0]:
+                        sess_ip = is_blockable_ip(str(row[0]))
+                        if sess_ip:
+                            client_ips.add(sess_ip)
+            if client_ips:
+                db.query(SupportBlockedActor).filter(
+                    SupportBlockedActor.actor_type == "ip",
+                    SupportBlockedActor.actor_value.in_(list(client_ips)),
                 ).delete(synchronize_session=False)
 
     state = db.query(SupportDialogState).filter(SupportDialogState.dialog_key == dialog_key).first()

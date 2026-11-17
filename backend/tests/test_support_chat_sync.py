@@ -705,11 +705,35 @@ async def test_mark_all_dialogs_read_and_block_unblock_guest_and_client(test_env
     client_chat_detail = admin_client_chat_get(client.id, db=db)
     assert client_chat_detail["client"]["is_blocked"] is True
 
-    # 5. Unblock registered client -> restores login & TG support
+    # 5. Unblock registered client -> restores login, clears auto_shield IP blocks, & restores TG support
+    client.registration_ip = "198.51.100.99"
+    db.add(
+        SupportBlockedActor(
+            actor_type="ip",
+            actor_value="198.51.100.99",
+            dialog_key="",
+            reason="Автоблокировка за спам/атаки",
+            blocked_by="auto_shield",
+        )
+    )
+    db.commit()
+
     unblock_client_res = await admin_dialog_unblock(client.id, db=db)
     assert unblock_client_res["ok"] is True
     assert unblock_client_res["is_blocked"] is False
     db.expire_all()
+    assert (
+        db.query(SupportBlockedActor)
+        .filter(SupportBlockedActor.actor_type == "ip", SupportBlockedActor.actor_value == "198.51.100.99")
+        .first()
+        is None
+    )
+    assert (
+        db.query(SupportBlockedActor)
+        .filter(SupportBlockedActor.actor_type == "ip", SupportBlockedActor.actor_value == "203.0.113.88")
+        .first()
+        is None
+    )
     assert authenticate_web_user(db, "spammer@example.com", "Password123!") is not None
     tg_ok = await sc.deliver_client_telegram_message(
         db,
@@ -720,4 +744,42 @@ async def test_mark_all_dialogs_read_and_block_unblock_guest_and_client(test_env
         allow_in_test=False,
     )
     assert tg_ok["client_id"] == client.id
+
+
+@pytest.mark.asyncio
+async def test_preset_burst_limit_structural_without_nl_matching_and_infra_ip_protection(test_env):
+    from fastapi import HTTPException
+
+    db = test_env.db
+    # Spoofed leftmost IP + real visitor IP + edge proxy IP + backend IP
+    req_edge = SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1"),
+        headers={"x-forwarded-for": "1.1.1.1, 203.0.113.120, 79.133.182.215, 202.71.13.57"},
+    )
+    await public_guest_chat_send(
+        request=req_edge,
+        payload={"sessionId": "sess_preset_struct_1", "text": "Вопрос по тарифам", "preset": "Тарифы"},
+        db=db,
+    )
+    await public_guest_chat_send(
+        request=req_edge,
+        payload={"sessionId": "sess_preset_struct_1", "text": "Нужен подбор аналогов", "preset": "Аналоги"},
+        db=db,
+    )
+    guest_row = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == "sess_preset_struct_1").first()
+    assert guest_row is not None
+    assert guest_row.client_ip == "203.0.113.120"
+
+    # 3rd preset click within 120s is rate-limited structurally even without 'Здравствуйте!' prefix
+    with pytest.raises(HTTPException) as exc_preset:
+        await public_guest_chat_send(
+            request=req_edge,
+            payload={"sessionId": "sess_preset_struct_1", "text": "Анализ закупки", "preset": "Анализ"},
+            db=db,
+        )
+    assert exc_preset.value.status_code == 429
+
+    # Infrastructure and private IPs can never be blocked
+    for non_blockable in ("79.133.182.215", "202.71.13.57", "127.0.0.1", "::1", "10.0.0.8", "192.168.0.5", "172.20.0.1"):
+        assert sc.is_blockable_ip(non_blockable) == ""
 

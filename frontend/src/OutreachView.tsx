@@ -1001,6 +1001,7 @@ export function OutreachView() {
       return
     }
     const interval = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.hidden) return
       if (searchStatusPollingRef.current) return
       searchStatusPollingRef.current = true
       const requestId = ++searchStatusRequestIdRef.current
@@ -1041,6 +1042,7 @@ export function OutreachView() {
     const intervalMs = (isSearchRunning || isCampaignRunning) ? 2000 : (taskSubTab === 'campaign' ? 3500 : 6000)
 
     const interval = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.hidden) return
       try {
         const stats = await outreachFetch<TaskStats>(`/api/outreach/tasks/${selectedTask.id}/stats`)
         setTaskStats(stats)
@@ -1092,6 +1094,7 @@ export function OutreachView() {
     const targetTaskId = inboxTaskFilter || undefined
     void fetchInbox(targetTaskId, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current, false, true)
     const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return
       const currentTaskId = inboxTaskFilterRef.current || undefined
       void fetchInbox(currentTaskId, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current, false, true)
     }, 20000)

@@ -276,8 +276,8 @@ def cluster_and_reconcile_item_quotes(
                     q.price_rub = converted
                     q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за мешок 50 кг -> {converted:,.0f} ₽/т"
 
-                # 5. ГСМ и жидкости: Бочка 200л vs Литр
-                elif norm_u in ("л", "литр") and (q_ratio >= 100.0 or (max_p / q.price_rub) >= 100.0) and q.price_rub > 15000:
+                # 5. ГСМ и жидкости: Бочка 200л vs Литр (делим только котировку, превышающую минимальную в >=100 раз)
+                elif norm_u in ("л", "литр") and q_ratio >= 100.0 and q.price_rub > 15000:
                     converted = round(q.price_rub / 200.0, 2)
                     q.price_rub = converted
                     q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за бочку 200л -> {converted:,.2f} ₽/л"
@@ -888,9 +888,16 @@ async def process_single_item(
                                     except Exception:
                                         pass
 
-                            # 2. Платный поиск ИНН в Яндексе внутри цикла кандидатов выполняем ТОЛЬКО для котировок с реальной ценой (quote.price_rub > 0).
+                            # 2. Платный поиск ИНН в Яндексе внутри цикла кандидатов выполняем ТОЛЬКО для котировок с реальной ценой (quote.price_rub > 0), не более 2 раз на позицию.
                             # Для котировок "по запросу" (price_rub == 0) не тратим платные запросы заранее.
-                            if not resolved and quote.price_rub > 0 and isinstance(engine, YandexSearchEngine):
+                            inn_queries_used = int(diagnostics.get("inn_yandex_queries", 0) or 0)
+                            if (
+                                not resolved
+                                and quote.price_rub > 0
+                                and inn_queries_used < 2
+                                and isinstance(engine, YandexSearchEngine)
+                            ):
+                                diagnostics["inn_yandex_queries"] = inn_queries_used + 1
                                 try:
                                     inn_query = f'"{domain}" ИНН'
                                     async with search_semaphore:
@@ -1329,7 +1336,15 @@ async def run_price_monitoring_pipeline(
         except Exception:
             pass
 
-    found_count = sum(1 for it in results if it.has_prices)
+    def _has_billable_prices(it: ItemPriceResult) -> bool:
+        valid = [q for q in it.quotes if q.price_rub > 0 and not q.is_outlier]
+        if not valid:
+            return False
+        if len(valid) == 1 and valid[0].evidence_level in {"search_snippet", "unknown"}:
+            return False
+        return True
+
+    found_count = sum(1 for it in results if _has_billable_prices(it))
     not_found_count = total - found_count
     total_charged_rub = round(found_count * price_per_position_rub, 2)
 

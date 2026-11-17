@@ -106,11 +106,66 @@ def _ensure_postgres_number_triggers(connection) -> None:
         )
 
 
+SCHEMA_MIGRATION_VERSION = "2026-11-16-deep-review-v2"
+_PG_INIT_ADVISORY_LOCK_KEY = 73948102
+
+
+def _pg_schema_is_current(connection) -> bool:
+    row = connection.execute(
+        text("SELECT to_regclass('public.schema_migrations')")
+    ).scalar()
+    if not row:
+        return False
+    ver = connection.execute(
+        text("SELECT version FROM schema_migrations WHERE id = 1")
+    ).scalar()
+    return ver == SCHEMA_MIGRATION_VERSION
+
+
+def _pg_mark_schema_current() -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS schema_migrations ("
+                "id INTEGER PRIMARY KEY, "
+                "version VARCHAR(128) NOT NULL, "
+                "applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO schema_migrations (id, version, applied_at) "
+                "VALUES (1, :ver, CURRENT_TIMESTAMP) "
+                "ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, applied_at = CURRENT_TIMESTAMP"
+            ),
+            {"ver": SCHEMA_MIGRATION_VERSION},
+        )
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
     from . import outreach_models  # noqa: F401
 
     _use_naive_datetimes_for_postgres()
+    if engine.dialect.name == "postgresql":
+        with engine.connect() as conn:
+            if _pg_schema_is_current(conn):
+                return
+        with engine.connect() as lock_conn:
+            lock_conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _PG_INIT_ADVISORY_LOCK_KEY})
+            try:
+                if _pg_schema_is_current(lock_conn):
+                    return
+                Base.metadata.create_all(bind=engine)
+                _ensure_schema()
+                _ensure_legacy_client_accounts()
+                _ensure_default_tariffs()
+                _pg_mark_schema_current()
+            finally:
+                lock_conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _PG_INIT_ADVISORY_LOCK_KEY})
+                lock_conn.commit()
+        return
+
     Base.metadata.create_all(bind=engine)
     _ensure_schema()
     _ensure_legacy_client_accounts()
@@ -615,15 +670,23 @@ def _ensure_legacy_client_accounts() -> None:
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     db = Session()
     try:
-        clients = db.query(Client).all()
+        existing_tg_ids = {
+            str(tg_id).strip()
+            for (tg_id,) in db.query(ClientTelegramAccount.telegram_id).all()
+            if tg_id
+        }
+        clients = (
+            db.query(Client)
+            .filter(Client.telegram_id.isnot(None))
+            .filter(Client.telegram_id != "")
+            .all()
+        )
         changed = False
         for client in clients:
             telegram_id = str(client.telegram_id or "").strip()
-            if not telegram_id or telegram_id.startswith(("web:", "pending:")):
+            if not telegram_id or telegram_id.startswith(("web:", "pending:")) or telegram_id in existing_tg_ids:
                 continue
-            existing = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.telegram_id == telegram_id).first()
-            if existing:
-                continue
+            existing_tg_ids.add(telegram_id)
             db.add(
                 ClientTelegramAccount(
                     client_id=client.id,
@@ -647,8 +710,9 @@ def _ensure_default_tariffs() -> None:
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     db = Session()
     try:
-        has_tariffs = db.query(TariffPackage).filter(TariffPackage.kind == "supplier_search").first()
-        if not has_tariffs:
+        existing_kinds = {kind for (kind,) in db.query(TariffPackage.kind).distinct().all() if kind}
+        changed = False
+        if "supplier_search" not in existing_kinds:
             default_packages = [
                 ("supplier_search", "1 поиск поставщиков", 1, 9900, 1),
                 ("supplier_search", "5 поисков поставщиков", 5, 49000, 2),
@@ -672,10 +736,9 @@ def _ensure_default_tariffs() -> None:
                         is_active=True,
                     )
                 )
-            db.commit()
+            changed = True
 
-        extra_exists = db.query(TariffPackage).filter(TariffPackage.kind == "supplier_search_extra").first()
-        if not extra_exists:
+        if "supplier_search_extra" not in existing_kinds:
             db.add(
                 TariffPackage(
                     kind="supplier_search_extra",
@@ -686,10 +749,9 @@ def _ensure_default_tariffs() -> None:
                     is_active=True,
                 )
             )
-            db.commit()
+            changed = True
 
-        exact_product_exists = db.query(TariffPackage).filter(TariffPackage.kind == "exact_product").first()
-        if not exact_product_exists:
+        if "exact_product" not in existing_kinds:
             exact_defaults = [
                 ("1 подбор товара и аналогов", 1, 9900, 1),
                 ("5 подборов товара и аналогов", 5, 49000, 2),
@@ -708,10 +770,9 @@ def _ensure_default_tariffs() -> None:
                         is_active=True,
                     )
                 )
-            db.commit()
+            changed = True
 
-        deposit_exists = db.query(TariffPackage).filter(TariffPackage.kind == "deposit").first()
-        if not deposit_exists:
+        if "deposit" not in existing_kinds:
             deposit_defaults = [
                 ("Старт", 10, 100000, 0, "", "Для разовых процедур и тестирования в бою", 10),
                 ("Оптимальный", 35, 300000, 50000, "", "Для регулярной работы специалиста", 20),
@@ -733,6 +794,9 @@ def _ensure_default_tariffs() -> None:
                         is_active=True,
                     )
                 )
+            changed = True
+
+        if changed:
             db.commit()
     finally:
         db.close()

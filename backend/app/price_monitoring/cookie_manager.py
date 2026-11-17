@@ -265,23 +265,55 @@ def normalize_cookie_string(raw: Any) -> str:
     return "; ".join(cleaned_pairs)
 
 
+def _mask_cookie_preview(cookie_str: str) -> str:
+    if not cookie_str:
+        return ""
+    names: list[str] = []
+    for part in cookie_str.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k = part.split("=", 1)[0].strip()
+            if k:
+                names.append(f"{k}=***")
+    preview = "; ".join(names[:5])
+    if len(names) > 5:
+        preview += f" (+{len(names) - 5})"
+    return preview
+
+
 class CookieManager:
     """Manages custom cookies for target domains."""
 
     def __init__(self, cookies_path: Path = COOKIES_FILE) -> None:
         self.cookies_path = cookies_path
         self._cookies: Dict[str, str] = {}
+        self._loaded_mtime_ns: int = -1
         self.load_cookies()
+
+    def _ensure_fresh(self) -> None:
+        try:
+            st = self.cookies_path.stat()
+            mtime_ns = st.st_mtime_ns
+        except OSError:
+            if self._loaded_mtime_ns != -1:
+                self._cookies = {}
+                self._loaded_mtime_ns = -1
+            return
+        if mtime_ns != self._loaded_mtime_ns:
+            self.load_cookies()
 
     def load_cookies(self) -> None:
         if not self.cookies_path.exists():
             self._cookies = {}
+            self._loaded_mtime_ns = -1
             return
         try:
+            st = self.cookies_path.stat()
             with open(self.cookies_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     self._cookies = {k.lower().strip(): str(v).strip() for k, v in data.items()}
+            self._loaded_mtime_ns = st.st_mtime_ns
         except Exception as e:
             logger.warning("Failed to load cookies from %s: %s", self.cookies_path, e)
             self._cookies = {}
@@ -289,13 +321,20 @@ class CookieManager:
     def save_cookies(self) -> None:
         try:
             self.cookies_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.cookies_path, "w", encoding="utf-8") as f:
+            fd = os.open(str(self.cookies_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(self._cookies, f, ensure_ascii=False, indent=2)
+            try:
+                os.chmod(self.cookies_path, 0o600)
+                self._loaded_mtime_ns = self.cookies_path.stat().st_mtime_ns
+            except OSError:
+                pass
             logger.info("Saved %d domain cookies to %s", len(self._cookies), self.cookies_path)
         except Exception as e:
             logger.error("Failed to save cookies to %s: %s", self.cookies_path, e)
 
     def set_cookie(self, domain: str, raw_cookie: Any) -> str:
+        self._ensure_fresh()
         clean_domain = domain.lower().strip()
         if clean_domain.startswith("www."):
             clean_domain = clean_domain[4:]
@@ -305,6 +344,7 @@ class CookieManager:
         return normalized
 
     def delete_cookie(self, domain: str) -> bool:
+        self._ensure_fresh()
         clean_domain = domain.lower().strip()
         if clean_domain.startswith("www."):
             clean_domain = clean_domain[4:]
@@ -315,6 +355,7 @@ class CookieManager:
         return False
 
     def get_cookie(self, domain: str) -> Optional[str]:
+        self._ensure_fresh()
         clean_domain = domain.lower().strip()
         if clean_domain.startswith("www."):
             clean_domain = clean_domain[4:]
@@ -322,6 +363,7 @@ class CookieManager:
 
     def get_cookie_for_url(self, url: str) -> Optional[str]:
         """Finds matching cookie for given URL based on domain suffix."""
+        self._ensure_fresh()
         if not self._cookies:
             return None
         try:
@@ -339,13 +381,16 @@ class CookieManager:
 
     def list_domains(self) -> Dict[str, int]:
         """Returns dict of configured domains and their cookie string lengths."""
+        self._ensure_fresh()
         return {d: len(c) for d, c in self._cookies.items()}
 
     def get_all_cookies(self) -> Dict[str, str]:
+        self._ensure_fresh()
         return dict(self._cookies)
 
     def get_catalog_with_status(self) -> List[Dict[str, Any]]:
         """Returns the full catalog of domains, augmented with their active cookie status."""
+        self._ensure_fresh()
         catalog_map = {item["domain"]: dict(item) for item in CATALOG_DOMAINS}
         
         # Add any user-configured domains that aren't in the default catalog
@@ -365,15 +410,13 @@ class CookieManager:
             cookie = self._cookies.get(domain)
             has_cookie = bool(cookie and len(cookie) > 0)
             cookie_len = len(cookie) if cookie else 0
-            
-            # Key cookies snippet preview (first 40 chars)
-            preview = (cookie[:60] + "...") if cookie and len(cookie) > 60 else (cookie or "")
+            preview = _mask_cookie_preview(cookie or "")
             
             meta_copy = dict(meta)
             meta_copy["has_cookie"] = has_cookie
             meta_copy["cookie_length"] = cookie_len
             meta_copy["cookie_preview"] = preview
-            meta_copy["cookie_value"] = cookie or ""
+            meta_copy["cookie_value"] = ""
             result.append(meta_copy)
 
         # Sort: first domains with active cookies, then by category
@@ -405,15 +448,24 @@ class CookieManager:
         start_time = time.time()
         proxy_url = os.getenv("PRICE_MONITORING_PROXY") or os.getenv("HTTPS_PROXY")
         try:
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, proxy=proxy_url) as client:
-                resp = await client.get(test_url, headers=headers)
+            from ..ssrf_guard import SSRFBlockedError, safe_async_get_bytes
+
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False, proxy=proxy_url) as client:
+                status_code, _resp_headers, body_bytes, final_url = await safe_async_get_bytes(
+                    client,
+                    test_url,
+                    headers=headers,
+                    max_redirects=5,
+                    max_bytes=5 * 1024 * 1024,
+                    timeout=10.0,
+                )
+                resp_text = body_bytes.decode("utf-8", errors="ignore")
                 duration_ms = int((time.time() - start_time) * 1000)
-                status_code = resp.status_code
-                resp_size = len(resp.text)
+                resp_size = len(resp_text)
 
                 # Extract page title if available
                 title = ""
-                m_title = re.search(r"<title[^>]*>(.*?)</title>", resp.text, re.IGNORECASE | re.DOTALL)
+                m_title = re.search(r"<title[^>]*>(.*?)</title>", resp_text, re.IGNORECASE | re.DOTALL)
                 if m_title:
                     title = re.sub(r"\s+", " ", m_title.group(1)).strip()[:80]
 
@@ -430,7 +482,7 @@ class CookieManager:
 
                 return {
                     "domain": clean_domain,
-                    "url": test_url,
+                    "url": final_url or test_url,
                     "status_code": status_code,
                     "status_text": status_text,
                     "accessible": is_ok,
@@ -440,6 +492,19 @@ class CookieManager:
                     "has_cookie_applied": bool(cookie),
                     "cookie_length": len(cookie) if cookie else 0,
                 }
+        except SSRFBlockedError as e:
+            return {
+                "domain": clean_domain,
+                "url": test_url,
+                "status_code": 400,
+                "status_text": f"Недопустимый адрес для проверки: {e}",
+                "accessible": False,
+                "response_size": 0,
+                "duration_ms": 0,
+                "title": "",
+                "has_cookie_applied": False,
+                "cookie_length": 0,
+            }
         except httpx.TimeoutException:
             duration_ms = int((time.time() - start_time) * 1000)
             return {

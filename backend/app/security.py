@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import hmac
+import logging
+import secrets
 import time
 from hashlib import sha256
 
@@ -10,17 +12,26 @@ from fastapi import Header, HTTPException, Request, status
 from .config import config
 
 ADMIN_COOKIE = "aipoisk_admin_session"
+_EPHEMERAL_SESSION_SECRET = secrets.token_hex(32)
+logger = logging.getLogger(__name__)
 
 
 def _admin_token() -> str:
     token = str(config.admin_token or "").strip()
-    return token if token and token != "change-me" else "change-me"
+    if not token or token == "change-me":
+        return ""
+    return token
 
 
 def _session_secret() -> str:
     password = str(config.admin_password or "").strip()
     token = _admin_token()
-    return token if token != "change-me" else password or token
+    if token:
+        return token
+    if password and password != "change-me":
+        return password
+    logger.warning("Admin session secret not configured; using instance-isolated ephemeral secret")
+    return _EPHEMERAL_SESSION_SECRET
 
 
 def _session_ttl_seconds() -> int:
@@ -34,6 +45,8 @@ def _sign(value: str) -> str:
 def check_admin_credentials(username: str, password: str) -> bool:
     expected_username = str(config.admin_username or "admin").strip()
     expected_password = str(config.admin_password or "").strip() or _admin_token()
+    if not expected_password or expected_password == "change-me":
+        return False
     return hmac.compare_digest(username.strip(), expected_username) and hmac.compare_digest(password, expected_password)
 
 
@@ -64,7 +77,8 @@ def admin_cookie_max_age() -> int:
 
 
 def require_admin(request: Request, x_admin_token: str = Header(default="")) -> None:
-    if x_admin_token and hmac.compare_digest(x_admin_token, _admin_token()):
+    configured_token = _admin_token()
+    if configured_token and x_admin_token and hmac.compare_digest(x_admin_token, configured_token):
         return
     if verify_admin_session(request.cookies.get(ADMIN_COOKIE, "")):
         return

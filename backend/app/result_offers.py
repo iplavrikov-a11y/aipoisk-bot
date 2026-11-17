@@ -543,6 +543,7 @@ def _settle_admin_supplement_offer_accepted_locked(
     if job.client_id and charge_amount_kopeks > 0:
         client = db.get(Client, job.client_id)
         if client:
+            db.refresh(client)
             avail_kopeks = max(
                 0,
                 int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0),
@@ -552,17 +553,27 @@ def _settle_admin_supplement_offer_accepted_locked(
                 raise ResultOfferConflict(
                     f"Недостаточно средств на балансе. Для принятия отчёта пополните баланс на {shortage} ₽."
                 )
-            client.money_balance_kopeks = int(client.money_balance_kopeks or 0) - charge_amount_kopeks
-            existing_charge = (
-                db.query(BillingTransaction)
+            new_balance = int(client.money_balance_kopeks or 0) - charge_amount_kopeks
+            client.money_balance_kopeks = new_balance
+            existing_kinds = {
+                str(r[0])
+                for r in db.query(BillingTransaction.kind)
                 .filter(
                     BillingTransaction.job_id == job.id,
-                    BillingTransaction.kind == job.mode,
                     BillingTransaction.operation == "charge",
                 )
-                .first()
-            )
-            tx_kind = f"{job.mode}_supplement" if existing_charge is not None else job.mode
+                .all()
+                if r and r[0]
+            }
+            if job.mode not in existing_kinds:
+                tx_kind = job.mode
+            elif f"{job.mode}_supplement" not in existing_kinds:
+                tx_kind = f"{job.mode}_supplement"
+            else:
+                idx = 2
+                while f"{job.mode}_supplement_{idx}" in existing_kinds:
+                    idx += 1
+                tx_kind = f"{job.mode}_supplement_{idx}"
             db.add(
                 BillingTransaction(
                     id=new_id(),
@@ -572,6 +583,8 @@ def _settle_admin_supplement_offer_accepted_locked(
                     operation="charge",
                     units=delta_units or 1,
                     amount_kopeks=charge_amount_kopeks,
+                    balance_after_kopeks=new_balance,
+                    reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
                     note=f"Оплата по согласованному экспертному отчёту: +{delta_units} поз. (всего {new_count} поз.)",
                     created_at=now,
                 )

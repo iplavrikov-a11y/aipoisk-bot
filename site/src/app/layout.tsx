@@ -10,6 +10,7 @@ import {
   buildOrganizationJsonLd,
   buildSoftwareApplicationJsonLd,
   normalizedSiteUrl,
+  safeJsonLd,
 } from "@/lib/seo";
 
 import "./globals.css";
@@ -122,11 +123,11 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
       <head>
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(orgSchema) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLd(orgSchema) }}
         />
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(softwareSchema) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLd(softwareSchema) }}
         />
         <script
           type="speculationrules"

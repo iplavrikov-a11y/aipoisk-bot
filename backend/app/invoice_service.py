@@ -166,25 +166,27 @@ def format_rubles_num(amount: int | float) -> str:
     return f"{rub_formatted},{kop:02d}"
 
 
+def _safe_excel_text(value: Any) -> str:
+    text_val = str(value or "")
+    if text_val and text_val[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return f"'{text_val}"
+    return text_val
+
+
 def next_invoice_number(db: Session) -> str:
-    """Generate sequential invoice number: TL-2026-0001"""
+    """Generate sequential invoice number: TL-2026-0001 (safe past 9999)."""
     year = now_utc().year
     prefix = f"TL-{year}-"
-    stmt = (
-        select(Invoice.invoice_number)
-        .where(Invoice.invoice_number.like(f"{prefix}%"))
-        .order_by(Invoice.invoice_number.desc())
-        .limit(1)
-    )
-    last_num_str = db.scalar(stmt)
-    if last_num_str and last_num_str.startswith(prefix):
-        try:
-            current_seq = int(last_num_str[len(prefix) :])
-            next_seq = current_seq + 1
-        except Exception:
-            next_seq = 1
-    else:
-        next_seq = 1
+    rows = db.scalars(
+        select(Invoice.invoice_number).where(Invoice.invoice_number.like(f"{prefix}%"))
+    ).all()
+    max_seq = 0
+    for num_str in rows:
+        if num_str and num_str.startswith(prefix):
+            suffix = num_str[len(prefix) :].strip()
+            if suffix.isdigit():
+                max_seq = max(max_seq, int(suffix))
+    next_seq = max_seq + 1
     return f"{prefix}{next_seq:04d}"
 
 
@@ -345,7 +347,7 @@ def generate_invoice_xlsx(invoice: Invoice, output_path: str) -> str:
     ws["A13"] = "Покупатель:"
     ws["A13"].font = f_small
     ws.merge_cells("C13:M13")
-    ws["C13"] = buyer_full
+    ws["C13"] = _safe_excel_text(buyer_full)
     ws["C13"].font = f_norm_bold
     ws["C13"].alignment = Alignment(wrap_text=True, vertical="top")
     ws.row_dimensions[13].height = 26
@@ -356,7 +358,7 @@ def generate_invoice_xlsx(invoice: Invoice, output_path: str) -> str:
     ws["A15"] = "Основание:"
     ws["A15"].font = f_small
     ws.merge_cells("C15:M15")
-    ws["C15"] = base_text
+    ws["C15"] = _safe_excel_text(base_text)
     ws["C15"].font = f_small_bold
     ws["C15"].alignment = Alignment(wrap_text=True, vertical="top")
 
@@ -398,7 +400,7 @@ def generate_invoice_xlsx(invoice: Invoice, output_path: str) -> str:
     ws["A18"].font = f_small
 
     ws.merge_cells("B18:G18")
-    ws["B18"] = item_desc
+    ws["B18"] = _safe_excel_text(item_desc)
     ws["B18"].font = f_small
     ws["B18"].alignment = Alignment(vertical="center", wrap_text=True)
 
@@ -529,6 +531,9 @@ def generate_invoice_pdf(invoice: Invoice, output_pdf_path: str) -> str:
                 "--headless=new",
                 "--no-sandbox",
                 "--disable-gpu",
+                "--disable-javascript",
+                "--disable-extensions",
+                "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost",
                 "--no-pdf-header-footer",
                 f"--print-to-pdf={out_pdf}",
                 str(tmp_html),
@@ -564,19 +569,22 @@ def generate_invoice_pdf(invoice: Invoice, output_pdf_path: str) -> str:
 
 def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
     """Generate authentic A4 HTML representation for web viewing and browser printing (@media print)."""
-    date_str = format_date_ru(invoice.created_at)
-    amount_str = format_rubles_num(invoice.amount_rub)
-    words_str = num_to_words_ru(invoice.amount_rub)
+    date_str = escape(format_date_ru(invoice.created_at), quote=True)
+    amount_str = escape(format_rubles_num(invoice.amount_rub), quote=True)
+    words_str = escape(num_to_words_ru(invoice.amount_rub), quote=True)
     tariff_label = invoice.tariff_name or "Пополнение баланса"
-    item_desc = f"{invoice.service_name} ({tariff_label}, {invoice.amount_rub:,} руб.)".replace(",", " ")
+    raw_item_desc = f"{invoice.service_name} ({tariff_label}, {invoice.amount_rub:,} руб.)".replace(",", " ")
+    item_desc = escape(raw_item_desc, quote=True)
+    safe_invoice_number = escape(str(invoice.invoice_number or ""), quote=True)
+    safe_buyer_email = escape(str(invoice.buyer_email or ""), quote=True)
 
-    buyer_parts = [invoice.buyer_name]
+    buyer_parts = [escape(str(invoice.buyer_name or ""), quote=True)]
     if invoice.buyer_inn:
-        buyer_parts.append(f"ИНН {invoice.buyer_inn}")
+        buyer_parts.append(f"ИНН {escape(str(invoice.buyer_inn), quote=True)}")
     if invoice.buyer_kpp:
-        buyer_parts.append(f"КПП {invoice.buyer_kpp}")
+        buyer_parts.append(f"КПП {escape(str(invoice.buyer_kpp), quote=True)}")
     if invoice.buyer_address:
-        buyer_parts.append(invoice.buyer_address)
+        buyer_parts.append(escape(str(invoice.buyer_address), quote=True))
     buyer_full = ", ".join(p for p in buyer_parts if p)
 
     stamp_src = "/invoice/stamp.png"
@@ -594,7 +602,7 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <title>Счет на оплату № {invoice.invoice_number} от {date_str} г.</title>
+  <title>Счет на оплату № {safe_invoice_number} от {date_str} г.</title>
   <style>
     * {{ box-sizing: border-box; }}
     body {{
@@ -875,7 +883,7 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
 
     <div class="info-row">
       <div class="info-label">Основание:</div>
-      <div class="info-value">Предоставление доступа к сервису TenderLex (пополнение баланса аккаунта {invoice.buyer_email or ''})</div>
+      <div class="info-value">Предоставление доступа к сервису TenderLex (пополнение баланса аккаунта {safe_buyer_email})</div>
     </div>
 
     <table class="items-table">
@@ -946,24 +954,27 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
 
 def send_invoice_email(invoice: Invoice, recipient_email: str) -> tuple[bool, str]:
     """Send generated invoice with attached Excel and PDF files to recipient."""
-    recipient = str(recipient_email or invoice.buyer_email or "").strip()
+    recipient = re.sub(r"[\r\n]+", "", str(recipient_email or invoice.buyer_email or "").strip())
     if not recipient or "@" not in recipient:
         return False, "Не указан корректный email получателя"
 
-    date_str = format_date_ru(invoice.created_at)
-    amount_str = format_rubles_num(invoice.amount_rub)
-    subject = f"Счёт на оплату № {invoice.invoice_number} от {date_str} - TenderLex"
+    date_str = escape(format_date_ru(invoice.created_at), quote=True)
+    amount_str = escape(format_rubles_num(invoice.amount_rub), quote=True)
+    safe_num = escape(re.sub(r"[\r\n]+", "", str(invoice.invoice_number or "")), quote=True)
+    safe_buyer = escape(str(invoice.buyer_name or ""), quote=True)
+    safe_inn = escape(str(invoice.buyer_inn or ""), quote=True)
+    subject = re.sub(r"[\r\n]+", " ", f"Счёт на оплату № {invoice.invoice_number} от {format_date_ru(invoice.created_at)} - TenderLex")
 
     body_html = f"""<html>
 <body style="font-family: Arial, sans-serif; font-size: 14px; color: #1e293b; line-height: 1.5;">
   <p>Здравствуйте!</p>
   <p>Вы сформировали счёт на оплату в сервисе <b>TenderLex</b>.</p>
   <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; margin: 16px 0;">
-    <p style="margin: 0 0 8px 0;"><b>Номер счёта:</b> {invoice.invoice_number}</p>
+    <p style="margin: 0 0 8px 0;"><b>Номер счёта:</b> {safe_num}</p>
     <p style="margin: 0 0 8px 0;"><b>Дата:</b> {date_str} г.</p>
     <p style="margin: 0 0 8px 0;"><b>Сумма к оплате:</b> {amount_str} ₽</p>
     <p style="margin: 0 0 8px 0;"><b>К зачислению на баланс:</b> {invoice.total_credit_rub:,} ₽ (бонус: +{invoice.bonus_rub:,} ₽)</p>
-    <p style="margin: 0;"><b>Покупатель:</b> {invoice.buyer_name} (ИНН {invoice.buyer_inn})</p>
+    <p style="margin: 0;"><b>Покупатель:</b> {safe_buyer} (ИНН {safe_inn})</p>
   </div>
 
   <p><b>Реквизиты для оплаты через банк-клиент:</b></p>
@@ -974,7 +985,7 @@ def send_invoice_email(invoice: Invoice, recipient_email: str) -> tuple[bool, st
     <tr><td style="padding: 4px 8px 4px 0; color: #64748b;">Банк:</td><td>АО "АЛЬФА-БАНК"</td></tr>
     <tr><td style="padding: 4px 8px 4px 0; color: #64748b;">БИК:</td><td><b>044525593</b></td></tr>
     <tr><td style="padding: 4px 8px 4px 0; color: #64748b;">Корр. счёт:</td><td>30101810200000000593</td></tr>
-    <tr><td style="padding: 4px 8px 4px 0; color: #64748b;">Назначение платежа:</td><td><b>Оплата по счету № {invoice.invoice_number} от {date_str} г. за услуги сервиса TenderLex. Без НДС.</b></td></tr>
+    <tr><td style="padding: 4px 8px 4px 0; color: #64748b;">Назначение платежа:</td><td><b>Оплата по счету № {safe_num} от {date_str} г. за услуги сервиса TenderLex. Без НДС.</b></td></tr>
   </table>
 
   <p>Оригинал счёта в формате Excel (.xlsx) и PDF с факсимиле подписи и печати прикреплены к этому письму.</p>

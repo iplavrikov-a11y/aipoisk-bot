@@ -251,7 +251,7 @@ def get_due_nurturing_candidates(
             # Both channels known: prioritize where user actually works (anti-spam, no double-sending)
             if jobs:
                 latest_job = max(jobs, key=lambda j: _ensure_utc(j.created_at))
-                if latest_job.created_by_telegram_id:
+                if str(latest_job.created_by_telegram_id or "").isdigit():
                     channel = "telegram"
                     recipient = tg_recipient
                 else:
@@ -282,12 +282,18 @@ def get_due_nurturing_candidates(
             continue
 
         # Existing reminders for this client (scoped by step across all channels to prevent duplicate sending)
-        existing_reminders = {
-            r.step: r
-            for r in db.query(OnboardingReminder)
-            .filter(OnboardingReminder.client_id == client.id, OnboardingReminder.status.in_(["claimed", "sent"]))
-            .all()
-        }
+        stale_claim_cutoff = now - timedelta(hours=2)
+        existing_reminders: dict[str, OnboardingReminder] = {}
+        for r in db.query(OnboardingReminder).filter(OnboardingReminder.client_id == client.id).all():
+            if r.status == "sent":
+                existing_reminders[r.step] = r
+            elif r.status == "claimed":
+                if r.claimed_at and _ensure_utc(r.claimed_at) >= stale_claim_cutoff:
+                    existing_reminders[r.step] = r
+            elif r.status == "failed":
+                code = str(r.failure_code or "")
+                if any(tok in code for tok in ("TelegramForbiddenError", "BotBlocked", "ChatNotFound", "UserDeactivated", "#r3")):
+                    existing_reminders[r.step] = r
 
         client_created = _ensure_utc(client.created_at)
 
@@ -348,7 +354,7 @@ def get_due_nurturing_candidates(
                     continue
 
             # Step 3 Check: Completed >= 4 jobs, trial exhausted (balance < 99 RUB / 9900 kopeks)
-            if "step3" not in existing_reminders and len(completed_jobs) >= 4 and client.money_balance_kopeks < 9900:
+            if "step3" not in existing_reminders and len(completed_jobs) >= 4 and len(pending_or_running_jobs) == 0 and client.money_balance_kopeks < 9900:
                 latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
                 completion_age_hours = (now - latest_completed).total_seconds() / 3600.0
                 if 2.0 <= completion_age_hours <= 168.0:
@@ -389,6 +395,15 @@ def get_due_nurturing_candidates(
     return results
 
 
+def _extract_failure_retry_count(code: str | None) -> int:
+    raw = str(code or "")
+    if "#r" in raw:
+        tail = raw.rsplit("#r", 1)[-1]
+        if tail.isdigit():
+            return int(tail)
+    return 1 if raw else 0
+
+
 def claim_nurturing_step(db: Session, client_id: str, channel: str, step: str) -> OnboardingReminder | None:
     existing = (
         db.query(OnboardingReminder)
@@ -399,11 +414,21 @@ def claim_nurturing_step(db: Session, client_id: str, channel: str, step: str) -
         )
         .first()
     )
+    now_ts = now_utc()
     if existing:
-        if existing.status in ("claimed", "sent"):
+        if existing.status == "sent":
             return None
+        if existing.status == "claimed":
+            if existing.claimed_at and (_ensure_utc(now_ts) - _ensure_utc(existing.claimed_at)).total_seconds() < 7200:
+                return None
+        if existing.status == "failed":
+            code = str(existing.failure_code or "")
+            if any(tok in code for tok in ("TelegramForbiddenError", "BotBlocked", "ChatNotFound", "UserDeactivated")):
+                return None
+            if _extract_failure_retry_count(code) >= 3:
+                return None
         existing.status = "claimed"
-        existing.claimed_at = now_utc()
+        existing.claimed_at = now_ts
         db.commit()
         return existing
 
@@ -428,11 +453,8 @@ def claim_nurturing_step(db: Session, client_id: str, channel: str, step: str) -
 # =========================================================================
 
 def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: str = "https://tenderlex.ru", trial_summary: str = "") -> tuple[str, str]:
-    if email:
-        unsub_link = html_lib.escape(f"{base_url}/unsubscribe?email={quote(email)}", quote=True)
-    else:
-        unsub_token = generate_unsubscribe_token(client_id, email)
-        unsub_link = html_lib.escape(f"{base_url}/unsubscribe?token={unsub_token}", quote=True)
+    unsub_token = generate_unsubscribe_token(client_id, email)
+    unsub_link = html_lib.escape(f"{base_url}/unsubscribe?token={quote(unsub_token, safe='')}", quote=True)
     cabinet_link = html_lib.escape(f"{base_url}/cabinet", quote=True)
 
     # 3 core platform modules in strict order (matching hh-agent visual card):
@@ -723,7 +745,19 @@ async def dispatch_nurturing_candidate(db: Session, candidate: NurturingCandidat
                 failure_reason = "EmailSendFailed"
     except Exception as exc:
         logger.exception("Failed to dispatch nurturing message for client %s: %s", candidate.client_id, exc)
-        failure_reason = type(exc).__name__[:80]
+        err_name = type(exc).__name__
+        err_text_low = str(exc).lower()
+        if (
+            err_name == "TelegramForbiddenError"
+            or "bot was blocked by the user" in err_text_low
+            or "user is deactivated" in err_text_low
+            or "chat not found" in err_text_low
+        ):
+            failure_reason = "TelegramForbiddenError"
+            if candidate.client is not None:
+                candidate.client.marketing_unsubscribed = True
+        else:
+            failure_reason = err_name[:60]
         success = False
 
     if success:
@@ -740,9 +774,11 @@ async def dispatch_nurturing_candidate(db: Session, candidate: NurturingCandidat
         )
         return True
     else:
+        prev_retries = _extract_failure_retry_count(reminder.failure_code)
+        base_code = (failure_reason or "UnknownError").split("#r", 1)[0][:60]
         reminder.status = "failed"
         reminder.failed_at = now_utc()
-        reminder.failure_code = failure_reason or "UnknownError"
+        reminder.failure_code = base_code if base_code == "TelegramForbiddenError" else f"{base_code}#r{prev_retries + 1}"
         db.commit()
         return False
 

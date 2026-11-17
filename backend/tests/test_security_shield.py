@@ -10,11 +10,15 @@ from app.db import Base, SessionLocal, engine
 from app.main import app, require_admin
 from app.models import SecurityEvent, SupportBlockedActor, SystemSettings, WebRegistrationAttempt
 from app.security_shield import (
+    _challenge_secret,
+    classify_and_reply_support_message,
     create_human_challenge,
     detect_attack_payload,
     get_support_work_hours_status,
     is_automated_user_agent,
     is_disposable_or_garbage_email,
+    maybe_auto_block_actor,
+    record_security_event,
     validate_guest_contact,
     validate_optional_phone,
     verify_human_challenge,
@@ -35,10 +39,14 @@ def test_real_user_inputs_never_false_positive():
     assert detect_attack_payload('ООО "Техно-Снаб"') is None
     assert detect_attack_payload("Иван Петров-Сидоров") is None
     assert detect_attack_payload("Подскажите, сколько стоит подбор поставщиков по 44-ФЗ?") is None
+    assert detect_attack_payload("Select cable from table 2") is None
+    assert detect_attack_payload("onload = 15 kN") is None
+    assert detect_attack_payload("curl https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber=0177200000926002782") is None
 
     assert is_disposable_or_garbage_email("ivan.petrov@yandex.ru") is None
     assert is_disposable_or_garbage_email("89199598403@mail.ru") is None
     assert is_disposable_or_garbage_email("zakupki@stroymash-group.ru") is None
+    assert is_disposable_or_garbage_email("admin@stroymash.ru") is None
 
     assert validate_optional_phone("") is None
     assert validate_optional_phone("+7 (919) 959-84-03") is None
@@ -52,9 +60,15 @@ def test_real_user_inputs_never_false_positive():
 
 def test_attack_and_garbage_inputs_detected():
     assert detect_attack_payload("-1' OR 2+781-781-1=0+0+0+1") is not None
+    assert detect_attack_payload("UNION ALL SELECT 1,2,3") is not None
     assert detect_attack_payload("ls -l") is not None
+    assert detect_attack_payload("whoami") is not None
+    assert detect_attack_payload("uname -a") is not None
+    assert detect_attack_payload("; cat /etc/passwd") is not None
+    assert detect_attack_payload("../../etc/passwd") is not None
     assert detect_attack_payload('/"/') is not None
     assert detect_attack_payload("<script>alert(1)</script>") is not None
+    assert detect_attack_payload("<svg/onload=alert(1)>") is not None
 
     assert is_disposable_or_garbage_email("sixiva3610@nbasweeps.com") is not None
     assert is_disposable_or_garbage_email("1@mail.ru") is not None
@@ -147,23 +161,32 @@ def test_register_blocks_sqli_and_disposable_allows_real_user(client: TestClient
 
 
 def test_guest_chat_anti_spam_and_real_flow(client: TestClient):
-    sid = "sess_shield_test_01"
+    ts = int(datetime.now().timestamp() * 1000)
+    sid_spam = f"sess_shield_spam_{ts}"
 
-    # 1. Garbage contact rejected
+    # 1. Garbage contact rejected (violation #1)
     r_bad_contact = client.post(
         "/api/public/guest-chat/send",
-        json={"sessionId": sid, "text": "[Контакт сохранен]: admin"},
+        json={"sessionId": sid_spam, "text": "[Контакт сохранен]: admin"},
     )
     assert r_bad_contact.status_code == 400
 
-    # 2. CLI probe rejected
+    # 2. CLI probe rejected (violation #2 -> triggers auto-block on guest_session threshold=2)
     r_probe = client.post(
         "/api/public/guest-chat/send",
-        json={"sessionId": sid, "text": "ls -l"},
+        json={"sessionId": sid_spam, "text": "ls -l"},
     )
     assert r_probe.status_code == 400
 
-    # 3. Real message succeeds
+    # 2b. Spammer session is now auto-blocked with 403
+    r_blocked = client.post(
+        "/api/public/guest-chat/send",
+        json={"sessionId": sid_spam, "text": "Здравствуйте!"},
+    )
+    assert r_blocked.status_code == 403
+
+    # 3. Legitimate visitor session succeeds
+    sid = f"sess_shield_real_{ts}"
     with patch("app.main.notify_admins_of_incoming_message", new_callable=AsyncMock) as mock_notify:
         r_ok = client.post(
             "/api/public/guest-chat/send",
@@ -227,3 +250,62 @@ def test_admin_security_endpoints(client: TestClient):
 
     r_unblock = client.post("/api/admin/security/unblock", json={"id": block_id})
     assert r_unblock.status_code == 200
+
+    for protected_ip in ("79.133.182.215", "202.71.13.57", "127.0.0.1", "::1", "10.0.0.5", "192.168.1.1", "172.16.0.1"):
+        r_bad = client.post(
+            "/api/admin/security/block",
+            json={"actor_type": "ip", "actor_value": protected_ip, "reason": "Accidental self-ban"},
+        )
+        assert r_bad.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_classify_and_reply_support_message_matches_real_call_llm_signature():
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        settings = db.query(SystemSettings).first()
+        if settings is None:
+            settings = SystemSettings(id=1)
+            db.add(settings)
+        settings.custom_ai_providers_json = '[{"id":"p1","name":"Test","apiKey":"sk-or-test-key","baseUrl":"https://openrouter.ai/api/v1"}]'
+        settings.support_ai_antispam_enabled = True
+        settings.support_ai_auto_reply_enabled = True
+        db.commit()
+
+        with patch("app.security_shield.call_llm", autospec=True) as mock_llm:
+            mock_llm.return_value = '{"category": "real_question", "need_human": true, "reply": "Добрый день! Поможем подобрать поставщиков."}'
+            result = await classify_and_reply_support_message(
+                db,
+                text="Здравствуйте, сколько стоит поиск поставщиков?",
+                is_guest=True,
+                is_work_hours=True,
+                force_in_test=True,
+            )
+            assert result["used_ai"] is True
+            assert result["category"] == "real_question"
+            assert result["need_human"] is True
+            assert "Поможем" in result["reply"]
+            mock_llm.assert_awaited_once()
+    finally:
+        db.close()
+
+
+def test_challenge_secret_derivation_and_ephemeral_fallback(monkeypatch):
+    import app.security_shield as ss
+
+    monkeypatch.setenv("AIPOISK_CHALLENGE_SECRET", "explicit-secret-value")
+    assert _challenge_secret() == b"explicit-secret-value"
+
+    monkeypatch.delenv("AIPOISK_CHALLENGE_SECRET", raising=False)
+    monkeypatch.setattr(ss.config, "admin_token", "prod-admin-secret-token")
+    derived = _challenge_secret()
+    assert len(derived) == 32
+    assert derived != b"prod-admin-secret-token"
+
+    monkeypatch.setattr(ss.config, "admin_token", "change-me")
+    monkeypatch.setattr(ss, "_EPHEMERAL_CHALLENGE_SECRET", None)
+    eph1 = _challenge_secret()
+    eph2 = _challenge_secret()
+    assert len(eph1) == 32
+    assert eph1 == eph2

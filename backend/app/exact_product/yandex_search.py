@@ -10,7 +10,7 @@ import random
 import time
 import httpx
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 import structlog
@@ -58,9 +58,9 @@ def _reserve_cross_process_slot(min_interval: float, pushback_s: float = 0.0) ->
     shared_ts = 0.0
     fd = None
     try:
-        fd = os.open(_CROSS_PROCESS_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o666)
+        fd = os.open(_CROSS_PROCESS_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            os.fchmod(fd, 0o666)
+            os.fchmod(fd, 0o600)
         except OSError:
             pass
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -102,10 +102,13 @@ def _reserve_cross_process_slot(min_interval: float, pushback_s: float = 0.0) ->
                 pass
 
 
-async def _paced_async_post(client: httpx.AsyncClient, url: str, *, json: dict, headers: dict):
+async def _paced_async_post_counted(
+    client: httpx.AsyncClient, url: str, *, json: dict, headers: dict
+) -> tuple[Any, int]:
     """
     Strictly pace searchAsync submissions below Yandex Cloud's 1.0 RPS quota (1 req / 1.15s)
     across both coroutines and OS processes, pushing back the global schedule on HTTP 429.
+    Returns (response, http_requests_sent).
     """
     global _ASYNC_SUBMIT_LOCK, _ASYNC_SUBMIT_LOOP, _LAST_ASYNC_SUBMIT_TS
     is_mock = (
@@ -115,10 +118,12 @@ async def _paced_async_post(client: httpx.AsyncClient, url: str, *, json: dict, 
     )
     if is_mock:
         resp = await client.post(url, json=json, headers=headers)
+        sent = 1
         if resp.status_code == 429:
             await asyncio.sleep(0.01)
             resp = await client.post(url, json=json, headers=headers)
-        return resp
+            sent += 1
+        return resp, sent
 
     try:
         loop = asyncio.get_running_loop()
@@ -132,6 +137,7 @@ async def _paced_async_post(client: httpx.AsyncClient, url: str, *, json: dict, 
     retry_delays = [1.5, 2.5]
     last_exc: Optional[Exception] = None
     resp = None
+    sent = 0
     for attempt in range(len(retry_delays) + 1):
         async with _ASYNC_SUBMIT_LOCK:
             wait_s = _reserve_cross_process_slot(min_interval)
@@ -139,6 +145,7 @@ async def _paced_async_post(client: httpx.AsyncClient, url: str, *, json: dict, 
             await asyncio.sleep(wait_s)
         try:
             resp = await client.post(url, json=json, headers=headers)
+            sent += 1
         except Exception as exc:
             last_exc = exc
             if attempt >= len(retry_delays):
@@ -146,16 +153,21 @@ async def _paced_async_post(client: httpx.AsyncClient, url: str, *, json: dict, 
             await asyncio.sleep(retry_delays[attempt] + random.uniform(0.1, 0.4))
             continue
         if resp.status_code not in (429, 502, 503, 504) or attempt >= len(retry_delays):
-            return resp
+            return resp, max(1, sent)
         backoff = retry_delays[attempt] + random.uniform(0.15, 0.45)
         async with _ASYNC_SUBMIT_LOCK:
             _reserve_cross_process_slot(min_interval, pushback_s=backoff)
         await asyncio.sleep(backoff)
     if resp is not None:
-        return resp
+        return resp, max(1, sent)
     if last_exc is not None:
         raise last_exc
     raise RuntimeError("yandex searchAsync submission failed")
+
+
+async def _paced_async_post(client: httpx.AsyncClient, url: str, *, json: dict, headers: dict):
+    resp, _ = await _paced_async_post_counted(client, url, json=json, headers=headers)
+    return resp
 
 
 # Non-commercial domains (social, video, encyclopedias, search engines, datasheets)
@@ -330,37 +342,45 @@ class YandexSearchEngine:
                 # Primary path: Asynchronous search (30.50 ₽ / 1k reqs vs 488 ₽ / 1k reqs sync)
                 if self._async_supported and is_yandex_async_available():
                     try:
-                        async_resp = await _paced_async_post(client, self.V2_ASYNC_API_URL, json=body, headers=headers)
+                        async_resp, sent_reqs = await _paced_async_post_counted(
+                            client, self.V2_ASYNC_API_URL, json=body, headers=headers
+                        )
                         if async_resp.status_code == 200:
                             self._consecutive_async_429 = 0
                             record_yandex_async_success()
-                            self.total_requests += 1
-                            self.async_requests += 1
-                            record_search_request(is_sync=False)
-                            op_id = async_resp.json().get("id")
+                            self.total_requests += sent_reqs
+                            self.async_requests += sent_reqs
+                            for _ in range(sent_reqs):
+                                record_search_request(is_sync=False)
+                            resp_payload = async_resp.json() or {}
+                            op_id = resp_payload.get("id")
                             if op_id:
                                 self._last_op_completed = False
                                 page_results = await self._wait_for_v2_operation(op_id, headers)
                                 if self._last_op_completed or page_results:
                                     async_completed = True
+                            else:
+                                inline_raw = resp_payload.get("rawData") or (resp_payload.get("response") or {}).get("rawData") or ""
+                                if inline_raw:
+                                    page_results = self._parse_v2_xml(inline_raw)
+                                    async_completed = True
                         elif async_resp.status_code == 429:
                             self._consecutive_async_429 += 1
                             if self._consecutive_async_429 >= 2:
-                                self._async_supported = False
-                                record_yandex_async_failure_429(180.0)
+                                record_yandex_async_failure_429(15.0)
                                 logger.warning(
                                     "yandex_async_circuit_breaker_tripped",
                                     consecutive_429=self._consecutive_async_429,
-                                    cooloff_sec=180,
-                                    msg="searchAsync 429 quota exhausted, switching engine to sync fallback for remaining requests",
+                                    cooloff_sec=15,
+                                    msg="searchAsync 429 rate-limited, applying brief 15s cooloff without permanently disabling async",
                                 )
                         elif async_resp.status_code in (401, 402, 403) or "PermissionDenied" in async_resp.text:
                             notify_yandex_search_error(async_resp.status_code, async_resp.text, query=search_query)
                     except Exception as async_exc:
-                        logger.debug("exact_product yandex async search failed, fallback to sync: %s", async_exc)
+                        logger.debug("exact_product yandex async search failed: %s", async_exc)
 
-                # Fallback path: Synchronous endpoint ONLY if async call failed/timed out (never when async legitimately returned 0 results)
-                if not async_completed and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", "1") != "0":
+                # Fallback path: Synchronous endpoint ONLY if explicitly opted in via AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK=1
+                if not async_completed and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", "0") == "1":
                     try:
                         self.total_requests += 1
                         self.sync_requests += 1

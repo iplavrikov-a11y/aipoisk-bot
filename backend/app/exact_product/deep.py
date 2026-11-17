@@ -2122,39 +2122,8 @@ async def resolve_standards_parameters(
             if a_specs:
                 all_spec_holders.append((alt, a_specs))
 
-    # 1. Быстрое сопоставление климатики (ГОСТ 15150-69) и защиты оболочки (ГОСТ 14254-2015) без регулярных выражений
-    context_low = context.lower()
-    climate_tag = ""
-    for c_tag in ("ухл1", "ухл2", "ухл3", "ухл4", "хл1", "хл2", "т1", "т2", "ом1", "в5"):
-        if c_tag in context_low:
-            climate_tag = c_tag.upper()
-            break
-
-    ip_tag = ""
-    for tag in ("ip68", "ip67", "ip66", "ip65", "ip55", "ip54", "ip44", "ip20", "ipx4", "ipx1"):
-        if tag in context_low:
-            ip_tag = tag.upper()
-            break
-
-    for holder, specs in all_spec_holders:
-        for s in specs:
-            if _item_val(s, "status") != "clarify":
-                continue
-            p_name = str(_item_val(s, "param_name") or "").lower()
-            tz_r = str(_item_val(s, "tz_requirement") or "").lower()
-
-            if climate_tag and ("климат" in p_name or "15150" in tz_r or "ухл" in tz_r):
-                _item_set(s, "product_fact", f"{climate_tag} (ГОСТ 15150-69)")
-                _item_set(s, "status", "match")
-                _item_set(s, "comment", f"Климатическое исполнение {climate_tag} подтверждено стандартом ГОСТ 15150-69")
-                resolved_count += 1
-            elif ip_tag and ("защит" in p_name or "оболочк" in p_name or "ip" in tz_r):
-                _item_set(s, "product_fact", f"{ip_tag} (ГОСТ 14254-2015)")
-                _item_set(s, "status", "match")
-                _item_set(s, "comment", f"Степень защиты оболочки {ip_tag} подтверждена ГОСТ 14254-2015")
-                resolved_count += 1
-
-    # Анализ по стандартам из ТЗ (ГОСТ/ТУ/СТО) выполняется нейросетью без подмены регексами (Правило 14)
+    # Анализ по стандартам из ТЗ (ГОСТ/ТУ/СТО) выполняется нейросетью строго по тексту реальных стандартов и паспортов,
+    # без переноса требований климатики/IP заказчика в характеристики непроверенного товара.
     standards = extract_standards_from_text(context)
     for pos in positions:
         pos_text = f"{_item_val(pos, 'identified_brand', '')} {_item_val(pos, 'identified_model', '')} {_item_val(pos, 'reasoning', '')} {_item_val(pos, 'name_in_tz', '')}"
@@ -2422,7 +2391,7 @@ async def detect_exact_products_deep(
     Глубокий инженерный поиск точного товара и аналогов с выходом в интернет,
     табличным парсингом PDF-паспортов и строгой проверкой заземления (TenderLex-паритет).
     """
-    if not report_text or len(report_text.strip()) < 30:
+    if not report_text or len(report_text.strip()) < 3:
         return []
 
     if progress_callback:

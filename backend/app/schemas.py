@@ -93,6 +93,8 @@ class WebRegisterRequest(BaseModel):
     ref: str = Field(default="", max_length=64)
     phone: str = Field(default="", max_length=64)
     challenge_token: str = Field(default="", max_length=256)
+    utm_source: str = Field(default="", max_length=40)
+    utm_campaign: str = Field(default="", max_length=80)
 
 
 class WebLoginRequest(BaseModel):

@@ -154,6 +154,8 @@ BLOCKED_DOMAINS = {
     "b2b-project.ru", "comreport.ru", "check-pro.ru", "vsem-podryad.ru", "licexpert.ru",
     "trudvsem.ru", "star-pro.ru", "rospravosudie.com", "kartoteka.ru",
     "reestr-doverennostey.ru", "fedresurs.ru", "mebeloptovik.ru", "100best.ru",
+    "companium.ru", "1cont.ru", "find-org.ru", "ruslist.su", "orgpage.ru",
+    "contragent.pro", "excheck.pro", "reabiz.ru", "casebook.ru",
     # Сметно-нормативные базы, классификаторы, реестры и файловые хранилища тендеров
     "smetnoedelo.ru", "cs.smetnoedelo.ru", "classinform.ru", "fgisrf.ru", "fgiscs.minstroyrf.ru",
     "fixedassets.ru", "tz-lab.ru", "normacs.ru", "meganorm.ru", "fsnb2022.ru", "fsnb.ru",
@@ -210,8 +212,6 @@ BLOCKED_HOST_SUFFIXES = (
     ".cntd.ru",
     ".wikipedia.org",
     ".ua",
-    ".kz",
-    ".by",
 )
 
 DOBOR_MINUS_WORDS = (
@@ -378,14 +378,16 @@ def base_domain(url_or_domain: str) -> str:
     return value
 
 
-def is_blocked(url_or_domain: str) -> bool:
+def is_blocked(url_or_domain: str, geo_scope: str = "ru") -> bool:
     host = hostname(url_or_domain)
     domain = base_domain(host)
-    return (
+    if (
         host in BLOCKED_DOMAINS
         or domain in BLOCKED_DOMAINS
         or any(host.endswith(suffix) for suffix in BLOCKED_HOST_SUFFIXES)
-    )
+    ):
+        return True
+    return not is_domain_allowed_for_geo(host, geo_scope)
 
 
 FOREIGN_NATIONAL_CCTLDS = {
@@ -437,7 +439,7 @@ def hostname(url_or_domain: str) -> str:
     return value.removeprefix("www.").split(":")[0]
 
 
-def normalize_url(value: str) -> str:
+def normalize_url(value: str, *, geo_scope: str = "ru") -> str:
     value = str(value or "").strip().rstrip(".,;])")
     if not value:
         return ""
@@ -448,7 +450,7 @@ def normalize_url(value: str) -> str:
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
-    if is_blocked(parsed.netloc):
+    if is_blocked(parsed.netloc, geo_scope=geo_scope):
         return ""
     return value
 
@@ -2111,19 +2113,33 @@ async def _discover_suppliers_impl(
             f"Ищу сайты поставщиков: запросов {len(queries)}, минимум {effective_minimum_target}, целевой результат {effective_delivery_target}",
         )
         is_registry_only = policy == SUPPLIER_POLICY_MINPROM_ONLY
-        discovered, search_meta = await discover_candidates(
-            settings,
-            queries,
-            max_results=max(len(queries) * 4, 60) if is_registry_only else max(effective_delivery_target * 4, 160 * item_count),
-            excluded_domains=excluded_domains,
-            primary_candidate_floor=0 if is_registry_only else _primary_candidate_floor(effective_delivery_target),
-            fallback_candidate_limit=0 if is_registry_only else _fallback_candidate_limit(effective_delivery_target),
-        )
+        try:
+            discovered, search_meta = await discover_candidates(
+                settings,
+                queries,
+                max_results=max(len(queries) * 4, 60) if is_registry_only else max(effective_delivery_target * 4, 160 * item_count),
+                excluded_domains=excluded_domains,
+                primary_candidate_floor=0 if is_registry_only else _primary_candidate_floor(effective_delivery_target),
+                fallback_candidate_limit=0 if is_registry_only else _fallback_candidate_limit(effective_delivery_target),
+                geo_scope=geo_scope,
+            )
+        except TypeError:
+            discovered, search_meta = await discover_candidates(
+                settings,
+                queries,
+                max_results=max(len(queries) * 4, 60) if is_registry_only else max(effective_delivery_target * 4, 160 * item_count),
+                excluded_domains=excluded_domains,
+                primary_candidate_floor=0 if is_registry_only else _primary_candidate_floor(effective_delivery_target),
+                fallback_candidate_limit=0 if is_registry_only else _fallback_candidate_limit(effective_delivery_target),
+            )
         preloaded_domains = {p.domain for p in preloaded_objs}
         candidates = preloaded_objs + [c for c in discovered if c.domain not in preloaded_domains]
 
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
-    candidates = _exclude_candidates(_rank_candidates(candidates, context, subject_kind=subject_kind), excluded_domains)[: max(effective_delivery_target * 5, 60 * item_count)]
+    try:
+        candidates = _exclude_candidates(_rank_candidates(candidates, context, subject_kind=subject_kind), excluded_domains, geo_scope=geo_scope)[: max(effective_delivery_target * 5, 60 * item_count)]
+    except TypeError:
+        candidates = _exclude_candidates(_rank_candidates(candidates, context, subject_kind=subject_kind), excluded_domains)[: max(effective_delivery_target * 5, 60 * item_count)]
     initial_candidate_pool = list(candidates)
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
     rerank = await ai_rerank_candidates(settings, profile, candidates, effective_delivery_target, registry_context=minprom_context)
@@ -2144,6 +2160,7 @@ async def _discover_suppliers_impl(
         progress_callback=progress_callback,
         delivery_city=delivery_city,
         geo_radius_km=geo_radius_km,
+        geo_scope=geo_scope,
     )
     recovery_rounds: list[dict] = []
     max_recovery_rounds = 0 if policy == SUPPLIER_POLICY_MINPROM_ONLY else 1
@@ -2184,6 +2201,7 @@ async def _discover_suppliers_impl(
                 progress_callback=progress_callback,
                 delivery_city=delivery_city,
                 geo_radius_km=geo_radius_km,
+                geo_scope=geo_scope,
             )
             reviewed.extend(fp_reviewed)
             accepted = _accepted_supplier_results(
@@ -2272,6 +2290,7 @@ async def _discover_suppliers_impl(
                     progress_callback=progress_callback,
                     delivery_city=delivery_city,
                     geo_radius_km=geo_radius_km,
+                    geo_scope=geo_scope,
                 )
                 reviewed.extend(recovery_reviewed)
                 accepted = _accepted_supplier_results(
@@ -2807,7 +2826,8 @@ async def extract_supplier_search_context(settings: SystemSettings, context: str
     cleaned_input = re.sub(r"[ \t]+", " ", str(context or "")).strip()
     cleaned_input = re.sub(r"\n{3,}", "\n\n", cleaned_input).strip()
     if (
-        50 <= len(cleaned_input) <= 1200
+        3 <= len(cleaned_input) <= 1200
+        and any(ch.isalpha() for ch in cleaned_input)
         and "=== FILE:" not in cleaned_input
         and "=== TABLE" not in cleaned_input
         and not any(
@@ -2858,7 +2878,7 @@ async def extract_supplier_search_context(settings: SystemSettings, context: str
     supplier_context = str(parsed.get("supplier_context") or "").strip()
     supplier_context = re.sub(r"[ \t]+", " ", supplier_context)
     supplier_context = re.sub(r"\n{3,}", "\n\n", supplier_context).strip()
-    if len(supplier_context) < 50:
+    if len(supplier_context) < 3:
         raise RuntimeError("AI supplier search context extraction returned an empty context")
     return supplier_context
 
@@ -3221,7 +3241,7 @@ def _validate_supplier_context_response(raw: str) -> None:
     supplier_context = str(parsed.get("supplier_context") or "").strip()
     supplier_context = re.sub(r"[ \t]+", " ", supplier_context)
     supplier_context = re.sub(r"\n{3,}", "\n\n", supplier_context).strip()
-    if len(supplier_context) < 50:
+    if len(supplier_context) < 3:
         raise RuntimeError("AI supplier search context extraction returned an empty context")
 
 
@@ -4180,6 +4200,7 @@ async def _review_candidates_until_target(
     progress_callback: ProgressCallback | None = None,
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> tuple[list[dict], list[dict], dict]:
     reviewed: list[dict] = []
     batch_size = _candidate_review_batch_size(target)
@@ -4213,8 +4234,13 @@ async def _review_candidates_until_target(
                 result["supplier_country"] = "Германия 🇩🇪"
             elif result.get("inn") or dom.endswith((".ru", ".рф", ".su", ".xn--p1ai")):
                 result["supplier_country"] = "Россия 🇷🇺"
-            else:
+            elif str(geo_scope or "ru").strip().lower() == "ru":
                 result["supplier_country"] = "Россия 🇷🇺"
+            else:
+                detected_ru_city = extract_city_from_text(
+                    f"{result.get('region', '')} {result.get('supplier_city', '')} {result.get('company_name', '')}"
+                )
+                result["supplier_country"] = "Россия 🇷🇺" if detected_ru_city else "Международный 🌐"
 
             raw_city = str(result.get("region") or result.get("supplier_city") or result.get("city") or "").strip()
             detected = extract_city_from_text(f"{raw_city} {result.get('company_name', '')} {result.get('comments', '')} {candidate.snippet} {result.get('contact_evidence_snippet', '')}")
@@ -4730,7 +4756,10 @@ async def _search_with_yandex(
     if not folder_id or not api_key:
         return [], 0
     if expand_queries:
-        search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "yandex"), geo_scope=geo_scope)
+        configured_cap = os.getenv("AIPOISK_YANDEX_SEARCH_QUERY_LIMIT", "") or os.getenv("AIPOISK_SEARCH_QUERY_LIMIT", "")
+        base_limit = _provider_query_limit(settings, "yandex")
+        effective_max_q = base_limit if configured_cap.strip() else min(48, max(base_limit, len(queries)))
+        search_queries = _expand_search_queries(queries, max_queries=effective_max_q, geo_scope=geo_scope)
     else:
         search_queries = [q.strip() for q in queries if str(q).strip()]
     max_pages = max_pages_per_query if max_pages_per_query is not None else _yandex_max_pages_per_query(settings)
@@ -4764,7 +4793,10 @@ async def _search_with_yandex(
                 if data.get("error"):
                     logger.warning("Yandex search async operation finished with error: id=%s error=%s", operation_id, data.get("error"))
                     return None
-                return str((data.get("response") or {}).get("rawData") or "")
+                raw_b64 = str((data.get("response") or {}).get("rawData") or "")
+                if not raw_b64 and _poll_idx == 0:
+                    continue
+                return raw_b64
             except Exception as poll_exc:
                 logger.debug("Yandex operation poll error: id=%s exc=%s", operation_id, poll_exc)
                 continue
@@ -4773,9 +4805,10 @@ async def _search_with_yandex(
 
     groups_on_page = _yandex_groups_on_page(settings)
     async_supported = True
+    last_provider_error = ""
 
     async def search_one_page(client: httpx.AsyncClient, query: str, page: int) -> list[Candidate]:
-        nonlocal requests_count, headers, async_supported
+        nonlocal requests_count, headers, async_supported, last_provider_error
         async with semaphore:
             body = {
                 "query": {"searchType": "SEARCH_TYPE_RU", "queryText": query, "page": str(page)},
@@ -4805,19 +4838,25 @@ async def _search_with_yandex(
                         if operation_id:
                             raw_data = await _poll_yandex_operation(client, operation_id)
                             if raw_data is not None:
-                                return _parse_yandex_xml(raw_data, query=query) if raw_data else []
+                                return _parse_yandex_xml(raw_data, query=query, geo_scope=geo_scope) if raw_data else []
+                            last_provider_error = f"operation_poll_timeout:{operation_id}"
                     elif response.status_code in (404, 501):
                         async_supported = False
+                        last_provider_error = f"http_{response.status_code}"
                     elif response.status_code == 429:
-                        record_yandex_async_failure_429(180.0)
-                        async_supported = False
+                        record_yandex_async_failure_429(15.0)
+                        last_provider_error = "http_429_rate_limited"
                     elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
+                        last_provider_error = f"http_{response.status_code}_auth_or_billing"
                         notify_yandex_search_error(response.status_code, response.text, query=query)
+                    else:
+                        last_provider_error = f"http_{response.status_code}"
                 except Exception as async_exc:
+                    last_provider_error = f"{type(async_exc).__name__}"
                     logger.debug("Yandex async search call failed: %s", async_exc)
 
-            # Fallback: Synchronous endpoint if async is unsupported, in 429 cooldown, or explicitly enabled
-            if (not async_supported or not is_yandex_async_available() or os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK") == "1") and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK") != "0":
+            # Fallback: Synchronous endpoint ONLY if async endpoint returned 404/501 or explicitly enabled via AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK=1
+            if (not async_supported or os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", "0") == "1") and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", "0") != "0":
                 try:
                     response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
                     if response.status_code == 429:
@@ -4828,14 +4867,17 @@ async def _search_with_yandex(
                         data = response.json()
                         raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
                         if raw_data:
-                            return _parse_yandex_xml(raw_data, query=query)
+                            return _parse_yandex_xml(raw_data, query=query, geo_scope=geo_scope)
                     elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
+                        last_provider_error = f"sync_http_{response.status_code}_auth_or_billing"
                         logger.warning("Yandex search auth/billing error: status=%s error=%s", response.status_code, response.text[:200])
                         notify_yandex_search_error(response.status_code, response.text, query=query)
                         return []
                     else:
+                        last_provider_error = f"sync_http_{response.status_code}"
                         logger.warning("Yandex sync search status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
                 except Exception as sync_exc:
+                    last_provider_error = f"sync_{type(sync_exc).__name__}"
                     logger.debug("Yandex sync search call failed: %s", sync_exc)
                     return []
             return []
@@ -4857,7 +4899,7 @@ async def _search_with_yandex(
                 new_added = 0
                 for c in page_candidates:
                     cand_domain = c.domain or base_domain(c.url)
-                    if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(cand_domain, geo_scope):
+                    if is_blocked(cand_domain, geo_scope=geo_scope) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(cand_domain, geo_scope):
                         for entity in extract_supplier_entities_from_aggregator_snippet(c.title, c.snippet):
                             ent_key = entity.lower().strip()
                             if ent_key not in seen_mined_entities:
@@ -4914,7 +4956,7 @@ async def _search_with_yandex(
                 mined_page_candidates = await search_one_page(client, target_q, 0)
                 for mc in mined_page_candidates:
                     m_dom = mc.domain or base_domain(mc.url)
-                    if not m_dom or m_dom in seen or is_blocked(m_dom) or m_dom in BLOCKED_DOMAINS or m_dom in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(m_dom, geo_scope):
+                    if not m_dom or m_dom in seen or is_blocked(m_dom, geo_scope=geo_scope) or m_dom in BLOCKED_DOMAINS or m_dom in EXTRA_AGGREGATOR_DOMAINS or not is_domain_allowed_for_geo(m_dom, geo_scope):
                         continue
                     seen.add(m_dom)
                     candidates.append(
@@ -4929,10 +4971,13 @@ async def _search_with_yandex(
                     )
                     break
 
+    if search_queries and requests_count == 0 and not candidates and last_provider_error:
+        raise RuntimeError(f"Yandex Search API unavailable: {last_provider_error}")
+
     return candidates[:max_results], requests_count
 
 
-def _parse_yandex_xml(xml_data: str, *, query: str) -> list[Candidate]:
+def _parse_yandex_xml(xml_data: str, *, query: str, geo_scope: str = "ru") -> list[Candidate]:
     raw = str(xml_data or "").strip()
     if not raw:
         return []
@@ -4950,7 +4995,7 @@ def _parse_yandex_xml(xml_data: str, *, query: str) -> list[Candidate]:
         url_elem = doc.find("url")
         if url_elem is None or not url_elem.text:
             continue
-        url = normalize_url(url_elem.text)
+        url = normalize_url(url_elem.text, geo_scope=geo_scope)
         domain = base_domain(url)
         if not url or not domain:
             continue
@@ -5003,7 +5048,7 @@ async def _search_with_google(
             )
             if response.status_code != 200:
                 return []
-            return _parse_google_items(list(response.json().get("items", [])), query=query)
+            return _parse_google_items(list(response.json().get("items", [])), query=query, geo_scope=geo_scope)
 
     candidates: list[Candidate] = []
     seen = set(existing_domains or set())
@@ -5026,10 +5071,10 @@ async def _search_with_google(
     return candidates[:max_results]
 
 
-def _parse_google_items(items: list[dict], *, query: str) -> list[Candidate]:
+def _parse_google_items(items: list[dict], *, query: str, geo_scope: str = "ru") -> list[Candidate]:
     candidates: list[Candidate] = []
     for item in items:
-        url = normalize_url(str(item.get("link") or item.get("url") or ""))
+        url = normalize_url(str(item.get("link") or item.get("url") or ""), geo_scope=geo_scope)
         domain = base_domain(url)
         if not url or not domain:
             continue
@@ -5227,12 +5272,6 @@ def _tavily_key_candidates(settings: SystemSettings) -> list[str]:
         value = os.getenv(name, "").strip()
         if value:
             keys.append(value)
-    hermes_env = Path("/home/hermes/.hermes/.env")
-    if hermes_env.exists():
-        for line in hermes_env.read_text(encoding="utf-8", errors="ignore").splitlines():
-            if line.startswith("TAVILY_API_KEY="):
-                keys.append(line.split("=", 1)[1].strip().strip('"').strip("'"))
-                break
     return [key for key in dict.fromkeys(keys) if key]
 
 
@@ -5365,11 +5404,6 @@ async def _search_with_adapter(settings: SystemSettings, queries: list[str], max
     return candidates
 
 
-_DNS_RESOLVE_CACHE: dict[str, bool] = {}
-_MX_RESOLVE_CACHE: dict[str, bool] = {}
-_MAX_DNS_CACHE_SIZE = 5000
-
-
 def _clean_host_for_dns(value: str) -> str:
     host = str(value or "").strip().lower()
     if "://" in host:
@@ -5390,19 +5424,18 @@ async def candidate_domain_resolves_fast(domain_or_url: str, *, timeout: float =
         return False
     if host.endswith(".example") or host.endswith(".test") or host.endswith(".invalid"):
         return True
-    cached = _DNS_RESOLVE_CACHE.get(host)
-    if cached is not None:
-        return cached
     try:
-        await asyncio.wait_for(asyncio.to_thread(socket.getaddrinfo, host, None), timeout=timeout)
-        if len(_DNS_RESOLVE_CACHE) >= _MAX_DNS_CACHE_SIZE:
-            _DNS_RESOLVE_CACHE.clear()
-        _DNS_RESOLVE_CACHE[host] = True
+        from .ssrf_guard import is_forbidden_ip
+
+        infos = await asyncio.wait_for(asyncio.to_thread(socket.getaddrinfo, host, None), timeout=timeout)
+        if not infos:
+            return False
+        for info in infos:
+            sockaddr = info[4]
+            if sockaddr and is_forbidden_ip(str(sockaddr[0])):
+                return False
         return True
     except Exception:
-        if len(_DNS_RESOLVE_CACHE) >= _MAX_DNS_CACHE_SIZE:
-            _DNS_RESOLVE_CACHE.clear()
-        _DNS_RESOLVE_CACHE[host] = False
         return False
 
 
@@ -5414,24 +5447,14 @@ async def email_has_valid_mx(email: str, *, timeout: float = 1.5) -> bool:
         domain = domain.encode("idna").decode("ascii")
     except Exception:
         pass
-    cached = _MX_RESOLVE_CACHE.get(domain)
-    if cached is not None:
-        return cached
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         records = await asyncio.wait_for(
             loop.run_in_executor(None, lambda: dns.resolver.resolve(domain, "MX")),
             timeout=timeout,
         )
-        has_mx = len(records) > 0
-        if len(_MX_RESOLVE_CACHE) >= _MAX_DNS_CACHE_SIZE:
-            _MX_RESOLVE_CACHE.clear()
-        _MX_RESOLVE_CACHE[domain] = has_mx
-        return has_mx
+        return len(records) > 0
     except Exception:
-        if len(_MX_RESOLVE_CACHE) >= _MAX_DNS_CACHE_SIZE:
-            _MX_RESOLVE_CACHE.clear()
-        _MX_RESOLVE_CACHE[domain] = False
         return False
 
 
@@ -5468,10 +5491,38 @@ async def verify_candidate(
         }
     emails = prioritize_emails(EMAIL_RE.findall(combined_text), candidate.domain)
     phones = sorted(set(PHONE_RE.findall(combined_text)))
-    inn_matches = [m.group(1) or m.group(2) for m in re.finditer(r"\bИНН(?:/КПП)?[:\s]*(\d{10}|\d{12})\b", combined_text, re.I)]
+    inn_matches: list[str] = []
+    for m in re.finditer(r"(?:ИНН|инн|taxid)[\s:№#«\"'\xa0\-–—/кппКПП]{0,16}?(\d{10}|\d{12})\b", combined_text, re.I):
+        val = m.group(1)
+        if val and val not in inn_matches:
+            inn_matches.append(val)
     extracted_inn = inn_matches[0] if inn_matches else ""
 
-    decision = await ai_verify(settings, candidate, context, pages, emails, phones, match, profile=profile, registry_context=registry_context)
+    try:
+        decision = await ai_verify(
+            settings,
+            candidate,
+            context,
+            pages,
+            emails,
+            phones,
+            match,
+            profile=profile,
+            registry_context=registry_context,
+            inns=inn_matches[:5],
+        )
+    except TypeError:
+        decision = await ai_verify(
+            settings,
+            candidate,
+            context,
+            pages,
+            emails,
+            phones,
+            match,
+            profile=profile,
+            registry_context=registry_context,
+        )
     rejection = _ai_rejection_reason(decision)
     if rejection:
         return {
@@ -5501,19 +5552,19 @@ async def verify_candidate(
                 email = ""
     contact_warning = ""
     if not phone and not email:
-        # Fallback: accept AI-provided contacts even without parser confirmation
-        ai_email = str(decision.get("email") or "").strip()
+        raw_corpus = (combined_text + "\n" + "\n".join(str(p.get("html") or "") for p in pages)).lower()
+        corpus_digits = re.sub(r"\D+", "", raw_corpus)
+        ai_email = _clean_email(str(decision.get("email") or ""))
         ai_phone = str(decision.get("phone") or "").strip()
-        if ai_email and EMAIL_RE.fullmatch(ai_email.lower()):
-            email = ai_email.lower()
-            contact_warning = " Контакт указан ИИ, требует ручной проверки."
+        if ai_email and EMAIL_RE.fullmatch(ai_email) and ai_email in raw_corpus:
+            email = ai_email
         elif ai_phone:
             phone_match = PHONE_RE.search(ai_phone)
             if phone_match:
                 normalized = _normalize_ru_phone(phone_match.group(0))
-                if normalized:
+                ai_digits = re.sub(r"\D+", "", normalized)[-10:] if normalized else ""
+                if normalized and len(ai_digits) == 10 and ai_digits in corpus_digits:
                     phone = normalized
-                    contact_warning = " Контакт указан ИИ, требует ручной проверки."
         if not phone and not email:
             return {
                 "company_name": decision.get("company_name") or candidate.domain,
@@ -5527,10 +5578,14 @@ async def verify_candidate(
         (decision.get("comments") or match.reason or "Официальный сайт открыт, релевантность и контакты проверены.") + contact_warning,
         registry_context,
     )
-    verified_inn = str(decision.get("inn") or extracted_inn or "").strip()
+    cand_inn = re.sub(r"\D+", "", str(decision.get("inn") or ""))[:12]
+    if cand_inn and (cand_inn in inn_matches or (_is_valid_ru_inn(cand_inn) and cand_inn in combined_text)):
+        final_inn = cand_inn
+    else:
+        final_inn = extracted_inn if len(extracted_inn) in (10, 12) else ""
     result = {
         "company_name": decision.get("company_name") or candidate.domain,
-        "inn": re.sub(r"\D+", "", verified_inn)[:12],
+        "inn": final_inn,
         "region": decision.get("region") or "",
         "status": decision.get("status") or ("исполнитель" if subject_kind == "services" else "поставщик"),
         "product": decision.get("product") or match.product,
@@ -5639,8 +5694,24 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
     except Exception:
         pass
     try:
-        response = await client.get(url)
-        if response.status_code >= 400:
+        from .ssrf_guard import async_validate_public_http_url
+
+        current_url = url
+        response = None
+        for _hop in range(5):
+            await async_validate_public_http_url(current_url)
+            try:
+                response = await client.get(current_url, follow_redirects=False)
+            except TypeError:
+                response = await client.get(current_url)
+            if getattr(response, "status_code", 0) in (301, 302, 303, 307, 308):
+                loc = (getattr(response, "headers", {}) or {}).get("location", "")
+                if not loc:
+                    return None
+                current_url = urljoin(str(getattr(response, "url", current_url) or current_url), loc)
+                continue
+            break
+        if response is None or response.status_code >= 400:
             return None
         ctype = (response.headers.get("content-type") or "").lower()
         url_lower = str(response.url).lower()
@@ -5676,6 +5747,34 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
 
 def html_text_to_page(html_text: str, url: str) -> dict | None:
     soup = BeautifulSoup(html_text, "html.parser")
+
+    # Preserve mailto:/tel: anchors and header/footer contact & INN blocks BEFORE decomposing chrome tags
+    href_contacts: list[str] = []
+    for anchor in soup.find_all("a", href=True):
+        href = str(anchor.get("href") or "").strip()
+        low_href = href.lower()
+        if low_href.startswith("mailto:"):
+            cleaned_m = _clean_email(href[7:].split("?", 1)[0])
+            if cleaned_m and cleaned_m not in href_contacts:
+                href_contacts.append(cleaned_m)
+        elif low_href.startswith("tel:"):
+            raw_t = unescape(href[4:].split("?", 1)[0]).strip()
+            if raw_t and raw_t not in href_contacts:
+                href_contacts.append(raw_t)
+
+    chrome_contact_blocks: list[str] = []
+    for chrome_tag_name in ("header", "footer"):
+        for ctag in soup.find_all(chrome_tag_name):
+            ctext = " ".join(unescape(ctag.get_text(" ", strip=True)).split())
+            if ctext and (
+                EMAIL_RE.search(ctext)
+                or PHONE_RE.search(ctext)
+                or "инн" in ctext.lower()
+                or "огрн" in ctext.lower()
+                or "отдел продаж" in ctext.lower()
+            ):
+                chrome_contact_blocks.append(ctext[:1500])
+
     for tag in soup(["script", "style", "noscript", "svg", "header", "footer", "nav", "aside", "form"]):
         tag.decompose()
 
@@ -5698,18 +5797,14 @@ def html_text_to_page(html_text: str, url: str) -> dict | None:
         if len(d_text) > 30 and len(d_text) < 4000:
             text_blocks.append(f"[БЛОК ПАРАМЕТРОВ]: {d_text}")
 
-    # 3. Основной текст страницы
+    # 3. Основной текст страницы + сохраненные контакты шапки/подвала
     main_text = unescape(soup.get_text("\n", strip=True))
-    href_contacts: list[str] = []
-    for anchor in soup.find_all("a", href=True):
-        href = str(anchor.get("href") or "").strip()
-        if href.lower().startswith(("mailto:", "tel:")):
-            href_contacts.append(href.replace("mailto:", "").replace("tel:", ""))
-    if href_contacts:
-        main_text = f"{main_text}\n" + "\n".join(href_contacts)
-
     if main_text:
         text_blocks.append(main_text)
+    if chrome_contact_blocks:
+        text_blocks.append("[КОНТАКТЫ И РЕКВИЗИТЫ ШАПКИ/ПОДВАЛА]:\n" + "\n".join(chrome_contact_blocks[:4]))
+    if href_contacts:
+        text_blocks.append("[ПРЯМЫЕ ССЫЛКИ MAILTO/TEL]:\n" + "\n".join(href_contacts[:12]))
 
     full_extracted = "\n\n".join(text_blocks)
     clean_extracted = re.sub(r"\n{3,}", "\n\n", full_extracted).strip()
@@ -5761,6 +5856,10 @@ async def fetch_page_with_browser(url: str, *, source: str = "") -> dict | None:
     """Fetch a page using the current supplier-search browser pool."""
     if _is_non_html_url(url):
         return None
+    from .ssrf_guard import async_is_safe_public_http_url, install_playwright_ssrf_guard
+
+    if not await async_is_safe_public_http_url(url):
+        return None
     html_text = ""
     final_url = url
     try:
@@ -5774,6 +5873,7 @@ async def fetch_page_with_browser(url: str, *, source: str = "") -> dict | None:
                     ignore_https_errors=True,
                 )
                 try:
+                    await install_playwright_ssrf_guard(page)
                     goto_ok = False
                     try:
                         await page.goto(url, wait_until="domcontentloaded", timeout=7000)
@@ -5781,6 +5881,8 @@ async def fetch_page_with_browser(url: str, *, source: str = "") -> dict | None:
                     except Exception:
                         pass
                     if goto_ok:
+                        if not await async_is_safe_public_http_url(page.url):
+                            return None
                         try:
                             await page.wait_for_load_state("networkidle", timeout=1500)
                         except Exception:
@@ -5959,6 +6061,7 @@ async def ai_verify(
     *,
     profile: ProcurementProfile | None = None,
     registry_context: MinpromRegistryContext | None = None,
+    inns: list[str] | None = None,
 ) -> dict:
     if not settings.has_active_ai_provider:
         return {
@@ -5986,7 +6089,7 @@ async def ai_verify(
         },
         "emails": emails,
         "phones": phones[:5],
-        "inns": extracted_inn if 'extracted_inn' in locals() and extracted_inn else [],
+        "inns": list(inns or []),
         "pages": [{"url": page["url"], "text": page["text"][:2500]} for page in pages[:4]],
     }
     is_services = bool(profile and str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services")
@@ -6221,15 +6324,31 @@ def _normalize_phone(value: object) -> str:
     return f"+{digits}"
 
 
+def _is_valid_ru_inn(inn_str: str) -> bool:
+    digits = [int(ch) for ch in str(inn_str or "") if ch.isdigit()]
+    if not digits or all(d == 0 for d in digits):
+        return False
+    if len(digits) == 10:
+        weights = (2, 4, 10, 3, 5, 9, 4, 6, 8)
+        chk = (sum(w * d for w, d in zip(weights, digits[:9])) % 11) % 10
+        return digits[9] == chk
+    if len(digits) == 12:
+        w11 = (7, 2, 4, 10, 3, 5, 9, 4, 6, 8)
+        w12 = (3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8)
+        c11 = (sum(w * d for w, d in zip(w11, digits[:10])) % 11) % 10
+        c12 = (sum(w * d for w, d in zip(w12, digits[:11])) % 11) % 10
+        return digits[10] == c11 and digits[11] == c12
+    return False
+
+
 def _verified_email(value: object, extracted_emails: list[str]) -> str:
+    if not extracted_emails:
+        return ""
     raw = str(value or "").strip().lower()
-    if raw and extracted_emails:
-        if raw in [e.lower() for e in extracted_emails]:
-            return raw
-        return extracted_emails[0]
-    if EMAIL_RE.fullmatch(raw):
-        return raw
-    return extracted_emails[0] if extracted_emails else ""
+    lowered_map = {e.lower(): e for e in extracted_emails if e}
+    if raw and raw in lowered_map:
+        return lowered_map[raw]
+    return extracted_emails[0]
 
 
 def _verified_phone(value: object, extracted_phones: list[str]) -> str:
@@ -6856,14 +6975,6 @@ def assess_candidate_match(candidate: Candidate, context: str, pages: list[dict]
     front_category_hits = _category_hits(front_text)
     target_groups = _target_category_groups(context)
     product = _best_product_label(context, exact_matches)
-    if not exact_matches and "сумк" in front_text:
-        return CandidateMatch(
-            accepted=False,
-            level="reject",
-            product="",
-            reason="Найдена сумка/аксессуар, а не само приспособление или профильный поставщик оборудования.",
-            matched_terms=tuple(sorted(category_hits)),
-        )
 
     if exact_matches and _exact_matches_need_context(exact_matches):
         overlap = _contextual_overlap_terms(context, lowered, exact_matches)
@@ -7170,12 +7281,6 @@ def _looks_like_reference_or_non_supplier(candidate: Candidate, text: str) -> bo
     if any(word in reference_front for word in ("реестр сертификатов", "сертификат соответствия", "госреестр")):
         return True
     if any(word in reference_front for word in ("тендер", "44-фз", "223-фз", "заказчик", "извещение", "процедур")) and "закуп" in reference_front:
-        return True
-    if "сверл" in front and not any(word in front for word in ("шахт", "горн", "сшу", "шсу", "пожар", "трубопровод")):
-        return True
-    if "сверл" in text and not any(word in text for word in ("пожар", "шахт", "горноспас", "трубопровод", "гм 70", "гм-70")):
-        return True
-    if any(word in text for word in ("радиоламп", "триод", "анод", "модуляторн", "электровакуум")):
         return True
     return False
 

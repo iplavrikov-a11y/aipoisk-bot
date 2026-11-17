@@ -356,9 +356,7 @@ def geocode_city_dadata_sync(city_or_address: str) -> tuple[float, float] | None
                     lat = data.get("geo_lat")
                     lon = data.get("geo_lon")
                     if lat is not None and lon is not None:
-                        coords = (float(lat), float(lon))
-                        CITY_COORDINATES[norm] = coords
-                        return coords
+                        return (float(lat), float(lon))
     except Exception as exc:
         logger.debug("dadata_sync_geocoding_failed", query=city_or_address, error=str(exc))
     return None

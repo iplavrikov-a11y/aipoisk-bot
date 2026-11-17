@@ -1,5 +1,45 @@
 # TenderLex: Project Status
 
+## Актуальное состояние — 17 ноября 2026 (Москва) — Полный ревизионный аудит и комплексное укрепление платформы (Deep Code Review v2): защита SSRF/CSRF/XSS и архивов, привязка гостевого чата и 152-ФЗ самоудаление аккаунта, точность биллинга и партнёрки, защита бюджета Яндекс Поиска, строгость движков подбора и атомарный координатор аутрич-ботов
+
+**Выполнено сквозное ревью и исправление всех подсистем TenderLex (`backend`, `site`, `frontend`, Telegram-бот и кластер привлечения `bots_tenderlex`) с полным прогоном `1 497` тестов платформы и `116` тестов аутрич-ботов и живым деплоем**:
+
+1. **Информационная безопасность, анти-спам и соответствие 152-ФЗ (`backend/app/ssrf_guard.py`, `backend/app/security.py`, `backend/app/security_shield.py`, `backend/app/document_parser.py`, `backend/app/invoice_service.py`, `backend/app/main.py`, `backend/app/web_auth.py`, `site/src/*`, `frontend/src/EmailBodyFrame.tsx`)**:
+   * **Доверенные IP и защита от общей блокировки**: `extract_real_request_ip` считывает `X-Forwarded-For` / `X-Real-IP` только от локального/доверенного прокси, исключая обход лимитов подменой заголовков и предотвращая общий 3/час локаут регистрации при одинаковом loopback-источнике.
+   * **CORS, CSRF и секреты**: закрыт широковещательный CORS (оставлен строгий список доменов `tenderlex.ru` и локальных портов), заблокирован дефолтный админ-токен `"change-me"`, убраны зашитые/чужие ключи в `autoeis/offer_builder.py` и `supplier_search.py`, закрыты права `0o600` на `cookies.json` без выдачи сырых куки в API, включена обязательная проверка `require_customer_csrf` на всех изменяющих маршрутах `/api/customer/*` (с передачей `x-csrf-token` из `cabinet-client.tsx` и `chat-widget.tsx`).
+   * **Безопасный разбор файлов, счетов и внешних сайтов (SSRF)**: в `document_parser.py` добавлены лимиты распаковки `.zip`/`.docx`, `Image.MAX_IMAGE_PIXELS` и запрет симлинков/выхода за пределы папки в `unrar`/`7z`; в `invoice_service.py` добавлено экранирование `html.escape`, строгий `CSP`, `--disable-javascript` для Chromium PDF и защита от формул Excel (`=+-@`) с сохранением телефонных номеров `+7...` (`report_builder.py`, `price_monitoring/excel_report.py`); внедрён единый фильтр `ssrf_guard.py` (`is_safe_public_http_url`) во всех парсерах и Playwright-перехватчиках; ужесточена песочница `EmailBodyFrame.tsx`.
+   * **Приватность гостевого чата и 152-ФЗ**: чтение истории и контакта в `/api/public/guest-chat/messages` привязано к подписанной HttpOnly cookie `tenderlex_guest_chat` с запретом перебора `tg_*`; чекбокс согласия на ПДн в `ChatWidget` по умолчанию снят; сохранение UTM в `sessionStorage` отложено до согласия на аналитику; добавлены RFC 8058 One-Click `POST /api/outreach/unsubscribe` и подписанные HMAC-ссылки отписки; реализовано полное самоудаление кабинета `POST /api/customer/account/delete` и перепривязка всех 7 связанных таблиц (`PartnerPayoutRequest`, `Invoice`, `YooKassaPayment`, `ApiKey`, `JobChatMessage`, `AccountLinkToken`, `Client.referrer_id`) в `merge_client`.
+
+2. **Точность биллинга, партнёрских начислений и контроль расходов на поиск (`backend/app/billing.py`, `backend/app/referral.py`, `backend/app/result_offers.py`, `backend/app/exact_product/yandex_search.py`, `backend/app/supplier_search.py`)**:
+   * Эндпоинт `/api/customer/jobs/{id}/retry` ограничен только неоплаченными задачами в статусе `failed` / `cancelled`, закрывая бесплатный перезапуск завершённых задач.
+   * Начисление партнёрского вознаграждения `process_referral_on_payment` подключено к вебхукам ЮKassa, подтверждению оплаты счетов юрлиц и ручным пополнениям с потокобезопасной отправкой уведомлений в Telegram.
+   * Устранено зависание резервов на `needs_review`, добавлен срок истечения пауз `multi_item_strategy`, исправлена ошибка повторных админ-доработок (`result_offers.py`), а также убрано залипание флага синхронного поиска Яндекса после временного `429` (защита от 16-кратного перерасхода).
+
+3. **Качество основных модулей, отказ от кеширования и устойчивость воркера (`backend/app/exact_product/*`, `backend/app/supplier_search.py`, `backend/app/procurement_report.py`, `backend/app/jobs.py`, `backend/app/db.py`, `backend/app/repository.py`)**:
+   * **Подбор товара и аналогов** (строго `.docx`): климатические и ГОСТ-параметры подтверждаются исключительно по тексту найденных страниц поставщиков (`deep.py`), аналоги с расхождением обязательных параметров отклоняются (`matcher.py`), убрана regex-фильтрация коротких российских брендов (`pipeline.py`), исправлены вызовы сверки с ГИСП (`minprom.py`, `product_brand_detector.py`).
+   * **Поиск поставщиков и анализ документации**: удалены межзадачные DNS/MX-кеши и жёсткие стоп-слова по товарам в `supplier_search.py`, проброшен `geo_scope` для режимов СНГ/Мир, исправлены обрезка текста верификатора, фильтрация ОКПД2 без повреждения IP/пунктов и сохранение `True RMS` в `procurement_report.py`.
+   * **Устойчивость БД и быстрый старт API**: добавлены `pool_pre_ping`, TCP keepalives, свежая сессия финализации отчётов, 30-секундный пульс воркера и версионирование миграций `schema_migrations`; из `commercial_jobs_query` убраны маски `%patch%` / `%smoke%`, скрывавшие реальные заказы на патч-корды и извещатели; очищена зависшая задача `#421` и скрыт сырой SQL-текст ошибки в `#1052`.
+
+4. **Telegram-бот, защита входящей почты и атомарная координация аутрич-ботов (`backend/app/bot.py`, `backend/app/outreach_api.py`, `backend/app/outreach_mail.py`, `bots_tenderlex/shared/coordinator.py`)**:
+   * В `/start` бота добавлена обработка диплинков аутрича (`c_<номер_контракта>`, `src_hh`, `src_sj`, `src_supl`) с автоматическим включением поиска поставщиков и записью атрибуции `outreach_entry`, проверки владельца на callback-кнопках и глобальный обработчик ошибок `@dp.error()`.
+   * При блокировке спамера в `outreach_api.py` публичные почтовые домены (`@gmail.com`, `@mail.ru`, `@yandex.ru` и др.) блокируются строго по конкретному адресу без удаления писем реальных клиентов, а строки `IMAP SEARCH` очищаются от спецсимволов.
+   * В `bots_tenderlex/shared/coordinator.py` внедрён атомарный резерв слота `claim_send` / `release_claim` (`BEGIN IMMEDIATE`), подключённый ко всем авто- и ручным отправкам `autoeis`, `superjobsuply` и `hh-agent`.
+
+5. **Верификация и живой деплой**:
+   * Автотесты платформы: **`1 497 passed, 0 failed, 54 subtests passed`** (`backend/tests/test_deep_review_v2_fixes.py`, `test_outreach_deeplinks.py`, `test_slice1_overhaul.py`, `test_slice2_engines_overhaul.py`).
+   * Автотесты кластера аутрич-ботов: **`116 passed, 0 failed`** (`shared`, `superjobsuply`, `autoeis`, `hh-agent`) + `verify_offline.py` (`35 passed`).
+   * Сборка и деплой: `cd site && npm run typecheck && npm run build`, `cd frontend && npm run build` (`frontend/dist/assets/index-BWEqzvHe.js`) и `./scripts/deploy_tenderlex_live.sh` — все 7 служб (`tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`, `autoeis`, `hh-bot`, `superjobsuply`) активны (`200 OK`).
+
+---
+
+## Состояние — 16 ноября 2026 (Москва) — Анти-спам щит регистрации и чата, тихий ночной режим поддержки, AI-триаж первой линии и вкладка «Безопасность» в админ-панели
+
+1. **Защита регистрации и форм (`backend/app/security_shield.py`, `backend/app/main.py`, `site/src/app/cabinet/cabinet-client.tsx`)**: добавлен подписанный HMAC-токен формы (`GET /api/public/auth/challenge`), фильтрация автоматических сканеров, SQLi/XSS/CLI-пейлоадов, одноразовых почтовых доменов и лимиты по подсетям `/24`.
+2. **Анти-спам чата поддержки и AI-помощник первой линии (`backend/app/support_chat.py`, `site/src/components/chat-widget.tsx`)**: кулдауны дублей, валидация контактов (`телефон`/`email`/`@telegram`), авто-блокировка инъекций и быстрый ответ AI-помощника первой линии по актуальным тарифам.
+3. **Тихий ночной режим и вкладка «Безопасность» (`frontend/src/SecurityView.tsx`, `frontend/src/App.tsx`, `backend/app/main.py`)**: настраиваемые часы работы поддержки (`09:00–20:00` МСК) без ночных личных уведомлений и панель «Безопасность» с журналом событий (`SecurityEvent`) и блокировкой/разблокировкой в 1 клик.
+
+---
+
 ## Актуальное состояние — 15 ноября 2026 (Москва, ч. 2) — Ускорение загрузки диалогов и `sync-check` (в 3.7x–5x), устранение зависания «Загрузка сообщений...», кнопка «Отметить все прочитанными» и 1-клик блокировка/разблокировка пользователей
 
 **Оптимизированы SQL-запросы и чтение диска в разделе «Диалоги с клиентами», убрано наслоение поллинга в админ-панели, добавлены массовая отметка прочитанным и 1-клик блокировка спамеров и злоупотреблений по всем каналам (чат сайта, IP, веб-кабинет, OAuth и Telegram-бот)**:

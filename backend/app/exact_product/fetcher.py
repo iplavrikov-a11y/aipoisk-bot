@@ -86,11 +86,22 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
     (KillBot, Cloudflare, DDoS-Guard) и рендеринга SPA/динамических таблиц характеристик.
     Имеет жесткие таймауты (Karpathy guidelines: budget timeout <= 7s суммарно на ссылку).
     """
+    from ..ssrf_guard import async_is_safe_public_http_url, async_validate_public_http_url, install_playwright_ssrf_guard
+
+    if not await async_is_safe_public_http_url(url):
+        return None
+
     # 1. Быстрый легковесный обход через curl_cffi (Chrome TLS fingerprint)
     if CurlCffiAsyncSession is not None:
         try:
             async with CurlCffiAsyncSession(impersonate="chrome124", timeout=7.0) as session:
-                resp = await session.get(url)
+                resp = await session.get(url, allow_redirects=False)
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    loc = (resp.headers.get("location") or "").strip()
+                    if loc:
+                        next_u = urljoin(url, loc)
+                        if await async_is_safe_public_http_url(next_u):
+                            resp = await session.get(next_u, allow_redirects=False)
                 if resp.status_code == 200 and resp.text:
                     body_text = ""
                     if trafilatura is not None:
@@ -146,7 +157,10 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
                     locale="ru-RU",
                 )
                 page = await context.new_page()
+                await install_playwright_ssrf_guard(page)
                 await page.goto(url, wait_until="domcontentloaded", timeout=7000)
+                if not await async_is_safe_public_http_url(page.url):
+                    return None
                 await page.wait_for_timeout(300)
                 content = await page.content()
                 title = await page.title()
@@ -226,9 +240,29 @@ async def fetch_web_or_pdf_document(
                 headers["Cookie"] = custom_cookie
         except Exception:
             pass
-        response = await client.get(url, headers=headers, timeout=timeout_seconds, follow_redirects=True)
+        from ..ssrf_guard import async_validate_public_http_url
+
+        current_url = url
+        response = None
+        for _hop in range(5):
+            await async_validate_public_http_url(current_url)
+            response = await client.get(
+                current_url,
+                headers=headers,
+                timeout=timeout_seconds,
+                follow_redirects=False,
+            )
+            if getattr(response, "status_code", 0) in (301, 302, 303, 307, 308):
+                loc = (getattr(response, "headers", {}) or {}).get("location", "")
+                if not loc:
+                    return None
+                current_url = urljoin(str(getattr(response, "url", current_url) or current_url), loc)
+                continue
+            break
+        if response is None:
+            return None
         if response.status_code in (403, 503, 429):
-            return await _fetch_with_browser_fallback(url, domain)
+            return await _fetch_with_browser_fallback(current_url, domain)
         if response.status_code >= 400:
             return None
 

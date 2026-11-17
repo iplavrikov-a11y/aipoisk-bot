@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .billing import grant_money_balance
+from .billing import _billing_client_lock, grant_money_balance
 from .config import config
 from .models import Client, ClientTelegramAccount, Job, now_utc
 
@@ -241,6 +241,25 @@ def link_referral_and_grant_welcome(
     )
 
 
+def _dispatch_telegram_notification_safe(chat_id: str, text: str) -> None:
+    if not chat_id or not text:
+        return
+    import asyncio
+    import threading
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_send_telegram_inviter_notification(chat_id, text))
+    except RuntimeError:
+        def _runner() -> None:
+            try:
+                asyncio.run(_send_telegram_inviter_notification(chat_id, text))
+            except Exception as exc:
+                logger.warning("telegram_inviter_notification_thread_error", extra={"error": str(exc), "chat_id": chat_id})
+
+        threading.Thread(target=_runner, daemon=True).start()
+
+
 def process_referral_on_payment(db: Session, client: Client, payment_amount_kopeks: int) -> bool:
     """
     Process referral rewards upon a qualifying first payment (min 1 000 ₽).
@@ -250,72 +269,68 @@ def process_referral_on_payment(db: Session, client: Client, payment_amount_kope
     if not client or not client.referrer_id:
         return False
 
-    if client.referral_reward_granted:
-        return False
-
     if payment_amount_kopeks < REFERRAL_QUALIFYING_PAYMENT_MIN_KOPEKS:
         return False
 
-    referrer = db.get(Client, client.referrer_id)
-    if not referrer or not referrer.is_active or referrer.id == client.id:
-        return False
+    with _billing_client_lock(f"ref_{client.id}"):
+        db.refresh(client)
+        if not client.referrer_id or client.referral_reward_granted:
+            return False
 
-    # 1. Award +1 000 ₽ welcome deposit bonus to invitee
-    try:
-        grant_money_balance(
-            db,
-            client,
-            amount_kopeks=REFERRAL_WELCOME_BONUS_KOPEKS,
-            note="Приветственный бонус +1 000 ₽ к первому пополнению по приглашению",
-            idempotency_key=f"ref_welcome_{client.id}",
-            created_by="referral_program",
-        )
-    except Exception as exc:
-        logger.error("referral_welcome_payment_bonus_failed", extra={"error": str(exc), "client_id": client.id})
+        referrer = db.get(Client, client.referrer_id)
+        if not referrer or not referrer.is_active or referrer.id == client.id:
+            return False
 
-    # 2. Award +1 000 ₽ reward to inviter
-    try:
-        grant_money_balance(
-            db,
-            referrer,
-            amount_kopeks=REFERRAL_INVITER_REWARD_KOPEKS,
-            note=f"Бонус 1 000 ₽ за первое пополнение реферала {client.id[:8]}",
-            idempotency_key=f"ref_reward_{client.id}",
-            created_by="referral_program",
-        )
-        client.referral_reward_granted = True
-        db.commit()
-        logger.info(
-            "referral_payment_reward_granted",
-            extra={"referrer_id": referrer.id, "referred_client_id": client.id, "payment_kopeks": payment_amount_kopeks},
-        )
-    except Exception as exc:
-        logger.error("referral_inviter_reward_failed", extra={"error": str(exc), "referrer_id": referrer.id})
-        return False
+        # 1. Award +1 000 ₽ welcome deposit bonus to invitee
+        try:
+            grant_money_balance(
+                db,
+                client,
+                amount_kopeks=REFERRAL_WELCOME_BONUS_KOPEKS,
+                note="Приветственный бонус +1 000 ₽ к первому пополнению по приглашению",
+                idempotency_key=f"ref_welcome_{client.id}",
+                created_by="referral_program",
+            )
+        except Exception as exc:
+            logger.error("referral_welcome_payment_bonus_failed", extra={"error": str(exc), "client_id": client.id})
+
+        # 2. Award +1 000 ₽ reward to inviter
+        try:
+            grant_money_balance(
+                db,
+                referrer,
+                amount_kopeks=REFERRAL_INVITER_REWARD_KOPEKS,
+                note=f"Бонус 1 000 ₽ за первое пополнение реферала {client.id[:8]}",
+                idempotency_key=f"ref_reward_{client.id}",
+                created_by="referral_program",
+            )
+            client.referral_reward_granted = True
+            db.commit()
+            logger.info(
+                "referral_payment_reward_granted",
+                extra={"referrer_id": referrer.id, "referred_client_id": client.id, "payment_kopeks": payment_amount_kopeks},
+            )
+        except Exception as exc:
+            logger.error("referral_inviter_reward_failed", extra={"error": str(exc), "referrer_id": referrer.id})
+            return False
 
     # 3. Notify inviter in Telegram if linked
     inviter_tg_id = _get_client_primary_telegram_id(db, referrer)
     if inviter_tg_id:
-        import asyncio
-        asyncio.create_task(
-            _send_telegram_inviter_notification(
-                inviter_tg_id,
-                "🎉 Вам начислено 1 000 ₽ на баланс!\n\n"
-                "Приглашенный вами коллега впервые пополнил баланс в TenderLex.\n"
-                "Ваш баланс пополнен на 1 000 ₽. Спасибо за рекомендацию!",
-            )
+        _dispatch_telegram_notification_safe(
+            inviter_tg_id,
+            "🎉 Вам начислено 1 000 ₽ на баланс!\n\n"
+            "Приглашенный вами коллега впервые пополнил баланс в TenderLex.\n"
+            "Ваш баланс пополнен на 1 000 ₽. Спасибо за рекомендацию!",
         )
 
     # 4. Notify invitee in Telegram if linked
     invitee_tg_id = _get_client_primary_telegram_id(db, client)
     if invitee_tg_id:
-        import asyncio
-        asyncio.create_task(
-            _send_telegram_inviter_notification(
-                invitee_tg_id,
-                "🎁 Вам начислен приветственный бонус +1 000 ₽ к первому пополнению по приглашению коллеги!\n\n"
-                "Средства уже зачислены на ваш единый баланс.",
-            )
+        _dispatch_telegram_notification_safe(
+            invitee_tg_id,
+            "🎁 Вам начислен приветственный бонус +1 000 ₽ к первому пополнению по приглашению коллеги!\n\n"
+            "Средства уже зачислены на ваш единый баланс.",
         )
 
     return True

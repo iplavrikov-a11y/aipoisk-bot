@@ -142,17 +142,24 @@ def test_unsubscribe_by_email(db_session: Session, test_client):
     db_session.add(web_user)
     db_session.commit()
 
-    resp = test_client.get(f"/api/customer/auth/unsubscribe?email={email}")
-    assert resp.status_code == 200
-    assert "Вы успешно отписались" in resp.text
+    # Unauthenticated HTTP ?email= without a signed token MUST be rejected (prevents third-party unsubscription)
+    unauth_resp = test_client.get(f"/api/customer/auth/unsubscribe?email={email}")
+    assert unauth_resp.status_code == 400
+    db_session.refresh(client)
+    assert client.marketing_unsubscribed is False
+
+    # Internal programmatic unsubscribe_by_email still works cleanly
+    from app.nurturing import unsubscribe_by_email
+    ok, _msg = unsubscribe_by_email(db_session, email)
+    assert ok is True
 
     db_session.refresh(client)
     db_session.refresh(web_user)
     assert client.marketing_unsubscribed is True
     assert web_user.marketing_unsubscribed is True
 
-    bad_resp = test_client.get("/api/customer/auth/unsubscribe?email=notanemail")
-    assert bad_resp.status_code == 400
+    bad_ok, _ = unsubscribe_by_email(db_session, "notanemail")
+    assert bad_ok is False
 
 
 def test_unsubscribe_by_telegram_id(db_session: Session):

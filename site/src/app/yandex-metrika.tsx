@@ -15,11 +15,22 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const initialized = useRef(false);
   const pendingSdk = useRef<Window["ym"]>(undefined);
+  const pendingUtm = useRef<{ source: string; campaign: string } | null>(null);
   const lastPage = useRef("");
   const allowed = Boolean(counterId && /^\d+$/.test(counterId) && pathname && !/^\/api(?:\/|$)/.test(pathname));
 
   useEffect(() => {
     rememberSeoEntry();
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const utmSource = (params.get("utm_source") || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 40);
+      const utmCampaign = (params.get("utm_campaign") || "").trim().replace(/[^a-zA-Z0-9_.:-]/g, "").slice(0, 80);
+      if (utmSource) {
+        pendingUtm.current = { source: utmSource, campaign: utmCampaign };
+      }
+    } catch {
+      /* URL search params may be unavailable in restricted contexts. */
+    }
     try {
       const stored = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
       if (stored === "granted" || stored === "denied") {
@@ -36,14 +47,35 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
       const next = event.newValue === "granted" || event.newValue === "denied" ? event.newValue : "unknown";
       configureAnalytics(counterId, next === "granted");
       setConsent(next);
-      if (next !== "granted") clearSeoLanding();
+      if (next !== "granted") {
+        clearSeoLanding();
+        try {
+          window.sessionStorage.removeItem("tenderlex_utm_source");
+          window.sessionStorage.removeItem("tenderlex_utm_campaign");
+        } catch {}
+      }
     }
     window.addEventListener("storage", sync);
     return () => window.removeEventListener("storage", sync);
   }, [counterId]);
 
   useEffect(() => {
-    if (allowed && consent === "granted") recordSeoLanding();
+    if (allowed && consent === "granted") {
+      recordSeoLanding();
+      if (pendingUtm.current?.source) {
+        try {
+          window.sessionStorage.setItem("tenderlex_utm_source", pendingUtm.current.source);
+          if (pendingUtm.current.campaign) {
+            window.sessionStorage.setItem("tenderlex_utm_campaign", pendingUtm.current.campaign);
+          }
+        } catch {}
+      }
+    } else if (consent === "denied") {
+      try {
+        window.sessionStorage.removeItem("tenderlex_utm_source");
+        window.sessionStorage.removeItem("tenderlex_utm_campaign");
+      } catch {}
+    }
   }, [allowed, consent]);
 
   useEffect(() => {
@@ -117,7 +149,7 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
   return <>
     {consent === "unknown" || settingsOpen ? (
       <aside className="cookie-consent" aria-label="Настройки аналитики">
-        <p>Необходимые cookie помогают работать сайту и кабинету. С вашего разрешения мы измеряем посещения и действия, чтобы улучшать сервис. <a href="/privacy#cookies">Подробнее</a></p>
+        <p>Необходимые cookie обеспечивают работу сайта и кабинета. Аналитика включается только с вашего согласия (<a href="/privacy#cookies">Подробнее</a>).</p>
         <div>
           <button type="button" className="cookie-secondary" onClick={() => choose("denied")}>Только необходимые</button>
           <button type="button" className="cookie-primary" onClick={() => choose("granted")}>Разрешить аналитику</button>

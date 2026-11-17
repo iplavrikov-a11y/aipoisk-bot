@@ -17,6 +17,7 @@
 Модуль не обращается к ИИ и БД — только чистые функции над dict-структурами.
 """
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import structlog
@@ -199,16 +200,118 @@ def _neutralize_alt_mentions(text: str, alt_names: List[str], replacement: str) 
     return result
 
 
+_PHYSICAL_UNIT_BASE: Dict[str, Tuple[str, float]] = {
+    "вт": ("power", 1.0), "ватт": ("power", 1.0), "w": ("power", 1.0),
+    "квт": ("power", 1000.0), "киловатт": ("power", 1000.0), "kw": ("power", 1000.0),
+    "мм": ("len", 1.0), "миллиметр": ("len", 1.0), "миллиметров": ("len", 1.0),
+    "см": ("len", 10.0), "сантиметр": ("len", 10.0), "сантиметров": ("len", 10.0),
+    "м": ("len", 1000.0), "метр": ("len", 1000.0), "метров": ("len", 1000.0),
+    "г": ("mass", 1.0), "гр": ("mass", 1.0), "грамм": ("mass", 1.0),
+    "кг": ("mass", 1000.0), "килограмм": ("mass", 1000.0),
+    "т": ("mass", 1_000_000.0), "тонн": ("mass", 1_000_000.0), "тонна": ("mass", 1_000_000.0),
+    "мл": ("vol", 1.0), "л": ("vol", 1000.0), "литр": ("vol", 1000.0), "литров": ("vol", 1000.0),
+    "в": ("volt", 1.0), "вольт": ("volt", 1.0),
+    "а": ("amp", 1.0), "ампер": ("amp", 1.0),
+    "дб": ("db", 1.0), "дба": ("db", 1.0),
+    "гц": ("freq", 1.0), "кгц": ("freq", 1000.0),
+    "бар": ("press", 1.0), "мпа": ("press", 10.0),
+}
+
+
+def _parse_single_fact_value_and_unit(fact: str) -> Optional[Tuple[float, str, float]]:
+    text = str(fact or "").strip().lower().replace("\xa0", " ")
+    if not text or any(sep in text for sep in ("х", "x", "×", "/", "±", "+-")):
+        return None
+    nums = re.findall(r"(?<!\w)(\d+(?:[.,]\d+)?)", text)
+    if len(nums) != 1:
+        return None
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*([а-яёa-z]+)\b", text)
+    if not m:
+        return None
+    unit_info = _PHYSICAL_UNIT_BASE.get(m.group(2))
+    if not unit_info:
+        return None
+    val = float(m.group(1).replace(",", "."))
+    dim, mult = unit_info
+    return val * mult, dim, val
+
+
+def _violates_numeric_bound(tz_req: str, product_fact: str) -> bool:
+    """Pure physical-unit inequality check on AI-extracted values (e.g. 2050 Вт vs 'не более 2001 Вт')."""
+    fact_parsed = _parse_single_fact_value_and_unit(product_fact)
+    if not fact_parsed:
+        return False
+    fact_base, fact_dim, _ = fact_parsed
+    req = str(tz_req or "").strip().lower().replace("\xa0", " ")
+    if not req or any(sep in req for sep in ("х", "x", "×", "/", "или")):
+        return False
+
+    # Check range: "от X ... до Y <unit>" or "не менее X ... не более Y <unit>"
+    m_range = re.search(
+        r"(?:от|не\s+менее|>=|≥)\s*(\d+(?:[.,]\d+)?)\s*([а-яёa-z]*)\s*(?:и\s+|,\s*|\s+)(?:до|не\s+более|<=|≤)\s*(\d+(?:[.,]\d+)?)\s*([а-яёa-z]+)\b",
+        req,
+    )
+    if m_range:
+        u2 = _PHYSICAL_UNIT_BASE.get(m_range.group(4))
+        if not u2 or u2[0] != fact_dim:
+            return False
+        u1 = _PHYSICAL_UNIT_BASE.get(m_range.group(2)) if m_range.group(2) else u2
+        if not u1 or u1[0] != fact_dim:
+            return False
+        lo = float(m_range.group(1).replace(",", ".")) * u1[1]
+        hi = float(m_range.group(3).replace(",", ".")) * u2[1]
+        return fact_base < lo - 1e-6 or fact_base > hi + 1e-6
+
+    nums_in_req = re.findall(r"(?<!\w)(\d+(?:[.,]\d+)?)", req)
+    if len(nums_in_req) != 1:
+        return False
+
+    m_max = re.search(r"(?:не\s+более|не\s+выше|не\s+превыша\w*|<=|≤|максимум)\s*(\d+(?:[.,]\d+)?)\s*([а-яёa-z]+)\b", req)
+    if m_max:
+        u = _PHYSICAL_UNIT_BASE.get(m_max.group(2))
+        if u and u[0] == fact_dim:
+            limit = float(m_max.group(1).replace(",", ".")) * u[1]
+            return fact_base > limit + 1e-6
+
+    m_strict_lt = re.search(r"(?<!не\s)\bменее\s*(\d+(?:[.,]\d+)?)\s*([а-яёa-z]+)\b", req)
+    if m_strict_lt:
+        u = _PHYSICAL_UNIT_BASE.get(m_strict_lt.group(2))
+        if u and u[0] == fact_dim:
+            limit = float(m_strict_lt.group(1).replace(",", ".")) * u[1]
+            return fact_base >= limit - 1e-6
+
+    m_min = re.search(r"(?:не\s+менее|не\s+ниже|>=|≥|минимум)\s*(\d+(?:[.,]\d+)?)\s*([а-яёa-z]+)\b", req)
+    if m_min:
+        u = _PHYSICAL_UNIT_BASE.get(m_min.group(2))
+        if u and u[0] == fact_dim:
+            limit = float(m_min.group(1).replace(",", ".")) * u[1]
+            return fact_base < limit - 1e-6
+
+    m_strict_gt = re.search(r"(?<!не\s)\bболее\s*(\d+(?:[.,]\d+)?)\s*([а-яёa-z]+)\b", req)
+    if m_strict_gt:
+        u = _PHYSICAL_UNIT_BASE.get(m_strict_gt.group(2))
+        if u and u[0] == fact_dim:
+            limit = float(m_strict_gt.group(1).replace(",", ".")) * u[1]
+            return fact_base <= limit + 1e-6
+
+    return False
+
+
 def _apply_spec_checks(spec: dict) -> None:
     """
-    Мутирует spec: проверяет согласованность комментария со статусом.
-    Характеристики и статус (match / mismatch / clarify) определяет исключительно ИИ (Правило 14).
-    Детерминированный код не имеет права менять match на mismatch/clarify через регексы или строковые эвристики.
+    Мутирует spec: проверяет согласованность комментария со статусом и арифметические границы.
     """
     key = _norm_status_key(spec)
-    # Согласованность комментария со статусом: если модель сама говорит об отклонении
-    if key == "match" and comment_says_deviation(spec):
-        spec["status"] = "mismatch"
+    if key == "match":
+        if comment_says_deviation(spec):
+            spec["status"] = "mismatch"
+            return
+        if _violates_numeric_bound(str(spec.get("tz_requirement") or ""), str(spec.get("product_fact") or "")):
+            spec["status"] = "mismatch"
+            existing_c = str(spec.get("comment") or "").strip()
+            note = f"Отклонение от числового предела ТЗ ({spec.get('product_fact')} при требовании «{spec.get('tz_requirement')}»)."
+            if "отклонени" not in existing_c.lower():
+                spec["comment"] = f"{note} {existing_c}".strip()
 
 
 def _recompute_confidence(specs: List[dict]) -> Optional[float]:

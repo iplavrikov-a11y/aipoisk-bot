@@ -102,9 +102,13 @@ def test_customer_create_payment_api(setup_database: Session):
         },
     }
 
+    from app.models import WebSession
+    csrf = db.query(WebSession).filter(WebSession.user_id == user.id).first().csrf_token
+
     with patch("app.main.create_yookassa_payment", return_value=mock_resp):
         resp = http_client.post(
             "/api/customer/payments/yookassa/create",
+            headers={"X-CSRF-Token": csrf},
             json={"amount_rub": 5000},
         )
         assert resp.status_code == 200, resp.text
@@ -147,10 +151,14 @@ def test_yookassa_payment_saves_phone_and_telegram(setup_database: Session):
         },
     }
 
+    from app.models import WebSession
+    csrf = db.query(WebSession).filter(WebSession.user_id == user.id).first().csrf_token
+
     with patch("app.main.create_yookassa_payment", return_value=mock_resp) as mock_create, \
          patch("app.main.notify_admin_payment_attempt") as mock_notify:
         resp = http_client.post(
             "/api/customer/payments/yookassa/create",
+            headers={"X-CSRF-Token": csrf},
             json={
                 "amount_rub": 5000,
                 "phone": "+7 (999) 777-88-99",

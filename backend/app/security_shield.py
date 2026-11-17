@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -21,6 +22,128 @@ from .config import config
 from .models import SecurityEvent, SupportBlockedActor, SystemSettings, TariffPackage, now_utc
 
 logger = logging.getLogger(__name__)
+
+PROTECTED_INFRASTRUCTURE_IPS: set[str] = {
+    "79.133.182.215",
+    "202.71.13.57",
+    "127.0.0.1",
+    "::1",
+}
+
+_RFC5737_TEST_NETS = (
+    ipaddress.ip_network("192.0.2.0/24"),
+    ipaddress.ip_network("198.51.100.0/24"),
+    ipaddress.ip_network("203.0.113.0/24"),
+)
+
+_EPHEMERAL_CHALLENGE_SECRET: bytes | None = None
+
+
+def get_protected_infrastructure_ips() -> set[str]:
+    """Return canonical infrastructure/proxy IPs that are trusted hops and must never be blocked."""
+    ips = set(PROTECTED_INFRASTRUCTURE_IPS)
+    extra = os.getenv("AIPOISK_TRUSTED_PROXY_IPS", "")
+    if extra:
+        for part in extra.split(","):
+            token = part.strip()
+            if not token:
+                continue
+            try:
+                ips.add(str(ipaddress.ip_address(token)))
+            except ValueError:
+                ips.add(token)
+    return ips
+
+
+def normalize_ip_token(raw_value: str | None) -> str:
+    candidate = str(raw_value or "").strip()
+    if not candidate or len(candidate) > 64 or candidate.lower() == "unknown":
+        return ""
+    try:
+        return str(ipaddress.ip_address(candidate))[:64]
+    except ValueError:
+        return ""
+
+
+def _is_pytest_doc_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        is_pytest()
+        and isinstance(ip_obj, ipaddress.IPv4Address)
+        and any(ip_obj in net for net in _RFC5737_TEST_NETS)
+    )
+
+
+def normalize_blockable_ip(raw_ip: str | None) -> str:
+    """Normalize an untrusted public visitor IP; return '' for loopback, private, reserved, or infra IPs."""
+    raw = str(raw_ip or "").strip().split(",")[0].strip()[:64]
+    if not raw or raw.lower() == "unknown":
+        return ""
+    try:
+        ip_obj = ipaddress.ip_address(raw)
+    except ValueError:
+        return ""
+    if (
+        ip_obj.is_loopback
+        or ip_obj.is_reserved
+        or ip_obj.is_link_local
+        or ip_obj.is_multicast
+        or ip_obj.is_unspecified
+        or (ip_obj.is_private and not _is_pytest_doc_ip(ip_obj))
+    ):
+        return ""
+    normalized = str(ip_obj)
+    if normalized in get_protected_infrastructure_ips():
+        return ""
+    return normalized
+
+
+def _is_trusted_proxy_peer(peer_raw: str) -> bool:
+    if not peer_raw or peer_raw == "testclient":
+        return True
+    peer = normalize_ip_token(peer_raw)
+    if not peer:
+        return False
+    if peer in get_protected_infrastructure_ips():
+        return True
+    try:
+        ip_obj = ipaddress.ip_address(peer)
+        return bool(ip_obj.is_loopback or ip_obj.is_private)
+    except ValueError:
+        return False
+
+
+def extract_real_request_ip(request: Any, *, default: str = "") -> str:
+    """Resolve visitor IP walking X-Forwarded-For right-to-left ONLY when peer is a trusted proxy."""
+    if request is None:
+        return default
+    client = getattr(request, "client", None)
+    peer_raw = str(getattr(client, "host", "") or "").strip() if client else ""
+    peer = normalize_ip_token(peer_raw) or peer_raw[:64]
+    if peer_raw and not _is_trusted_proxy_peer(peer_raw):
+        return peer or default
+    headers = getattr(request, "headers", None)
+    ips: list[str] = []
+    real_ip = ""
+    if headers:
+        forwarded_raw = str(headers.get("x-forwarded-for", "") or "").strip()
+        if forwarded_raw:
+            ips = [ip for part in forwarded_raw.split(",") if (ip := normalize_ip_token(part))]
+            for candidate in reversed(ips):
+                if normalize_blockable_ip(candidate):
+                    return candidate
+        real_ip = normalize_ip_token(headers.get("x-real-ip", ""))
+        if real_ip and normalize_blockable_ip(real_ip):
+            return real_ip
+        if real_ip and not ipaddress.ip_address(real_ip).is_loopback:
+            return real_ip
+        non_loopback = [ip for ip in reversed(ips) if not ipaddress.ip_address(ip).is_loopback]
+        if non_loopback:
+            return non_loopback[0]
+        if ips:
+            return ips[-1]
+        if real_ip:
+            return real_ip
+    return peer or default
 
 # Known disposable / temporary email domains and reserved test domains
 DISPOSABLE_EMAIL_DOMAINS = {
@@ -72,12 +195,24 @@ _AUTOMATED_UA_RE = re.compile(
 )
 
 _SQLI_XSS_CLI_PATTERNS = [
-    re.compile(r"(?:^|\s)(?:-?\d+['\"]?|['\"])\s*(?:or|and)\s+[\d\s+\-*/=]+=\s*[\d\s+\-*/=]+", re.IGNORECASE),
-    re.compile(r"\bunion\s+(?:all\s+)?select\b", re.IGNORECASE),
-    re.compile(r"\b(?:select\s+.+\s+from|insert\s+into|drop\s+table|delete\s+from|waitfor\s+delay|pg_sleep|benchmark\()\b", re.IGNORECASE),
-    re.compile(r"<\s*script\b|javascript\s*:|on(?:error|load|click|mouseover)\s*=", re.IGNORECASE),
-    re.compile(r"^(?:ls\s+-[a-z]+|cat\s+/etc/|whoami|uname\s+-a|id\s*;|wget\s+https?://|curl\s+https?://|rm\s+-rf\s+/)", re.IGNORECASE),
-    re.compile(r"(?:\.\./){2,}|/etc/passwd|/etc/shadow", re.IGNORECASE),
+    re.compile(r"(?:^|\s)(?:-?\d+['\"]|['\"])\s*(?:or|and)\s+[\d\s+\-*/='\"]+=[\d\s+\-*/='\"]+", re.IGNORECASE),
+    re.compile(
+        r"\bunion\s+all\s+select\b|\bunion\s+select\s+(?:null|\d+|@@|version\s*\(|user\s*\()"
+        r"|(?:;\s*(?:drop|delete|truncate|alter)\s+table\b)"
+        r"|\b(?:waitfor\s+delay\b|pg_sleep\s*\(|benchmark\s*\()",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"<\s*script\b|javascript\s*:\s*[a-zA-Z0-9_(]"
+        r"|<\s*[a-z]+\b[^>]*\bon(?:error|load|toggle|mouseover|focus)\s*=",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:ls(?:\s+-[lahtrR]+)+\s*|whoami\s*|uname\s+-a\s*|id\s*)$"
+        r"|(?:;|&&|\|\|)\s*(?:cat\s+/etc/(?:passwd|shadow)|rm\s+-rf\s+/|whoami\b|id\b)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?:\.\./){2,}|(?:\.\.\\){2,}|/etc/(?:passwd|shadow)\b", re.IGNORECASE),
     re.compile(r"^[/\\'\"`;|&$]{2,6}$"),
 ]
 
@@ -118,12 +253,23 @@ _GARBAGE_CONTACT_VALUES = {
 
 
 def _challenge_secret() -> bytes:
-    raw = (
-        os.getenv("AIPOISK_CHALLENGE_SECRET")
-        or config.admin_token
-        or "tenderlex-shield-default-secret"
-    )
-    return raw.encode("utf-8")
+    global _EPHEMERAL_CHALLENGE_SECRET
+    explicit = os.getenv("AIPOISK_CHALLENGE_SECRET", "").strip()
+    if explicit:
+        return explicit.encode("utf-8")
+    admin_tok = str(getattr(config, "admin_token", "") or "").strip()
+    if admin_tok and admin_tok != "change-me":
+        return hmac.new(
+            admin_tok.encode("utf-8"),
+            b"tenderlex-human-challenge-v1",
+            hashlib.sha256,
+        ).digest()
+    if _EPHEMERAL_CHALLENGE_SECRET is None:
+        _EPHEMERAL_CHALLENGE_SECRET = secrets.token_bytes(32)
+        logger.warning(
+            "AIPOISK_CHALLENGE_SECRET and non-default ADMIN_TOKEN are unset; using runtime ephemeral challenge secret."
+        )
+    return _EPHEMERAL_CHALLENGE_SECRET
 
 
 def create_human_challenge() -> dict[str, Any]:
@@ -230,15 +376,17 @@ def validate_guest_contact(contact: str | None) -> str | None:
 
 
 def ipv4_subnet_prefix(ip_str: str | None) -> str:
-    """Return /24 prefix for IPv4 addresses (e.g. '192.168.1.') or empty string."""
-    raw = str(ip_str or "").strip().split(",")[0].strip()
+    """Return /24 prefix for public untrusted IPv4 addresses or empty string."""
+    clean = normalize_blockable_ip(ip_str)
+    if not clean:
+        return ""
     try:
-        ip_obj = ipaddress.ip_address(raw)
+        ip_obj = ipaddress.ip_address(clean)
     except ValueError:
         return ""
-    if ip_obj.version != 4 or ip_obj.is_loopback or ip_obj.is_private:
+    if ip_obj.version != 4:
         return ""
-    parts = raw.split(".")
+    parts = clean.split(".")
     return ".".join(parts[:3]) + "."
 
 
@@ -286,14 +434,30 @@ def maybe_auto_block_actor(
 ) -> bool:
     """Auto-block an actor in SupportBlockedActor if security events exceed threshold."""
     clean_val = str(actor_value or "").strip()
-    if not clean_val or clean_val in {"127.0.0.1", "::1", "unknown"}:
+    if not clean_val or clean_val.lower() == "unknown":
         return False
+    if actor_type == "ip":
+        clean_val = normalize_blockable_ip(clean_val)
+        if not clean_val:
+            return False
+    elif clean_val in get_protected_infrastructure_ips():
+        return False
+
     cutoff = now_utc() - timedelta(minutes=window_minutes)
+    if actor_type == "guest_session":
+        actor_filter = SecurityEvent.actor_key.in_([clean_val, f"guest:{clean_val}"])
+    elif actor_type == "client":
+        actor_filter = SecurityEvent.actor_key.in_([clean_val, f"client:{clean_val}"])
+    elif actor_type == "ip":
+        actor_filter = (SecurityEvent.ip_address == clean_val) | (SecurityEvent.actor_key == clean_val)
+    else:
+        actor_filter = (SecurityEvent.ip_address == clean_val) | (SecurityEvent.actor_key == clean_val)
+
     recent_cnt = (
         db.query(SecurityEvent.id)
         .filter(
             SecurityEvent.created_at >= cutoff,
-            (SecurityEvent.ip_address == clean_val) | (SecurityEvent.actor_key == clean_val),
+            actor_filter,
         )
         .count()
     )
@@ -445,7 +609,14 @@ async def classify_and_reply_support_message(
     if is_pytest() and not force_in_test:
         return {"category": "real_question", "need_human": True, "reply": "", "used_ai": False}
 
-    if settings is None or not settings.has_active_ai_provider:
+    has_ai = bool(
+        settings is not None
+        and (
+            getattr(settings, "has_active_ai_provider", False)
+            or str(getattr(settings, "openrouter_api_key", "") or "").strip()
+        )
+    )
+    if not has_ai:
         return {"category": "real_question", "need_human": True, "reply": "", "used_ai": False}
 
     tariffs_summary = _build_tariffs_summary_for_ai(db)
@@ -474,8 +645,8 @@ async def classify_and_reply_support_message(
             system_prompt=system_prompt,
             routing_key=AI_ROUTING_FALLBACK_LIGHT,
             timeout_seconds=6.0,
-            max_model_attempts=1,
-            max_request_attempts=2,
+            total_timeout_seconds=8.0,
+            max_retries=1,
             temperature=0.2,
         )
         text_out = str(raw or "").strip()

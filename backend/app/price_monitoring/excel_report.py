@@ -19,6 +19,16 @@ from .models import ItemPriceResult, SupplierQuote
 logger = logging.getLogger(__name__)
 
 
+def _safe_excel_cell_str(val: object) -> str:
+    text = str(val if val is not None else "")
+    stripped = text.lstrip(" \t\r\n")
+    if stripped.startswith(("=", "+", "-", "@")):
+        if re.fullmatch(r"\+\d[\d\s().,;/-]{5,}", stripped):
+            return text
+        return "'" + text
+    return text
+
+
 def _source_position_note(item: ItemPriceResult) -> str:
     note = [f"Позиция исходного перечня: {item.source_position_no or item.row_number}"]
     for label, value in (("ID", item.position_id), ("Файл", item.source_file), ("Лист", item.source_sheet),
@@ -522,7 +532,7 @@ def generate_price_monitoring_excel(
         row_fill = PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid") if (current_row % 2 == 1) else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
         # A: Номенклатура
-        cell_nom = ws.cell(row=current_row, column=1, value=item.raw_name)
+        cell_nom = ws.cell(row=current_row, column=1, value=_safe_excel_cell_str(item.raw_name))
         cell_nom.comment = Comment(_source_position_note(item), "TenderLex")
         cell_nom.font = font_calibri_regular
         cell_nom.alignment = align_left
@@ -530,7 +540,7 @@ def generate_price_monitoring_excel(
         cell_nom.fill = row_fill
 
         # B: Ед. изм.
-        cell_unit = ws.cell(row=current_row, column=2, value=item.unit)
+        cell_unit = ws.cell(row=current_row, column=2, value=_safe_excel_cell_str(item.unit))
         cell_unit.font = font_calibri_regular
         cell_unit.alignment = align_center
         cell_unit.border = thin_border
@@ -682,7 +692,7 @@ def generate_price_monitoring_excel(
             args_str = ",".join(f"{col_let}{current_row}" for col_let in numeric_col_letters)
             cell_min.value = f"=MIN({args_str})"
             cell_avg.value = f"=AVERAGE({args_str})"
-            cell_var.value = f'=_xlfn.IFS(COUNTA({args_str})>=3,_xlfn.STDEV.S({args_str})/{cell_avg.coordinate},COUNTA({args_str})<3,"мало данных")'
+            cell_var.value = f'=IF(COUNTA({args_str})>=3,STDEV({args_str})/{cell_avg.coordinate},"мало данных")'
         else:
             # Все отображаемые поставщики имеют цену "по запросу"
             cell_min.alignment = align_center
@@ -790,9 +800,9 @@ def generate_price_monitoring_excel(
 
         row_vals = [
             item.source_position_no or item.row_number,
-            item.raw_name,
-            item.unit,
-            status_text,
+            _safe_excel_cell_str(item.raw_name),
+            _safe_excel_cell_str(item.unit),
+            _safe_excel_cell_str(status_text),
             best_p,
         ]
         for s_idx in range(1, max_suppliers + 1):
@@ -807,11 +817,11 @@ def generate_price_monitoring_excel(
                     loc_val = q.supplier_city
 
                 row_vals.extend([
-                    q.company_name or "-",
-                    q.inn or "-",
-                    q.kpp or "-",
-                    q.contacts or "-",
-                    loc_val,
+                    _safe_excel_cell_str(q.company_name or "-"),
+                    _safe_excel_cell_str(q.inn or "-"),
+                    _safe_excel_cell_str(q.kpp or "-"),
+                    _safe_excel_cell_str(q.contacts or "-"),
+                    _safe_excel_cell_str(loc_val),
                     q.price_rub if q.price_rub > 0 else "по запросу",
                     q.raw_price_rub if q.raw_price_rub > 0 else "-",
                     q.site_unit or "-",

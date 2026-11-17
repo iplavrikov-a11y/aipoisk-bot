@@ -16,7 +16,7 @@ import {
   Clock,
   TrendingUp,
 } from "lucide-react";
-import type { FaqItem } from "@/lib/seo";
+import { safeJsonLd, type FaqItem } from "@/lib/seo";
 
 export interface RegionalStat {
   label: string;
@@ -85,22 +85,22 @@ export function RegionalPageLayout({
     <>
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }}
+        dangerouslySetInnerHTML={{ __html: safeJsonLd(breadcrumbSchema) }}
       />
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(serviceSchema) }}
+        dangerouslySetInnerHTML={{ __html: safeJsonLd(serviceSchema) }}
       />
       {faqSchema && (
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLd(faqSchema) }}
         />
       )}
       {howToSchema && (
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(howToSchema) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLd(howToSchema) }}
         />
       )}
 

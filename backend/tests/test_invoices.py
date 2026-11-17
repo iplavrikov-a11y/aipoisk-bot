@@ -26,7 +26,9 @@ from app.config import config
 
 
 @pytest.fixture(autouse=True)
-def setup_database():
+def setup_database(monkeypatch):
+    if not config.admin_token or config.admin_token == "change-me":
+        monkeypatch.setattr(config, "admin_token", "test-admin-secret-token")
     init_db()
     db = SessionLocal()
     try:
@@ -97,6 +99,7 @@ def test_create_and_manage_invoices_pipeline(setup_database: Session, tmp_path):
 
     client = TestClient(app)
     client.cookies.set("tenderlex_customer_session", token)
+    csrf = db.query(WebSession).filter(WebSession.user_id == test_user.id).first().csrf_token
 
     # 1. Create invoice for 10 000 RUB (package with 40% bonus -> +4 000 RUB bonus, total 14 000 RUB)
     with patch("app.invoice_service.notify_admin_telegram", new=AsyncMock()) as mock_notify:
@@ -109,7 +112,7 @@ def test_create_and_manage_invoices_pipeline(setup_database: Session, tmp_path):
             "buyer_address": "г. Москва, ул. Арбат, 1",
             "buyer_email": "director@romashka.ru",
         }
-        res = client.post("/api/customer/invoices", json=payload)
+        res = client.post("/api/customer/invoices", headers={"X-CSRF-Token": csrf}, json=payload)
         assert res.status_code == 200, res.text
         data = res.json()
         assert data["success"] is True
@@ -141,7 +144,7 @@ def test_create_and_manage_invoices_pipeline(setup_database: Session, tmp_path):
     assert SELLER_INN in html
     assert SELLER_BANK_BIK in html
     assert SELLER_ACCOUNT in html
-    assert 'ООО "РОМАШКА"' in html
+    assert ('ООО &quot;РОМАШКА&quot;' in html) or ('ООО "РОМАШКА"' in html)
     assert "10 000,00" in html
     assert "Четырнадцать тысяч рублей" not in html  # sum to pay is 10 000
     assert "Десять тысяч рублей 00 копеек. Без НДС." in html
@@ -184,6 +187,7 @@ def test_custom_manual_amount_and_ip_buyer(setup_database: Session):
 
     client = TestClient(app)
     client.cookies.set("tenderlex_customer_session", token)
+    csrf = db.query(WebSession).filter(WebSession.user_id == test_user.id).first().csrf_token
 
     # Invoice for custom amount (e.g. 50 000 RUB -> 50% bonus -> +25 000 RUB, total 75 000 RUB)
     # Buyer is an Individual Entrepreneur (12-digit INN, no KPP)
@@ -196,7 +200,7 @@ def test_custom_manual_amount_and_ip_buyer(setup_database: Session):
         "buyer_address": "162600, Вологодская обл., г. Череповец, ул. Ленина, д. 5",
         "buyer_email": "ip_buyer@test.ru",
     }
-    res = client.post("/api/customer/invoices", json=payload)
+    res = client.post("/api/customer/invoices", headers={"X-CSRF-Token": csrf}, json=payload)
     assert res.status_code == 200
     data = res.json()
     inv = data["invoice"]

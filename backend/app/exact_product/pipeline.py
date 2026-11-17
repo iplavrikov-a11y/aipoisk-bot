@@ -256,10 +256,11 @@ def _are_duplicate_structured_positions(pos_a: Dict[str, Any], pos_b: Dict[str, 
     map_b = {str(r["param_name"]).strip().lower(): str(r["tz_requirement"]).strip() for r in reqs_b}
     shared_keys = set(map_a) & set(map_b)
     union_count = len(set(map_a) | set(map_b))
-    if len(shared_keys) < 5 or union_count == 0 or (len(shared_keys) / union_count) < 0.75:
+    if len(shared_keys) < 5 or union_count == 0 or (len(shared_keys) / union_count) < 0.90:
         return False
+    # Never merge two positions if ANY shared technical parameter differs (e.g. 16A vs 25A or DN50 vs DN80)
     matched = sum(1 for k in shared_keys if _req_values_equivalent(map_a[k], map_b[k]))
-    return (matched / len(shared_keys)) >= 0.80
+    return matched == len(shared_keys)
 
 
 def _merge_duplicate_structured_positions(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -540,6 +541,26 @@ async def _analyze_exact_product(
                     for aspec in (a.get("specs_breakdown") or [])
                     if isinstance(aspec, dict)
                 ]
+                alt_gisp = None
+                if a.get("gisp_match") and isinstance(a["gisp_match"], dict) and a["gisp_match"].get("registry_number"):
+                    agm = a["gisp_match"]
+                    alt_gisp = GispRegistryMatch(
+                        registry_number=str(agm.get("registry_number") or ""),
+                        manufacturer=str(agm.get("manufacturer") or a.get("manufacturer") or ""),
+                        product=str(agm.get("product") or a.get("model") or ""),
+                        inn=str(agm.get("inn") or ""),
+                        conclusion_number=str(agm.get("conclusion_number") or ""),
+                        valid_until=str(agm.get("valid_until") or ""),
+                        source_url=str(agm.get("source_url") or ""),
+                        matched=True,
+                    )
+                elif a.get("minprom_registry_number"):
+                    alt_gisp = GispRegistryMatch(
+                        registry_number=str(a.get("minprom_registry_number")),
+                        manufacturer=str(a.get("manufacturer") or a.get("brand") or ""),
+                        product=str(a.get("model") or ""),
+                        matched=True,
+                    )
                 alts_list.append(AlternativeProduct(
                     brand=a.get("brand") or "Аналог",
                     model=a.get("model") or "",
@@ -547,6 +568,7 @@ async def _analyze_exact_product(
                     confidence=float(a.get("confidence") or 0.85),
                     notes=a.get("notes") or "",
                     specs_breakdown=alt_specs,
+                    gisp_match=alt_gisp,
                     source_url=a.get("source_url") or "",
                 ))
 

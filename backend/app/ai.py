@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import random
@@ -445,7 +446,7 @@ def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
 
 
 def _llm_concurrency_limit() -> int:
-    return _env_int("AIPOISK_LLM_MAX_CONCURRENCY", 3, minimum=1, maximum=32)
+    return _env_int("AIPOISK_LLM_MAX_CONCURRENCY", 8, minimum=1, maximum=32)
 
 
 def _max_model_attempts() -> int:
@@ -530,6 +531,7 @@ def _safe_error_text(exc: Exception) -> str:
 
 
 _process_llm_limiter = _ProcessLLMLimiter()
+_llm_limiter_held_var: contextvars.ContextVar[bool] = contextvars.ContextVar("_llm_limiter_held", default=False)
 
 
 async def _sleep_before_retry(delay: float, deadline_monotonic: float | None) -> None:
@@ -590,7 +592,9 @@ async def _post_llm_request(
             if request_metadata is not None:
                 request_metadata["request_attempts"] = int(request_metadata["request_attempts"]) + 1
                 request_metadata["retry_count"] = attempt
-            await _process_llm_limiter.acquire(timeout=limiter_timeout_seconds)
+            already_held = _llm_limiter_held_var.get()
+            if not already_held:
+                await _process_llm_limiter.acquire(timeout=limiter_timeout_seconds)
             try:
                 try:
                     response = await client.post(selection.base_url, headers=headers, json=payload)
@@ -598,7 +602,8 @@ async def _post_llm_request(
                 except httpx.HTTPError as exc:
                     transport_error = exc
             finally:
-                _process_llm_limiter.release()
+                if not already_held:
+                    _process_llm_limiter.release()
 
             if transport_error is not None:
                 last_error = LLMError(
@@ -744,22 +749,37 @@ async def call_llm(
             "fallback_used": index > 0,
         }
         try:
-            selection_timeout = max(0.001, min(float(timeout_seconds), remaining))
-            result = await asyncio.wait_for(
-                _post_llm_request(
-                    selection,
-                    messages,
-                    json_mode=json_mode,
-                    timeout_seconds=selection_timeout,
-                    temperature=temperature,
-                    attempt_budget=request_budget,
-                    request_metadata=request_metadata,
-                    deadline_monotonic=deadline,
-                    max_retries=max_retries,
-                    limiter_timeout_seconds=limiter_timeout_seconds,
-                ),
-                timeout=selection_timeout,
+            acquire_timeout = (
+                limiter_timeout_seconds
+                if limiter_timeout_seconds is not None
+                else max(0.001, deadline - time.monotonic())
             )
+            await _process_llm_limiter.acquire(timeout=acquire_timeout)
+            token = _llm_limiter_held_var.set(True)
+            try:
+                post_remaining = deadline - time.monotonic()
+                if post_remaining <= 0:
+                    raise TimeoutError("LLM overall deadline exceeded")
+                selection_timeout = max(0.001, min(float(timeout_seconds), post_remaining))
+                started = time.monotonic()
+                result = await asyncio.wait_for(
+                    _post_llm_request(
+                        selection,
+                        messages,
+                        json_mode=json_mode,
+                        timeout_seconds=selection_timeout,
+                        temperature=temperature,
+                        attempt_budget=request_budget,
+                        request_metadata=request_metadata,
+                        deadline_monotonic=deadline,
+                        max_retries=max_retries,
+                        limiter_timeout_seconds=limiter_timeout_seconds,
+                    ),
+                    timeout=selection_timeout,
+                )
+            finally:
+                _llm_limiter_held_var.reset(token)
+                _process_llm_limiter.release()
             phase = "validation"
             if response_validator is not None:
                 response_validator(result)

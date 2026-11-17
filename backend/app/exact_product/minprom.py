@@ -127,15 +127,27 @@ async def is_gisp_product_compatible_ai(
 Ответь строго JSON: {{"compatible": true}} или {{"compatible": false}}"""
 
     try:
-        raw = await _get_call_llm()(
-            settings,
-            prompt,
-            system_prompt="Ты эксперт по товарной классификации. Отвечай только валидным JSON.",
-            tier="light",
-            routing_key="procurement_brand_detection",
-            json_mode=True,
-            timeout_seconds=20.0,
-        )
+        llm_fn = _get_call_llm()
+        try:
+            raw = await llm_fn(
+                prompt=prompt,
+                system_prompt="Ты эксперт по товарной классификации. Отвечай только валидным JSON.",
+                model_tier="light",
+                routing_key="procurement_brand_detection",
+                json_mode=True,
+                timeout_seconds=20.0,
+                settings=settings,
+            )
+        except TypeError:
+            raw = await llm_fn(
+                settings,
+                prompt,
+                system_prompt="Ты эксперт по товарной классификации. Отвечай только валидным JSON.",
+                tier="light",
+                routing_key="procurement_brand_detection",
+                json_mode=True,
+                timeout_seconds=20.0,
+            )
         parsed = parse_json_dict(raw)
         if isinstance(parsed, dict) and "compatible" in parsed:
             return bool(parsed["compatible"])
@@ -328,6 +340,8 @@ async def find_minprom_registry_matches_ai(
                         (match_expression, max_entries),
                     )
                     for reg_num, manuf, prod, inn, src_url, evidence in cursor.fetchall():
+                        if name_in_tz and not _is_gisp_product_compatible(str(prod or ""), name_in_tz, brand, model):
+                            continue
                         key = f"{manuf}_{prod}"
                         if key not in seen:
                             seen.add(key)

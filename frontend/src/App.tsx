@@ -1307,7 +1307,7 @@ function ToastContainer({
   )
 }
 
-const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'invoices', 'settings', 'ai', 'mcp', 'price_monitoring', 'cookies'] as const
+const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'dialogs', 'security', 'outreach', 'billing', 'invoices', 'settings', 'ai', 'mcp', 'price_monitoring', 'cookies'] as const
 
 function getInitialView(): View {
   if (typeof window === 'undefined') return 'dashboard'
@@ -4117,7 +4117,11 @@ function JobsView({
   }, [activeFilesDropdownJobId])
 
   useEffect(() => {
-    const timer = setInterval(() => setNowTs(Date.now()), 1000)
+    const timer = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) {
+        setNowTs(Date.now())
+      }
+    }, 1000)
     return () => clearInterval(timer)
   }, [])
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({})

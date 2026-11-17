@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from bs4 import BeautifulSoup
 
@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 TEXT_EXTENSIONS = {".txt", ".md", ".json", ".yaml", ".yml", ".ini", ".log"}
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"}
 ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z"}
 DEFAULT_DOCUMENT_OPTIONS = {
     "ocr_enabled": True,
-    "pdf_ocr_pages": 12,
+    "pdf_ocr_pages": 25,
     "docx_ocr_images": 20,
     "archive_max_files": 80,
     "archive_max_mb": 250,
@@ -113,14 +113,17 @@ def _natural_sort_key(s: str) -> list[int | str]:
 
 
 def sanitize_filename(value: str) -> str:
-    raw_val = clean_surrogates(str(value or "")).strip()
+    raw_val = clean_surrogates(str(value or "")).replace("\\", "/").strip()
     if not raw_val:
         return "upload"
-    p = Path(raw_val)
+    leaf = PurePosixPath(raw_val).name.strip()
+    if not leaf or leaf in {".", ".."}:
+        return "upload"
+    p = Path(leaf)
     ext = p.suffix
-    stem = p.stem if ext else raw_val
+    stem = p.stem if ext else leaf
     clean_ext = re.sub(r"[^\w.-]+", "_", ext, flags=re.UNICODE)
-    clean_stem = re.sub(r"[^\w?-??-??? ._-]+", "_", stem, flags=re.UNICODE).strip(" ._")
+    clean_stem = re.sub(r"[^\wА-Яа-яЁё()№ ._-]+", "_", stem, flags=re.UNICODE).strip(" ._")
     ext_bytes = len(clean_ext.encode("utf-8"))
     max_stem_bytes = max(10, 180 - ext_bytes)
     truncated_stem = _truncate_utf8(clean_stem, max_stem_bytes, fallback="upload")
@@ -229,7 +232,7 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
                     return text, "docx_ocr_ok"
 
                 if not cleaned:
-                    pdf_pages = int(options.get("pdf_ocr_pages") or 12)
+                    pdf_pages = max(int(options.get("pdf_ocr_pages") or 15), 15)
                     lo_pdf_ocr = _extract_office_via_pdf_ocr(file_path, pdf_pages)
                     if lo_pdf_ocr.strip():
                         return lo_pdf_ocr, "docx_pdf_ocr_ok"
@@ -262,7 +265,7 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
         if suffix == ".pdf":
             text = _extract_pdf(file_path)
             if _pdf_needs_ocr(file_path, text) and options.get("ocr_enabled"):
-                max_pages = max(int(options.get("pdf_ocr_pages") or 20), 20)
+                max_pages = max(int(options.get("pdf_ocr_pages") or 40), 40)
                 ocr_text = _extract_pdf_ocr(file_path, max_pages)
                 if ocr_text.strip():
                     return ocr_text, "pdf_ocr_ok"
@@ -283,7 +286,7 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
             text = _extract_doc(file_path)
             cleaned = _clean_text(text)
             if len(cleaned) < 80 and options.get("ocr_enabled"):
-                pdf_pages = int(options.get("pdf_ocr_pages") or 12)
+                pdf_pages = max(int(options.get("pdf_ocr_pages") or 15), 15)
                 doc_ocr = _extract_office_via_pdf_ocr(file_path, pdf_pages)
                 if doc_ocr.strip():
                     return doc_ocr, "doc_ocr_ok"
@@ -408,7 +411,11 @@ def _extract_docx_xml(path: Path) -> str:
         with zipfile.ZipFile(path) as z:
             if "word/document.xml" not in z.namelist():
                 return ""
-            xml_data = z.read("word/document.xml")
+            info = z.getinfo("word/document.xml")
+            if info.file_size > 64 * 1024 * 1024:
+                return ""
+            with z.open(info) as stream:
+                xml_data = stream.read(64 * 1024 * 1024)
         soup = BeautifulSoup(xml_data, "xml")
         body = soup.find(["w:body", "body"])
         if not body:
@@ -623,14 +630,34 @@ def _extract_image_ocr(path: Path) -> str:
     tesseract = shutil.which("tesseract")
     if not tesseract:
         return ""
-    result = subprocess.run(
-        [tesseract, str(path), "stdout", "-l", "rus+eng"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-    return result.stdout if result.returncode == 0 else ""
+    ocr_target = path
+    tmp_dir: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        from PIL import Image, ImageOps
+
+        Image.MAX_IMAGE_PIXELS = 45_000_000
+        with Image.open(path) as img:
+            normalized = ImageOps.exif_transpose(img)
+            gray = ImageOps.grayscale(normalized)
+            enhanced = ImageOps.autocontrast(gray, cutoff=1)
+            tmp_dir = tempfile.TemporaryDirectory(prefix="aipoisk-img-ocr-")
+            prepped = Path(tmp_dir.name) / "prepped.png"
+            enhanced.save(prepped, format="PNG")
+            ocr_target = prepped
+    except Exception:
+        ocr_target = path
+    try:
+        result = subprocess.run(
+            [tesseract, str(ocr_target), "stdout", "-l", "rus+eng"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        return result.stdout if result.returncode == 0 else ""
+    finally:
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
 
 
 def _extract_pdf_ocr(path: Path, max_pages: int) -> str:
@@ -752,27 +779,73 @@ def _extract_archive(path: Path, options: dict, depth: int) -> tuple[str, str]:
         return "", "archive_no_text"
 
 
+MAX_ARCHIVE_MEMBER_BYTES = 80 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 200 * 1024 * 1024
+
+
 def _extract_zip_members(path: Path, destination: Path, max_files: int) -> list[Path]:
     extracted: list[Path] = []
+    dest_resolved = destination.resolve()
+    total_written = 0
     with zipfile.ZipFile(path) as archive:
         for member in archive.infolist():
             if max_files and len(extracted) >= max_files:
                 break
             if member.is_dir():
                 continue
-            filename = fix_archive_filename(member.filename)
-            safe_name = sanitize_filename(Path(filename).name)
+            # Reject POSIX symlinks stored in zip external_attr (S_IFLNK == 0o120000)
+            if ((member.external_attr >> 16) & 0o170000) == 0o120000:
+                continue
+            if member.file_size > MAX_ARCHIVE_MEMBER_BYTES or (total_written + member.file_size) > MAX_ARCHIVE_TOTAL_BYTES:
+                continue
+            filename = fix_archive_filename(member.filename).replace("\\", "/")
+            raw_parts = [
+                p for p in PurePosixPath(filename).parts
+                if p not in ("", "/", ".", "..")
+            ]
+            if not raw_parts:
+                continue
+            safe_dirs = [
+                re.sub(r"[^\wА-Яа-яЁё()№ ._-]+", "_", d, flags=re.UNICODE).strip(" ._") or "dir"
+                for d in raw_parts[:-1][:6]
+            ]
+            safe_name = sanitize_filename(raw_parts[-1])
             if not safe_name:
                 continue
-            target = destination / f"{len(extracted) + 1:03d}_{safe_name}"
-            target.write_bytes(archive.read(member))
+            rel_dir = Path(*safe_dirs) if safe_dirs else Path()
+            target_dir = (destination / rel_dir).resolve()
+            if not target_dir.is_relative_to(dest_resolved):
+                continue
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = (target_dir / safe_name).resolve()
+            if not target.is_relative_to(dest_resolved):
+                continue
+            if target.exists():
+                target = (target_dir / f"{len(extracted) + 1:03d}_{safe_name}").resolve()
+            member_written = 0
+            aborted = False
+            with archive.open(member) as src, target.open("wb") as dst:
+                while True:
+                    chunk = src.read(65536)
+                    if not chunk:
+                        break
+                    member_written += len(chunk)
+                    if member_written > MAX_ARCHIVE_MEMBER_BYTES or (total_written + member_written) > MAX_ARCHIVE_TOTAL_BYTES:
+                        aborted = True
+                        break
+                    dst.write(chunk)
+            if aborted:
+                target.unlink(missing_ok=True)
+                continue
+            total_written += member_written
             extracted.append(target)
     return extracted
 
 
 def _extract_external_archive(path: Path, destination: Path, max_files: int) -> list[Path]:
+    dest_resolved = destination.resolve()
     if path.suffix.lower() == ".rar" and shutil.which("unrar"):
-        command = ["unrar", "x", "-o+", str(path), str(destination)]
+        command = ["unrar", "x", "-o+", "-ol-", str(path), str(destination)]
     elif shutil.which("7z"):
         command = ["7z", "x", f"-o{destination}", "-y", str(path)]
     else:
@@ -780,19 +853,34 @@ def _extract_external_archive(path: Path, destination: Path, max_files: int) -> 
     result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=180)
     if result.returncode != 0:
         return []
-    files = [item for item in destination.rglob("*") if item.is_file()]
     clean_files: list[Path] = []
-    for item in files:
+    total_bytes = 0
+    for item in destination.rglob("*"):
+        if item.is_symlink():
+            item.unlink(missing_ok=True)
+            continue
+        try:
+            resolved_item = item.resolve()
+        except Exception:
+            continue
+        if not resolved_item.is_relative_to(dest_resolved) or not resolved_item.is_file():
+            continue
+        size = resolved_item.stat().st_size
+        if size > MAX_ARCHIVE_MEMBER_BYTES or (total_bytes + size) > MAX_ARCHIVE_TOTAL_BYTES:
+            resolved_item.unlink(missing_ok=True)
+            continue
+        total_bytes += size
         raw_name = item.name
         cleaned_name = fix_archive_filename(raw_name)
         if cleaned_name != raw_name:
             safe_name = sanitize_filename(cleaned_name)
-            new_target = item.parent / safe_name
-            try:
-                item.rename(new_target)
-                item = new_target
-            except Exception:
-                pass
+            new_target = (item.parent / safe_name).resolve()
+            if new_target.is_relative_to(dest_resolved):
+                try:
+                    item.rename(new_target)
+                    item = new_target
+                except Exception:
+                    pass
         clean_files.append(item)
     return clean_files[: max_files or len(clean_files)]
 
@@ -1017,8 +1105,9 @@ def is_substantive_tz_text(text: str) -> tuple[bool, str]:
     if has_signature and len(meaningful_chars) < 25:
         return False, "В документе отсутствуют требования к товару (обнаружен только штамп электронной подписи). Загрузите файл со спецификацией или текстом ТЗ."
 
-    if len(meaningful_chars) < 10:
-        return False, "В документе недостаточно данных для подбора (содержимое пусто или менее 10 значимых символов). Загрузите файл со спецификацией."
+    alpha_chars = re.sub(r"[\s\W_\d]+", "", stripped_placeholder, flags=re.UNICODE)
+    if len(meaningful_chars) < 4 or len(alpha_chars) < 2:
+        return False, "В документе недостаточно данных для подбора (содержимое пусто или слишком короткое). Загрузите файл со спецификацией или укажите наименование товара."
 
     return True, "ok"
 
@@ -1128,6 +1217,28 @@ def extract_smart_pdf_content(
                     break
         except Exception:
             continue
+
+    combined_alnum = re.sub(r"[\s\W_]+", "", "\n".join(pages_text), flags=re.UNICODE)
+    if len(combined_alnum) < 80 and shutil.which("tesseract"):
+        try:
+            with tempfile.TemporaryDirectory(prefix="aipoisk-smartpdf-ocr-") as tmp:
+                for pno in range(min(total_pages, 6)):
+                    try:
+                        page = doc[pno]
+                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                        img_path = Path(tmp) / f"smart-page-{pno + 1}.png"
+                        pix.save(str(img_path))
+                        ocr_txt = _extract_image_ocr(img_path).strip()
+                        if ocr_txt:
+                            block = f"--- [OCR СТРАНИЦА ПАСПОРТА/КАТАЛОГА {pno + 1}] ---\n{ocr_txt}"
+                            pages_text.append(block)
+                            current_length += len(block)
+                            if current_length >= max_chars:
+                                break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
 
     doc.close()
     return "\n".join(pages_text)

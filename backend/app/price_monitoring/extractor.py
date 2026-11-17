@@ -47,12 +47,13 @@ BLOCKED_DOMAINS = {
 }
 
 
-# Маркетплейсы потребительских товаров и доски объявлений
+# Маркетплейсы потребительских товаров, доски объявлений и B2B-агрегаторы
 MARKETPLACE_DOMAINS = {
     "ozon.ru", "wildberries.ru", "market.yandex.ru", "megamarket.ru",
     "aliexpress.ru", "aliexpress.com", "avito.ru", "taobao.com", "1688.com",
     "temu.com", "ebay.com", "amazon.com", "lamoda.ru", "sbermegamarket.ru",
-    "youla.ru", "farpost.ru", "drom.ru", "irr.ru", "doski.ru", "flagma.ru"
+    "youla.ru", "farpost.ru", "drom.ru", "irr.ru", "doski.ru", "flagma.ru",
+    "pulscen.ru", "blizko.ru", "satom.ru", "tiu.ru", "fis.ru", "orgpage.ru",
 }
 
 # Сайты-посредники зарубежного выкупа / мейлфорвардеры
@@ -220,6 +221,12 @@ def is_foreign_source(url: str, text: str = "", geo_scope: str = "ru") -> bool:
             if tld not in {".ru", ".рф", ".su"} and not domain.endswith(".xn--p1ai"):
                 if scope == "cis" and tld in CIS_CCTLDS:
                     pass
+                elif tld in GENERIC_BUSINESS_TLDS and text and len(text) > 30:
+                    cyrillic = len(re.findall(r'[а-яА-ЯёЁ]', text))
+                    latin = len(re.findall(r'[a-zA-Z]', text))
+                    total = cyrillic + latin
+                    if cyrillic < 10 or (total > 20 and (cyrillic / total) < 0.25):
+                        return True
                 else:
                     return True
 
@@ -361,13 +368,29 @@ def extract_schema_org_product_data(soup: BeautifulSoup) -> Tuple[Optional[Dict[
     def _inspect_offer(offer_dict: dict) -> Tuple[Optional[float], Optional[str], Optional[str], bool]:
         price_val = None
         raw_price = offer_dict.get("price") or offer_dict.get("lowPrice")
+        price_spec = offer_dict.get("priceSpecification")
+        if raw_price is None and isinstance(price_spec, dict):
+            raw_price = price_spec.get("price") or price_spec.get("minPrice")
+        elif raw_price is None and isinstance(price_spec, list):
+            for ps in price_spec:
+                if isinstance(ps, dict) and (ps.get("price") is not None or ps.get("minPrice") is not None):
+                    raw_price = ps.get("price") or ps.get("minPrice")
+                    break
+        if raw_price is None and isinstance(offer_dict.get("offers"), list):
+            for nested in offer_dict["offers"]:
+                if isinstance(nested, dict):
+                    nv, nc, na, no = _inspect_offer(nested)
+                    if nv and nv > 0:
+                        return nv, nc, na, no
         if raw_price is not None:
             try:
-                c_pr = str(raw_price).replace(" ", "").replace(",", ".")
+                c_pr = str(raw_price).replace(" ", "").replace("\xa0", "").replace(",", ".")
                 price_val = float(c_pr)
             except Exception:
                 price_val = None
         curr = offer_dict.get("priceCurrency")
+        if not curr and isinstance(price_spec, dict):
+            curr = price_spec.get("priceCurrency")
         avail = str(offer_dict.get("availability") or "").lower()
         is_oos = any(bad in avail for bad in ("outofstock", "discontinued", "soldout"))
         return price_val, curr, avail, is_oos
@@ -423,12 +446,53 @@ def extract_schema_org_product_data(soup: BeautifulSoup) -> Tuple[Optional[Dict[
                         "is_out_of_stock": p_oos,
                     }
 
-    # Также проверяем мета-теги наличия
+    # Также проверяем мета-теги наличия и микроразметку цены (itemprop="price" / meta product:price:amount)
+    microdata_price: Optional[float] = None
+    microdata_currency: str = "RUB"
     for meta in soup.find_all("meta"):
-        prop = (meta.get("property") or meta.get("name") or "").lower()
-        content = (meta.get("content") or "").lower()
-        if "availability" in prop and any(bad in content for bad in ("discontinued", "снят")):
+        prop = (meta.get("property") or meta.get("name") or meta.get("itemprop") or "").lower()
+        content = (meta.get("content") or "").strip()
+        content_low = content.lower()
+        if "availability" in prop and any(bad in content_low for bad in ("discontinued", "снят")):
             is_discontinued = True
+        if prop in ("price", "product:price:amount", "og:price:amount") and content and microdata_price is None:
+            try:
+                pv = float(re.sub(r"[^\d.,]", "", content).replace(",", "."))
+                if pv > 0:
+                    microdata_price = pv
+            except Exception:
+                pass
+        if prop in ("pricecurrency", "product:price:currency", "og:price:currency") and content:
+            microdata_currency = content.upper()
+
+    if microdata_price is None:
+        price_el = soup.find(attrs={"itemprop": "price"})
+        if price_el is not None:
+            raw_md = price_el.get("content") or price_el.get_text(" ", strip=True)
+            if raw_md:
+                try:
+                    pv = float(re.sub(r"[^\d.,]", "", str(raw_md)).replace(",", "."))
+                    if pv > 0:
+                        microdata_price = pv
+                except Exception:
+                    pass
+
+    if microdata_price is not None:
+        if best_product is None:
+            h1 = soup.find("h1")
+            best_product = {
+                "name": h1.get_text(" ", strip=True) if h1 else None,
+                "sku": None,
+                "brand": None,
+                "price": microdata_price,
+                "currency": microdata_currency or "RUB",
+                "availability": None,
+                "is_out_of_stock": is_discontinued,
+            }
+        elif not best_product.get("price"):
+            best_product["price"] = microdata_price
+            if not best_product.get("currency"):
+                best_product["currency"] = microdata_currency or "RUB"
 
     return best_product, is_discontinued
 
@@ -450,8 +514,28 @@ async def fetch_page_content_and_meta(
     if custom_cookie:
         headers["Cookie"] = custom_cookie
     try:
-        resp = await client.get(url, headers=headers, timeout=httpx.Timeout(7.0, connect=2.5))
-        if resp.status_code != 200 or not resp.text:
+        from ..ssrf_guard import async_validate_public_http_url
+
+        current_url = url
+        resp = None
+        for _hop in range(5):
+            await async_validate_public_http_url(current_url)
+            resp = await client.get(
+                current_url,
+                headers=headers,
+                timeout=httpx.Timeout(7.0, connect=2.5),
+            )
+            if getattr(resp, "status_code", 0) in {301, 302, 303, 307, 308}:
+                loc = (getattr(resp, "headers", {}) or {}).get("location", "")
+                if not loc:
+                    return None, None, None, None
+                current_url = urljoin(current_url, loc)
+                continue
+            break
+        if resp is None or resp.status_code != 200 or not resp.text:
+            return None, None, None, None
+        raw_content = getattr(resp, "content", None)
+        if isinstance(raw_content, (bytes, bytearray)) and len(raw_content) > 12 * 1024 * 1024:
             return None, None, None, None
 
         raw_html = resp.text
@@ -526,21 +610,25 @@ async def fetch_page_content_and_meta(
         if footer_tag:
             footer_text = " ".join(footer_tag.stripped_strings)
 
-        # Удаляем скрипты и стили
-        for tag in soup(["script", "style", "iframe", "noscript"]):
+        # Удаляем скрипты, стили и сквозные меню шапки/навигации, чтобы не забивать окно контента
+        for tag in soup(["script", "style", "iframe", "noscript", "svg", "header", "nav"]):
             tag.decompose()
 
         main_text = " ".join(soup.stripped_strings)
 
         # Объединяем структурированные данные Schema.org, основной текст и реквизиты подвала
-        combined_text = (schema_block + main_text)[:3500] if schema_block else main_text[:3500]
+        combined_text = (schema_block + main_text)[:15000] if schema_block else main_text[:15000]
         if footer_text:
-            combined_text += "\n\n[РЕКВИЗИТЫ И ПОДВАЛ САЙТА]:\n" + footer_text[:1000]
+            combined_text += "\n\n[РЕКВИЗИТЫ И ПОДВАЛ САЙТА]:\n" + footer_text[:1500]
 
         # Если ИНН или контактов всё ещё нет, но есть ссылки на реквизиты/контакты, пробуем быстро подтянуть реквизиты
         if (not inn or not contacts) and contacts_suburls:
+            from ..ssrf_guard import async_is_safe_public_http_url
+
             for c_url in contacts_suburls:
                 try:
+                    if not await async_is_safe_public_http_url(c_url):
+                        continue
                     c_resp = await client.get(c_url, headers=headers, timeout=httpx.Timeout(3.5, connect=2.0))
                     if c_resp.status_code == 200 and c_resp.text:
                         c_inn, c_kpp, c_contacts = _extract_inn_kpp_contacts(c_resp.text)
@@ -965,6 +1053,9 @@ URL страницы: {url}
    - СНЯТИЕ С ПРОИЗВОДСТВА И АРХИВНЫЕ ТОВАРЫ:
      * Если товар явно помечен 'снят с производства' / 'архивный товар' без предложения поставки — установи is_relevant: false, is_price_found: false!
    - ВНИМАНИЕ: Если указана реальная цена в рублях (например 890 ₽, 1 500 ₽), но на складе статус 'под заказ', 'уточняйте наличие' или 'нет на складе' — ЭТО ДЕЙСТВУЮЩАЯ ЦЕНА КАТАЛОГА ДЛЯ ЗАКУПКИ! Установи is_price_found: true, is_relevant: true!
+   - УЧЕТ НДС И ОПТОВЫХ ПОРОГОВ:
+     * Если на странице указаны одновременно цена с НДС и цена без НДС, приоритетно выбирай цену С НДС (для сопоставимости расчета НМЦК), а если указана только цена 'без НДС' — сохрани её как есть и обязательно отметь 'Цена на сайте указана без НДС' в conversion_comment.
+     * Если на странице указана сетка цен от объема ('розница / от 10 шт / крупный опт от 1000 шт'), бери базовую коммерческую цену за 1 единицу (или мелкий опт без заградительного минимального порога), не подменяя розничную/мелкооптовую цену глубокой дилерской скидкой от вагона.
 3. СЕМАНТИЧЕСКИЙ ФИЗИЧЕСКИЙ ПЕРЕСЧЕТ В ЕДИНИЦУ ЗАКАЗЧИКА "{norm_unit}" (ПРАВИЛО 14):
    - Если единица на сайте уже совпадает с "{norm_unit}", price_rub = raw_price_rub.
    - Если отличается, выполни математический пересчет исходя из физических характеристик товара:

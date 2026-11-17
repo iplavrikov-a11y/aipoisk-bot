@@ -65,6 +65,8 @@ export function ChatWidget() {
   const [activeJobContext, setActiveJobContext] = useState<ActiveJobContext | null>(null);
   const [inputText, setInputText] = useState('');
   const [contactInput, setContactInput] = useState('');
+  const [contactConsent, setContactConsent] = useState(false);
+  const [contactError, setContactError] = useState('');
   const [savedContact, setSavedContact] = useState('');
   const [showContactModal, setShowContactModal] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -72,6 +74,7 @@ export function ChatWidget() {
   const [isBlocked, setIsBlocked] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [workHours, setWorkHours] = useState<{ is_open: boolean; notice?: string } | null>(null);
+  const [hasGuestInteraction, setHasGuestInteraction] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messageFeedRef = useRef<HTMLDivElement>(null);
@@ -80,6 +83,7 @@ export function ChatWidget() {
   const pollControllerRef = useRef<AbortController | null>(null);
   const pendingMessageIdsRef = useRef(new Map<string, Pick<Message, 'text' | 'preset'>>());
   const shouldScrollToEndRef = useRef(false);
+  const customerCsrfRef = useRef('');
 
   function persistMessages(updated: Message[]) {
     if (!isCustomerMode) {
@@ -158,9 +162,14 @@ export function ChatWidget() {
     isOpenRef.current = true;
     shouldScrollToEndRef.current = true;
     setIsOpen(true);
+    setHasGuestInteraction(true);
     setIsPillDismissed(false);
     if (isCustomerMode && unreadCount > 0) {
-      fetch('/api/customer/chat/read', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+      fetch('/api/customer/chat/read', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: customerCsrfRef.current ? { 'x-csrf-token': customerCsrfRef.current } : undefined,
+      }).catch(() => {});
       setUnreadCount(0);
     }
   }
@@ -200,6 +209,9 @@ export function ChatWidget() {
         if (res.ok) {
           const data = await res.json();
           if (data && data.authenticated && !disposed) {
+            if (typeof data.csrf_token === 'string') {
+              customerCsrfRef.current = data.csrf_token;
+            }
             setIsCustomerMode(true);
             setCustomerName(data.client?.name || '');
             if (data.client?.phone || data.client?.email) {
@@ -231,7 +243,7 @@ export function ChatWidget() {
       if (disposed) return;
       // Guest Mode initialization
       let sid = localStorage.getItem('tenderlex_chat_session_id');
-      if (!sid) {
+      if (!sid || sid.toLowerCase().startsWith('tg_')) {
         sid = 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
         localStorage.setItem('tenderlex_chat_session_id', sid);
       }
@@ -244,8 +256,14 @@ export function ChatWidget() {
       if (savedMsgs) {
         try {
           const restoredMessages = JSON.parse(savedMsgs);
-          if (Array.isArray(restoredMessages)) replaceMessages(restoredMessages);
-          else initWelcomeMessage();
+          if (Array.isArray(restoredMessages)) {
+            replaceMessages(restoredMessages);
+            if (restoredMessages.some((m: any) => m && m.sender === 'user')) {
+              setHasGuestInteraction(true);
+            }
+          } else {
+            initWelcomeMessage();
+          }
         } catch {
           initWelcomeMessage();
         }
@@ -276,7 +294,11 @@ export function ChatWidget() {
     if (isOpen) {
       setUnreadCount(0);
       if (isCustomerMode) {
-        fetch('/api/customer/chat/read', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+        fetch('/api/customer/chat/read', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: customerCsrfRef.current ? { 'x-csrf-token': customerCsrfRef.current } : undefined,
+        }).catch(() => {});
       }
     }
   }, [isOpen, isCustomerMode]);
@@ -296,6 +318,8 @@ export function ChatWidget() {
 
     const poll = async () => {
       if (pollControllerRef.current) return;
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (!isCustomerMode && !isOpenRef.current && !hasGuestInteraction) return;
       const controller = new AbortController();
       pollControllerRef.current = controller;
       try {
@@ -304,8 +328,15 @@ export function ChatWidget() {
             signal: controller.signal,
             credentials: 'same-origin',
           });
+          if (res.status === 401 && !disposed) {
+            setIsCustomerMode(false);
+            return;
+          }
           if (res.ok) {
             const data = await res.json();
+            if (!disposed && typeof data.csrf_token === 'string') {
+              customerCsrfRef.current = data.csrf_token;
+            }
             if (!disposed && Array.isArray(data.messages)) {
               const mapped: Message[] = data.messages.map((m: any) => ({
                 id: m.id,
@@ -324,7 +355,7 @@ export function ChatWidget() {
           const res = await fetch(`/api/chat/messages?sessionId=${sessionId}`, { signal: controller.signal });
           if (res.ok) {
             const data = await res.json();
-            if (!disposed) {
+            if (!disposed && !data.transient) {
               setIsBlocked(data.status === 'blocked' || Boolean(data.is_blocked));
               if (data.work_hours && typeof data.work_hours.is_open === 'boolean') {
                 setWorkHours(data.work_hours);
@@ -360,7 +391,7 @@ export function ChatWidget() {
       if (timeout) clearTimeout(timeout);
       if (pollControllerRef.current) pollControllerRef.current.abort();
     };
-  }, [sessionId, isCustomerMode]);
+  }, [sessionId, isCustomerMode, hasGuestInteraction]);
 
   // 4. Send Message Handler
   async function handleSend(textToSend?: string, presetLabel?: string) {
@@ -369,6 +400,7 @@ export function ChatWidget() {
 
     setIsSending(true);
     setSendError('');
+    setHasGuestInteraction(true);
 
     const userMsg: Message = {
       id: 'user_' + Date.now(),
@@ -396,12 +428,16 @@ export function ChatWidget() {
         const response = await fetch('/api/customer/chat', {
           method: 'POST',
           credentials: 'same-origin',
+          headers: customerCsrfRef.current ? { 'x-csrf-token': customerCsrfRef.current } : undefined,
           body: formData,
         });
         if (!response.ok) {
           const errData = await response.json().catch(() => null);
-          if (response.status === 403 || response.status === 401) {
+          if (response.status === 403) {
             setIsBlocked(true);
+          }
+          if (response.status === 401) {
+            throw new Error('Сессия в кабинете истекла — обновите страницу, чтобы продолжить диалог.');
           }
           throw new Error(errData?.detail || errData?.error || 'Message delivery failed');
         }
@@ -459,6 +495,10 @@ export function ChatWidget() {
 
   // 5. Save contact handler
   function saveContactInfo() {
+    if (!contactConsent) {
+      setContactError('Для сохранения контакта необходимо согласие на обработку персональных данных.');
+      return;
+    }
     const val = contactInput.trim();
     if (!val) return;
     const lower = val.toLowerCase();
@@ -470,9 +510,10 @@ export function ChatWidget() {
       ['admin', 'test', 'user', 'root', 'x', '123', 'qwerty'].includes(lower) ||
       (!hasEmail && !hasTg && !hasPhone)
     ) {
-      setSendError('Укажите реальный телефон (от 7 цифр), email или @username в Telegram.');
+      setContactError('Укажите реальный телефон (от 7 цифр), email или @username в Telegram.');
       return;
     }
+    setContactError('');
     setSendError('');
     setSavedContact(val);
     localStorage.setItem('tenderlex_chat_contact', val);
@@ -702,28 +743,65 @@ export function ChatWidget() {
           {/* Contact Input Modal Overlay */}
           {showContactModal && (
             <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-20">
-              <div className="bg-white rounded-2xl p-4 w-full max-w-[320px] shadow-2xl border border-slate-200">
+              <div className="bg-white rounded-2xl p-4 w-full max-w-[330px] shadow-2xl border border-slate-200">
                 <h4 className="font-extrabold text-sm text-slate-900 mb-1">Оставайтесь на связи</h4>
                 <p className="text-xs text-slate-500 mb-3">
-                  Укажите ваш телефон, email или логин Telegram, чтобы администратор смог ответить вам при закрытии вкладки.
+                  Укажите ваш телефон, email или логин Telegram, чтобы специалист смог ответить вам при закрытии вкладки.
                 </p>
                 <input
                   type="text"
                   placeholder="+7 (999) 000-00-00 или @username"
                   value={contactInput}
-                  onChange={(e) => setContactInput(e.target.value)}
-                  className="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs mb-3 focus:outline-none focus:border-teal-600"
+                  onChange={(e) => {
+                    setContactInput(e.target.value);
+                    if (contactError) setContactError('');
+                  }}
+                  className="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs mb-2.5 focus:outline-none focus:border-teal-600"
                 />
+                <label className="flex items-start gap-2 text-[11px] leading-snug text-slate-600 mb-3 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={contactConsent}
+                    onChange={(e) => {
+                      setContactConsent(e.target.checked);
+                      if (contactError) setContactError('');
+                    }}
+                    className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 text-teal-700 focus:ring-teal-600 shrink-0"
+                    required
+                  />
+                  <span>
+                    Даю{' '}
+                    <a href="/personal-data" target="_blank" rel="noreferrer" className="text-teal-700 underline font-semibold hover:text-teal-900">
+                      согласие на обработку персональных данных
+                    </a>{' '}
+                    в соответствии с{' '}
+                    <a href="/privacy" target="_blank" rel="noreferrer" className="text-teal-700 underline font-semibold hover:text-teal-900">
+                      Политикой конфиденциальности
+                    </a>
+                    .
+                  </span>
+                </label>
+                {contactError ? (
+                  <p role="alert" className="text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5 mb-2.5">
+                    {contactError}
+                  </p>
+                ) : null}
                 <div className="flex items-center justify-end gap-2">
                   <button
-                    onClick={() => setShowContactModal(false)}
+                    type="button"
+                    onClick={() => {
+                      setContactError('');
+                      setShowContactModal(false);
+                    }}
                     className="px-3 py-1.5 text-xs text-slate-600 hover:text-slate-900 font-bold cursor-pointer"
                   >
                     Отмена
                   </button>
                   <button
+                    type="button"
+                    disabled={!contactConsent}
                     onClick={saveContactInfo}
-                    className="bg-teal-700 hover:bg-teal-800 text-white font-extrabold text-xs px-3 py-1.5 rounded-xl shadow-xs cursor-pointer"
+                    className="bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white font-extrabold text-xs px-3 py-1.5 rounded-xl shadow-xs cursor-pointer"
                   >
                     Сохранить
                   </button>
@@ -771,6 +849,19 @@ export function ChatWidget() {
               <Send className="w-4 h-4" />
             </button>
           </form>
+          {!isCustomerMode && (
+            <p className="px-3 pb-2 pt-0 bg-white text-[10px] leading-tight text-slate-400 text-center">
+              Отправляя контакт и сообщение, вы даёте{' '}
+              <a href="/personal-data" target="_blank" rel="noreferrer" className="underline hover:text-teal-700">
+                согласие на обработку персональных данных
+              </a>{' '}
+              в соответствии с{' '}
+              <a href="/privacy" target="_blank" rel="noreferrer" className="underline hover:text-teal-700">
+                Политикой конфиденциальности
+              </a>
+              .
+            </p>
+          )}
         </div>
       )}
     </div>

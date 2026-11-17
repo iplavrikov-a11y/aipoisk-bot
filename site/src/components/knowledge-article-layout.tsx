@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getSiteData } from "@/lib/site-data";
+import { safeJsonLd } from "@/lib/seo";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
@@ -69,24 +70,24 @@ export async function KnowledgeArticleLayout({
     <>
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }}
+        dangerouslySetInnerHTML={{ __html: safeJsonLd(breadcrumbSchema) }}
       />
       {articleSchema && (
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(articleSchema) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLd(articleSchema) }}
         />
       )}
       {howToSchema && (
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(howToSchema) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLd(howToSchema) }}
         />
       )}
       {faqSchema && (
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLd(faqSchema) }}
         />
       )}
 
@@ -187,6 +188,58 @@ export async function KnowledgeArticleLayout({
                     </ul>
                   </nav>
                 )}
+
+                {/* COMPACT CONVERSION BANNER RIGHT AFTER TOC */}
+                <aside
+                  aria-label="Быстрый переход к проверке задачи"
+                  className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-[#e5f4f3] via-[#f6f8f7] to-white border border-[#b8c8c5] shadow-2xs space-y-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-[#075b63]">
+                        <Sparkles size={13} className="text-[#075b63]" /> Практическая проверка в TenderLex
+                      </span>
+                      <p className="text-xs sm:text-sm font-bold text-[#172120]">
+                        Проверьте свою спецификацию или извещение прямо сейчас — выберите сценарий:
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid sm:grid-cols-3 gap-2.5">
+                    <Link
+                      href="/cabinet?mode=supplier_search"
+                      className="p-3 rounded-xl bg-white hover:bg-[#e5f4f3] border border-[#b8c8c5] hover:border-[#075b63] transition-all group block shadow-2xs"
+                    >
+                      <strong className="text-xs font-extrabold text-[#075b63] group-hover:text-[#06464c] block">
+                        1. Поиск поставщиков →
+                      </strong>
+                      <span className="text-[11px] text-[#2f3f3d] block mt-0.5 leading-snug">
+                        Заводы, дилеры, контакты сбыта и проект запроса КП
+                      </span>
+                    </Link>
+                    <Link
+                      href="/cabinet?mode=exact_product"
+                      className="p-3 rounded-xl bg-white hover:bg-[#e5f4f3] border border-[#b8c8c5] hover:border-[#075b63] transition-all group block shadow-2xs"
+                    >
+                      <strong className="text-xs font-extrabold text-[#075b63] group-hover:text-[#06464c] block">
+                        2. Подбор товара и аналогов →
+                      </strong>
+                      <span className="text-[11px] text-[#2f3f3d] block mt-0.5 leading-snug">
+                        Сравнение параметров ТЗ и сверка с реестром РФ
+                      </span>
+                    </Link>
+                    <Link
+                      href="/cabinet?mode=procurement_report"
+                      className="p-3 rounded-xl bg-white hover:bg-[#e5f4f3] border border-[#b8c8c5] hover:border-[#075b63] transition-all group block shadow-2xs"
+                    >
+                      <strong className="text-xs font-extrabold text-[#075b63] group-hover:text-[#06464c] block">
+                        3. Анализ документации →
+                      </strong>
+                      <span className="text-[11px] text-[#2f3f3d] block mt-0.5 leading-snug">
+                        Разбор условий, сроков, обеспечения и рисков закупки
+                      </span>
+                    </Link>
+                  </div>
+                </aside>
 
                 {/* ACTUAL ARTICLE CONTENT */}
                 <div className="article-prose space-y-6">
@@ -318,7 +371,7 @@ export async function KnowledgeArticleLayout({
                         Подбор товара и аналогов по ТЗ
                       </strong>
                       <span className="text-[11px] text-[#697a77] block leading-tight">
-                        Рабочее сравнение требований и характеристик в DOCX.
+                        Построчное сравнение характеристик товара и подходящих аналогов под требования закупки.
                       </span>
                     </Link>
 
@@ -371,40 +424,6 @@ export async function KnowledgeArticleLayout({
                     </Link>
                   </div>
                 </div>
-
-                {/* RELATED ARTICLES INLINE BLOCK FOR CRAWLERS & READERS */}
-                {relatedArticles && relatedArticles.length > 0 && (
-                  <div className="my-8 p-6 rounded-2xl bg-[#f6f8f7] border border-[#d8e3e1] space-y-4">
-                    <h4 className="text-xs font-black uppercase tracking-wider text-[#075b63] flex items-center gap-2">
-                      <Bookmark size={14} className="text-[#075b63]" />
-                      Рекомендуемые материалы по теме статьи
-                    </h4>
-                    <div className="grid sm:grid-cols-3 gap-3">
-                      {relatedArticles.map((ra, idx) => (
-                        <Link
-                          key={idx}
-                          href={`/baza-znaniy/${ra.slug}`}
-                          className="p-3.5 rounded-xl bg-white hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#075b63] transition-all group flex flex-col justify-between shadow-2xs"
-                        >
-                          <div>
-                            <span className="text-[10px] font-bold text-[#075b63] uppercase block mb-1">
-                              {ra.tag}
-                            </span>
-                            <strong className="text-xs font-bold text-[#172120] group-hover:text-[#075b63] transition-colors line-clamp-2 block mb-1 leading-snug">
-                              {ra.title}
-                            </strong>
-                            <p className="text-[11px] text-[#697a77] line-clamp-2 leading-tight">
-                              {ra.description}
-                            </p>
-                          </div>
-                          <span className="text-[10px] font-bold text-[#075b63] mt-2 block">
-                            Читать подробнее →
-                          </span>
-                        </Link>
-                      ))}
-                    </div>
-                  </div>
-                )}
 
                 {/* ARTICLE IN-TEXT CTA (LIGHT EMERALD) */}
                 <div className="my-10 p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-[#e5f4f3] via-[#edf7df]/60 to-[#eef3f2] border-2 border-[#b8c8c5] text-[#172120] shadow-md space-y-5">

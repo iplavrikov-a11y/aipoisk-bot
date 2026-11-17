@@ -224,7 +224,6 @@ async def send_telegram_admin_alert(
         if (now - last_sent) < throttle_seconds:
             logger.info("Admin alert throttled (key=%s, remaining=%ds)", deduplicate_key, int(throttle_seconds - (now - last_sent)))
             return False
-        _ALERT_THROTTLE[deduplicate_key] = now
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload: dict[str, Any] = {
@@ -240,6 +239,8 @@ async def send_telegram_admin_alert(
         async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.post(url, json=payload)
             if resp.status_code == 200 and resp.json().get("ok"):
+                if deduplicate_key:
+                    _ALERT_THROTTLE[deduplicate_key] = now
                 logger.info("Admin telegram alert sent: key=%s", deduplicate_key)
                 return True
             else:

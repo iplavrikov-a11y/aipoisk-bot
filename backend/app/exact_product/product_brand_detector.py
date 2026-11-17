@@ -9,6 +9,7 @@ from .llm_bridge import call_llm
 from .minprom import (
     find_minprom_gisp_match as _find_minprom_sync,
     find_minprom_registry_matches_ai as _find_minprom_ai,
+    is_gisp_product_compatible_ai,
 )
 
 logger = logging.getLogger(__name__)
@@ -182,14 +183,23 @@ def find_minprom_registry_matches(
     max_entries: int = 5,
 ) -> list[dict[str, Any]]:
     """Синхронный поиск в реестре Минпромторга (ГИСП)."""
-    return _find_minprom_sync(
+    match = _find_minprom_sync(
         brand=brand,
         manufacturer=manufacturer,
         model=model,
         name_in_tz=name_in_tz,
-        okpd2=okpd2,
-        max_entries=max_entries,
     )
+    if not match:
+        return []
+    return [{
+        "registry_number": match.registry_number,
+        "manufacturer": match.manufacturer,
+        "product": match.product,
+        "inn": match.inn,
+        "conclusion_number": match.conclusion_number,
+        "valid_until": match.valid_until,
+        "source_url": match.source_url,
+    }][:max(1, int(max_entries or 5))]
 
 
 async def enrich_positions_with_minprom_registry_ai(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -198,6 +208,9 @@ async def enrich_positions_with_minprom_registry_ai(positions: list[dict[str, An
     """
     if not positions:
         return []
+
+    from .llm_bridge import get_settings
+    settings = get_settings()
 
     for pos in positions:
         if not isinstance(pos, dict):
@@ -214,9 +227,16 @@ async def enrich_positions_with_minprom_registry_ai(positions: list[dict[str, An
             model=model,
             name_in_tz=name_tz,
             max_entries=3,
+            settings=settings,
         )
 
-        valid_matches = raw_matches[:3]
+        valid_matches: list[dict[str, Any]] = []
+        for candidate in raw_matches[:3]:
+            prod = str(candidate.get("product") or "").strip()
+            if prod and name_tz:
+                if not await is_gisp_product_compatible_ai(settings, prod, name_tz, brand, model):
+                    continue
+            valid_matches.append(candidate)
         pos["minprom_matches"] = valid_matches
 
         if existing_reg:

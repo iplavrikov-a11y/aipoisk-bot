@@ -136,7 +136,7 @@ from .yookassa_service import (
     notify_admin_payment_success,
     notify_admin_payment_canceled,
 )
-from .procurement_sources import source_label, source_payloads_from_text
+from .procurement_sources import NOTICE_NUMBER_RE, URL_RE, source_label, source_payloads_from_text
 from .repository import client_access_error, get_client_by_telegram_id, get_or_create_settings, get_or_create_trial_client_by_telegram_id, seed_owner_client, supplier_target_for_client
 from .result_offers import (
     CONFIRMATION_KIND_REGISTRY_FALLBACK,
@@ -293,8 +293,8 @@ JOB_DELIVERY_LOCKS: dict[str, asyncio.Lock] = {}
 DELIVERED_JOB_IDS: set[str] = set()
 BATCH_RUNNING_CHATS: set[int] = set()
 BOT_CANCEL_NOTIFIED_JOBS: set[str] = set()
-TEXT_TZ_MIN_CHARS = 50
-TEXT_TZ_MIN_WORDS = 6
+TEXT_TZ_MIN_CHARS = 4
+TEXT_TZ_MIN_WORDS = 1
 TELEGRAM_CAPTION_LIMIT = 1024
 ALLOWED_DOCUMENT_EXTENSIONS = {
     ".docx", ".doc", ".pdf", ".xlsx", ".xls", ".rtf", ".odt",
@@ -722,31 +722,19 @@ def _source_link_rejection_text() -> str:
 
 def _looks_like_supplier_text_tz(text: str) -> bool:
     cleaned = str(text or "").strip()
-    if len(cleaned) < TEXT_TZ_MIN_CHARS:
+    if not cleaned or cleaned.startswith("/"):
         return False
-    words = _text_words(cleaned)
+    without_sources = NOTICE_NUMBER_RE.sub(" ", URL_RE.sub(" ", cleaned)).strip()
+    if len(without_sources) < TEXT_TZ_MIN_CHARS:
+        return False
+    if not any(ch.isalpha() for ch in without_sources):
+        return False
+    words = _text_words(without_sources)
     if len(words) < TEXT_TZ_MIN_WORDS:
         return False
-    lowered = cleaned.lower()
-    markers = (
-        "тз",
-        "техничес",
-        "описание объекта",
-        "объект закуп",
-        "закуп",
-        "поставка",
-        "поставщик",
-        "производител",
-        "требуется",
-        "необходим",
-        "характерист",
-        "спецификац",
-        "количество",
-        "гост",
-        " ту ",
-        " шт",
-    )
-    return any(marker in lowered for marker in markers)
+    if len(words) == 1 and not any(ch.isdigit() for ch in without_sources) and len(without_sources) < 20:
+        return False
+    return True
 
 
 def _text_words(text: str) -> list[str]:
@@ -1930,12 +1918,19 @@ def _scenario_for_message(message: Message) -> str:
     return PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
 
 
-def _start_text() -> str:
-    return (
-        f"👋 Добро пожаловать в {BRAND_NAME}!\n\n"
-        "Помогу быстро найти производителей и дилеров по ТЗ, подобрать товар и аналоги или разобрать закупочную документацию (44-ФЗ / 223-ФЗ).\n\n"
-        "💳 Списание средств происходит только после успешной выдачи готового результата."
-    )
+def _start_text(*, balance_rub: int = 0, include_legal_note: bool = False) -> str:
+    lines = [
+        f"👋 Добро пожаловать в {BRAND_NAME}!",
+        "",
+        "Помогу быстро найти производителей и дилеров по ТЗ, подобрать товар и аналоги или разобрать закупочную документацию (44-ФЗ / 223-ФЗ).",
+        "",
+        "💳 Списание средств происходит только после успешной выдачи готового результата.",
+    ]
+    if balance_rub > 0:
+        lines.extend(["", f"🎁 На вашем балансе <b>{balance_rub} ₽</b> для бесплатной проверки задач."])
+    if include_legal_note:
+        lines.extend(["", "Продолжая работу с ботом, вы соглашаетесь с условиями и политикой обработки ПДн (/legal)."])
+    return "\n".join(lines)
 
 
 def _contacts_text(settings, telegram_id: str = "") -> str:
@@ -2628,6 +2623,8 @@ async def start(message: Message, command: CommandObject | None = None) -> None:
             return
         link_token = ""
         ref_code = ""
+        outreach_contract = ""
+        outreach_src = ""
         command_args = str(getattr(command, "args", "") or "").strip()
         if command_args.startswith("link_"):
             link_token = command_args.removeprefix("link_")
@@ -2635,6 +2632,14 @@ async def start(message: Message, command: CommandObject | None = None) -> None:
             ref_code = command_args.removeprefix("ref_")
         elif command_args.startswith("ref-"):
             ref_code = command_args.removeprefix("ref-")
+        elif command_args.startswith("c_"):
+            cand_c = re.sub(r"[^0-9A-Za-z_-]", "", command_args.removeprefix("c_"))[:40]
+            if cand_c:
+                outreach_contract = cand_c
+        elif command_args.startswith("src_"):
+            cand_src = re.sub(r"[^0-9A-Za-z_-]", "", command_args)[:40]
+            if cand_src:
+                outreach_src = cand_src
         if link_token:
             try:
                 link_result = consume_web_to_telegram_token(
@@ -2675,13 +2680,51 @@ async def start(message: Message, command: CommandObject | None = None) -> None:
                     logger.warning("bot_referral_welcome_error", extra={"error": str(ref_err)})
         if account_error:
             access_note = f"\n\n⚠️ {account_error}"
+        start_balance_rub = 0
         if client:
+            start_balance_rub = max(
+                0,
+                int((getattr(client, "money_balance_kopeks", 0) or 0) - (getattr(client, "money_reserved_kopeks", 0) or 0)) // 100,
+            )
             first_use = not bool(db.query(Job.id).filter(Job.client_id == client.id).first())
             record_journey_event(db, client.id, channel="telegram", event_name="bot_started")
+            if outreach_contract:
+                _select_scenario(message.chat.id, SCENARIO_SUPPLIERS)
+                record_journey_event(
+                    db,
+                    client.id,
+                    channel="telegram",
+                    event_name="outreach_entry",
+                    outcome="autoeis",
+                    reason_code=outreach_contract,
+                )
+                access_note += (
+                    f"\n\n📄 <b>Контракт № {html_escape(outreach_contract)}</b>: "
+                    "режим поиска поставщиков уже включён. Пришлите файл спецификации/ТЗ или список позиций — подберу прямых производителей и дилеров."
+                )
+            elif outreach_src:
+                _select_scenario(message.chat.id, SCENARIO_SUPPLIERS)
+                src_map = {
+                    "src_hh": "hh",
+                    "src_sj": "superjob",
+                    "src_supl": "suplbiz",
+                }
+                src_outcome = src_map.get(outreach_src.lower(), outreach_src.removeprefix("src_").lower() or "outreach")
+                record_journey_event(
+                    db,
+                    client.id,
+                    channel="telegram",
+                    event_name="outreach_entry",
+                    outcome=src_outcome,
+                    reason_code=outreach_src,
+                )
+                access_note += (
+                    "\n\n🔎 Режим поиска поставщиков включён. Пришлите файл ТЗ/спецификации или описание товара — подберу производителей и дилеров с проверенными контактами."
+                )
     finally:
         db.close()
     await message.answer(
-        _start_text() + access_note,
+        _start_text(balance_rub=start_balance_rub, include_legal_note=True) + access_note,
         reply_markup=_inline_menu_for_message(message),
         parse_mode=ParseMode.HTML,
     )
@@ -3095,7 +3138,7 @@ async def _apply_delivery_choice(message: Message, value: str) -> None:
         await message.answer(html_escape(str(exc)))
         return
     with SessionLocal() as db:
-        client = get_client_by_telegram_id(db, str(message.from_user.id if message.from_user else ""))
+        client, _ = get_client_by_telegram_id(db, str(message.from_user.id if message.from_user else ""))
         settings = get_or_create_settings(db)
         allowed = bool(getattr(settings, "geo_radius_search_enabled_global", False) or (client and client.allowed_geo_radius))
         if radius and not allowed:
@@ -3578,26 +3621,60 @@ async def cancel_job_callback(callback: CallbackQuery) -> None:
     )
 
 
+async def _watch_and_deliver_resumed_job(
+    message: Message,
+    job_id: str,
+    *,
+    status_message: Message | None = None,
+) -> None:
+    chat_id = int(message.chat.id)
+    BATCH_RUNNING_CHATS.add(chat_id)
+    try:
+        snapshot = await watch_job_progress(message, job_id, status_message=status_message)
+        if not (snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION):
+            await _send_job_outputs(message, job_id, snapshot)
+    except Exception:
+        logger.exception("Error watching resumed job %s in chat %s", job_id, chat_id)
+    finally:
+        BATCH_RUNNING_CHATS.discard(chat_id)
+
+
 @router.callback_query(F.data.startswith("retry_normal:"))
 async def retry_normal_callback(callback: CallbackQuery) -> None:
     job_id = str(callback.data or "").split(":", 1)[1].strip()
     if not callback.message:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
-    await callback.answer()
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
     db = SessionLocal()
+    status_msg: Message | None = None
     try:
         job = db.get(Job, job_id)
         if not job:
-            await callback.message.answer("⚠️ Задача не найдена.")
+            await callback.answer("Задача не найдена.", show_alert=True)
+            return
+        if job.status not in {"failed", "cancelled"}:
+            await callback.answer("Повторный запуск доступен только для отменённых или завершившихся с ошибкой задач.", show_alert=True)
+            return
+        from .models import BillingTransaction
+        already_charged = (
+            db.query(BillingTransaction.id)
+            .filter(BillingTransaction.job_id == job.id, BillingTransaction.operation == "charge")
+            .first()
+        )
+        if already_charged:
+            await callback.answer("Эта задача уже завершена и оплачена. Запустите новую задачу.", show_alert=True)
             return
         client = job.client
         if client and not getattr(job, "is_admin_rerun", False):
             try:
                 reserve_job_units(db, client, job, supplier_search_count=1)
             except BillingError as exc:
+                await callback.answer("Недостаточно средств на балансе.", show_alert=True)
                 await callback.message.answer(
-                    f"⚠️ Недостаточно средств для запуска обычного поиска:\n{exc}\n\nПополните баланс для продолжения.",
+                    f"⚠️ Недостаточно средств для запуска обычного поиска:\n{html_escape(str(exc))}\n\nПополните баланс для продолжения.",
                     reply_markup=main_menu(),
                 )
                 return
@@ -3609,13 +3686,16 @@ async def retry_normal_callback(callback: CallbackQuery) -> None:
         job.updated_at = now_utc()
         db.commit()
         enqueue_job(job.id)
-        await callback.message.answer(
+        await callback.answer("Поиск запущен!")
+        status_msg = await callback.message.answer(
             "🚀 Запустил обычный поиск поставщиков по открытому рынку.\n\n"
             f"Статус задачи можно отслеживать кнопкой «{BUTTON_STATUS}».",
             reply_markup=processing_menu(),
         )
     finally:
         db.close()
+    if status_msg is not None:
+        asyncio.create_task(_watch_and_deliver_resumed_job(callback.message, job_id, status_message=status_msg))
 
 
 @router.message(F.text == BUTTON_CANCEL_BATCH)
@@ -4224,7 +4304,7 @@ def format_exact_product_telegram_summary(report_data: dict) -> str:
     if not positions:
         return ""
 
-    lines = ["🎯 *Подбор товара и аналогов:*"]
+    lines = ["🎯 Подбор товара и аналогов:"]
     for idx, pos in enumerate(positions[:3], start=1):
         name = str(pos.get("name_in_tz") or f"Позиция {idx}").strip()
         brand = str(pos.get("identified_brand") or "").strip()
@@ -4258,14 +4338,14 @@ def format_exact_product_telegram_summary(report_data: dict) -> str:
             spec_info = f"{len(specs) - len(mismatches)}/{len(specs)} парам. (расхождений: {len(mismatches)})"
 
         lines.append(
-            f"\n*{idx}. {name}*\n"
+            f"\n{idx}. {name}\n"
             f"• Товар: {prod_title}\n"
             f"• Минпромторг (ГИСП): {gisp_info}\n"
             f"• Сверка ТЗ: {spec_info}"
         )
 
     if len(positions) > 3:
-        lines.append(f"\n_...и ещё {len(positions) - 3} поз. в прикреплённом файле._")
+        lines.append(f"\n…и ещё {len(positions) - 3} поз. в прикреплённом файле.")
 
     return "\n".join(lines)
 
@@ -4442,7 +4522,7 @@ def _referral_text_and_keyboard(db: Session, client: Client | None, user) -> tup
     text = (
         "🎁 <b>Реферальная программа TenderLex</b>\n\n"
         "Дарите коллегам бонус +1 000 ₽ к первому пополнению баланса и получайте 1 000 ₽ себе за каждого активного пользователя!\n\n"
-        "🔹 <b>Что получает коллега:</b> 5 бесплатных проверок при регистрации + 1 000 ₽ бонусом на баланс при первом пополнении от 1 000 ₽.\n"
+        "🔹 <b>Что получает коллега:</b> пробный баланс на первые расчёты при регистрации + 1 000 ₽ бонусом на баланс при первом пополнении от 1 000 ₽.\n"
         "🔹 <b>Что получаете вы:</b> 1 000 ₽ на свой баланс, как только приглашенный коллега впервые пополнит счёт.\n\n"
         f"🔗 <b>Ваша ссылка для приглашения:</b>\n<code>{bot_link}</code>\n\n"
         "📊 <b>Ваша статистика:</b>\n"
@@ -4457,7 +4537,7 @@ def _referral_text_and_keyboard(db: Session, client: Client | None, user) -> tup
         "1. Находит реальных производителей и дилеров по ТЗ с прямыми телефонами и email.\n"
         "2. Подбирает точную модель товара и аналоги под первую часть заявки, в том числе из реестра Минпромторга (ГИСП).\n"
         "3. Формирует полный структурированный отчет по закупке (ТЗ, условия оплаты, сроки, логистика и требования к товару).\n\n"
-        "По моей ссылке ты получишь 5 бесплатных проверок + бонус 1 000 ₽ к первому пополнению баланса:\n"
+        "По моей ссылке ты получишь пробный баланс на первые расчёты + бонус 1 000 ₽ к первому пополнению баланса:\n"
         f"👉 {bot_link}"
     )
 
@@ -4770,6 +4850,11 @@ async def check_yk_callback(callback: CallbackQuery) -> None:
         if not record:
             await callback.answer("Платёж не найден.", show_alert=True)
             return
+        caller_tg_id = str(callback.from_user.id if callback.from_user else "")
+        caller_client, _ = get_client_by_telegram_id(db, caller_tg_id)
+        if not caller_client or caller_client.id != record.client_id:
+            await callback.answer("Этот платёж относится к другому аккаунту.", show_alert=True)
+            return
 
         if record.status == "succeeded":
             await callback.answer("✅ Оплата уже зачислена на ваш баланс!", show_alert=True)
@@ -5056,7 +5141,7 @@ async def handle_nurturing_feedback(callback: CallbackQuery) -> None:
     db = SessionLocal()
     try:
         user_id = str(callback.from_user.id if callback.from_user else "")
-        client = get_client_by_telegram_id(db, user_id)
+        client, _ = get_client_by_telegram_id(db, user_id)
         record_journey_event(
             db,
             client.id if client else None,
@@ -5302,6 +5387,9 @@ async def exact_suppliers_prompt_callback(callback: CallbackQuery) -> None:
     if not callback.message:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
     await callback.message.answer(
         _exact_to_suppliers_confirmation_text(),
         reply_markup=_exact_to_suppliers_confirmation_keyboard(job_id),
@@ -5311,6 +5399,10 @@ async def exact_suppliers_prompt_callback(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("exact_suppliers_no:"))
 async def exact_suppliers_no_callback(callback: CallbackQuery) -> None:
+    job_id = str(callback.data or "").split(":", 1)[1]
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
     if callback.message:
         try:
             await callback.message.delete()
@@ -5493,10 +5585,18 @@ async def multi_strategy_choice_callback(callback: CallbackQuery) -> None:
         db.close()
     await callback.answer("Стратегия сохранена!")
     mode_name = "🔍 Попозиционный глубокий поиск" if normalized == "per_item" else "⚖️ Сбалансированный поиск"
+    status_msg: Message | None = None
     try:
-        await callback.message.edit_text(f"✅ Выбрана стратегия: {mode_name}.\n\nВозобновляю поиск поставщиков...")
+        status_msg = await callback.message.edit_text(f"✅ Выбрана стратегия: {mode_name}.\n\nВозобновляю поиск поставщиков...")
     except Exception:
-        pass
+        try:
+            status_msg = await callback.message.answer(
+                f"✅ Выбрана стратегия: {mode_name}.\n\nВозобновляю поиск поставщиков...",
+                reply_markup=processing_menu(),
+            )
+        except Exception:
+            pass
+    asyncio.create_task(_watch_and_deliver_resumed_job(callback.message, job_id, status_message=status_msg))
 
 
 @router.callback_query(F.data.startswith("result_offer_no:"))
@@ -5676,11 +5776,11 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
                 added_sources = _add_pending_sources(pending, caption_sources)
                 record_journey_event(db, client.id, channel="telegram", event_name="input_added", mode=mode, outcome="document")
                 note_text = (
-                    f"🔄 Предыдущий файл заменён на: <b>{filename}</b>\n"
+                    f"🔄 Предыдущий файл заменён на: <b>{html_escape(filename)}</b>\n"
                     f"<i>(в бесплатном доступе обрабатывается 1 ТЗ за раз)</i>\n\n"
                     f"👇 Нажмите «▶️ Запустить поиск» под сообщением:"
                 )
-                await message.answer(note_text, reply_markup=batch_inline_keyboard(pending))
+                await message.answer(note_text, reply_markup=batch_inline_keyboard(pending), parse_mode=ParseMode.HTML)
                 return
         if len(pending.files) >= settings.max_files_per_batch:
             await message.answer(f"В комплекте уже максимум файлов: {settings.max_files_per_batch}.", reply_markup=batch_menu())
@@ -5775,7 +5875,7 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
                 "<i>(в бесплатном доступе обрабатывается 1 ТЗ за раз)</i>\n\n"
                 "👇 Нажмите «▶️ Запустить поиск» под сообщением:"
             )
-            await message.answer(note_text, reply_markup=batch_inline_keyboard(pending))
+            await message.answer(note_text, reply_markup=batch_inline_keyboard(pending), parse_mode=ParseMode.HTML)
             return True
         if len(pending.files) >= settings.max_files_per_batch:
             await message.answer(f"В комплекте уже максимум ТЗ: {settings.max_files_per_batch}.", reply_markup=batch_inline_keyboard(pending))
@@ -6582,10 +6682,12 @@ async def _handle_support_private_message(message: Message, bot: Bot | None = No
                 await message.answer("⛔ Доступ к поддержке ограничен администратором.")
                 return True
             try:
+                client_for_att, _ = get_client_by_telegram_id(db, tg_uid)
                 atts = await _download_bot_support_attachments(
                     message,
                     bot,
-                    client_id=tg_uid,
+                    client_id=client_for_att.id if client_for_att else "",
+                    guest_session_id="" if client_for_att else f"tg_{tg_uid}",
                     prefix="cli_tg",
                 )
             except ValueError as exc:
@@ -6878,6 +6980,23 @@ async def run_bot() -> None:
         pass
     await configure_bot_profile(bot)
     dispatcher = Dispatcher()
+
+    @dispatcher.error()
+    async def _global_bot_error_handler(event: ErrorEvent) -> bool:
+        logger.exception("Unhandled exception in Telegram bot update handler: %s", event.exception)
+        try:
+            from .admin_alerts import send_telegram_admin_alert
+            err_type = type(event.exception).__name__
+            err_msg = html_escape(str(event.exception)[:240])
+            await send_telegram_admin_alert(
+                f"⚠️ <b>Ошибка обработчика Telegram-бота</b>\n<code>{err_type}: {err_msg}</code>",
+                deduplicate_key=f"bot_handler_err:{err_type}",
+                throttle_seconds=900,
+            )
+        except Exception:
+            pass
+        return True
+
     dispatcher.include_router(support_group_router)
     dispatcher.include_router(group_safety_router)
     dispatcher.include_router(router)
@@ -6944,11 +7063,12 @@ async def send_admin_supplement_telegram(
         return False
     bot = Bot(token=config.bot_token)
     try:
-        title = job_title or "Задача"
+        title = html_escape(job_title or "Задача")
+        safe_job_id = html_escape(str(job_id or ""), quote=True)
         header = f"✨ <b>Отчёт по вашей задаче дополнен экспертами TenderLex</b>\n\n📌 <b>Задача:</b> {title}"
         if comment:
-            header += f"\n\n💬 <b>Комментарий эксперта:</b>\n{comment}"
-        header += f"\n\n🌐 <a href=\"https://tenderlex.ru/cabinet#job-{job_id}\">Открыть задачу в личном кабинете</a>"
+            header += f"\n\n💬 <b>Комментарий эксперта:</b>\n{html_escape(comment)}"
+        header += f"\n\n🌐 <a href=\"https://tenderlex.ru/cabinet#job-{safe_job_id}\">Открыть задачу в личном кабинете</a>"
 
         file_list: list[tuple[Path, str]] = []
         if files:

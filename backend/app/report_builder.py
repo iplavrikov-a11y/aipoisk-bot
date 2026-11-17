@@ -422,7 +422,24 @@ def _populate_supplier_sheet(
         comment = clean_xml_compatible(_client_supplier_comment(row, is_multi_item=is_multi_item))
         location_display = clean_xml_compatible(_format_supplier_location(row))
 
-        ws.append([company, site_display, phone, email, comment, location_display, reg_text])
+        def _safe_xlsx_val(v: object) -> str:
+            s = str(v if v is not None else "")
+            stripped = s.lstrip(" \t\r\n")
+            if stripped.startswith(("=", "+", "-", "@")):
+                if re.fullmatch(r"\+\d[\d\s().,;/-]{5,}", stripped):
+                    return s
+                return "'" + s
+            return s
+
+        ws.append([
+            _safe_xlsx_val(company),
+            _safe_xlsx_val(site_display),
+            _safe_xlsx_val(phone),
+            _safe_xlsx_val(email),
+            _safe_xlsx_val(comment),
+            _safe_xlsx_val(location_display),
+            _safe_xlsx_val(reg_text),
+        ])
 
         # Col 1: Компания
         c1 = ws.cell(row=row_idx, column=1)
@@ -433,7 +450,7 @@ def _populate_supplier_sheet(
 
         # Col 2: Сайт
         c2 = ws.cell(row=row_idx, column=2)
-        if site_raw:
+        if site_raw and str(site_raw).strip().lower().startswith(("http://", "https://")):
             c2.hyperlink = site_raw
             c2.font = Font(name="Calibri", size=10, color="0284C7", underline="single")
         else:
@@ -1310,7 +1327,7 @@ def _remove_okpd_codes(text: str) -> str:
         value,
         flags=re.IGNORECASE,
     )
-    value = re.sub(r"\b\d{2}\.\d{2}\.\d{2}(?:\.\d{1,3}){0,3}\b", "", value)
+    value = re.sub(r"\b\d{2}\.\d{2}\.\d{2}\.\d{3}\b", "", value)
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r"\s+([,.;:])", r"\1", value)
     value = re.sub(r"\(\s*\)", "", value)

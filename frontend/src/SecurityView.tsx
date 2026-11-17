@@ -61,6 +61,21 @@ type SecurityOverview = {
   }>
 }
 
+const PROTECTED_INFRA_IPS = new Set(['127.0.0.1', '::1', '79.133.182.215', '202.71.13.57', 'localhost', 'unknown'])
+
+function isProtectedOrPrivateIp(raw?: string | null): boolean {
+  const ip = String(raw || '').trim().toLowerCase()
+  if (!ip || PROTECTED_INFRA_IPS.has(ip)) return true
+  if (ip.startsWith('127.') || ip.startsWith('10.') || ip.startsWith('192.168.') || ip.startsWith('169.254.')) return true
+  if (ip.startsWith('fc00:') || ip.startsWith('fd00:') || ip.startsWith('fe80:')) return true
+  const m172 = ip.match(/^172\.(\d{1,3})\./)
+  if (m172) {
+    const second = Number(m172[1])
+    if (second >= 16 && second <= 31) return true
+  }
+  return false
+}
+
 function fmtDate(raw?: string | null) {
   if (!raw) return '—'
   try {
@@ -147,7 +162,7 @@ export function SecurityView() {
   }
 
   async function blockIp(ip: string, reason: string) {
-    if (!ip || ip === '127.0.0.1' || ip === 'unknown') return
+    if (isProtectedOrPrivateIp(ip)) return
     try {
       const res = await fetch('/api/admin/security/block', {
         method: 'POST',
@@ -322,7 +337,7 @@ export function SecurityView() {
                     {row.user_agent || '—'}
                   </td>
                   <td>
-                    {row.ip_address && row.ip_address !== '127.0.0.1' && !row.flags.includes('ip_blocked') && (
+                    {!isProtectedOrPrivateIp(row.ip_address) && !row.flags.includes('ip_blocked') && (
                       <button
                         type="button"
                         className="btn btn-secondary"
@@ -369,7 +384,7 @@ export function SecurityView() {
                     {ev.payload_preview || '—'}
                   </td>
                   <td>
-                    {ev.ip_address && ev.ip_address !== '127.0.0.1' && !ev.is_ip_blocked && (
+                    {!isProtectedOrPrivateIp(ev.ip_address) && !ev.is_ip_blocked && (
                       <button
                         type="button"
                         className="btn btn-secondary"

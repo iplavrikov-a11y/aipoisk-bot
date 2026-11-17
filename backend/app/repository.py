@@ -27,8 +27,18 @@ MODE_EXACT_PRODUCT = "exact_product"
 MODE_PRICE_MONITORING = "price_monitoring"
 DEFAULT_SUPPLIER_TARGET = 50
 MAX_SUPPLIER_TARGET = 100
+INTERNAL_JOB_MARKERS = (
+    "worker_smoke",
+    "smoke_test",
+    "smoke_check",
+    "live_smoke",
+    "live_retest",
+    "retest_internal",
+    "ai_required_smoke",
+    "[internal]",
+)
 INTERNAL_JOB_PATTERN = re.compile(
-    r"(smoke|retest|patch2?|remain|pusher|ai_required|live_|worker_smoke)",
+    r"(?:worker_smoke|smoke_test|smoke_check|live_smoke|live_retest|retest_internal|ai_required_smoke|\[internal\]|^retest$)",
     re.IGNORECASE,
 )
 PENDING_TELEGRAM_ID_PREFIX = "pending:"
@@ -174,40 +184,20 @@ def current_function_usage(db: Session, client: Client) -> tuple[int, int, int]:
 
 
 def is_internal_job_record(job: Job | object) -> bool:
-    text = " ".join(
-        str(getattr(job, attr, "") or "")
-        for attr in ("title", "message", "error")
-    ).lower()
-    return bool(INTERNAL_JOB_PATTERN.search(text))
+    for attr in ("title", "message"):
+        val = str(getattr(job, attr, "") or "").strip()
+        if val and INTERNAL_JOB_PATTERN.search(val):
+            return True
+    return False
 
 
 def commercial_jobs_query(db: Session, client: Client):
-    internal_filters = [
-        func.coalesce(Job.title, "").ilike("%smoke%"),
-        func.coalesce(Job.title, "").ilike("%retest%"),
-        func.coalesce(Job.title, "").ilike("%patch%"),
-        func.coalesce(Job.title, "").ilike("%remain%"),
-        func.coalesce(Job.title, "").ilike("%pusher%"),
-        func.coalesce(Job.title, "").ilike("%ai_required%"),
-        func.coalesce(Job.title, "").ilike("%live_%"),
-        func.coalesce(Job.title, "").ilike("%worker_smoke%"),
-        func.coalesce(Job.message, "").ilike("%smoke%"),
-        func.coalesce(Job.message, "").ilike("%retest%"),
-        func.coalesce(Job.message, "").ilike("%patch%"),
-        func.coalesce(Job.message, "").ilike("%remain%"),
-        func.coalesce(Job.message, "").ilike("%pusher%"),
-        func.coalesce(Job.message, "").ilike("%ai_required%"),
-        func.coalesce(Job.message, "").ilike("%live_%"),
-        func.coalesce(Job.message, "").ilike("%worker_smoke%"),
-        func.coalesce(Job.error, "").ilike("%smoke%"),
-        func.coalesce(Job.error, "").ilike("%retest%"),
-        func.coalesce(Job.error, "").ilike("%patch%"),
-        func.coalesce(Job.error, "").ilike("%remain%"),
-        func.coalesce(Job.error, "").ilike("%pusher%"),
-        func.coalesce(Job.error, "").ilike("%ai_required%"),
-        func.coalesce(Job.error, "").ilike("%live_%"),
-        func.coalesce(Job.error, "").ilike("%worker_smoke%"),
-    ]
+    internal_filters = []
+    for col in (Job.title, Job.message):
+        coalesced = func.coalesce(col, "")
+        for marker in INTERNAL_JOB_MARKERS:
+            internal_filters.append(coalesced.ilike(f"%{marker}%"))
+        internal_filters.append(func.lower(func.trim(coalesced)) == "retest")
     return db.query(Job).filter(Job.client_id == client.id).filter(not_(or_(*internal_filters)))
 
 

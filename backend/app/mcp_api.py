@@ -41,16 +41,25 @@ from .exact_product import (
     write_exact_product_docx,
     is_exact_position_resolved,
 )
-from .models import ApiKey, ApiOperation, ApiRateLimitEvent, Client, Job, JobFile, SystemSettings, now_utc
+from .models import ApiKey, ApiOperation, ApiRateLimitEvent, Client, Job, JobFile, SystemSettings, now_utc, parse_json_dict
 from .procurement_report import generate_procurement_report
+from .procurement_sources import (
+    NOTICE_NUMBER_RE,
+    SOURCE_KIND_TENDERPLAN_NOTICE,
+    URL_RE,
+    fetch_source_context_sync,
+    source_payloads_from_text,
+)
 from .quote_request import build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
 from .security import require_admin
 from .supplier_search import (
+    EmptyProcurementProfileError,
     discover_suppliers,
     extract_supplier_search_context,
     supplier_search_job_context,
 )
+from .tenderplan import fetch_tenderplan_source_sync
 
 logger = logging.getLogger(__name__)
 
@@ -492,7 +501,7 @@ def _attach_api_input_file(db: Session, job: Job, text: str, filename: str = "З
             job_id=job.id,
             original_filename=filename,
             stored_path=str(stored_path),
-            parse_status="parsed",
+            parse_status="ok",
             extracted_chars=len(text),
         )
         db.add(job_file)
@@ -529,7 +538,7 @@ def start_api_job_with_reservation(
         job = Job(
             job_number=next_job_number(db),
             client_id=api_key.client_id,
-            created_by_telegram_id=f"api:{api_key.key_prefix}",
+            created_by_telegram_id=f"api:{api_key.id}",
             mode=service,
             status="running",
             progress=0,
@@ -565,7 +574,7 @@ def start_api_job_with_reservation(
         job = Job(
             job_number=next_job_number(db),
             client_id=client.id,
-            created_by_telegram_id=f"api:{api_key.key_prefix}",
+            created_by_telegram_id=f"api:{api_key.id}",
             mode=service,
             status="running",
             progress=0,
@@ -1240,7 +1249,7 @@ def record_api_job(
         job = Job(
             job_number=next_job_number(db),
             client_id=api_key.client_id,
-            created_by_telegram_id=f"api:{api_key.key_prefix}",
+            created_by_telegram_id=f"api:{api_key.id}",
             mode=mode,
             status=status,
             progress=100 if status == "completed" else 0,
@@ -1258,6 +1267,46 @@ def record_api_job(
     except Exception as exc:
         logger.warning("failed_to_record_api_job: %s", exc)
         return None
+
+
+async def _resolve_mcp_source_text(raw_text: str, settings: SystemSettings | None = None) -> str:
+    """If input text is primarily a 19-digit EIS notice number or official EIS URL, fetch its notice & documents."""
+    cleaned = str(raw_text or "").strip()
+    if not cleaned:
+        return cleaned
+    sources = source_payloads_from_text(cleaned)
+    if not sources:
+        return cleaned
+    remainder = NOTICE_NUMBER_RE.sub(" ", URL_RE.sub(" ", cleaned)).strip(" \t\r\n,.;:-—№#")
+    if len(remainder) >= 40:
+        return cleaned
+    blocks: list[str] = []
+    doc_opts = parse_json_dict(getattr(settings, "document_settings_json", None)) if settings else {}
+    for src in sources[:3]:
+        try:
+            if src["kind"] == SOURCE_KIND_TENDERPLAN_NOTICE:
+                res = await asyncio.to_thread(fetch_tenderplan_source_sync, src["value"])
+            else:
+                res = await asyncio.to_thread(fetch_source_context_sync, src["kind"], src["value"])
+            if getattr(res, "context", ""):
+                blocks.append(str(res.context).strip())
+            downloaded_files = getattr(res, "downloaded_files", None) or []
+            if downloaded_files:
+                import tempfile
+                from . import document_parser
+
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    for idx, dl in enumerate(downloaded_files[:10], start=1):
+                        fname = document_parser.sanitize_filename(getattr(dl, "filename", f"attachment_{idx}.bin"))
+                        fpath = Path(tmp_dir) / f"{idx:02d}_{fname}"
+                        fpath.write_bytes(getattr(dl, "content", b""))
+                        file_text, _st = await asyncio.to_thread(document_parser.extract_text, fpath, doc_opts)
+                        if file_text and file_text.strip():
+                            blocks.append(f"=== Файл: {fname} ===\n{file_text.strip()}")
+        except Exception as exc:
+            logger.warning("mcp_source_fetch_failed for %s: %s", src.get("value"), exc)
+    joined = "\n\n".join(b for b in blocks if b)
+    return joined if joined.strip() else cleaned
 
 
 @router.post("/suppliers/search", response_model=McpSupplierSearchResponse)
@@ -1290,7 +1339,7 @@ async def mcp_supplier_search(
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    spec_text = req.specification.strip()
+    spec_text = await _resolve_mcp_source_text(req.specification.strip(), settings)
     if delivery_city:
         spec_text = f"Регион поставки: {delivery_city}\n\n{spec_text}"
 
@@ -1329,6 +1378,16 @@ async def mcp_supplier_search(
                 delivery_city=delivery_city,
                 geo_radius_km=geo_radius_km,
             )
+    except EmptyProcurementProfileError as exc:
+        logger.warning("mcp_supplier_search_empty_profile: %s", exc)
+        release_api_job_reservation(
+            db, api_key, job, "supplier_search", error=str(exc)
+        )
+        complete_api_operation(db, operation, status_value="failed", job=job)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc) or "В запросе не обнаружены конкретные товары или спецификация для поиска поставщиков.",
+        ) from exc
     except (Exception, asyncio.CancelledError, BaseException) as exc:
         logger.error("mcp_supplier_search_failed: %s", exc, exc_info=True)
         release_api_job_reservation(
@@ -1480,7 +1539,7 @@ async def mcp_exact_product(
     """
     settings = get_or_create_settings(db)
     check_api_service_permission(api_key, "exact_product")
-    spec_text = req.specification.strip()
+    spec_text = await _resolve_mcp_source_text(req.specification.strip(), settings)
     proc_title = req.procurement_title.strip()
 
     job_title = f"API: Подбор товара и аналогов — {(proc_title or spec_text)[:80].strip()}"
@@ -1506,6 +1565,16 @@ async def mcp_exact_product(
             context=spec_text,
             procurement_title=proc_title,
         )
+    except EmptyProcurementProfileError as exc:
+        logger.warning("mcp_exact_product_empty_profile: %s", exc)
+        release_api_job_reservation(
+            db, api_key, job, "exact_product", error=str(exc)
+        )
+        complete_api_operation(db, operation, status_value="failed", job=job)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc) or "В запросе не обнаружены конкретные товары или спецификация.",
+        ) from exc
     except (Exception, asyncio.CancelledError, BaseException) as exc:
         logger.error("mcp_exact_product_failed: %s", exc, exc_info=True)
         release_api_job_reservation(
@@ -1652,7 +1721,7 @@ async def mcp_procurement_analyze(
     """
     settings = get_or_create_settings(db)
     check_api_service_permission(api_key, "procurement_report")
-    doc_text = req.document_text.strip()
+    doc_text = await _resolve_mcp_source_text(req.document_text.strip(), settings)
     job_title = f"API: Анализ документации — {doc_text[:80].strip()}"
     operation = claim_api_operation(db, api_key, "procurement_report", idempotency_key, req.model_dump())
     try:
@@ -1672,6 +1741,16 @@ async def mcp_procurement_analyze(
 
     try:
         gen_result = await generate_procurement_report(settings, doc_text)
+    except EmptyProcurementProfileError as exc:
+        logger.warning("mcp_procurement_analyze_empty_profile: %s", exc)
+        release_api_job_reservation(
+            db, api_key, job, "procurement_report", error=str(exc)
+        )
+        complete_api_operation(db, operation, status_value="failed", job=job)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc) or "В запросе отсутствует содержательная документация закупки.",
+        ) from exc
     except (Exception, asyncio.CancelledError, BaseException) as exc:
         logger.error("mcp_procurement_analyze_failed: %s", exc, exc_info=True)
         release_api_job_reservation(
@@ -1807,17 +1886,25 @@ def mcp_download_report(
     if not safe_name.endswith((".docx", ".xlsx", ".pdf", ".zip")):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file format")
 
-    storage_dir = Path(config.storage_dir or "/root/projects/tenderlex/storage") / "mcp_reports"
+    storage_dir = (Path(config.storage_dir or "/root/projects/tenderlex/storage") / "mcp_reports").resolve()
     file_path = (storage_dir / safe_name).resolve()
 
-    if not str(file_path).startswith(str(storage_dir.resolve())) or not file_path.exists():
+    if not file_path.is_relative_to(storage_dir) or not file_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found or expired")
+
+    ext_mime = {
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".pdf": "application/pdf",
+        ".zip": "application/zip",
+    }
+    media_type = ext_mime.get(file_path.suffix.lower(), "application/octet-stream")
 
     from fastapi.responses import FileResponse
     return FileResponse(
         path=file_path,
         filename=safe_name,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        media_type=media_type,
     )
 
 

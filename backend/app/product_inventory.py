@@ -126,15 +126,20 @@ def _table_rows(text: str, source_file: str) -> list[dict] | None:
             get = lambda column: cells[column].strip() if column is not None and column < len(cells) else ""
             name_val = get(name_col)
 
+            is_ktru_vertical = char_col is not None and val_col is not None
             is_new = False
             if current is None:
                 is_new = True
+            elif is_ktru_vertical:
+                # In vertical KTRU / characteristic tables, row numbers often enumerate characteristics (1..N)
+                # rather than separate products, and product name is either blank (merged cell) or repeated.
+                if name_val and current.get("name") and _identity(name_val) != _identity(current["name"]):
+                    is_new = True
             elif number is not None:
                 if current.get("position_no") != number:
                     is_new = True
             elif name_val and number_col is None:
-                if not (char_col is not None and val_col is not None and current.get("name") and _identity(name_val) == _identity(current["name"])):
-                    is_new = True
+                is_new = True
 
             if is_new:
                 flush()

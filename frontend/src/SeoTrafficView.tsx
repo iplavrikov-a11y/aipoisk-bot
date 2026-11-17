@@ -545,7 +545,9 @@ export function SeoTrafficView() {
       }
     }
     void sync()
-    const interval = window.setInterval(() => void sync(), 120000)
+    const interval = window.setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) void sync()
+    }, 120000)
     const onVisible = () => {
       if (!document.hidden) void sync()
     }

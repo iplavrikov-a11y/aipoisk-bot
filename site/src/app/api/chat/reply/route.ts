@@ -35,7 +35,7 @@ export async function POST(req: Request) {
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${ADMIN_TOKEN}`,
+          "X-Admin-Token": ADMIN_TOKEN,
         },
         body: form,
         cache: "no-store",

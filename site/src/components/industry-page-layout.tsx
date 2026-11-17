@@ -4,7 +4,7 @@ import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
 import { CheckCircle2, Layers, FileSpreadsheet, Building, Sparkles } from "lucide-react";
-import type { FaqItem } from "@/lib/seo";
+import { safeJsonLd, type FaqItem } from "@/lib/seo";
 
 interface IndustryPageLayoutProps {
   categoryTitle: string;
@@ -35,10 +35,10 @@ export function IndustryPageLayout({
 }: IndustryPageLayoutProps) {
   return (
     <>
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }} />
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(serviceSchema) }} />
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }} />
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(howToSchema) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: safeJsonLd(breadcrumbSchema) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: safeJsonLd(serviceSchema) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: safeJsonLd(faqSchema) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: safeJsonLd(howToSchema) }} />
 
       <main className="tl-public tl-industry-page bg-slate-50 text-slate-900 min-h-screen font-sans">
         <SiteHeader />

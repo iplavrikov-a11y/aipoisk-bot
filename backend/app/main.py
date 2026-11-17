@@ -141,6 +141,7 @@ from .models import (
     JobFile,
     JobSource,
     OnboardingReminder,
+    PartnerPayoutRequest,
     SecurityEvent,
     SeoEntry,
     SupplierResult,
@@ -163,17 +164,22 @@ from .models import (
     parse_json_dict,
     parse_json_list,
 )
-from .procurement_sources import source_label, source_payloads_from_text
+from .procurement_sources import NOTICE_NUMBER_RE, URL_RE, source_label, source_payloads_from_text
 from .admin_alerts import is_pytest
 from .security_shield import (
+    PROTECTED_INFRASTRUCTURE_IPS,
     classify_and_reply_support_message,
     create_human_challenge,
     detect_attack_payload,
+    extract_real_request_ip,
+    get_protected_infrastructure_ips,
     get_support_work_hours_status,
     ipv4_subnet_prefix,
     is_automated_user_agent,
     is_disposable_or_garbage_email,
     maybe_auto_block_actor,
+    normalize_blockable_ip,
+    normalize_ip_token,
     record_security_event,
     validate_guest_contact,
     validate_optional_phone,
@@ -181,6 +187,7 @@ from .security_shield import (
 )
 from .seo_funnel import ENTRY_COOKIE, RETENTION_DAYS, attach_registration, create_entry, delete_entry, entry_exists, funnel_report, prune_entries
 from .support_chat import (
+    GUEST_CHAT_COOKIE,
     GUEST_CLIENT_PREFIX,
     TELEGRAM_ID_RE,
     block_support_dialog,
@@ -199,10 +206,12 @@ from .support_chat import (
     parse_telegram_id_list,
     safe_chat_attachment_dir,
     save_attachment_bytes,
+    set_guest_chat_cookie,
     test_support_group_connection,
     unblock_support_dialog,
     unread_dialogs_count_for_admin,
     validate_guest_session_id,
+    verify_guest_chat_cookie,
 )
 from .repository import (
     client_access_error,
@@ -288,6 +297,8 @@ from .web_auth import (
     get_or_create_telegram_web_user,
     get_or_create_yandex_web_user,
     hash_password,
+    mask_email_for_log,
+    normalize_email,
     send_email_verification,
     send_password_reset_email,
     optional_web_context,
@@ -329,13 +340,23 @@ app.include_router(mcp_jobs_router)
 app.include_router(mcp_admin_router)
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 CUSTOMER_AUTH_ATTEMPTS: dict[str, list[float]] = {}
+EMAIL_VERIFY_RESEND_ATTEMPTS: dict[str, list[float]] = {}
+INVOICE_EMAIL_ATTEMPTS: dict[str, list[float]] = {}
 CUSTOMER_REGISTRATION_HOUR_LIMIT = 3
 CUSTOMER_REGISTRATION_DAY_LIMIT = 8
+ALLOWED_CORS_ORIGINS = [
+    "https://tenderlex.ru",
+    "https://www.tenderlex.ru",
+    "https://admin.tenderlex.ru",
+    "http://127.0.0.1:3093",
+    "http://localhost:3093",
+    "http://localhost:5173",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -375,6 +396,35 @@ def clear_seo_entry_api(request: Request, response: Response, db: Session = Depe
     response.delete_cookie(ENTRY_COOKIE, path="/api/customer", httponly=True, secure=True, samesite="lax")
 
 
+def _is_client_actor_blocked(db: Session, client_id: str | None) -> bool:
+    if not client_id:
+        return False
+    return bool(
+        db.query(SupportBlockedActor.id)
+        .filter(
+            SupportBlockedActor.actor_type == "client",
+            SupportBlockedActor.actor_value == str(client_id),
+        )
+        .first()
+    )
+
+
+def _record_oauth_legal_acceptance(db: Session, request: Request, user: WebUser, source: str) -> None:
+    client_ip = _client_ip(request)
+    user_agent = str(request.headers.get("user-agent", "") or "")
+    for doc_type in (LEGAL_DOCUMENT_TERMS, LEGAL_DOCUMENT_PERSONAL_DATA):
+        record_legal_acceptance(
+            db,
+            subject_type="web_user",
+            subject_id=user.id,
+            document_type=doc_type,
+            source=source,
+            document_version=LEGAL_VERSION,
+            ip_address=client_ip,
+            user_agent=user_agent,
+        )
+
+
 def _link_seo_registration(db: Session, request: Request, user: WebUser) -> bool:
     token = request.cookies.get(ENTRY_COOKIE, "")
     if not token or not user.created_at:
@@ -387,28 +437,20 @@ def _link_seo_registration(db: Session, request: Request, user: WebUser) -> bool
         return False
 
 
-@app.on_event("startup")
-async def startup() -> None:
-    config.storage_path.mkdir(parents=True, exist_ok=True)
-    init_db()
-    db = next(db_session())
+def _run_startup_recovery_sync() -> tuple[list[str], list[str]]:
+    from .db import SessionLocal
+    from .outreach_models import OutreachCampaign, OutreachSearchTask
+
     recovered_job_ids: list[str] = []
-    try:
+    running_camp_ids: list[str] = []
+    with SessionLocal() as db:
         settings = get_or_create_settings(db)
-        seed_owner_client(db)
         cleanup_expired_jobs(db, settings)
         expire_stale_confirmations(db)
         recovered_job_ids = recover_interrupted_jobs(db)
         try:
-            from .db import SessionLocal
-            from .outreach_models import OutreachCampaign, OutreachSearchTask
-            from .outreach_mail import run_campaign_worker, ACTIVE_CAMPAIGN_TASKS
             running_camps = db.query(OutreachCampaign).filter(OutreachCampaign.status == "running").all()
-            for rc in running_camps:
-                task = asyncio.create_task(run_campaign_worker(rc.id, SessionLocal))
-                ACTIVE_CAMPAIGN_TASKS[rc.id] = task
-
-            # Recover interrupted search tasks into paused state so candidates are not lost
+            running_camp_ids = [rc.id for rc in running_camps]
             stale_searches = db.query(OutreachSearchTask).filter(OutreachSearchTask.status == "running").all()
             for s_task in stale_searches:
                 s_task.status = "paused"
@@ -421,23 +463,56 @@ async def startup() -> None:
                     s_task.waves_json = json.dumps(waves, ensure_ascii=False)
                 except Exception:
                     pass
-            # Launch background periodic IMAP poller (runs quietly every 45s)
-            asyncio.create_task(_background_imap_loop())
-        except Exception as e:
-            logger.warning(f"Error resuming campaigns on startup: {e}")
+            if stale_searches:
+                db.commit()
+        except Exception as exc:
+            logger.warning("Error scanning outreach tasks on startup: %s", exc)
+    return recovered_job_ids, running_camp_ids
+
+
+async def _post_startup_maintenance() -> None:
+    try:
+        recovered_job_ids, running_camp_ids = await asyncio.to_thread(_run_startup_recovery_sync)
+        for job_id in recovered_job_ids:
+            enqueue_job(job_id)
+        if running_camp_ids:
+            from .db import SessionLocal
+            from .outreach_mail import ACTIVE_CAMPAIGN_TASKS, run_campaign_worker
+
+            for camp_id in running_camp_ids:
+                existing = ACTIVE_CAMPAIGN_TASKS.get(camp_id)
+                if existing and not existing.done():
+                    continue
+                ACTIVE_CAMPAIGN_TASKS[camp_id] = asyncio.create_task(run_campaign_worker(camp_id, SessionLocal))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("Post-startup maintenance failed: %s", exc)
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    config.storage_path.mkdir(parents=True, exist_ok=True)
+    init_db()
+    db = next(db_session())
+    try:
+        get_or_create_settings(db)
+        seed_owner_client(db)
     finally:
         db.close()
-    for job_id in recovered_job_ids:
-        enqueue_job(job_id)
-    app.state.seo_entry_pruner = asyncio.create_task(_prune_seo_entries_loop())
+    if not is_pytest():
+        app.state.post_startup_task = asyncio.create_task(_post_startup_maintenance())
+        app.state.background_imap_task = asyncio.create_task(_background_imap_loop())
+        app.state.seo_entry_pruner = asyncio.create_task(_prune_seo_entries_loop())
 
 
 @app.on_event("shutdown")
 async def stop_seo_entry_pruner() -> None:
-    task = getattr(app.state, "seo_entry_pruner", None)
-    if task is not None:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+    for attr in ("post_startup_task", "background_imap_task", "seo_entry_pruner"):
+        task = getattr(app.state, attr, None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 def _prune_seo_entries() -> None:
@@ -501,34 +576,12 @@ def public_site_api(db: Session = Depends(db_session)) -> dict:
 
 
 def _normalize_ip_token(raw: str | None) -> str:
-    candidate = str(raw or "").strip()
-    if not candidate:
-        return ""
-    try:
-        return str(ipaddress.ip_address(candidate))[:64]
-    except ValueError:
-        return ""
+    return normalize_ip_token(raw)
 
 
 def _extract_request_ip(request: Request, *, default: str = "") -> str:
-    """Resolve the visitor's validated IP from proxy headers or ASGI peer info."""
-    headers = getattr(request, "headers", None)
-    if headers:
-        forwarded_raw = str(headers.get("x-forwarded-for", "") or "").strip()
-        if forwarded_raw:
-            ips = [ip for part in forwarded_raw.split(",") if (ip := _normalize_ip_token(part))]
-            non_loopback = [ip for ip in ips if not ipaddress.ip_address(ip).is_loopback]
-            if non_loopback:
-                return non_loopback[0]
-            if ips:
-                return ips[0]
-        real_ip = _normalize_ip_token(headers.get("x-real-ip", ""))
-        if real_ip and not ipaddress.ip_address(real_ip).is_loopback:
-            return real_ip
-    client = getattr(request, "client", None)
-    peer_raw = str(getattr(client, "host", "") or "").strip() if client else ""
-    peer = _normalize_ip_token(peer_raw) or peer_raw[:64]
-    return peer or default
+    """Resolve the visitor's validated IP walking X-Forwarded-For right-to-left past trusted proxies."""
+    return extract_real_request_ip(request, default=default)
 
 
 def _customer_request_ip(request: Request) -> str:
@@ -558,11 +611,44 @@ def _record_customer_auth_failure(key: str) -> None:
     CUSTOMER_AUTH_ATTEMPTS[key] = [*CUSTOMER_AUTH_ATTEMPTS.get(key, []), time.time()]
 
 
+def _check_email_verify_resend_rate(request: Request, email: str) -> str:
+    key = _customer_auth_key(request, email)
+    now = time.time()
+    attempts = [item for item in EMAIL_VERIFY_RESEND_ATTEMPTS.get(key, []) if now - item < 600]
+    EMAIL_VERIFY_RESEND_ATTEMPTS[key] = attempts
+    if len(attempts) >= 5:
+        raise HTTPException(
+            status_code=429,
+            detail="Слишком много запросов на отправку письма. Проверьте почту (включая «Спам») или подождите несколько минут.",
+        )
+    return key
+
+
+def _record_email_verify_resend(key: str) -> None:
+    EMAIL_VERIFY_RESEND_ATTEMPTS[key] = [*EMAIL_VERIFY_RESEND_ATTEMPTS.get(key, []), time.time()]
+
+
+def _registration_rate_key(request: Request) -> str:
+    raw_ip = _customer_request_ip(request)
+    protected_ips = get_protected_infrastructure_ips()
+    if (
+        not raw_ip
+        or raw_ip.lower() == "unknown"
+        or raw_ip in {"127.0.0.1", "::1", "localhost"}
+        or raw_ip in protected_ips
+    ):
+        ua = str(request.headers.get("user-agent", "") or "").strip()[:300]
+        accept_lang = str(request.headers.get("accept-language", "") or "").strip()[:120]
+        fp = hashlib.sha256(f"{ua}|{accept_lang}".encode("utf-8")).hexdigest()[:16]
+        return f"fallback:{fp}"
+    return raw_ip
+
+
 def _record_customer_registration_attempt(db: Session, request: Request, email: str, status: str) -> None:
     db.add(
         WebRegistrationAttempt(
             email=str(email or "").strip().lower()[:255],
-            ip_address=_customer_request_ip(request),
+            ip_address=_registration_rate_key(request),
             status=status[:40],
             user_agent=str(request.headers.get("user-agent", ""))[:1000],
         )
@@ -571,19 +657,20 @@ def _record_customer_registration_attempt(db: Session, request: Request, email: 
 
 
 def _check_customer_registration_rate(db: Session, request: Request, email: str) -> None:
+    rate_key = _registration_rate_key(request)
     ip_address = _customer_request_ip(request)
     now = now_utc()
     hour_cutoff = now - timedelta(hours=1)
     day_cutoff = now - timedelta(days=1)
     hour_count = (
         db.query(WebRegistrationAttempt.id)
-        .filter(WebRegistrationAttempt.ip_address == ip_address)
+        .filter(WebRegistrationAttempt.ip_address == rate_key)
         .filter(WebRegistrationAttempt.created_at >= hour_cutoff)
         .count()
     )
     day_count = (
         db.query(WebRegistrationAttempt.id)
-        .filter(WebRegistrationAttempt.ip_address == ip_address)
+        .filter(WebRegistrationAttempt.ip_address == rate_key)
         .filter(WebRegistrationAttempt.created_at >= day_cutoff)
         .count()
     )
@@ -599,7 +686,7 @@ def _check_customer_registration_rate(db: Session, request: Request, email: str)
             reason="registration_ip_rate_limit",
         )
         raise HTTPException(status_code=429, detail="Слишком много регистраций. Попробуйте позже или напишите нам.")
-    subnet = ipv4_subnet_prefix(ip_address)
+    subnet = ipv4_subnet_prefix(ip_address) if not rate_key.startswith("fallback:") else ""
     if subnet:
         subnet_count = (
             db.query(WebRegistrationAttempt.id)
@@ -751,6 +838,8 @@ def customer_register_api(
             commit=False,
         )
         client_ip = _client_ip(request)
+        if user.client:
+            user.client.registration_ip = client_ip[:64]
         user_agent = request.headers.get("user-agent", "")
         doc_version = str(data.legal_version or LEGAL_VERSION).strip() or LEGAL_VERSION
         record_legal_acceptance(
@@ -795,6 +884,19 @@ def customer_register_api(
         _link_seo_registration(db, request, user)
         db.commit()
         db.refresh(user)
+        raw_utm_source = re.sub(r"[^a-zA-Z0-9_-]", "", str(getattr(data, "utm_source", "") or "").strip().lower())[:40]
+        raw_utm_campaign = re.sub(r"[^a-zA-Z0-9_.:-]", "", str(getattr(data, "utm_campaign", "") or "").strip())[:80]
+        if raw_utm_source and user.client_id:
+            from .journey import record_journey_event
+            record_journey_event(
+                db,
+                user.client_id,
+                channel="web",
+                event_name="outreach_entry",
+                mode="supplier_search",
+                outcome=raw_utm_source,
+                reason_code=raw_utm_campaign,
+            )
     except ValueError as exc:
         db.rollback()
         _record_customer_registration_attempt(db, request, data.email, "failed")
@@ -815,9 +917,9 @@ def customer_register_api(
     payload = customer_session_payload(db, user, csrf_token=csrf_token, authenticated=True)
     payload["verification_email_sent"] = email_sent
     payload["message"] = (
-        "Кабинет создан. Подтвердите email, чтобы запускать задачи."
+        "Кабинет создан. Вы можете сразу запустить первую пробную задачу; подтвердите email для дальнейшей работы."
         if email_sent
-        else "Кабинет создан. Для подтверждения email напишите нам через контакты на сайте."
+        else "Кабинет создан. Вы можете сразу запустить первую пробную задачу; для подтверждения email напишите нам через контакты на сайте."
     )
     return payload
 
@@ -829,11 +931,25 @@ def customer_login_api(
     response: Response,
     db: Session = Depends(db_session),
 ) -> dict:
+    login_ip = _extract_request_ip(request, default="")
+    if login_ip and is_ip_blocked(db, login_ip):
+        raise HTTPException(status_code=403, detail="Доступ с вашего адреса ограничен администратором.")
     key = _check_customer_auth_rate(request, data.email)
     user = authenticate_web_user(db, data.email, data.password)
     if not user:
         _record_customer_auth_failure(key)
         raise HTTPException(status_code=401, detail="Неверный email или пароль.")
+    if user.client_id:
+        client_blocked = (
+            db.query(SupportBlockedActor.id)
+            .filter(
+                SupportBlockedActor.actor_type == "client",
+                SupportBlockedActor.actor_value == user.client_id,
+            )
+            .first()
+        )
+        if client_blocked:
+            raise HTTPException(status_code=403, detail="Доступ к аккаунту ограничен администратором.")
     token, csrf_token, session = create_web_session(db, user, request=request)
     set_customer_session_cookie(response, token)
     CUSTOMER_AUTH_ATTEMPTS.pop(key, None)
@@ -929,12 +1045,14 @@ def customer_yandex_callback_api(
         clear_yandex_oauth_state_cookie(resp)
         return resp
 
-    if not user.is_active or (user.client and not user.client.is_active):
+    if not user.is_active or (user.client and not user.client.is_active) or _is_client_actor_blocked(db, user.client_id):
         resp = RedirectResponse(url=f"{target_error_url}account_blocked", status_code=303)
         clear_yandex_oauth_state_cookie(resp)
         return resp
 
-    if is_new and _link_seo_registration(db, request, user):
+    if is_new:
+        _record_oauth_legal_acceptance(db, request, user, source="yandex_oauth")
+        _link_seo_registration(db, request, user)
         db.commit()
     token, csrf_token, session = create_web_session(db, user, request=request)
     success_fragment = "registration_success" if is_new else "login_success"
@@ -1008,10 +1126,12 @@ def customer_telegram_callback_api(
             url=f"{target_error_url}user_creation_failed", status_code=303
         )
 
-    if not user.is_active or (user.client and not user.client.is_active):
+    if not user.is_active or (user.client and not user.client.is_active) or _is_client_actor_blocked(db, user.client_id):
         return RedirectResponse(url=f"{target_error_url}account_blocked", status_code=303)
 
-    if is_new and _link_seo_registration(db, request, user):
+    if is_new:
+        _record_oauth_legal_acceptance(db, request, user, source="telegram_oauth")
+        _link_seo_registration(db, request, user)
         db.commit()
     token, csrf_token, session = create_web_session(db, user, request=request)
     success_fragment = "registration_success" if is_new else "login_success"
@@ -1073,13 +1193,15 @@ def customer_telegram_verify_api(
         logger.error("telegram_auth_user_creation_error", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if not user.is_active or (user.client and not user.client.is_active):
+    if not user.is_active or (user.client and not user.client.is_active) or _is_client_actor_blocked(db, user.client_id):
         raise HTTPException(
             status_code=403,
             detail="Доступ к аккаунту ограничен администратором.",
         )
 
-    if is_new and _link_seo_registration(db, request, user):
+    if is_new:
+        _record_oauth_legal_acceptance(db, request, user, source="telegram_oauth")
+        _link_seo_registration(db, request, user)
         db.commit()
     token, csrf_token, session = create_web_session(db, user, request=request)
     set_customer_session_cookie(response, token)
@@ -1115,7 +1237,7 @@ def customer_password_reset_request_api(
         try:
             email_sent = send_password_reset_email(user, token, public_base_url=settings.public_base_url)
         except Exception as exc:
-            logger.warning("password_reset_email_send_failed", extra={"email": email, "error": str(exc)})
+            logger.warning("password_reset_email_send_failed", extra={"email": mask_email_for_log(email), "error": str(exc)})
             email_sent = False
 
         recent_cutoff = now_utc() - timedelta(minutes=15)
@@ -1135,7 +1257,7 @@ def customer_password_reset_request_api(
                     status="completed" if email_sent else "open",
                     resolved_by="system" if email_sent else None,
                     resolved_at=now if email_sent else None,
-                    requested_ip=str(getattr(request.client, "host", "") or "")[:80],
+                    requested_ip=_extract_request_ip(request, default="")[:80],
                     user_agent=str(request.headers.get("user-agent", ""))[:1000],
                     admin_note="Ссылка отправлена на email" if email_sent else "Заявка на сброс пароля",
                 )
@@ -1196,6 +1318,12 @@ def customer_change_password_api(
             detail="Новый пароль должен быть не короче 10 символов.",
         )
     user.password_hash = hash_password(new_pwd)
+    now_ts = now_utc()
+    db.query(WebSession).filter(
+        WebSession.user_id == user.id,
+        WebSession.id != context.session.id,
+        WebSession.revoked_at.is_(None),
+    ).update({WebSession.revoked_at: now_ts}, synchronize_session=False)
     db.commit()
     return {"ok": True, "message": "Пароль успешно изменён."}
 
@@ -1209,8 +1337,8 @@ def customer_email_verification_request_api(
     require_customer_csrf(request, context)
     if context.user.is_email_verified:
         return {"success": True, "message": "Email уже подтверждён."}
-    key = _check_customer_auth_rate(request, context.user.email)
-    _record_customer_auth_failure(key)
+    resend_key = _check_email_verify_resend_rate(request, context.user.email)
+    _record_email_verify_resend(resend_key)
     email_sent = _send_customer_verification_email(db, context.user, request)
     return {
         "success": True,
@@ -1229,15 +1357,23 @@ def customer_email_verification_confirm_link(token: str):
 
 
 @app.get("/api/customer/auth/unsubscribe")
-def customer_unsubscribe_api(token: str = "", email: str = "", db: Session = Depends(db_session)):
-    from .nurturing import unsubscribe_by_email, unsubscribe_by_token
+@app.post("/api/customer/auth/unsubscribe")
+def customer_unsubscribe_api(
+    token: str = Query(default=""),
+    token_form: str = Form(default="", alias="token"),
+    email: str = Query(default=""),
+    db: Session = Depends(db_session),
+):
+    from .nurturing import unsubscribe_by_token
 
-    if token:
-        success, message = unsubscribe_by_token(db, token)
-    elif email:
-        success, message = unsubscribe_by_email(db, email)
+    resolved_token = (token or token_form or "").strip()
+    if resolved_token:
+        success, message = unsubscribe_by_token(db, resolved_token)
     else:
-        success, message = False, "Недействительная ссылка отписки: не указан токен или email."
+        success, message = (
+            False,
+            "Недействительная ссылка отписки: требуется подписанный токен из письма. Перейдите по актуальной ссылке отписки в письме или напишите нам.",
+        )
 
     status_title = "Вы успешно отписались" if success else "Ошибка отписки"
     status_desc = (
@@ -1265,6 +1401,38 @@ def customer_unsubscribe_api(token: str = "", email: str = "", db: Session = Dep
 </body>
 </html>"""
     return HTMLResponse(content=html, status_code=200 if success else 400)
+
+
+@app.post("/api/customer/account/delete")
+def customer_delete_account_api(
+    request: Request,
+    response: Response,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    client = context.user.client or (db.get(Client, context.user.client_id) if context.user.client_id else None)
+    if client:
+        active_job = (
+            db.query(Job.id)
+            .filter(
+                Job.client_id == client.id,
+                Job.status.in_(["pending", "running", "settling"]),
+            )
+            .first()
+        )
+        if active_job:
+            raise HTTPException(
+                status_code=409,
+                detail="Дождитесь завершения или отмените активные задачи перед удалением кабинета.",
+            )
+        _force_delete_client(db, client)
+    else:
+        db.query(WebSession).filter(WebSession.user_id == context.user.id).delete(synchronize_session=False)
+        db.delete(context.user)
+    db.commit()
+    clear_customer_session_cookie(response)
+    return {"ok": True, "message": "Ваш кабинет и персональные данные удалены."}
 
 
 @app.post("/api/customer/auth/verify-email/confirm")
@@ -1300,8 +1468,8 @@ def customer_email_change_api(
         db.commit()
         db.refresh(context.user)
 
-    key = _check_customer_auth_rate(request, context.user.email)
-    _record_customer_auth_failure(key)
+    resend_key = _check_email_verify_resend_rate(request, context.user.email)
+    _record_email_verify_resend(resend_key)
     email_sent = _send_customer_verification_email(db, context.user, request)
     payload = customer_session_payload(db, context.user, csrf_token=context.session.csrf_token if context.session else "", authenticated=True)
     payload["verification_email_sent"] = email_sent
@@ -1630,7 +1798,13 @@ def customer_jobs_api(
             filters.append(Job.job_number == int(clean_num))
         query = query.filter(or_(*filters))
     clean_mode = str(mode or "").strip()
-    if clean_mode in {MODE_SUPPLIER_SEARCH, MODE_EXACT_PRODUCT, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
+    if clean_mode in {
+        MODE_SUPPLIER_SEARCH,
+        MODE_EXACT_PRODUCT,
+        MODE_PROCUREMENT_REPORT,
+        MODE_ANALYSIS_AND_SUPPLIERS,
+        MODE_PRICE_MONITORING,
+    }:
         query = query.filter(Job.mode == clean_mode)
     clean_policy = str(policy or "").strip()
     if clean_policy in {"normal", "minprom_registry_only", "minprom_registry_priority"}:
@@ -1705,6 +1879,7 @@ async def customer_create_job_route(
     mode: str = Form(default=MODE_SUPPLIER_SEARCH),
     supplier_search_policy: str = Form(default=SUPPLIER_POLICY_NORMAL),
     multi_item_mode: str = Form(default="balanced"),
+    auto_confirm_strategy: bool = Form(default=False),
     delivery_city: str = Form(default=""),
     geo_radius_km: int | None = Form(default=None),
     geo_scope: str = Form(default="ru"),
@@ -1720,6 +1895,7 @@ async def customer_create_job_route(
         mode=mode,
         supplier_search_policy=supplier_search_policy,
         multi_item_mode=multi_item_mode,
+        auto_confirm_strategy=auto_confirm_strategy,
         delivery_city=delivery_city,
         geo_radius_km=geo_radius_km,
         geo_scope=geo_scope,
@@ -1759,6 +1935,24 @@ def customer_job_retry_api(
         if created:
             enqueue_job(child.id)
         return {"ok": True, "message": "Создана новая задача; предыдущий результат сохранён", "job": customer_job_to_dict(child)}
+    if job.status not in {"failed", "cancelled"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Повторный запуск доступен только для завершённых с ошибкой или отменённых задач.",
+        )
+    already_charged = (
+        db.query(BillingTransaction.id)
+        .filter(
+            BillingTransaction.job_id == job.id,
+            BillingTransaction.operation == OP_CHARGE,
+        )
+        .first()
+    )
+    if already_charged:
+        raise HTTPException(
+            status_code=409,
+            detail="Задача уже была оплачена и завершена. Создайте новую задачу.",
+        )
     if policy:
         normalized = _normalize_supplier_search_policy_for_job(job.mode, policy)
         job.supplier_search_policy = normalized
@@ -2101,12 +2295,15 @@ async def customer_start_supplier_search_route(
 @app.post("/api/customer/jobs/{job_id}/chat")
 async def customer_job_chat_route(
     job_id: str,
+    request: Request = None,
     message: str = Form(default=""),
     files: list[UploadFile] = File(default=[]),
     file: UploadFile | None = File(default=None),
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    if isinstance(request, Request):
+        require_customer_csrf(request, context)
     job = _customer_job_or_404(db, job_id, context)
     root_id = resolve_chat_job_id(job)
     clean_message = str(message or "").strip()
@@ -2237,9 +2434,12 @@ async def customer_job_chat_route(
 @app.post("/api/customer/jobs/{job_id}/chat/read")
 def customer_job_chat_mark_read_route(
     job_id: str,
+    request: Request = None,
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    if isinstance(request, Request):
+        require_customer_csrf(request, context)
     job = _customer_job_or_404(db, job_id, context)
     root_id = resolve_chat_job_id(job)
     db.query(JobChatMessage).filter(
@@ -2360,6 +2560,7 @@ def customer_chat_messages_route(
 
     return {
         "authenticated": True,
+        "csrf_token": context.session.csrf_token,
         "client": {
             "id": client.id,
             "name": client.name or context.user.name or "",
@@ -2374,6 +2575,7 @@ def customer_chat_messages_route(
 
 @app.post("/api/customer/chat")
 async def customer_chat_post_route(
+    request: Request = None,
     message: str = Form(default=""),
     job_id: str = Form(default=""),
     files: list[UploadFile] = File(default=[]),
@@ -2381,8 +2583,40 @@ async def customer_chat_post_route(
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    if isinstance(request, Request):
+        require_customer_csrf(request, context)
     client_id = context.user.client_id
     client = context.user.client or db.get(Client, client_id)
+    req_ip = _extract_request_ip(request, default="") if request is not None else ""
+    if req_ip and is_ip_blocked(db, req_ip):
+        raise HTTPException(status_code=403, detail="Отправка сообщений ограничена администратором.")
+    if client is not None and not getattr(client, "is_active", True):
+        raise HTTPException(status_code=403, detail="Отправка сообщений ограничена администратором.")
+    if client_id:
+        dialog_key = f"client:{client_id}"
+        actor_blocked = (
+            db.query(SupportBlockedActor.id)
+            .filter(
+                or_(
+                    and_(
+                        SupportBlockedActor.actor_type == "client",
+                        SupportBlockedActor.actor_value == client_id,
+                    ),
+                    SupportBlockedActor.dialog_key == dialog_key,
+                )
+            )
+            .first()
+        )
+        dialog_state_blocked = (
+            db.query(SupportDialogState.id)
+            .filter(
+                SupportDialogState.dialog_key == dialog_key,
+                SupportDialogState.status == "blocked",
+            )
+            .first()
+        )
+        if actor_blocked or dialog_state_blocked:
+            raise HTTPException(status_code=403, detail="Отправка сообщений ограничена администратором.")
     clean_message = str(message or "").strip()
     clean_job_id = str(job_id or "").strip()
 
@@ -2402,7 +2636,7 @@ async def customer_chat_post_route(
                 db,
                 event_type="chat_probe",
                 severity="high",
-                ip_address="",
+                ip_address=req_ip,
                 actor_key=f"client:{context.user.client_id}",
                 payload_preview=clean_message[:300],
                 reason=attack_reason,
@@ -2536,9 +2770,12 @@ async def customer_chat_post_route(
 
 @app.post("/api/customer/chat/read")
 def customer_chat_mark_read_route(
+    request: Request = None,
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    if isinstance(request, Request):
+        require_customer_csrf(request, context)
     client_id = context.user.client_id
     db.query(JobChatMessage).filter(
         JobChatMessage.client_id == client_id,
@@ -2597,6 +2834,8 @@ def public_guest_chat_messages(
         clean_sid = validate_guest_session_id(sessionId)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if isinstance(request, Request) and clean_sid.startswith("tg_"):
+        raise HTTPException(status_code=403, detail="Недопустимый идентификатор сессии чата.")
 
     guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == clean_sid).first()
     if not guest:
@@ -2612,6 +2851,16 @@ def public_guest_chat_messages(
     blocked = is_guest_chat_blocked(db, session_id=clean_sid, client_ip=client_ip, guest=guest)
     settings = get_or_create_settings(db)
     work_hours = get_support_work_hours_status(settings)
+    if isinstance(request, Request) and (msgs or (guest and guest.visitor_contact)):
+        cookie_val = request.cookies.get(GUEST_CHAT_COOKIE)
+        if not verify_guest_chat_cookie(cookie_val, clean_sid):
+            return {
+                "messages": [],
+                "contact": None,
+                "status": "blocked" if blocked else "open",
+                "is_blocked": blocked,
+                "work_hours": work_hours,
+            }
     return {
         "messages": [build_guest_chat_frontend_message(m) for m in msgs],
         "contact": guest.visitor_contact if (guest and guest.visitor_contact) else None,
@@ -2624,6 +2873,7 @@ def public_guest_chat_messages(
 @app.post("/api/public/guest-chat/send")
 async def public_guest_chat_send(
     request: Request,
+    response: Response = None,
     payload: dict = Body(...),
     db: Session = Depends(db_session),
 ) -> dict:
@@ -2631,6 +2881,16 @@ async def public_guest_chat_send(
         clean_sid = validate_guest_session_id(payload.get("sessionId"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if isinstance(request, Request) and clean_sid.startswith("tg_"):
+        raise HTTPException(status_code=403, detail="Недопустимый идентификатор сессии чата.")
+    if isinstance(request, Request):
+        existing_has_msgs = (
+            db.query(JobChatMessage.id)
+            .filter(JobChatMessage.client_id == f"guest:{clean_sid}")
+            .first()
+        )
+        if existing_has_msgs and not verify_guest_chat_cookie(request.cookies.get(GUEST_CHAT_COOKIE), clean_sid):
+            raise HTTPException(status_code=403, detail="Сессия чата не подтверждена. Обновите страницу.")
 
     raw_text = str(payload.get("text") or "").strip()
     raw_preset = str(payload.get("preset") or "").strip()
@@ -2798,6 +3058,8 @@ async def public_guest_chat_send(
             except Exception as exc:
                 logger.warning("Error notifying admin about guest chat message: %s", exc)
 
+    if response is not None:
+        set_guest_chat_cookie(response, clean_sid)
     resp_payload: dict[str, Any] = {
         "success": True,
         "message": build_guest_chat_frontend_message(new_msg),
@@ -2844,6 +3106,7 @@ async def customer_create_invoice_api(
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    require_customer_csrf(request, context)
     if not context.user.is_email_verified:
         raise HTTPException(
             status_code=403,
@@ -2994,8 +3257,14 @@ def customer_invoice_html_api(
         raise HTTPException(status_code=404, detail="Счёт не найден")
     from .invoice_service import render_invoice_html
 
-    html = render_invoice_html(invoice)
-    return HTMLResponse(content=html)
+    html_doc = render_invoice_html(invoice)
+    return HTMLResponse(
+        content=html_doc,
+        headers={
+            "Content-Security-Policy": "default-src 'none'; img-src data: 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.get("/api/customer/invoices/{invoice_id}/download")
@@ -3015,26 +3284,28 @@ def customer_invoice_download_api(
     storage_base.mkdir(parents=True, exist_ok=True)
 
     fmt = str(format or "xlsx").lower().strip()
+    safe_file_id = re.sub(r"[^A-Za-z0-9_-]", "", str(invoice.id or "")) or "inv"
+    safe_dl_num = re.sub(r"[^A-Za-z0-9_-]", "_", str(invoice.invoice_number or safe_file_id))
     try:
         if fmt == "pdf":
-            file_path = storage_base / f"schet_{invoice.invoice_number}.pdf"
+            file_path = storage_base / f"schet_{safe_file_id}.pdf"
             generate_invoice_pdf(invoice, str(file_path))
             return FileResponse(
                 str(file_path),
                 media_type="application/pdf",
-                filename=f"schet_{invoice.invoice_number}.pdf",
+                filename=f"schet_{safe_dl_num}.pdf",
             )
         else:
-            file_path = storage_base / f"schet_{invoice.invoice_number}.xlsx"
+            file_path = storage_base / f"schet_{safe_file_id}.xlsx"
             generate_invoice_xlsx(invoice, str(file_path))
             return FileResponse(
                 str(file_path),
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                filename=f"schet_{invoice.invoice_number}.xlsx",
+                filename=f"schet_{safe_dl_num}.xlsx",
             )
     except Exception as exc:
         logger.exception("invoice_download_error", extra={"invoice_id": invoice_id, "error": str(exc)})
-        raise HTTPException(status_code=500, detail=f"Ошибка генерации файла: {exc}")
+        raise HTTPException(status_code=500, detail="Ошибка генерации файла счёта")
 
 
 @app.post("/api/customer/invoices/{invoice_id}/send-email")
@@ -3044,9 +3315,17 @@ async def customer_invoice_send_email_api(
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    require_customer_csrf(request, context)
     invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
     if not invoice or invoice.client_id != context.user.client.id:
         raise HTTPException(status_code=404, detail="Счёт не найден")
+
+    rate_key = f"inv_email:{context.user.client.id}"
+    now_ts = time.time()
+    recent_sends = [ts for ts in INVOICE_EMAIL_ATTEMPTS.get(rate_key, []) if now_ts - ts < 3600]
+    INVOICE_EMAIL_ATTEMPTS[rate_key] = recent_sends
+    if len(recent_sends) >= 5:
+        raise HTTPException(status_code=429, detail="Слишком много отправок счёта на почту. Подождите немного.")
 
     email = ""
     try:
@@ -3058,12 +3337,28 @@ async def customer_invoice_send_email_api(
     if not email:
         email = invoice.buyer_email or context.user.email
 
+    allowed_recipients = {
+        addr
+        for addr in (
+            normalize_email(context.user.email or ""),
+            normalize_email(invoice.buyer_email or ""),
+        )
+        if addr
+    }
+    normalized_target = normalize_email(email)
+    if not normalized_target or normalized_target not in allowed_recipients:
+        raise HTTPException(
+            status_code=400,
+            detail="Отправка счёта доступна только на email вашего кабинета или email, указанный в реквизитах счёта.",
+        )
+
     from .invoice_service import send_invoice_email
 
-    ok, msg = send_invoice_email(invoice, email)
+    ok, msg = send_invoice_email(invoice, normalized_target)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
-    return {"success": True, "message": f"Счёт успешно отправлен на {email}"}
+    INVOICE_EMAIL_ATTEMPTS[rate_key] = [*recent_sends, now_ts]
+    return {"success": True, "message": f"Счёт успешно отправлен на {normalized_target}"}
 
 
 @app.get("/api/admin/invoices", dependencies=[Depends(require_admin)])
@@ -3131,6 +3426,14 @@ def admin_mark_invoice_paid_api(
         else:
             db.commit()
         db.refresh(invoice)
+        paid_actual_kopeks = int(invoice.amount_rub or 0) * 100
+
+    if not existing and paid_actual_kopeks >= 100_000:
+        try:
+            from .referral import process_referral_on_payment
+            process_referral_on_payment(db, client, paid_actual_kopeks)
+        except Exception as ref_exc:
+            logger.warning("referral_on_invoice_paid_error", extra={"error": str(ref_exc)})
 
     return {
         "success": True,
@@ -3176,8 +3479,17 @@ def _process_yookassa_payment_success(
     payment_data: dict,
     payment_record: YooKassaPayment | None = None,
 ) -> None:
+    from decimal import Decimal, InvalidOperation
+    from .billing import _billing_client_lock, _grant_money_balance_locked
+
     payment_id = payment_data.get("id")
     if not payment_id:
+        return
+
+    amount_obj = payment_data.get("amount") or {}
+    currency = str(amount_obj.get("currency") or "RUB").strip().upper()
+    if currency and currency != "RUB":
+        logger.error("Rejected YooKassa payment %s with non-RUB currency %s", payment_id, currency)
         return
 
     record = payment_record or db.query(YooKassaPayment).filter(YooKassaPayment.payment_id == payment_id).first()
@@ -3189,66 +3501,90 @@ def _process_yookassa_payment_success(
         logger.error("Cannot process YooKassa payment %s: client_id missing", payment_id)
         return
 
-    client = db.get(Client, client_id)
-    if not client:
-        logger.error("Client %s for YooKassa payment %s not found", client_id, payment_id)
-        return
-
-    amount_val = payment_data.get("amount", {}).get("value")
+    amount_val = amount_obj.get("value")
     try:
-        amount_rub = int(float(amount_val))
-    except Exception:
+        amount_dec = Decimal(str(amount_val))
+        amount_rub = int(amount_dec.to_integral_value())
+    except (InvalidOperation, TypeError, ValueError):
         amount_rub = int(getattr(record, "amount_rub", 0) or metadata.get("amount_rub") or 0)
+
+    if record and getattr(record, "amount_rub", 0) and amount_rub != int(record.amount_rub):
+        logger.error(
+            "YooKassa amount mismatch for %s: webhook=%s record=%s",
+            payment_id,
+            amount_rub,
+            record.amount_rub,
+        )
+        return
 
     bonus_rub = int(getattr(record, "bonus_rub", 0) or metadata.get("bonus_rub") or 0)
     total_credit_rub = int(getattr(record, "total_credit_rub", 0) or metadata.get("total_credit_rub") or (amount_rub + bonus_rub))
     package_name = getattr(record, "package_name", "") or metadata.get("package_name") or "Пополнение баланса"
-
-    # Credit money balance with idempotency
+    pm_type = payment_data.get("payment_method", {}).get("type") or ""
     idempotency_key = f"yookassa_{payment_id}"
-    existing_tx = db.query(BillingTransaction).filter(BillingTransaction.idempotency_key == idempotency_key).first()
-    if not existing_tx:
-        from .billing import grant_money_balance
-        grant_money_balance(
+
+    with _billing_client_lock(client_id):
+        client = db.get(Client, client_id)
+        if not client:
+            logger.error("Client %s for YooKassa payment %s not found", client_id, payment_id)
+            return
+        db.refresh(client)
+        record = db.query(YooKassaPayment).filter(YooKassaPayment.payment_id == payment_id).first() or payment_record
+        existing_tx = db.query(BillingTransaction).filter(BillingTransaction.idempotency_key == idempotency_key).first()
+        if existing_tx:
+            if record and record.status != "succeeded":
+                record.status = "succeeded"
+                record.payment_method_type = pm_type
+                record.paid_at = record.paid_at or now_utc()
+                db.commit()
+            return
+
+        _grant_money_balance_locked(
             db,
             client,
-            amount_kopeks=total_credit_rub * 100,
+            amount=total_credit_rub * 100,
             note=f"Оплата через ЮKassa № {payment_id} ({package_name})",
             created_by="yookassa",
             idempotency_key=idempotency_key,
         )
 
-    pm_type = payment_data.get("payment_method", {}).get("type") or ""
+        if record:
+            record.status = "succeeded"
+            record.payment_method_type = pm_type
+            record.paid_at = now_utc()
+        else:
+            new_record = YooKassaPayment(
+                payment_id=payment_id,
+                client_id=client.id,
+                user_id=user_id or None,
+                status="succeeded",
+                amount_rub=amount_rub,
+                bonus_rub=bonus_rub,
+                total_credit_rub=total_credit_rub,
+                package_name=package_name,
+                payment_method_type=pm_type,
+                paid_at=now_utc(),
+            )
+            db.add(new_record)
 
-    if record:
-        record.status = "succeeded"
-        record.payment_method_type = pm_type
-        record.paid_at = now_utc()
-    else:
-        new_record = YooKassaPayment(
-            payment_id=payment_id,
-            client_id=client.id,
-            user_id=user_id or None,
-            status="succeeded",
-            amount_rub=amount_rub,
-            bonus_rub=bonus_rub,
-            total_credit_rub=total_credit_rub,
-            package_name=package_name,
-            payment_method_type=pm_type,
-            paid_at=now_utc(),
-        )
-        db.add(new_record)
+        db.commit()
 
-    db.commit()
     logger.info("Successfully processed YooKassa payment %s: credited %s rub to client %s", payment_id, total_credit_rub, client.id)
+
+    if amount_rub >= 1000:
+        try:
+            from .referral import process_referral_on_payment
+            process_referral_on_payment(db, client, amount_rub * 100)
+        except Exception as ref_exc:
+            logger.warning("referral_on_yookassa_payment_error", extra={"error": str(ref_exc)})
 
     user_email = metadata.get("user_email") or ""
     if not user_email:
-        first_user = client.users[0] if getattr(client, "users", None) else None
+        first_user = client.web_users[0] if getattr(client, "web_users", None) else None
         user_email = getattr(first_user, "email", "") or ""
 
-    payer_phone = metadata.get("phone") or (payment_record.phone if payment_record else "") or (client.web_users[0].phone if client.web_users else "") or getattr(client, "phone", "")
-    payer_tg = metadata.get("telegram_username") or (payment_record.telegram_username if payment_record else "") or (client.web_users[0].telegram_username if client.web_users else "") or getattr(client, "username", "")
+    payer_phone = metadata.get("phone") or (record.phone if record else "") or (client.web_users[0].phone if client.web_users else "") or getattr(client, "phone", "")
+    payer_tg = metadata.get("telegram_username") or (record.telegram_username if record else "") or (client.web_users[0].telegram_username if client.web_users else "") or getattr(client, "username", "")
 
     notify_admin_payment_success(
         payment_id=payment_id,
@@ -3321,9 +3657,12 @@ def _process_yookassa_payment_canceled(
 @app.post("/api/customer/payments/yookassa/create")
 def customer_create_yookassa_payment_api(
     data: CreateYooKassaPaymentRequest,
+    request: Request = None,
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    if isinstance(request, Request):
+        require_customer_csrf(request, context)
     if not context.user.is_email_verified:
         raise HTTPException(
             status_code=403,
@@ -3342,15 +3681,36 @@ def customer_create_yookassa_payment_api(
     from .billing import calculate_deposit_bonus_kopeks
 
     amount_rub = int(data.amount_rub)
-    bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, client)
-    bonus_rub = round(bonus_kopeks / 100)
-    total_credit_rub = amount_rub + bonus_rub
-
+    has_custom_tariffs = client_has_custom_tariffs(db, client)
     package_name = "Пополнение баланса"
     if data.package_id:
         package = db.get(TariffPackage, data.package_id)
-        if package:
-            package_name = package.name
+        if not package or not getattr(package, "is_active", True):
+            raise HTTPException(status_code=400, detail="Выбранный тариф не найден или неактивен.")
+        expected_kopeks = int(package.price_kopeks or 0)
+        if amount_rub * 100 != expected_kopeks:
+            raise HTTPException(
+                status_code=400,
+                detail="Сумма платежа не совпадает со стоимостью выбранного тарифа.",
+            )
+        package_name = package.name
+        pkg_bonus_kopeks = int(getattr(package, "bonus_kopeks", 0) or 0)
+        bonus_kopeks = (
+            0
+            if has_custom_tariffs
+            else (
+                pkg_bonus_kopeks
+                if pkg_bonus_kopeks > 0
+                else calculate_deposit_bonus_kopeks(amount_rub * 100, db, client)
+            )
+        )
+    else:
+        if amount_rub < 300:
+            raise HTTPException(status_code=400, detail="Минимальная сумма пополнения — 300 ₽.")
+        bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, client)
+
+    bonus_rub = round(bonus_kopeks / 100)
+    total_credit_rub = amount_rub + bonus_rub
 
     base_url = (settings.public_base_url or "https://tenderlex.ru").rstrip("/")
     desc = f"TenderLex: {package_name} ({context.user.email})"
@@ -3395,9 +3755,6 @@ def customer_create_yookassa_payment_api(
         "tenderlex_payment_id": payment_record.id,
         "client_id": client.id,
         "user_id": context.user.id,
-        "user_email": context.user.email,
-        "phone": final_phone,
-        "telegram_username": final_tg,
         "amount_rub": str(amount_rub),
         "bonus_rub": str(bonus_rub),
         "total_credit_rub": str(total_credit_rub),
@@ -4426,14 +4783,44 @@ def _force_delete_client(db: Session, client: Client) -> None:
     api_keys = db.query(ApiKey).filter(ApiKey.client_id == client.id).all()
     api_key_ids = [k.id for k in api_keys]
     if api_key_ids:
+        mcp_ops = db.query(ApiOperation).filter(ApiOperation.api_key_id.in_(api_key_ids)).all()
+        for op in mcp_ops:
+            if getattr(op, "result_path", ""):
+                Path(op.result_path).unlink(missing_ok=True)
+            shutil.rmtree(config.storage_path / "mcp_reports" / op.id, ignore_errors=True)
         db.query(ApiOperation).filter(ApiOperation.api_key_id.in_(api_key_ids)).delete(synchronize_session=False)
         db.query(ApiRateLimitEvent).filter(ApiRateLimitEvent.api_key_id.in_(api_key_ids)).delete(synchronize_session=False)
         db.query(ApiKey).filter(ApiKey.client_id == client.id).delete(synchronize_session=False)
+
+    client_invoices = db.query(Invoice).filter(Invoice.client_id == client.id).all()
+    invoices_dir = Path(config.storage_path) / "invoices"
+    for inv in client_invoices:
+        if getattr(inv, "proof_path", ""):
+            Path(inv.proof_path).unlink(missing_ok=True)
+        for ext in ("pdf", "xlsx"):
+            (invoices_dir / f"schet_{inv.id}.{ext}").unlink(missing_ok=True)
+            if getattr(inv, "invoice_number", ""):
+                (invoices_dir / f"schet_{inv.invoice_number}.{ext}").unlink(missing_ok=True)
 
     db.query(YooKassaPayment).filter(YooKassaPayment.client_id == client.id).delete(synchronize_session=False)
     db.query(Invoice).filter(Invoice.client_id == client.id).delete(synchronize_session=False)
     db.query(PartnerPayoutRequest).filter(PartnerPayoutRequest.client_id == client.id).delete(synchronize_session=False)
     db.query(Client).filter(Client.referrer_id == client.id).update({Client.referrer_id: None}, synchronize_session=False)
+
+    dialog_key = f"client:{client.id}"
+    db.query(SupportDialogState).filter(
+        (SupportDialogState.client_id == client.id) | (SupportDialogState.dialog_key == dialog_key)
+    ).delete(synchronize_session=False)
+    db.query(SupportBlockedActor).filter(
+        ((SupportBlockedActor.actor_type == "client") & (SupportBlockedActor.actor_value == client.id))
+        | (SupportBlockedActor.dialog_key == dialog_key)
+    ).delete(synchronize_session=False)
+    tg_ids_to_clean = [str(client.telegram_id)] if getattr(client, "telegram_id", "") else []
+    for tg_acc in db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == client.id).all():
+        if tg_acc.telegram_id:
+            tg_ids_to_clean.append(str(tg_acc.telegram_id))
+    for tg_uid in set(tg_ids_to_clean):
+        db.query(SupportGuestSession).filter(SupportGuestSession.session_id == f"tg_{tg_uid}").delete(synchronize_session=False)
 
     web_users = db.query(WebUser).filter(WebUser.client_id == client.id).all()
     web_user_ids = [wu.id for wu in web_users]
@@ -4534,6 +4921,14 @@ def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends
     target.notes = "\n".join(item for item in [target.notes, merge_note] if item).strip()
 
     db.query(Job).filter(Job.client_id == source.id).update({Job.client_id: target.id}, synchronize_session=False)
+    db.query(JobChatMessage).filter(JobChatMessage.client_id == source.id).update({JobChatMessage.client_id: target.id}, synchronize_session=False)
+    db.query(Invoice).filter(Invoice.client_id == source.id).update({Invoice.client_id: target.id}, synchronize_session=False)
+    db.query(YooKassaPayment).filter(YooKassaPayment.client_id == source.id).update({YooKassaPayment.client_id: target.id}, synchronize_session=False)
+    db.query(ApiKey).filter(ApiKey.client_id == source.id).update({ApiKey.client_id: target.id}, synchronize_session=False)
+    db.query(PartnerPayoutRequest).filter(PartnerPayoutRequest.client_id == source.id).update({PartnerPayoutRequest.client_id: target.id}, synchronize_session=False)
+    db.query(Client).filter(Client.referrer_id == source.id, Client.id != target.id).update({Client.referrer_id: target.id}, synchronize_session=False)
+    if not target.referrer_id and source.referrer_id and source.referrer_id != target.id:
+        target.referrer_id = source.referrer_id
     db.query(BillingTransaction).filter(BillingTransaction.client_id == source.id).update({BillingTransaction.client_id: target.id}, synchronize_session=False)
     db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == source.id).update({ClientTelegramAccount.client_id: target.id}, synchronize_session=False)
     db.query(WebUser).filter(WebUser.client_id == source.id).update({WebUser.client_id: target.id}, synchronize_session=False)
@@ -4541,11 +4936,49 @@ def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends
     db.query(UserJourneyEvent).filter(UserJourneyEvent.client_id == source.id).update({UserJourneyEvent.client_id: target.id}, synchronize_session=False)
     db.query(OnboardingReminder).filter(OnboardingReminder.client_id == source.id).update({OnboardingReminder.client_id: target.id}, synchronize_session=False)
     db.query(AccountLinkToken).filter(AccountLinkToken.client_id == source.id).update({AccountLinkToken.client_id: target.id}, synchronize_session=False)
+    db.query(AccountLinkToken).filter(AccountLinkToken.conflict_client_id == source.id).update({AccountLinkToken.conflict_client_id: target.id}, synchronize_session=False)
+    db.query(SupportDialogState).filter(SupportDialogState.client_id == source.id).delete(synchronize_session=False)
     db.flush()
     db.delete(source)
     db.commit()
     db.refresh(target)
     return {"success": True, "client": client_to_dict(target, db=db)}
+
+
+def _sync_open_invoice_on_admin_grant(
+    db: Session,
+    client: Client,
+    *,
+    pay_kopeks: int,
+    total_amount_kopeks: int = 0,
+) -> Invoice | None:
+    if pay_kopeks <= 0:
+        return None
+    candidate_kopeks = {int(pay_kopeks)}
+    if int(total_amount_kopeks or 0) > 0:
+        candidate_kopeks.add(int(total_amount_kopeks))
+    open_invoices = (
+        db.query(Invoice)
+        .filter(
+            Invoice.client_id == client.id,
+            Invoice.status == "issued",
+        )
+        .order_by(Invoice.created_at.asc(), Invoice.id.asc())
+        .all()
+    )
+    for inv in open_invoices:
+        inv_amount_kopeks = int(inv.amount_rub or 0) * 100
+        inv_total_kopeks = int(
+            (inv.total_credit_rub or (int(inv.amount_rub or 0) + int(inv.bonus_rub or 0))) or 0
+        ) * 100
+        if inv_amount_kopeks in candidate_kopeks or (inv_total_kopeks > 0 and inv_total_kopeks in candidate_kopeks):
+            inv.status = "paid"
+            inv.paid_at = now_utc()
+            if not inv.settlement_mode:
+                inv.settlement_mode = "admin_grant_sync"
+            db.commit()
+            return inv
+    return None
 
 
 @app.post("/api/clients/{client_id}/billing/grants", dependencies=[Depends(require_admin)])
@@ -4565,6 +4998,7 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
     units = package.units if package else data.units
     if kind in {KIND_MONEY, KIND_DEPOSIT}:
         has_custom_tariffs = client_has_custom_tariffs(db, client)
+        pay_kopeks = 0
         if package and package.kind == KIND_DEPOSIT:
             pay_kopeks = int(package.price_kopeks or 0)
             bonus_kopeks = 0 if has_custom_tariffs else int(getattr(package, "bonus_kopeks", 0) or 0)
@@ -4610,6 +5044,7 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
             total_amount_kopeks = int(data.amount_kopeks or 0)
             grant_note = data.note or "Ручное списание с баланса"
 
+        synced_invoice: Invoice | None = None
         try:
             if operation == "grant":
                 transaction = grant_money_balance(
@@ -4620,10 +5055,16 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                     created_by="admin",
                     idempotency_key=data.idempotency_key or "",
                 )
-                if total_amount_kopeks >= 100_000:
+                synced_invoice = _sync_open_invoice_on_admin_grant(
+                    db,
+                    client,
+                    pay_kopeks=pay_kopeks,
+                    total_amount_kopeks=total_amount_kopeks,
+                )
+                if pay_kopeks >= 100_000:
                     try:
                         from .referral import process_referral_on_payment
-                        process_referral_on_payment(db, client, total_amount_kopeks)
+                        process_referral_on_payment(db, client, pay_kopeks)
                     except Exception as ref_exc:
                         logger.warning("referral_on_admin_grant_error", extra={"error": str(ref_exc)})
             else:
@@ -4638,13 +5079,18 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
         except BillingError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         db.refresh(client)
-        return {
+        result_payload = {
             "success": True,
             "transaction": transaction_to_dict(transaction),
             "client": client_to_dict(client, db=db),
         }
+        if synced_invoice is not None:
+            result_payload["synced_invoice_id"] = synced_invoice.id
+            result_payload["synced_invoice_number"] = synced_invoice.invoice_number
+        return result_payload
     if kind not in VALID_BILLING_KINDS:
         raise HTTPException(status_code=400, detail="Unknown billing kind")
+    synced_pkg_invoice: Invoice | None = None
     try:
         if operation == "grant":
             note = data.note or (f"Начислен пакет «{package.name}»" if package else "Ручное пополнение пакета")
@@ -4659,7 +5105,13 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 created_by="admin",
                 idempotency_key=data.idempotency_key or "",
             )
-            pkg_price = getattr(package, "price_kopeks", 0) if package else int(data.amount_kopeks or 0)
+            pkg_price = int(getattr(package, "price_kopeks", 0) or 0) if package else int(data.amount_kopeks or 0)
+            synced_pkg_invoice = _sync_open_invoice_on_admin_grant(
+                db,
+                client,
+                pay_kopeks=pkg_price,
+                total_amount_kopeks=pkg_price,
+            )
             if pkg_price >= 100_000:
                 try:
                     from .referral import process_referral_on_payment
@@ -4680,11 +5132,15 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
     except BillingError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.refresh(client)
-    return {
+    pkg_result = {
         "success": True,
         "transaction": transaction_to_dict(transaction),
         "client": client_to_dict(client, db=db),
     }
+    if synced_pkg_invoice is not None:
+        pkg_result["synced_invoice_id"] = synced_pkg_invoice.id
+        pkg_result["synced_invoice_number"] = synced_pkg_invoice.invoice_number
+    return pkg_result
 
 
 @app.patch("/api/clients/{client_id}/tariff-overrides/{kind}", dependencies=[Depends(require_admin)])
@@ -6123,31 +6579,46 @@ async def upload_admin_supplement(
         # Прямая публикация без ожидания согласования (или бесплатное дополнение)
         if supplement_items and job.client_id and not getattr(job, "is_admin_rerun", False) and needed_kopeks > 0:
             try:
-                if client_obj is not None and avail_kopeks > 0:
-                    actual_charge = min(needed_kopeks, avail_kopeks)
-                    if actual_charge > 0:
-                        client_obj.money_balance_kopeks = int(client_obj.money_balance_kopeks or 0) - actual_charge
-                        existing_charge = (
-                            db.query(BillingTransaction)
-                            .filter(
-                                BillingTransaction.job_id == job.id,
-                                BillingTransaction.kind == job.mode,
-                                BillingTransaction.operation == "charge",
+                from .billing import _billing_client_lock
+                with _billing_client_lock(job.client_id):
+                    client_obj = db.get(Client, job.client_id)
+                    if client_obj is not None:
+                        db.refresh(client_obj)
+                        avail_now = max(0, int(client_obj.money_balance_kopeks or 0) - int(client_obj.money_reserved_kopeks or 0))
+                        actual_charge = min(needed_kopeks, avail_now)
+                        if actual_charge > 0:
+                            client_obj.money_balance_kopeks = int(client_obj.money_balance_kopeks or 0) - actual_charge
+                            existing_charges = (
+                                db.query(BillingTransaction.kind)
+                                .filter(
+                                    BillingTransaction.job_id == job.id,
+                                    BillingTransaction.operation == "charge",
+                                )
+                                .all()
                             )
-                            .first()
-                        )
-                        tx_kind = f"{job.mode}_supplement" if existing_charge is not None else job.mode
-                        db.add(
-                            BillingTransaction(
-                                client_id=client_obj.id,
-                                job_id=job.id,
-                                kind=tx_kind,
-                                operation="charge",
-                                units=delta_units or 1,
-                                amount_kopeks=actual_charge,
-                                note=f"Оплата по дополненному экспертному отчёту: +{delta_units} поз. (всего найдено {max_verified} поз.)",
+                            used_kinds = {str(r[0]) for r in existing_charges if r and r[0]}
+                            if job.mode not in used_kinds:
+                                tx_kind = job.mode
+                            elif f"{job.mode}_supplement" not in used_kinds:
+                                tx_kind = f"{job.mode}_supplement"
+                            else:
+                                supp_idx = 2
+                                while f"{job.mode}_supplement_{supp_idx}" in used_kinds:
+                                    supp_idx += 1
+                                tx_kind = f"{job.mode}_supplement_{supp_idx}"
+                            db.add(
+                                BillingTransaction(
+                                    client_id=client_obj.id,
+                                    job_id=job.id,
+                                    kind=tx_kind,
+                                    operation="charge",
+                                    units=delta_units or 1,
+                                    amount_kopeks=actual_charge,
+                                    balance_after_kopeks=int(client_obj.money_balance_kopeks or 0),
+                                    reserved_after_kopeks=int(client_obj.money_reserved_kopeks or 0),
+                                    note=f"Оплата по дополненному экспертному отчёту: +{delta_units} поз. (всего найдено {max_verified} поз.)",
+                                )
                             )
-                        )
             except Exception as bill_exc:
                 logger.warning("Failed to settle supplement charge for job %s: %s", job.id, bill_exc)
 
@@ -6710,6 +7181,14 @@ def admin_security_block(
         raise HTTPException(status_code=400, detail="Недопустимый тип блокировки.")
     if not actor_value:
         raise HTTPException(status_code=400, detail="Укажите значение для блокировки.")
+    if actor_type == "ip":
+        clean_ip = normalize_blockable_ip(actor_value)
+        if not clean_ip:
+            raise HTTPException(
+                status_code=400,
+                detail="Этот системный, прокси или локальный IP-адрес нельзя заблокировать.",
+            )
+        actor_value = clean_ip
     existing = (
         db.query(SupportBlockedActor)
         .filter(
@@ -7923,6 +8402,7 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
         "authenticated": authenticated,
         "csrf_token": csrf_token,
         "csrf_header": CSRF_HEADER,
+        "can_launch_trial_without_email_verify": _unverified_user_can_launch_first_job(db, user),
         "user": customer_user_to_dict(db, user),
         "balance": balance,
         "limits": {
@@ -7968,6 +8448,26 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
     }
 
 
+def _unverified_user_can_launch_first_job(db: Session, user: WebUser | None) -> bool:
+    if user is None:
+        return False
+    if bool(getattr(user, "is_email_verified", False)):
+        return True
+    client_id = getattr(user, "client_id", None) or (getattr(user.client, "id", None) if getattr(user, "client", None) else None)
+    if not client_id:
+        return False
+    existing_jobs = (
+        db.query(func.count(Job.id))
+        .filter(
+            Job.client_id == client_id,
+            Job.status.notin_(["failed", "cancelled"]),
+        )
+        .scalar()
+        or 0
+    )
+    return existing_jobs == 0
+
+
 def customer_user_to_dict(db: Session, user: WebUser) -> dict:
     settings = get_or_create_settings(db)
     is_geo_allowed = bool(
@@ -7993,6 +8493,7 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "telegram_username": getattr(user, "telegram_username", "") or (user.client and getattr(user.client, "username", "")) or "",
         "is_active": bool(user.is_active),
         "is_email_verified": bool(user.is_email_verified),
+        "can_launch_trial_without_email_verify": _unverified_user_can_launch_first_job(db, user),
         "has_telegram": has_telegram,
         "client_id": user.client_id,
         "allowed_price_monitoring": is_pm_allowed,
@@ -8186,9 +8687,6 @@ def customer_job_to_dict(
         "admin_supplement_at": job.admin_supplement_at.isoformat() if getattr(job, "admin_supplement_at", None) else None,
         "chat_messages": chat_list,
         "unread_admin_messages_count": unread_admin_cnt,
-        "yandex_requests_count": getattr(job, "yandex_requests_count", 0) or 0,
-        "yandex_cost_rub": getattr(job, "yandex_cost_rub", 0.0) or 0.0,
-        "yandex_cost_label": f"{(getattr(job, 'yandex_cost_rub', 0.0) or 0.0):.2f} ₽",
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
@@ -8200,7 +8698,7 @@ def customer_job_to_dict(
         data["cumulative_verified_count"] = prior_count + int(job.verified_count or 0)
     if include_files:
         data["files"] = [file_to_dict(item) for item in job.files]
-        data["sources"] = [source_to_dict(item) for item in job.sources]
+        data["sources"] = [source_to_dict(item, customer_facing=True) for item in job.sources]
     return data
 
 
@@ -8284,8 +8782,11 @@ async def create_customer_job_api(
 ) -> dict:
     if mode not in VALID_JOB_MODES:
         raise HTTPException(status_code=400, detail="Неизвестный режим обработки.")
-    if not context.user.is_email_verified:
-        raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
+    if not context.user.is_email_verified and not _unverified_user_can_launch_first_job(db, context.user):
+        raise HTTPException(
+            status_code=403,
+            detail="Подтвердите email по ссылке из письма, чтобы продолжить запуск задач (первая пробная задача уже выполнена).",
+        )
     normalized_policy = _normalize_supplier_search_policy_for_job(mode, supplier_search_policy)
     normalized_multi_item_mode = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
     settings = get_or_create_settings(db)
@@ -8302,18 +8803,20 @@ async def create_customer_job_api(
         if not is_geo_allowed:
             raise HTTPException(status_code=403, detail="Поиск в радиусе доставки пока не активирован для вашего аккаунта.")
     sources = source_payloads_from_text(source_urls)
-    if sources and mode == MODE_SUPPLIER_SEARCH:
-        raise HTTPException(
-            status_code=400,
-            detail="Для поиска поставщиков отправьте файл или текст ТЗ. Номер извещения и ссылку используйте в анализе закупки.",
-        )
     payload = await _customer_upload_payload(files or [], settings)
     text_value = str(text or "").strip()
+    if text_value and not payload and not sources:
+        text_sources = source_payloads_from_text(text_value)
+        if text_sources:
+            stripped_remainder = NOTICE_NUMBER_RE.sub(" ", URL_RE.sub(" ", text_value)).strip(" \t\r\n,.;:-—№#")
+            if len(stripped_remainder) < 30:
+                sources = text_sources
+                text_value = ""
     if text_value:
         payload.append(("technical_assignment.txt", text_value.encode("utf-8")))
     if not payload and not sources:
         if mode == MODE_SUPPLIER_SEARCH:
-            raise HTTPException(status_code=400, detail="Приложите одно или несколько ТЗ.")
+            raise HTTPException(status_code=400, detail="Приложите ТЗ, номер извещения или ссылку на закупку.")
         raise HTTPException(status_code=400, detail="Добавьте документы закупки, номер извещения или ссылку.")
     if len(payload) > int(settings.max_files_per_batch or 20):
         raise HTTPException(status_code=400, detail="Слишком много файлов в одной задаче.")
@@ -8354,8 +8857,11 @@ async def create_customer_job_api(
                     geo_scope=geo_scope,
                     initial_status="draft",
                 )
-                if auto_confirm_strategy and normalized_multi_item_mode == "balanced":
-                    update_dobor_context_dict(job, {"multi_item_confirmed": True, "selected_item_ids": None})
+                if auto_confirm_strategy:
+                    update_dobor_context_dict(
+                        job,
+                        {"multi_item_confirmed": True, "auto_confirm_strategy": True, "selected_item_ids": None},
+                    )
                 created_jobs.append(job)
                 reserve_job_units(db, client, job)
                 jobs.append(job)
@@ -8368,6 +8874,7 @@ async def create_customer_job_api(
             return {"batch": True, "count": len(jobs), "jobs": [customer_job_to_dict(job) for job in jobs]}
 
         title = _customer_initial_job_title(mode, payload, sources)
+        pass_sources = [] if mode == MODE_SUPPLIER_SEARCH else sources
         job = create_job(
             db,
             client_id=client.id,
@@ -8376,7 +8883,7 @@ async def create_customer_job_api(
             title=title,
             target_suppliers=safe_target,
             files=payload,
-            sources=sources,
+            sources=pass_sources,
             supplier_search_policy=normalized_policy,
             multi_item_mode=normalized_multi_item_mode,
             delivery_city=delivery_city,
@@ -8384,9 +8891,29 @@ async def create_customer_job_api(
             geo_scope=geo_scope,
             initial_status="draft",
         )
+        if mode == MODE_SUPPLIER_SEARCH and sources:
+            seen_vals: set[str] = set()
+            for src in sources:
+                val = str(src.get("value") or src.get("url") or "").strip()
+                if not val or val in seen_vals:
+                    continue
+                seen_vals.add(val)
+                db.add(
+                    JobSource(
+                        job_id=job.id,
+                        kind=str(src.get("kind") or "procurement_url"),
+                        label=str(src.get("label") or source_label(val))[:255],
+                        value=val,
+                    )
+                )
+            db.commit()
+            db.refresh(job)
         created_jobs.append(job)
-        if auto_confirm_strategy and mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS} and normalized_multi_item_mode == "balanced":
-            update_dobor_context_dict(job, {"multi_item_confirmed": True, "selected_item_ids": None})
+        if auto_confirm_strategy and mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+            update_dobor_context_dict(
+                job,
+                {"multi_item_confirmed": True, "auto_confirm_strategy": True, "selected_item_ids": None},
+            )
         reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
         job.status = "pending"
         job.message = "Задача создана"
@@ -10228,15 +10755,23 @@ def file_to_dict(file: JobFile) -> dict:
     }
 
 
-def source_to_dict(source: JobSource) -> dict:
+def source_to_dict(source: JobSource, *, customer_facing: bool = False) -> dict:
+    kind = source.kind
+    label = source.label or ""
+    err = source.error or ""
+    if customer_facing:
+        if kind == "tenderplan_notice":
+            kind = "procurement_notice"
+        label = re.sub(r"(?i)tenderplan", "ЕИС / ЭТП", label)
+        err = sanitize_customer_error(err) if err else ""
     return {
         "id": source.id,
-        "kind": source.kind,
-        "label": source.label,
+        "kind": kind,
+        "label": label,
         "value": source.value,
         "parse_status": source.parse_status,
         "extracted_chars": source.extracted_chars,
-        "error": source.error,
+        "error": err,
     }
 
 

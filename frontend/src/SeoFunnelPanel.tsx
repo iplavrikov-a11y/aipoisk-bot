@@ -50,7 +50,9 @@ export function SeoFunnelPanel() {
       }
     }
     void load()
-    const timer = window.setInterval(load, 120000)
+    const timer = window.setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) void load()
+    }, 120000)
     return () => {
       controller.abort()
       window.clearInterval(timer)

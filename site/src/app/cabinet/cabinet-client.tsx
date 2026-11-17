@@ -5,7 +5,7 @@ import "./cabinet-redesign.css";
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent, type MouseEvent } from "react";
 import { TelegramLoginWidget } from "@/components/telegram-login-widget";
-import { trackGoal } from "@/lib/analytics";
+import { ANALYTICS_CONSENT_KEY, trackGoal } from "@/lib/analytics";
 import { pendingSeoEntry } from "@/lib/seo-funnel";
 import {
   AlertTriangle,
@@ -1601,10 +1601,6 @@ function CustomerJobChat({
 
 export function CabinetClient() {
   const [nowTs, setNowTs] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNowTs(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
   const [session, setSession] = useState<SessionPayload | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [telegramVerifying, setTelegramVerifying] = useState(false);
@@ -1648,17 +1644,22 @@ export function CabinetClient() {
   const [changePasswordBusy, setChangePasswordBusy] = useState(false);
   const [changePasswordError, setChangePasswordError] = useState("");
   const [changePasswordSuccess, setChangePasswordSuccess] = useState("");
+  const [deleteAccountConfirm, setDeleteAccountConfirm] = useState(false);
+  const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
   const [name, setName] = useState("");
   const [registerPhone, setRegisterPhone] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [website, setWebsite] = useState("");
   const [challengeToken, setChallengeToken] = useState("");
+  const isSubmittingJobRef = useRef(false);
+  const lastJobSubmitRef = useRef<{ signature: string; ts: number }>({ signature: "", ts: 0 });
 
   useEffect(() => {
-    if (authMode !== "register") return;
+    const isAuthed = Boolean(session?.authenticated && session.user);
+    if (authMode !== "register" || sessionLoading || isAuthed) return;
     let cancelled = false;
-    fetch("/api/public/auth/challenge", { credentials: "same-origin" })
+    fetch("/api/public/auth/challenge", { credentials: "same-origin", cache: "no-store" })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!cancelled && data?.token) setChallengeToken(String(data.token));
@@ -1667,7 +1668,7 @@ export function CabinetClient() {
     return () => {
       cancelled = true;
     };
-  }, [authMode]);
+  }, [authMode, sessionLoading, session?.authenticated, session?.user]);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [personalDataConsent, setPersonalDataConsent] = useState(false);
   const [emailDraft, setEmailDraft] = useState("");
@@ -1922,7 +1923,8 @@ export function CabinetClient() {
   }
 
   function fillDemoExample() {
-    setScenario("supplier_search");
+    selectScenario("supplier_search");
+    setError("");
     setText(
       "Поставка промышленной трубопроводной арматуры:\n" +
       "1. Задвижка стальная клиновая фланцевая 30с41нж Ду100 Ру16 — 12 шт.\n" +
@@ -2142,6 +2144,20 @@ export function CabinetClient() {
     () => jobs.filter((job) => ["pending", "running", "awaiting_customer_confirmation", "awaiting_exact_selection", "awaiting_position_selection"].includes(job.status)).length,
     [jobs],
   );
+  const hasTickingJobs = useMemo(
+    () => jobs.some((job) => job.status === "pending" || job.status === "running"),
+    [jobs],
+  );
+  useEffect(() => {
+    if (!hasTickingJobs) return;
+    setNowTs(Date.now());
+    const timer = setInterval(() => {
+      if (typeof document === "undefined" || !document.hidden) {
+        setNowTs(Date.now());
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [hasTickingJobs]);
   const jobsPageCount = Math.max(1, Math.ceil(jobsTotal / jobsPageSize));
   const jobsStart = jobsTotal ? (jobsPage - 1) * jobsPageSize + 1 : 0;
   const jobsEnd = Math.min(jobsTotal, jobsPage * jobsPageSize);
@@ -2159,6 +2175,10 @@ export function CabinetClient() {
         setCustomerInvoices([]);
         setCustomerInvoicesTotal(0);
         return null;
+      }
+      if (!response.ok && response.status >= 500) {
+        if (background || session) return session;
+        throw new Error("Сервер временно обновляется. Повторите попытку через пару секунд.");
       }
       const payload = await readJson<SessionPayload>(response);
       setSession(payload.authenticated ? payload : null);
@@ -2252,11 +2272,19 @@ export function CabinetClient() {
   }
 
   async function handleStartOnlinePayment() {
+    if (!customTopUpRub || customTopUpRub < 500) {
+      setOnlinePayError("Минимальная сумма пополнения — 500 ₽");
+      return;
+    }
     const rawDigits = payerPhone.replace(/\D/g, "");
     if (!rawDigits || rawDigits.length < 10) {
       setOnlinePayError("Укажите контактный номер телефона для связи");
       return;
     }
+    const matchedPkg =
+      selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub
+        ? selectedTopUpPackage
+        : null;
     setIsPayingOnline(true);
     setOnlinePayError("");
     try {
@@ -2269,7 +2297,7 @@ export function CabinetClient() {
         credentials: "same-origin",
         body: JSON.stringify({
           amount_rub: customTopUpRub,
-          package_id: selectedTopUpPackage?.id || null,
+          package_id: matchedPkg?.id || null,
           phone: payerPhone.trim(),
           telegram_username: payerTelegram.trim().replace(/^@/, ""),
         }),
@@ -2408,6 +2436,7 @@ export function CabinetClient() {
     setScenario(next);
     if (typeof window !== "undefined") {
       try {
+        sessionStorage.removeItem("tenderlex_pending_launcher_scenario");
         localStorage.setItem("tenderlex_cabinet_launcher_scenario", next);
       } catch {}
     }
@@ -2442,16 +2471,24 @@ export function CabinetClient() {
     if (scenarioParam === "doc_analysis") {
       setScenario("procurement_report");
       if (typeof window !== "undefined") {
-        try { localStorage.setItem("tenderlex_cabinet_launcher_scenario", "procurement_report"); } catch {}
+        try {
+          sessionStorage.setItem("tenderlex_pending_launcher_scenario", "procurement_report");
+          localStorage.setItem("tenderlex_cabinet_launcher_scenario", "procurement_report");
+        } catch {}
       }
     } else if (scenarioParam && validScenarios.includes(scenarioParam as Scenario)) {
       setScenario(scenarioParam as Scenario);
       if (typeof window !== "undefined") {
-        try { localStorage.setItem("tenderlex_cabinet_launcher_scenario", scenarioParam); } catch {}
+        try {
+          sessionStorage.setItem("tenderlex_pending_launcher_scenario", scenarioParam);
+          localStorage.setItem("tenderlex_cabinet_launcher_scenario", scenarioParam);
+        } catch {}
       }
     } else if (typeof window !== "undefined") {
       try {
-        const savedScenario = localStorage.getItem("tenderlex_cabinet_launcher_scenario");
+        const pendingScenario = sessionStorage.getItem("tenderlex_pending_launcher_scenario");
+        const savedScenario = pendingScenario || localStorage.getItem("tenderlex_cabinet_launcher_scenario");
+        if (pendingScenario) sessionStorage.removeItem("tenderlex_pending_launcher_scenario");
         if (savedScenario && validScenarios.includes(savedScenario as Scenario)) {
           setScenario(savedScenario as Scenario);
         }
@@ -2464,6 +2501,16 @@ export function CabinetClient() {
     const refParam = params.get("ref");
     if (refParam && typeof window !== "undefined") {
       localStorage.setItem("tenderlex_ref", refParam.trim());
+    }
+    const utmSourceParam = (params.get("utm_source") || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 40);
+    const utmCampaignParam = (params.get("utm_campaign") || "").trim().replace(/[^a-zA-Z0-9_.:-]/g, "").slice(0, 80);
+    if (utmSourceParam && typeof window !== "undefined") {
+      try {
+        if (window.localStorage.getItem(ANALYTICS_CONSENT_KEY) === "granted") {
+          sessionStorage.setItem("tenderlex_utm_source", utmSourceParam);
+          if (utmCampaignParam) sessionStorage.setItem("tenderlex_utm_campaign", utmCampaignParam);
+        }
+      } catch {}
     }
     const hashStr = typeof window !== "undefined" && window.location.hash ? window.location.hash.replace(/^#/, "") : "";
     const hashParams = new URLSearchParams(hashStr);
@@ -2584,6 +2631,7 @@ export function CabinetClient() {
   useEffect(() => {
     if (!authenticated) return;
     const timer = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
       loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, true);
       if (activeJobs) loadSession({ background: true }).catch(() => {});
     }, activeJobs ? 3000 : 7000);
@@ -2830,6 +2878,19 @@ export function CabinetClient() {
         return;
       }
       if (authMode === "register") await pendingSeoEntry();
+      let tokenToSend = challengeToken;
+      if (authMode === "register" && !tokenToSend) {
+        try {
+          const chRes = await fetch("/api/public/auth/challenge", { credentials: "same-origin", cache: "no-store" });
+          if (chRes.ok) {
+            const chData = await chRes.json();
+            if (chData?.token) {
+              tokenToSend = String(chData.token);
+              setChallengeToken(tokenToSend);
+            }
+          }
+        } catch {}
+      }
       const response = await fetch(`/api/customer/auth/${authMode}`, {
         method: "POST",
         credentials: "same-origin",
@@ -2840,8 +2901,10 @@ export function CabinetClient() {
           name,
           phone: authMode === "register" ? registerPhone : "",
           website: authMode === "register" ? website : "",
-          challenge_token: authMode === "register" ? challengeToken : "",
+          challenge_token: authMode === "register" ? tokenToSend : "",
           ref: authMode === "register" ? (typeof window !== "undefined" ? localStorage.getItem("tenderlex_ref") || "" : "") : "",
+          utm_source: authMode === "register" ? (typeof window !== "undefined" ? sessionStorage.getItem("tenderlex_utm_source") || "" : "") : "",
+          utm_campaign: authMode === "register" ? (typeof window !== "undefined" ? sessionStorage.getItem("tenderlex_utm_campaign") || "" : "") : "",
           terms_accepted: termsAccepted,
           personal_data_consent: personalDataConsent,
           legal_version: "2026-07-17",
@@ -2853,8 +2916,20 @@ export function CabinetClient() {
       setPassword("");
       setRegisterPasswordConfirm("");
       setWebsite("");
-      setMessage(authMode === "register" ? (payload.message || "Кабинет создан. Подтвердите email, чтобы запускать задачи.") : "");
+      setMessage(
+        authMode === "register"
+          ? (payload.message || "Вы можете сразу запустить первую пробную задачу или демо-пример. Для следующих задач подтвердите email по ссылке из письма.")
+          : "",
+      );
     } catch (err) {
+      if (authMode === "register") {
+        fetch("/api/public/auth/challenge", { credentials: "same-origin", cache: "no-store" })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (data?.token) setChallengeToken(String(data.token));
+          })
+          .catch(() => {});
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -2971,6 +3046,35 @@ export function CabinetClient() {
     }
   }
 
+  async function handleDeleteAccount() {
+    if (!csrf || deleteAccountBusy) return;
+    setDeleteAccountBusy(true);
+    setChangePasswordError("");
+    try {
+      const response = await fetch("/api/customer/account/delete", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "x-csrf-token": csrf },
+      });
+      await readJson(response);
+      setChangePasswordOpen(false);
+      setDeleteAccountConfirm(false);
+      setSession(null);
+      invoiceRequestVersion.current++;
+      setCustomerInvoices([]);
+      setCustomerInvoicesTotal(0);
+      setJobs([]);
+      setJobsPage(1);
+      setJobsTotal(0);
+      setAuthMode("login");
+      setMessage("Аккаунт и персональные данные удалены.");
+    } catch (err) {
+      setChangePasswordError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleteAccountBusy(false);
+    }
+  }
+
   async function resendVerification() {
     if (!csrf) return;
     setBusy(true);
@@ -3044,10 +3148,20 @@ export function CabinetClient() {
   async function submitJob(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!csrf) return;
-    if (!emailVerified) {
-      setError("Подтвердите email, чтобы запускать задачи.");
+    if (isSubmittingJobRef.current) return;
+    const nonFailedOrCancelledCount = jobs.filter((j) => j.status !== "failed" && j.status !== "cancelled").length;
+    if (!emailVerified && nonFailedOrCancelledCount > 0) {
+      setError("Подтвердите email по ссылке из письма, чтобы запускать следующие задачи.");
       return;
     }
+    const filesSig = selectedFiles.map((file) => `${file.name}:${file.size}:${file.lastModified}`).join("|");
+    const submitSignature = `${selectedMode}::${supplierSearchPolicy}::${geoScope}::${multiItemMode}::${acceptsText ? text.trim() : ""}::${acceptsSources ? sourceUrls.trim() : ""}::${filesSig}`;
+    const now = Date.now();
+    if (lastJobSubmitRef.current.signature === submitSignature && now - lastJobSubmitRef.current.ts < 4000) {
+      return;
+    }
+    isSubmittingJobRef.current = true;
+    lastJobSubmitRef.current = { signature: submitSignature, ts: now };
     setBusy(true);
     setError("");
     setMessage("");
@@ -3088,8 +3202,10 @@ export function CabinetClient() {
       await loadSession({ background: true });
       await loadJobs(1).catch(() => {});
     } catch (err) {
+      lastJobSubmitRef.current = { signature: "", ts: 0 };
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      isSubmittingJobRef.current = false;
       setBusy(false);
     }
   }
@@ -3454,8 +3570,12 @@ export function CabinetClient() {
       if (multiItemModeParam) params.set("multi_item_mode", multiItemModeParam);
       const qs = params.toString() ? `?${params.toString()}` : "";
       const url = `/api/customer/jobs/${job.id}/retry${qs}`;
-      const res = await fetch(url, { method: "POST" });
-      const data = await res.json();
+      const res = await fetch(url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: csrf ? { "x-csrf-token": csrf } : {},
+      });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.detail || "Не удалось перезапустить задачу");
       }
@@ -3618,6 +3738,22 @@ export function CabinetClient() {
                   </svg>
                   <span>{authMode === "login" ? "Войти с Яндекс ID" : "Создать кабинет через Яндекс ID"}</span>
                 </a>
+
+                <p className="text-[11px] leading-snug text-slate-500 text-center px-1">
+                  Продолжая через Telegram или Яндекс ID, вы принимаете{" "}
+                  <a className="text-teal-700 underline hover:text-teal-900 font-medium" href="/terms" target="_blank" rel="noreferrer">
+                    публичную оферту
+                  </a>
+                  , даёте{" "}
+                  <a className="text-teal-700 underline hover:text-teal-900 font-medium" href="/personal-data" target="_blank" rel="noreferrer">
+                    согласие на обработку ПДн
+                  </a>{" "}
+                  и ознакомлены с{" "}
+                  <a className="text-teal-700 underline hover:text-teal-900 font-medium" href="/privacy" target="_blank" rel="noreferrer">
+                    Политикой конфиденциальности
+                  </a>
+                  .
+                </p>
 
                 {authMode === "register" ? (
                   <div className="flex items-center justify-center gap-2 text-xs text-teal-900 font-semibold bg-teal-50 border border-teal-200/80 rounded-xl py-2 px-3 text-center">
@@ -4209,13 +4345,51 @@ export function CabinetClient() {
                   <button
                     type="submit"
                     className="w-1/2 py-2.5 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs shadow-2xs cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
-                    disabled={changePasswordBusy}
+                    disabled={changePasswordBusy || deleteAccountBusy}
                   >
                     {changePasswordBusy && <Loader2 size={14} className="animate-spin" />}
                     <span>Сохранить</span>
                   </button>
                 </div>
               </form>
+
+              <div className="pt-3 border-t border-slate-200/80 space-y-2.5">
+                {!deleteAccountConfirm ? (
+                  <button
+                    type="button"
+                    onClick={() => setDeleteAccountConfirm(true)}
+                    disabled={changePasswordBusy || deleteAccountBusy}
+                    className="w-full text-left text-[11px] font-semibold text-slate-500 hover:text-rose-700 transition-colors cursor-pointer"
+                  >
+                    Удалить аккаунт и отозвать согласие на обработку персональных данных…
+                  </button>
+                ) : (
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 space-y-2.5">
+                    <p className="text-[11px] text-rose-900 leading-relaxed font-medium">
+                      Вы уверены? Все активные сессии будут завершены, а персональные данные обезличены (при отсутствии активных задач в очереди).
+                    </p>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDeleteAccountConfirm(false)}
+                        disabled={deleteAccountBusy}
+                        className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 font-bold text-xs cursor-pointer"
+                      >
+                        Отмена
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteAccount()}
+                        disabled={deleteAccountBusy}
+                        className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs cursor-pointer disabled:opacity-50 inline-flex items-center gap-1.5"
+                      >
+                        {deleteAccountBusy ? <Loader2 size={13} className="animate-spin" /> : null}
+                        <span>Подтвердить удаление</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -4382,7 +4556,7 @@ export function CabinetClient() {
           <div className="flex items-center gap-2">
             <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
             <span>
-              <strong>Подтвердите email.</strong> Для запуска задач и получения отчётов подтвердите адрес почты (проверьте почту или запросите ссылку повторно).
+              <strong>Подтвердите email.</strong> Вы можете сразу запустить первую пробную задачу или демо-пример. Для следующих задач подтвердите email по ссылке из письма.
             </span>
           </div>
           <button
@@ -4688,7 +4862,7 @@ export function CabinetClient() {
                 <div className="flex items-center gap-2">
                   <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
                   <span>
-                    <strong>Подтвердите email для работы с задачами.</strong> Проверьте папку «Входящие» и «Спам» или перейдите через Telegram в 1 клик.
+                    Вы можете сразу запустить первую пробную задачу или демо-пример. Для следующих задач подтвердите email по ссылке из письма (проверьте «Входящие» и «Спам») или войдите через Telegram.
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -4718,24 +4892,37 @@ export function CabinetClient() {
             ) : null}
 
             {acceptsSources ? (
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 w-full">
-                <label className="flex flex-col gap-1 text-xs font-bold text-slate-700 flex-1 min-w-0">
-                  <span className="text-[11px]">{selectedCopy.sourceLabel}</span>
-                  <input
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs h-[38px]"
-                    value={sourceUrls}
-                    onChange={(event) => setSourceUrls(event.target.value)}
-                    placeholder={selectedCopy.sourcePlaceholder}
-                  />
-                </label>
-                <button
-                  className="px-5 h-[38px] bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs font-extrabold rounded-lg shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 whitespace-nowrap border border-teal-500/40"
-                  type="submit"
-                  disabled={busy}
-                >
-                  {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
-                  <span>{selectedCopy.submit}</span>
-                </button>
+              <div className="space-y-1.5">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 w-full">
+                  <label className="flex flex-col gap-1 text-xs font-bold text-slate-700 flex-1 min-w-0">
+                    <span className="text-[11px]">{selectedCopy.sourceLabel}</span>
+                    <input
+                      className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs h-[38px]"
+                      value={sourceUrls}
+                      onChange={(event) => setSourceUrls(event.target.value)}
+                      placeholder={selectedCopy.sourcePlaceholder}
+                    />
+                  </label>
+                  <button
+                    className="px-5 h-[38px] bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs font-extrabold rounded-lg shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 whitespace-nowrap border border-teal-500/40"
+                    type="submit"
+                    disabled={busy}
+                  >
+                    {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
+                    <span>{selectedCopy.submit}</span>
+                  </button>
+                </div>
+                {scenario === "procurement_report" && selectedFiles.length === 0 ? (
+                  <div className="px-0.5">
+                    <button
+                      type="button"
+                      onClick={() => selectScenario("supplier_search")}
+                      className="text-[11px] font-semibold text-teal-700 hover:text-teal-900 hover:underline transition-colors text-left cursor-pointer"
+                    >
+                      Нужно найти заводы и дилеров по списку товаров или названию? Переключитесь во вкладку «Поиск поставщиков» →
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
@@ -7075,8 +7262,12 @@ export function CabinetClient() {
               </button>
             </header>
 
-            {/* Modal Tab Navigation (Spacious, No Blue, Clean 5-Tab Grid) */}
-            <div className="bg-slate-100 p-2 border-b border-slate-200 grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-xs sm:text-[13px] shrink-0">
+            {/* Modal Tab Navigation */}
+            <div
+              className={`bg-slate-100 p-2 border-b border-slate-200 grid grid-cols-2 ${
+                session?.user?.allowed_price_monitoring ? "sm:grid-cols-3 lg:grid-cols-6" : "sm:grid-cols-5"
+              } gap-1.5 text-xs sm:text-[13px] shrink-0`}
+            >
               <button
                 type="button"
                 onClick={() => setHelpModalTab("workflow")}
@@ -7160,17 +7351,17 @@ export function CabinetClient() {
                   <div className="flex items-center justify-between pb-1.5 border-b border-slate-100">
                     <div>
                       <h3 className="font-extrabold text-slate-900 text-sm sm:text-base">
-                        Рекомендуемый пошаговый порядок работы
+                        Рекомендуемый порядок работы с задачами
                       </h3>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        3 шага подготовки: документация, поставщики, товар и аналоги
+                        4 сценария кабинета: от проверки условий закупки до подбора товара и аналогов
                       </p>
                     </div>
                   </div>
 
-                  {/* 3 Step Cards in 3 Columns */}
-                  <div className="grid sm:grid-cols-3 gap-3.5">
-                    {/* Step 1 */}
+                  {/* 4 Step Cards in Canonical Cabinet Order */}
+                  <div className="grid sm:grid-cols-2 gap-3.5">
+                    {/* Step 1: Анализ документации */}
                     <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-teal-400 transition-all shadow-2xs">
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
@@ -7203,7 +7394,7 @@ export function CabinetClient() {
                       </div>
                     </div>
 
-                    {/* Step 2 */}
+                    {/* Step 2: Поиск поставщиков */}
                     <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-teal-400 transition-all shadow-2xs">
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
@@ -7236,12 +7427,45 @@ export function CabinetClient() {
                       </div>
                     </div>
 
-                    {/* Step 3 */}
+                    {/* Step 3: Анализ + поиск */}
+                    <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-teal-400 transition-all shadow-2xs">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="w-6 h-6 rounded-full bg-teal-100 text-teal-900 font-extrabold text-xs flex items-center justify-center shrink-0">
+                            3
+                          </span>
+                          <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200">
+                            Комплексный запуск
+                          </span>
+                        </div>
+                        <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
+                          Анализ + поиск
+                        </strong>
+                        <p className="text-xs text-slate-600 leading-relaxed">
+                          Совмещает разбор закупочной документации и подбор профильных поставщиков под спецификацию в рамках одного запуска.
+                        </p>
+                      </div>
+                      <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
+                        <span className="text-[11px] text-slate-500 font-medium">Аудит + контакты сбыта</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            selectScenario("analysis_and_suppliers");
+                            setShowHelpModal(false);
+                          }}
+                          className="px-2.5 py-1 bg-teal-50 hover:bg-teal-600 hover:text-white text-teal-800 border border-teal-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
+                        >
+                          Выбрать →
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Step 4: Подбор товара и аналогов */}
                     <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-emerald-400 transition-all shadow-2xs">
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
                           <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-900 font-extrabold text-xs flex items-center justify-center shrink-0">
-                            3
+                            4
                           </span>
                           <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
                             Подбор аналогов
@@ -7268,31 +7492,6 @@ export function CabinetClient() {
                         </button>
                       </div>
                     </div>
-                  </div>
-
-                  {/* Complex Mode Banner (Emerald / Teal Theme, Zero Blue) */}
-                  <div className="p-4 bg-teal-50/80 border border-teal-200/90 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs sm:text-[13px]">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-teal-100 text-teal-950 border border-teal-300">
-                          Комплексный запуск
-                        </span>
-                        <strong className="text-slate-900 text-xs sm:text-[13px]">Анализ + поиск в 1 клик</strong>
-                      </div>
-                      <p className="text-xs text-slate-600">
-                        Совмещает Шаг 1 и Шаг 2: сразу выполняет аудит рисков и формирует базу профильных поставщиков под ТЗ.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        selectScenario("analysis_and_suppliers");
-                        setShowHelpModal(false);
-                      }}
-                      className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer shrink-0"
-                    >
-                      Выбрать комплекс →
-                    </button>
                   </div>
                 </div>
               ) : null}
@@ -7793,7 +7992,7 @@ export function CabinetClient() {
 2. Подобрать точную модель товара и аналоги под первую часть заявки
 3. Сформировать структурированный отчет и анализ требований закупки
 
-По ссылке доступно 5 бесплатных проверок + бонус 1 000 ₽ к первому пополнению баланса:
+По ссылке доступен пробный доступ для проверки первых задач + бонус 1 000 ₽ к первому пополнению баланса:
 ${webLink}`;
 
         function copyLink(textToCopy: string, key: string) {
@@ -8626,8 +8825,9 @@ ${webLink}`;
                         onChange={(e) => {
                           const val = parseInt(e.target.value, 10) || 0;
                           setCustomTopUpRub(val);
-                          const match = (session?.deposit_packages || DEFAULT_DEPOSIT_PACKAGES).find((p) => p.price_rub === val);
-                          setSelectedTopUpPackage(match || null);
+                          const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
+                          const match = pkgs.find((p) => p.price_rub === val) || null;
+                          setSelectedTopUpPackage(match);
                         }}
                         placeholder="5000"
                         className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
@@ -8779,7 +8979,11 @@ ${webLink}`;
                     }
                     return calculateDepositBonus(customTopUpRub);
                   })();
-                  const pkgName = selectedTopUpPackage?.name || "Пополнение баланса";
+                  const matchedPkg =
+                    selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub
+                      ? selectedTopUpPackage
+                      : null;
+                  const pkgName = matchedPkg?.name || "Пополнение баланса";
                   const tgMsg = encodeURIComponent(
                     `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
                   );
@@ -8789,7 +8993,7 @@ ${webLink}`;
                     <div className="space-y-2 pt-1">
                       <button
                         type="button"
-                        disabled={isPayingOnline || customTopUpRub < 100 || !payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10}
+                        disabled={isPayingOnline || customTopUpRub < 500 || !payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10}
                         onClick={handleStartOnlinePayment}
                         className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs sm:text-sm font-bold transition-all shadow-sm hover:shadow cursor-pointer disabled:opacity-50 active:scale-[0.99]"
                       >
@@ -8901,8 +9105,9 @@ ${webLink}`;
                             onChange={(e) => {
                               const val = parseInt(e.target.value, 10) || 0;
                               setCustomTopUpRub(val);
-                              const match = (session?.deposit_packages || DEFAULT_DEPOSIT_PACKAGES).find((p) => p.price_rub === val);
-                              setSelectedTopUpPackage(match || null);
+                              const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
+                              const match = pkgs.find((p) => p.price_rub === val) || null;
+                              setSelectedTopUpPackage(match);
                             }}
                             placeholder="5000"
                             className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
@@ -9138,8 +9343,12 @@ ${webLink}`;
                       <div className="pt-2">
                         <button
                           type="button"
-                          disabled={invoiceSubmitting || !invoiceInn.trim() || !invoiceName.trim() || !payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10}
+                          disabled={invoiceSubmitting || customTopUpRub < 500 || !invoiceInn.trim() || !invoiceName.trim() || !payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10}
                           onClick={async () => {
+                            if (!customTopUpRub || customTopUpRub < 500) {
+                              setInvoiceSubmitError("Минимальная сумма счёта — 500 ₽");
+                              return;
+                            }
                             if (!invoiceInn.trim()) {
                               setInvoiceSubmitError("Укажите ИНН организации или ИП");
                               return;
@@ -9155,11 +9364,19 @@ ${webLink}`;
                             setInvoiceSubmitting(true);
                             setInvoiceSubmitError("");
                             try {
-                              const pkgName = selectedTopUpPackage?.name || "Пополнение баланса";
+                              const matchedPkg =
+                                selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub
+                                  ? selectedTopUpPackage
+                                  : null;
+                              const pkgName = matchedPkg?.name || "Пополнение баланса";
                               const emailToSend = (invoiceEmail.trim() || session?.user?.email || "").trim();
                               const res = await fetch("/api/customer/invoices", {
                                 method: "POST",
-                                headers: { "Content-Type": "application/json" },
+                                credentials: "same-origin",
+                                headers: {
+                                  "Content-Type": "application/json",
+                                  ...(csrf ? { "x-csrf-token": csrf } : {}),
+                                },
                                 body: JSON.stringify({
                                   amount_rub: customTopUpRub,
                                   tariff_name: pkgName,
@@ -9313,7 +9530,11 @@ ${webLink}`;
                             try {
                               const res = await fetch(`/api/customer/invoices/${invoiceCreated.id}/send-email`, {
                                 method: "POST",
-                                headers: { "Content-Type": "application/json" },
+                                credentials: "same-origin",
+                                headers: {
+                                  "Content-Type": "application/json",
+                                  ...(csrf ? { "x-csrf-token": csrf } : {}),
+                                },
                                 body: JSON.stringify({ email: invoiceCreated.buyer_email || session?.user?.email }),
                               });
                               const data = await res.json();

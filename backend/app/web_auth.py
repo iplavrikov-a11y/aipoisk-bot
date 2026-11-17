@@ -36,6 +36,7 @@ from .models import (
     now_utc,
 )
 from .repository import get_or_create_settings, next_client_number
+from .security_shield import extract_real_request_ip
 
 CUSTOMER_COOKIE = "tenderlex_customer_session"
 CSRF_HEADER = "x-csrf-token"
@@ -54,6 +55,18 @@ class WebAuthContext:
 
 def normalize_email(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
+
+
+def mask_email_for_log(value: str) -> str:
+    clean = normalize_email(value)
+    if "@" not in clean:
+        return "***"
+    local, domain = clean.split("@", 1)
+    if len(local) <= 2:
+        masked_local = f"{local[:1]}***"
+    else:
+        masked_local = f"{local[:2]}***"
+    return f"{masked_local}@{domain}"
 
 
 def validate_email(value: str) -> str:
@@ -205,12 +218,11 @@ def create_email_verification_token(
 ) -> tuple[str, WebEmailVerificationToken]:
     token = secrets.token_urlsafe(48)
     headers = getattr(request, "headers", {}) or {}
-    client = getattr(request, "client", None)
     record = WebEmailVerificationToken(
         user_id=user.id,
         email=user.email,
         token_hash=_token_hash(token),
-        requested_ip=str(getattr(client, "host", "") or "")[:80],
+        requested_ip=extract_real_request_ip(request, default="")[:80],
         user_agent=str(headers.get("user-agent", ""))[:1000] if hasattr(headers, "get") else "",
         expires_at=now_utc() + timedelta(hours=max(1, int(config.customer_email_verification_hours or 24))),
     )
@@ -256,12 +268,11 @@ def create_password_reset_token(
 ) -> tuple[str, WebPasswordResetToken]:
     token = secrets.token_urlsafe(48)
     headers = getattr(request, "headers", {}) or {}
-    client = getattr(request, "client", None)
     record = WebPasswordResetToken(
         user_id=user.id,
         email=user.email,
         token_hash=_token_hash(token),
-        requested_ip=str(getattr(client, "host", "") or "")[:80],
+        requested_ip=extract_real_request_ip(request, default="")[:80],
         user_agent=str(headers.get("user-agent", ""))[:1000] if hasattr(headers, "get") else "",
         expires_at=now_utc() + timedelta(hours=2),
     )
@@ -516,9 +527,9 @@ def send_password_reset_email(
 
 
 def verify_and_consume_password_reset_token(db: Session, token: str, new_password: str) -> WebUser:
-    clean_pass = str(new_password or "").strip()
-    if len(clean_pass) < 8:
-        raise ValueError("Пароль должен содержать не менее 8 символов.")
+    clean_pass = str(new_password or "")
+    if len(clean_pass) < 10:
+        raise ValueError("Пароль должен быть не короче 10 символов.")
     if len(clean_pass) > 256:
         raise ValueError("Пароль слишком длинный.")
 
@@ -575,13 +586,12 @@ def create_web_session(db: Session, user: WebUser, *, request: Request | object 
     token = secrets.token_urlsafe(48)
     csrf_token = secrets.token_urlsafe(32)
     headers = getattr(request, "headers", {}) or {}
-    client = getattr(request, "client", None)
     session = WebSession(
         user_id=user.id,
         token_hash=_token_hash(token),
         csrf_token=csrf_token,
         user_agent=str(headers.get("user-agent", ""))[:1000] if hasattr(headers, "get") else "",
-        ip_address=str(getattr(client, "host", "") or "")[:80],
+        ip_address=extract_real_request_ip(request, default="")[:80],
         expires_at=now_utc() + timedelta(hours=max(1, int(config.customer_session_hours or 168))),
         last_seen_at=now_utc(),
     )
@@ -826,6 +836,8 @@ def get_or_create_yandex_web_user(
     # 2. Match by email
     user = db.query(WebUser).filter(WebUser.email == normalized_email).first()
     if user:
+        if user.yandex_id and user.yandex_id != clean_yandex_id:
+            raise ValueError("Этот email уже привязан к другому аккаунту Яндекс ID.")
         user.yandex_id = clean_yandex_id
         user.is_email_verified = True
         if display_name and not user.name:
@@ -888,8 +900,14 @@ def verify_telegram_auth_payload(
     except (ValueError, TypeError):
         return False
 
+    now_ts = int(now_utc().timestamp())
+    if auth_date > now_ts + 60:
+        logger.warning(
+            "telegram_auth_verification_failed: future_auth_date",
+            extra={"auth_date": auth_date, "now": now_ts},
+        )
+        return False
     if max_age_seconds > 0:
-        now_ts = int(now_utc().timestamp())
         if now_ts - auth_date > max_age_seconds:
             logger.warning(
                 "telegram_auth_verification_failed: expired_auth_date",

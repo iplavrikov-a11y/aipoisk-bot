@@ -91,7 +91,7 @@ def _add_docx_hyperlink(paragraph, url: str, text: str, color_hex="0284C7", unde
     """Adds an interactive OpenXML hyperlink into a Word paragraph."""
     text = clean_xml_compatible(text)
     clean_url = clean_xml_compatible(url).strip()
-    if not clean_url:
+    if not clean_url or not clean_url.lower().startswith(("http://", "https://")):
         return paragraph.add_run(text)
     try:
         from docx.opc.constants import RELATIONSHIP_TYPE
@@ -522,7 +522,11 @@ def write_exact_product_docx(
                 cells[0].text = str(a_idx)
                 cells[1].text = f"{alt.brand} {alt.model}"
                 cells[2].text = alt.manufacturer
-                cells[3].text = "РФ (Реестр)"
+                cells[3].text = (
+                    f"ГИСП № {alt.gisp_match.registry_number}"
+                    if (alt.gisp_match and alt.gisp_match.registry_number)
+                    else "Требует проверки"
+                )
                 cells[4].text = f"{int(alt.confidence * 100)}%"
                 cells[5].text = alt.notes or "Взаимозаменяемый аналог по ГОСТ/ТУ"
 
@@ -567,7 +571,7 @@ def write_exact_product_docx(
                 gisp_alt_tag = (
                     f"ГИСП № {alt.gisp_match.registry_number}"
                     if (alt.gisp_match and alt.gisp_match.registry_number)
-                    else "ГИСП: Реестр РФ"
+                    else "Страна/реестр: требует проверки"
                 )
                 r_a_hdr = alt_form2_p.add_run(
                     f"Показатели аналога №{a_idx} для первой части заявки — "

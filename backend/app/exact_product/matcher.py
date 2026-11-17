@@ -310,23 +310,22 @@ def _is_clean_maker_or_brand(val: Any) -> bool:
     )
     has_corp = any(c in s_low for c in corp_markers)
     if not has_corp:
-        # 1. Маркировки с цифрами или дефисами (ПВ-3, МДУ-10, ВВГнг-0.66)
-        if re.search(r'\d', s) or '-' in s:
+        # 1. Маркировки с цифрами после дефиса/точки или букв (ПВ-3, МДУ-10, ВВГнг-0.66), но не бренды типа 3M / TP-Link
+        if re.search(r'-\d|\d+\.\d+|[А-Яа-яЁё]+\s*\d', s):
+            return False
+        if re.search(r'\d', s) and not re.match(r'^\d[A-Za-z]{1,6}$', s):
             return False
         # 2. Неестественные консонантные кластеры (4+ согласных подряд: авббшв, квтч, ктрп)
         if re.search(r'[бвгджзклмнпрстфхцчшщ]{4,}', s_low):
             return False
-        # 3. Чисто согласные кириллические токены (КТП, ВРУ, ШР, КРВ, ЩО, НД, ВВГ)
+        # 3. Чисто согласные кириллические токены без гласных (КТП, ВРУ, ШР, КРВ, НД, ВВГ)
         if re.match(r'^[бвгджзклмнпрстфхцчшщ\s]{2,6}$', s_low):
             return False
-        # 4. Короткие 2-3 буквенные кириллические токены (МДУ, МФУ, СИП, АРМ)
+        # 4. Короткие 2-3 буквенные кириллические технические сокращения (МДУ, МФУ, СИП, АРМ, ЩО)
         if re.match(r'^[а-яёА-ЯЁ]{2,3}$', s):
             return False
         # 5. Специфические номенклатурные сокращения с внутренней капитализацией (АВБбШв, ВВГнг)
         if re.match(r'^[А-ЯЁа-яё]{4,10}$', s) and re.search(r'[А-ЯЁ].*[а-яё].*[А-ЯЁ]', s):
-            return False
-        # 6. Чисто заглавные 2-4 буквенные аббревиатуры
-        if re.match(r'^[А-ЯЁ]{2,4}$', s):
             return False
 
     return True
@@ -1128,11 +1127,14 @@ async def extract_doc_facts(
     facts: Dict[str, str] = {}
     exact_map = {r["param_name"].strip().lower(): r["param_name"] for r in requirements}
     norm_map = {_normalize_param_name(r["param_name"]): r["param_name"] for r in requirements}
+    grounding_source = f"{title}\n{text[:25000]}"
 
     for key, value in list(raw_facts.items())[:_MAX_FACTS_PER_DOC]:
         p_name = str(key or "").strip()
         val = str(value or "").strip()
         if not p_name or not val or len(val) > 120:
+            continue
+        if not _is_grounded_in_text(val, grounding_source):
             continue
         canonical_param = exact_map.get(p_name.lower())
         if not canonical_param:
@@ -1398,7 +1400,7 @@ _MULTI_SOURCE_CONSENSUS_PROMPT = """Ты — эксперт по анализу 
 2. Сверь значения между источниками (консенсус):
    - Если источники называют одно значение — подтверди его, статус "pass" (соответствует ТЗ) или "fail" (не соответствует). В note укажи: "Подтверждено [названия источников]: [значение]".
    - Если на одном сайте опечатка/разногласие (например, 1650 Вт на одном сайте, а на других 2000 Вт или паспорт завода говорит 2000 Вт) — зафиксируй консенсусное значение (2000 Вт) и в note укажи: "Консенсус N источников: [значение] (на сайте [домен] вероятная опечатка: [ошибочное значение])".
-   - Если на одном сайте указано 2050 Вт (или 1900–2050 Вт), а в ТЗ «не более 2001 Вт» — это СТРОГО "pass"! В электротехнике 2050 Вт является пиковой пусковой мощностью ТЭНа, а номинальная рабочая мощность составляет 1850–2000 Вт и полностью удовлетворяет нормативу ТЗ. В note укажи: "Номинальная мощность 2000 Вт (пиковая до 2050 Вт) удовлетворяет требованию ТЗ (не более 2001 Вт)". Запрещено ставить статус "fail"!
+   - Если фактическое значение параметра выходит за предел ТЗ («не более X», «не менее X», «от X до Y»), статус обязан быть СТРОГО "fail" с честным указанием фактического числа (категорически запрещено оправдывать превышение порога ТЗ предположениями о пиковых/номинальных режимах, если это прямо не написано в официальном паспорте завода).
    - Данные официального PDF-паспорта завода всегда имеют наивысший приоритет над коммерческими интернет-магазинами.
    - Если реальное неразрешимое противоречие или параметр не найден нигде — укажи "unknown" и поясни в note.
 3. Оценка вердикта:
@@ -2027,16 +2029,10 @@ def build_positions_from_ranked(
     winner_m = str(winner.get("model") or "").strip().lower()
     winner_key = f"{winner_b} {winner_m}".strip()
 
-    # Формируем пул аналогов: сначала кандидаты без отклонений, затем близкие аналоги с минимальными отклонениями
+    # Формируем пул аналогов: включаем ТОЛЬКО эквиваленты без отклонений по обязательным показателям ТЗ (fails == 0)
     seen_alt_keys = {winner_key}
     analogs_pool = []
     clean_analogs = [c for c in ranked if c["matrix"]["fails"] == 0 and _has_real_maker(c, pos_hint)]
-    if len(clean_analogs) < max_analogs:
-        near_analogs = [
-            c for c in ranked
-            if c != winner and c["matrix"]["fails"] <= 5 and _has_real_maker(c, pos_hint) and c not in clean_analogs
-        ]
-        clean_analogs.extend(near_analogs)
 
     for c in clean_analogs:
         c_b = str(c.get("brand") or c.get("manufacturer") or "").strip().lower()
@@ -3163,9 +3159,13 @@ async def detect_exact_products_characteristic_first(
     # Сохраняем исходный строгий порядок позиций из ТЗ
     valid_results.sort(key=lambda x: x[0])
 
-    for _, matched in valid_results:
+    tz_no_by_idx = {
+        idx: int(p_tz.get("position_no") or idx)
+        for idx, p_tz in enumerate(tz_positions[:MAX_EXACT_POSITIONS_PER_JOB], start=1)
+    }
+    for orig_idx, matched in valid_results:
         pos = matched["position"]
-        pos["position_no"] = len(all_positions) + 1
+        pos["position_no"] = tz_no_by_idx.get(orig_idx, orig_idx)
         all_positions.append(pos)
         for c in matched["ranked"][:3]:
             c_docs = c.get("fused_docs") or [c["doc"]]

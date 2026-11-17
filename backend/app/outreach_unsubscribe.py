@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 import logging
 
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -61,8 +61,14 @@ def confirm_unsubscribe(email: str = "", token: str = "") -> HTMLResponse:
 
 
 @router.post("/unsubscribe", response_class=HTMLResponse)
-def unsubscribe(email: str = Form(""), token: str = Form(""), db: Session = Depends(get_db)) -> HTMLResponse:
-    clean_email = _valid_token_or_400(email, token)
+def unsubscribe(
+    email: str = Form(""),
+    token: str = Form(""),
+    email_q: str = Query("", alias="email"),
+    token_q: str = Query("", alias="token"),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    clean_email = _valid_token_or_400(email or email_q, token or token_q)
 
     leads = db.query(OutreachLead).filter(func.lower(OutreachLead.email) == clean_email).all()
     for lead in leads:

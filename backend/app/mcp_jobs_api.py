@@ -199,6 +199,7 @@ async def create_queued_job(
             "geo_radius_km": geo_radius_km,
             "supplier_search_policy": str(supplier_search_policy or ""),
             "multi_item_mode": str(multi_item_mode or ""),
+            "auto_confirm_strategy": bool(auto_confirm_strategy),
             "target_suppliers": target_suppliers,
             "files": fingerprint,
         },
