@@ -76,9 +76,11 @@ from .billing import (
     grant_money_balance,
     grant_package_units,
     invalidate_tariff_packages_cache,
+    job_has_unsettled_reservation,
     operation_label,
     preload_clients_billing_cache,
     clear_clients_billing_cache,
+    reconcile_stuck_client_reservations,
     release_job_reservation,
     list_tariffs,
     recent_billing_transactions,
@@ -140,6 +142,7 @@ from .models import (
     JobChatMessage,
     JobFile,
     JobSource,
+    LegalAcceptance,
     OnboardingReminder,
     PartnerPayoutRequest,
     SecurityEvent,
@@ -261,8 +264,10 @@ from .schemas import (
 from .readiness import build_readiness
 from .yookassa_service import (
     YooKassaError,
+    YooKassaTransientError,
     create_yookassa_payment,
     fetch_yookassa_payment,
+    is_trusted_yookassa_webhook_ip,
     notify_admin_payment_attempt,
     notify_admin_payment_canceled,
     notify_admin_payment_success,
@@ -275,6 +280,7 @@ from .security import (
     check_admin_credentials,
     create_admin_session,
     require_admin,
+    revoke_admin_session,
     verify_admin_session,
 )
 from .web_auth import (
@@ -332,7 +338,14 @@ from .outreach_unsubscribe import router as outreach_unsubscribe_router
 from .mcp_api import router as mcp_router, admin_router as mcp_admin_router, generate_api_key
 from .mcp_jobs_api import router as mcp_jobs_router
 
-app = FastAPI(title="TenderLex API", version="0.1.0")
+_PUBLIC_DOCS_ENABLED = os.getenv("AIPOISK_ENABLE_PUBLIC_DOCS", "").strip() in {"1", "true", "yes"}
+app = FastAPI(
+    title="TenderLex API",
+    version="0.1.0",
+    docs_url="/docs" if _PUBLIC_DOCS_ENABLED else None,
+    redoc_url="/redoc" if _PUBLIC_DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if _PUBLIC_DOCS_ENABLED else None,
+)
 app.include_router(outreach_router)
 app.include_router(outreach_unsubscribe_router)
 app.include_router(mcp_router)
@@ -348,9 +361,15 @@ ALLOWED_CORS_ORIGINS = [
     "https://tenderlex.ru",
     "https://www.tenderlex.ru",
     "https://admin.tenderlex.ru",
-    "http://127.0.0.1:3093",
-    "http://localhost:3093",
-    "http://localhost:5173",
+    *(
+        [
+            "http://127.0.0.1:3093",
+            "http://localhost:3093",
+            "http://localhost:5173",
+        ]
+        if os.getenv("AIPOISK_ALLOW_LOCALHOST_CORS", "").strip() in {"1", "true", "yes"} or is_pytest()
+        else []
+    ),
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -447,6 +466,7 @@ def _run_startup_recovery_sync() -> tuple[list[str], list[str]]:
         settings = get_or_create_settings(db)
         cleanup_expired_jobs(db, settings)
         expire_stale_confirmations(db)
+        reconcile_stuck_client_reservations(db)
         recovered_job_ids = recover_interrupted_jobs(db)
         try:
             running_camps = db.query(OutreachCampaign).filter(OutreachCampaign.status == "running").all()
@@ -1050,9 +1070,19 @@ def customer_yandex_callback_api(
         clear_yandex_oauth_state_cookie(resp)
         return resp
 
-    if is_new:
+    has_terms_acceptance = bool(
+        db.query(LegalAcceptance.id)
+        .filter(
+            LegalAcceptance.subject_type == "web_user",
+            LegalAcceptance.subject_id == user.id,
+            LegalAcceptance.document_type == LEGAL_DOCUMENT_TERMS,
+        )
+        .first()
+    )
+    if is_new or not has_terms_acceptance:
         _record_oauth_legal_acceptance(db, request, user, source="yandex_oauth")
-        _link_seo_registration(db, request, user)
+        if is_new:
+            _link_seo_registration(db, request, user)
         db.commit()
     token, csrf_token, session = create_web_session(db, user, request=request)
     success_fragment = "registration_success" if is_new else "login_success"
@@ -3113,9 +3143,14 @@ async def customer_create_invoice_api(
             detail="Подтвердите email перед выставлением счёта.",
         )
     body = await request.json()
-    amount_rub = int(body.get("amount_rub") or 0)
+    try:
+        amount_rub = int(body.get("amount_rub") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Некорректная сумма счёта")
     if amount_rub < 500:
         raise HTTPException(status_code=400, detail="Минимальная сумма счёта — 500 ₽")
+    if amount_rub > 10_000_000:
+        raise HTTPException(status_code=400, detail="Максимальная сумма одного счёта — 10 000 000 ₽")
 
     buyer_inn = re.sub(r"\D+", "", str(body.get("buyer_inn") or "")).strip()
     buyer_name = str(body.get("buyer_name") or "").strip()
@@ -3354,7 +3389,7 @@ async def customer_invoice_send_email_api(
 
     from .invoice_service import send_invoice_email
 
-    ok, msg = send_invoice_email(invoice, normalized_target)
+    ok, msg = await asyncio.to_thread(send_invoice_email, invoice, normalized_target)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     INVOICE_EMAIL_ATTEMPTS[rate_key] = [*recent_sends, now_ts]
@@ -3884,6 +3919,11 @@ async def yookassa_webhook_api(
     request: Request,
     db: Session = Depends(db_session),
 ) -> dict:
+    remote_ip = _client_ip(request)
+    if not is_trusted_yookassa_webhook_ip(remote_ip):
+        logger.warning("Blocked YooKassa webhook from untrusted IP %s", remote_ip)
+        raise HTTPException(status_code=403, detail="Forbidden webhook source IP")
+
     try:
         payload = await request.json()
     except Exception:
@@ -3901,12 +3941,26 @@ async def yookassa_webhook_api(
         logger.warning("YooKassa webhook received but credentials not configured")
         return {"status": "not_configured"}
 
-    # Defense-in-depth: verify authentic state directly with YooKassa
-    verified = fetch_yookassa_payment(
-        shop_id=settings.yookassa_shop_id,
-        secret_key=settings.yookassa_secret_key,
-        payment_id=payment_id,
-    )
+    # Defense-in-depth: verify authentic state directly with YooKassa off the event loop
+    try:
+        verified = await asyncio.to_thread(
+            fetch_yookassa_payment,
+            shop_id=settings.yookassa_shop_id,
+            secret_key=settings.yookassa_secret_key,
+            payment_id=payment_id,
+            raise_on_transient=True,
+        )
+    except TypeError:
+        verified = await asyncio.to_thread(
+            fetch_yookassa_payment,
+            shop_id=settings.yookassa_shop_id,
+            secret_key=settings.yookassa_secret_key,
+            payment_id=payment_id,
+        )
+    except YooKassaTransientError as exc:
+        logger.warning("YooKassa webhook temporary verification error for %s: %s", payment_id, exc)
+        raise HTTPException(status_code=503, detail="Temporary payment verification error; please retry")
+
     if not verified:
         logger.warning("YooKassa webhook payment_id %s could not be verified with API", payment_id)
         return {"status": "unverified"}
@@ -3960,7 +4014,8 @@ def login(data: LoginRequest, request: Request, response: Response) -> dict:
 
 
 @app.post("/api/auth/logout")
-def logout(response: Response) -> dict:
+def logout(request: Request, response: Response) -> dict:
+    revoke_admin_session(request.cookies.get(ADMIN_COOKIE, ""))
     response.delete_cookie(ADMIN_COOKIE, path="/")
     return {"ok": True}
 
@@ -4916,6 +4971,19 @@ def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends
         deduct_kopeks = sum(int(t.amount_kopeks or 0) for t in abused_txs)
         if deduct_kopeks > 0:
             target.money_balance_kopeks = max(0, int(target.money_balance_kopeks or 0) - deduct_kopeks)
+            db.add(
+                BillingTransaction(
+                    client_id=target.id,
+                    kind=KIND_MONEY,
+                    operation=OP_MANUAL_DEBIT,
+                    units=0,
+                    amount_kopeks=deduct_kopeks,
+                    balance_after_kopeks=max(0, int(target.money_balance_kopeks or 0)),
+                    reserved_after_kopeks=max(0, int(target.money_reserved_kopeks or 0)),
+                    note="Аннулирование бонусов за самореферал при объединении профилей",
+                    created_by="system",
+                )
+            )
             merge_note += f"; аннулированы накрученные реферальные бонусы на {deduct_kopeks / 100:.2f} ₽"
 
     target.notes = "\n".join(item for item in [target.notes, merge_note] if item).strip()
@@ -6315,6 +6383,8 @@ def resolve_all_failed_jobs(db: Session = Depends(db_session)) -> dict:
     failed_jobs = db.query(Job).filter(Job.status == "failed").all()
     count = len(failed_jobs)
     for job in failed_jobs:
+        if job_has_unsettled_reservation(db, job):
+            release_job_reservation(db, job, note="Резерв возвращён при закрытии ошибочной задачи")
         job.status = "resolved"
         job.updated_at = now_utc()
     if count > 0:
@@ -6324,10 +6394,12 @@ def resolve_all_failed_jobs(db: Session = Depends(db_session)) -> dict:
 
 @app.post("/api/jobs/{job_id}/resolve", dependencies=[Depends(require_admin)])
 def resolve_single_job(job_id: str, db: Session = Depends(db_session)) -> dict:
-    """Mark a single failed job as resolved."""
+    """Mark a single failed or review job as resolved and release any stuck reservation."""
     job = resolve_admin_job(job_id, db)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job_has_unsettled_reservation(db, job):
+        release_job_reservation(db, job, note="Резерв возвращён при закрытии задачи администратором")
     job.status = "resolved"
     job.updated_at = now_utc()
     db.commit()

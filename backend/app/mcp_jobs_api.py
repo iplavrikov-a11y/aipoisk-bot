@@ -24,7 +24,7 @@ from .jobs import (
     VALID_JOB_MODES,
 )
 from .mcp_api import abandon_api_operation, claim_api_operation, complete_api_operation, get_api_key_auth
-from .models import ApiKey, Client, Job
+from .models import ApiKey, Client, Job, WebUser
 from .repository import get_or_create_settings
 from .web_auth import WebAuthContext
 
@@ -75,21 +75,26 @@ def _linked_client_or_403(api_key: ApiKey, db: Session) -> Client:
     client = db.get(Client, api_key.client_id)
     if not client or not client.is_active:
         raise HTTPException(status_code=403, detail="Клиентский аккаунт для API-ключа не найден или отключён.")
+    if not bool(getattr(api_key, "is_admin", False)):
+        web_users = db.query(WebUser).filter(WebUser.client_id == client.id).all()
+        if web_users and not any(bool(u.is_email_verified) for u in web_users):
+            raise HTTPException(status_code=403, detail="Подтвердите email клиентского аккаунта перед запуском задач по API.")
     return client
 
 
 def _mode_is_permitted(api_key: ApiKey, client: Client, mode: str) -> bool:
+    is_admin_key = bool(getattr(api_key, "is_admin", False))
     if mode == MODE_SUPPLIER_SEARCH:
-        permitted = bool(getattr(api_key, "allowed_supplier_search", False))
+        permitted = is_admin_key or bool(getattr(api_key, "allowed_supplier_search", False))
     elif mode == MODE_PROCUREMENT_REPORT:
-        permitted = bool(getattr(api_key, "allowed_procurement_report", False))
+        permitted = is_admin_key or bool(getattr(api_key, "allowed_procurement_report", False))
     elif mode == MODE_ANALYSIS_AND_SUPPLIERS:
-        permitted = (
+        permitted = is_admin_key or (
             bool(getattr(api_key, "allowed_procurement_report", False))
             and bool(getattr(api_key, "allowed_supplier_search", False))
         )
     elif mode == MODE_EXACT_PRODUCT:
-        permitted = bool(getattr(api_key, "allowed_exact_product", False))
+        permitted = is_admin_key or bool(getattr(api_key, "allowed_exact_product", False))
     elif mode == MODE_PRICE_MONITORING:
         from sqlalchemy.orm import object_session
         from .repository import get_or_create_settings
@@ -102,7 +107,8 @@ def _mode_is_permitted(api_key: ApiKey, client: Client, mode: str) -> bool:
                 client_allowed = True
             elif pm_mode == "disabled":
                 client_allowed = False
-        permitted = bool(getattr(api_key, "allowed_price_monitoring", False) and client_allowed)
+        key_ok = is_admin_key or bool(getattr(api_key, "allowed_price_monitoring", False))
+        permitted = bool(key_ok and client_allowed)
     else:  # guarded by _canonical_mode; retained for safe future mode additions
         permitted = False
     return permitted

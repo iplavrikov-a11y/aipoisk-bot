@@ -603,9 +603,12 @@ def _extract_via_libreoffice(path: Path, target_suffix: str, reader) -> str:
     if not libreoffice:
         return ""
     with tempfile.TemporaryDirectory(prefix="aipoisk-lo-") as tmp:
+        lo_profile = Path(tmp) / "lo_profile"
+        lo_profile.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
             [
                 libreoffice,
+                f"-env:UserInstallation={lo_profile.as_uri()}",
                 "--headless",
                 "--convert-to",
                 target_suffix.lstrip("."),
@@ -727,9 +730,12 @@ def _extract_office_via_pdf_ocr(path: Path, max_pages: int = 12) -> str:
     if not shutil.which("libreoffice") or not shutil.which("tesseract") or max_pages <= 0:
         return ""
     with tempfile.TemporaryDirectory(prefix="aipoisk-doc-pdf-") as tmp:
+        lo_profile = Path(tmp) / "lo_profile"
+        lo_profile.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
             [
                 "libreoffice",
+                f"-env:UserInstallation={lo_profile.as_uri()}",
                 "--headless",
                 "--convert-to",
                 "pdf",
@@ -842,12 +848,54 @@ def _extract_zip_members(path: Path, destination: Path, max_files: int) -> list[
     return extracted
 
 
+def _inspect_7z_uncompressed_totals(path: Path) -> tuple[int, int] | None:
+    """Return (max_member_bytes, total_uncompressed_bytes) using 7z listing before disk extraction."""
+    seven_z = shutil.which("7z")
+    if not seven_z:
+        return None
+    try:
+        listing = subprocess.run(
+            [seven_z, "l", "-slt", "-y", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        return None
+    if listing.returncode != 0:
+        return None
+    total_size = 0
+    max_member = 0
+    in_entries = False
+    for line in (listing.stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped == "----------":
+            in_entries = True
+            continue
+        if not in_entries:
+            continue
+        if stripped.startswith("Size = "):
+            raw_num = stripped[len("Size = ") :].strip()
+            if raw_num.isdigit():
+                val = int(raw_num)
+                total_size += val
+                if val > max_member:
+                    max_member = val
+    return max_member, total_size
+
+
 def _extract_external_archive(path: Path, destination: Path, max_files: int) -> list[Path]:
     dest_resolved = destination.resolve()
+    totals = _inspect_7z_uncompressed_totals(path)
+    if totals is not None:
+        max_member, total_uncompressed = totals
+        if max_member > MAX_ARCHIVE_MEMBER_BYTES or total_uncompressed > MAX_ARCHIVE_TOTAL_BYTES:
+            return []
     if path.suffix.lower() == ".rar" and shutil.which("unrar"):
         command = ["unrar", "x", "-o+", "-ol-", str(path), str(destination)]
     elif shutil.which("7z"):
-        command = ["7z", "x", f"-o{destination}", "-y", str(path)]
+        command = ["7z", "x", f"-o{destination}", "-y", "-snl-", str(path)]
     else:
         return []
     result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=180)

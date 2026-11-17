@@ -24,6 +24,36 @@ class YooKassaError(Exception):
     """Base error for YooKassa integration."""
 
 
+class YooKassaTransientError(YooKassaError):
+    """Temporary network/5xx/429 error while talking to YooKassa API."""
+
+
+YOOKASSA_WEBHOOK_CIDRS = (
+    "185.71.76.0/27",
+    "185.71.77.0/27",
+    "77.75.153.0/25",
+    "77.75.156.11/32",
+    "77.75.156.35/32",
+    "77.75.154.128/25",
+    "2a02:5180::/32",
+)
+
+
+def is_trusted_yookassa_webhook_ip(ip_str: str | None) -> bool:
+    import ipaddress
+
+    if os.getenv("AIPOISK_YOOKASSA_TRUST_ANY_IP", "").strip() in {"1", "true", "yes"}:
+        return True
+    raw = str(ip_str or "").strip()
+    if not raw or raw in {"testclient", "127.0.0.1", "::1", "localhost"}:
+        return True
+    try:
+        addr = ipaddress.ip_address(raw)
+    except ValueError:
+        return False
+    return any(addr in ipaddress.ip_network(cidr) for cidr in YOOKASSA_WEBHOOK_CIDRS)
+
+
 def create_yookassa_payment(
     *,
     shop_id: str,
@@ -155,6 +185,7 @@ def fetch_yookassa_payment(
     secret_key: str,
     payment_id: str,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    raise_on_transient: bool = False,
 ) -> dict[str, Any] | None:
     """Fetch live payment details from YooKassa v3 by payment_id."""
     clean_shop_id = str(shop_id or "").strip()
@@ -174,9 +205,13 @@ def fetch_yookassa_payment(
             if resp.status_code == 404:
                 return None
             logger.warning("YooKassa fetch_payment returned status %s for %s", resp.status_code, clean_payment_id)
+            if raise_on_transient and (resp.status_code == 429 or resp.status_code >= 500):
+                raise YooKassaTransientError(f"YooKassa returned transient HTTP {resp.status_code}")
             return None
         except httpx.RequestError as exc:
             logger.error("YooKassa network error during fetch_payment: %s", exc)
+            if raise_on_transient:
+                raise YooKassaTransientError(f"YooKassa network error: {exc}") from exc
             return None
 
 
@@ -253,13 +288,18 @@ def dispatch_yookassa_telegram_alert(coro) -> None:
 
 
 def _format_contacts_line(phone: str = "", telegram_username: str = "") -> str:
+    import re
+
     parts = []
     clean_phone = (phone or "").strip()
-    clean_tg = (telegram_username or "").strip().lstrip("@")
+    raw_tg = (telegram_username or "").strip().lstrip("@")
+    clean_tg = re.sub(r"[^A-Za-z0-9_]", "", raw_tg)[:64]
     if clean_phone:
-        parts.append(f"📞 <code>{html_escape(clean_phone)}</code>")
+        parts.append(f"📞 <code>{html_escape(clean_phone, quote=True)}</code>")
     if clean_tg:
-        parts.append(f"💬 <a href=\"https://t.me/{clean_tg}\">@{html_escape(clean_tg)}</a>")
+        parts.append(f"💬 <a href=\"https://t.me/{html_escape(clean_tg, quote=True)}\">@{html_escape(clean_tg, quote=True)}</a>")
+    elif raw_tg:
+        parts.append(f"💬 <code>@{html_escape(raw_tg, quote=True)}</code>")
     if parts:
         return f"\n<b>Контакты:</b> {' | '.join(parts)}"
     return ""

@@ -267,6 +267,7 @@ class PendingBatch:
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL
     delivery_city: str = ""
     geo_radius_km: int | None = None
+    updated_at: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -349,7 +350,59 @@ def _scenario_job_mode(scenario: str) -> str:
     return MODE_SUPPLIER_SEARCH
 
 
+MAX_PENDING_BOT_STATE_ENTRIES = 2048
+PENDING_UPLOAD_TTL_SECONDS = 6 * 3600
+
+
+def _prune_pending_bot_maps(*, now_mono: float | None = None) -> None:
+    now_ts = time.monotonic() if now_mono is None else now_mono
+    stale_upload_chats = [
+        cid
+        for cid, batch in list(PENDING_UPLOADS.items())
+        if cid not in BATCH_RUNNING_CHATS and (now_ts - float(getattr(batch, "updated_at", now_ts))) > PENDING_UPLOAD_TTL_SECONDS
+    ]
+    for cid in stale_upload_chats:
+        PENDING_UPLOADS.pop(cid, None)
+    while len(PENDING_UPLOADS) > MAX_PENDING_BOT_STATE_ENTRIES:
+        oldest_cid = next((cid for cid in PENDING_UPLOADS if cid not in BATCH_RUNNING_CHATS), None)
+        if oldest_cid is None:
+            break
+        PENDING_UPLOADS.pop(oldest_cid, None)
+
+    for state_dict in (
+        PENDING_MODES,
+        PENDING_SUPPLIER_POLICIES,
+        PENDING_GEO,
+        PENDING_B2B_INN,
+        PENDING_B2B_NAME,
+        PENDING_INVOICE_PROOF,
+    ):
+        while len(state_dict) > MAX_PENDING_BOT_STATE_ENTRIES:
+            state_dict.pop(next(iter(state_dict)), None)
+
+    for state_set in (
+        PENDING_GEO_INPUT,
+        PENDING_CUSTOM_TOPUP,
+        PENDING_B2B_CUSTOM_AMOUNT,
+        DELIVERED_JOB_IDS,
+        BOT_CANCEL_NOTIFIED_JOBS,
+    ):
+        if len(state_set) > MAX_PENDING_BOT_STATE_ENTRIES:
+            excess = len(state_set) - (MAX_PENDING_BOT_STATE_ENTRIES // 2)
+            for item in list(state_set)[:excess]:
+                state_set.discard(item)
+
+    for lock_map in (CHAT_UPLOAD_LOCKS, JOB_DELIVERY_LOCKS):
+        if len(lock_map) > MAX_PENDING_BOT_STATE_ENTRIES:
+            for key, lock in list(lock_map.items()):
+                if not lock.locked():
+                    lock_map.pop(key, None)
+                if len(lock_map) <= (MAX_PENDING_BOT_STATE_ENTRIES // 2):
+                    break
+
+
 def _clear_pending_state(chat_id: int) -> bool:
+    _prune_pending_bot_maps()
     had_state = (
         any(chat_id in state for state in (PENDING_UPLOADS, PENDING_MODES, PENDING_SUPPLIER_POLICIES, PENDING_GEO, PENDING_B2B_INN, PENDING_B2B_NAME, PENDING_INVOICE_PROOF))
         or chat_id in PENDING_GEO_INPUT
@@ -370,6 +423,7 @@ def _clear_pending_state(chat_id: int) -> bool:
 
 
 def _select_scenario(chat_id: int, scenario: str) -> bool:
+    _prune_pending_bot_maps()
     expected_mode = _scenario_job_mode(scenario)
     from .geo_policy import GEO_SUPPORTED_MODES
     PENDING_GEO_INPUT.discard(chat_id)
@@ -2612,6 +2666,7 @@ def _record_telegram_terms_acceptance(db, telegram_id: str) -> None:
 
 @router.message(Command("start"))
 async def start(message: Message, command: CommandObject | None = None) -> None:
+    _prune_pending_bot_maps()
     telegram_id, username, name = _telegram_user_fields(message)
     _clear_support_session_safe(telegram_id, role_scope=None)
     access_note = ""

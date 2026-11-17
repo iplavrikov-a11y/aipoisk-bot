@@ -90,7 +90,7 @@ def collect_funnel(snapshot, tokens, http_json):
         if segment == "organic":
             query["filters"] = "ym:s:lastSignTrafficSource=='organic'"
         response = http_json("https://api-metrika.yandex.net/stat/v1/data?" + urlencode(query),
-                             headers={"Authorization": "OAuth " + tokens["metrika"]}, timeout=15)
+                             headers={"Authorization": "OAuth " + tokens["metrika"]}, timeout=15, retry_transient=True)
         totals = response.get("totals") if isinstance(response, dict) else None
         valid = (isinstance(response, dict) and not response.get("error") and not response.get("errors") and isinstance(totals, list)
                  and len(totals) == 3 and all(number(value) is not None and value >= 0 for value in totals)

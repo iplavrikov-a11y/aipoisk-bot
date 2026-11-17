@@ -19,6 +19,11 @@ def setup_test_database():
     import sqlalchemy as sa
     from app.db import engine
     if engine.dialect.name == "postgresql":
+        db_name = str(engine.url.database or "").strip().lower()
+        if not (db_name.startswith("test_") or db_name.endswith("_test")):
+            raise RuntimeError(
+                f"Refusing to run DROP SCHEMA public CASCADE on non-test PostgreSQL database: {db_name!r}"
+            )
         with engine.begin() as conn:
             conn.execute(sa.text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
     init_db()

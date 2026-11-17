@@ -314,6 +314,7 @@ def _verification_email_text(link: str, grant_text: str = "бесплатные 
 
 def _verification_email_html(link: str, grant_text: str = "бесплатные задачи") -> str:
     safe_link = html_lib.escape(link, quote=True)
+    safe_grant_text = html_lib.escape(str(grant_text or "бесплатные задачи"), quote=True)
     return (
         '<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
@@ -334,7 +335,7 @@ def _verification_email_html(link: str, grant_text: str = "бесплатные 
         '</td></tr>'
         '<tr><td style="padding-bottom:18px;">'
         '<div style="font-size:14px;line-height:1.5;color:#334155;">Вы создали личный кабинет в сервисе <b>TenderLex</b>. '
-        f'Подтвердите email для активации тестового доступа на {grant_text}:</div>'
+        f'Подтвердите email для активации тестового доступа на {safe_grant_text}:</div>'
         '</td></tr>'
         '<tr><td align="center" style="padding-bottom:18px;">'
         '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
@@ -838,9 +839,16 @@ def get_or_create_yandex_web_user(
     if user:
         if user.yandex_id and user.yandex_id != clean_yandex_id:
             raise ValueError("Этот email уже привязан к другому аккаунту Яндекс ID.")
+        was_unverified = not bool(user.is_email_verified)
+        if was_unverified:
+            # Prevent pre-account takeover: invalidate any password/sessions created before email ownership was proven
+            user.password_hash = hash_password(secrets.token_urlsafe(32))
+            db.query(WebSession).filter(WebSession.user_id == user.id).delete(synchronize_session=False)
+            db.query(WebEmailVerificationToken).filter(WebEmailVerificationToken.user_id == user.id).delete(synchronize_session=False)
+            db.query(WebPasswordResetToken).filter(WebPasswordResetToken.user_id == user.id).delete(synchronize_session=False)
         user.yandex_id = clean_yandex_id
         user.is_email_verified = True
-        if display_name and not user.name:
+        if display_name and (not user.name or was_unverified):
             user.name = display_name
         db.commit()
         db.refresh(user)

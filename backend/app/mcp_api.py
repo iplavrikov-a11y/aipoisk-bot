@@ -313,7 +313,7 @@ def consume_quota(db: Session, api_key: ApiKey, service: str, count: int = 1) ->
         if not api_key.allowed_exact_product:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Exact product & Form 2 service ('exact_product') is not permitted for this API key",
+                detail="Exact product & analog selection service ('exact_product') is not permitted for this API key",
             )
     elif service == "procurement_report":
         if not api_key.allowed_procurement_report:
@@ -1533,7 +1533,7 @@ async def mcp_exact_product(
     db: Session = Depends(db_session),
 ):
     """
-    Deep technical specification analysis to uncover hidden original model, Form 2 parameters,
+    Deep technical specification analysis to uncover hidden original model, technical specification parameters,
     and 2-4 verified equivalent analogues with compliance verification and DOCX report.
     Uses two-phase reservation billing: funds settled on success, released on error.
     """

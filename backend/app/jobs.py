@@ -31,6 +31,7 @@ from .billing import (
     STATUS_CONFIRMATION_EXPIRED,
     STATUS_CUSTOMER_DECLINED,
     STATUS_DELIVERY_EXPIRED,
+    charge_job_kind_reservation,
     charge_job_reservation,
     charge_price_monitoring_job,
     finalize_internal_price_monitoring_job,
@@ -2582,6 +2583,13 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             KIND_SUPPLIER_SEARCH,
             note="Резерв поставщиков возвращён: подтверждённых поставщиков нет",
         )
+        if not str(getattr(report, "warning", "") or "").strip():
+            charge_job_kind_reservation(
+                db,
+                job,
+                KIND_PROCUREMENT_REPORT,
+                note="Анализ документации готов",
+            )
         _set_job(
             db,
             job,

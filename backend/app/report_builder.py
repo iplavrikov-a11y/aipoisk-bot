@@ -426,7 +426,7 @@ def _populate_supplier_sheet(
             s = str(v if v is not None else "")
             stripped = s.lstrip(" \t\r\n")
             if stripped.startswith(("=", "+", "-", "@")):
-                if re.fullmatch(r"\+\d[\d\s().,;/-]{5,}", stripped):
+                if re.match(r"^\+\d", stripped) and not any(ch in stripped for ch in ("=", "|", "!")):
                     return s
                 return "'" + s
             return s
@@ -461,6 +461,7 @@ def _populate_supplier_sheet(
 
         # Col 3: Телефоны
         c3 = ws.cell(row=row_idx, column=3)
+        c3.data_type = "s"
         c3.font = Font(name="Calibri", size=10, color="1E293B")
         c3.fill = base_bg
         c3.border = thin_border
@@ -505,10 +506,14 @@ def _populate_supplier_sheet(
         for sec_idx, (sec_name, sec_rows) in enumerate(sections, start=1):
             sec_header_row = current_row
             ws.append([None] * len(SUPPLIER_HEADERS))
+            is_unassigned_sec = sec_name == UNASSIGNED_SUPPLIER_SECTION
             if sec_rows:
                 icon = "▶" if should_collapse else "▼"
                 action_tip = "нажмите [+] слева для раскрытия" if should_collapse else "нажмите [-] слева для сворачивания"
-                sec_title = f"{icon} Позиция {sec_idx}: {sec_name} (найдено поставщиков: {len(sec_rows)} · {action_tip})"
+                if is_unassigned_sec:
+                    sec_title = f"{icon} {sec_name} (найдено поставщиков: {len(sec_rows)} · {action_tip})"
+                else:
+                    sec_title = f"{icon} Позиция {sec_idx}: {sec_name} (найдено поставщиков: {len(sec_rows)} · {action_tip})"
             else:
                 sec_title = f"▷ Позиция {sec_idx}: {sec_name} (поставщиков не найдено)"
             _style_category_header_row(ws, sec_header_row, sec_title)
@@ -543,6 +548,9 @@ def _populate_supplier_sheet(
     widths = [32, 35, 22, 26, 52, 26, 24]
     for column, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(column)].width = width
+
+
+UNASSIGNED_SUPPLIER_SECTION = "Общие поставщики по закупке (без привязки к отдельной позиции)"
 
 
 def _build_item_specs(profile_items: list[dict]) -> list[dict]:
@@ -618,8 +626,6 @@ def _match_supplier_to_item_ids(r: dict, item_specs: list[dict]) -> set[str]:
             if score >= threshold:
                 matched.add(it_id)
 
-    if not matched and item_specs:
-        matched.add(item_specs[0]["id"])
     return matched
 
 
@@ -651,8 +657,13 @@ def write_supplier_xlsx(
         item_specs = _build_item_specs(profile_items)
         # Precompute row matches once per row O(M * N) instead of O(N^2 * M)
         spec_id_to_rows: dict[str, list[dict]] = {spec["id"]: [] for spec in item_specs}
+        unassigned_rows: list[dict] = []
         for r in rows:
-            for matched_id in _match_supplier_to_item_ids(r, item_specs):
+            matched_ids = _match_supplier_to_item_ids(r, item_specs)
+            if not matched_ids:
+                unassigned_rows.append(r)
+                continue
+            for matched_id in matched_ids:
                 if matched_id in spec_id_to_rows:
                     spec_id_to_rows[matched_id].append(r)
 
@@ -663,6 +674,8 @@ def write_supplier_xlsx(
             item_sections.append((it_name, matched_rows))
             if not matched_rows:
                 unmatched_item_names.append(it_name)
+        if unassigned_rows:
+            item_sections.append((UNASSIGNED_SUPPLIER_SECTION, unassigned_rows))
     elif not profile_items:
         raw_distinct: list[str] = []
         for r in rows:
@@ -687,12 +700,17 @@ def write_supplier_xlsx(
         if len(distinct_items) > 1:
             is_multi = True
             item_to_rows: dict[str, list[dict]] = {item: [] for item in distinct_items}
+            unassigned_rows = []
             for r in rows:
                 mapped = cluster_map.get(_clean_comment_text(r.get("procurement_item") or ""))
                 if mapped in item_to_rows:
                     item_to_rows[mapped].append(r)
+                else:
+                    unassigned_rows.append(r)
             for item in distinct_items:
                 item_sections.append((item, item_to_rows[item]))
+            if unassigned_rows:
+                item_sections.append((UNASSIGNED_SUPPLIER_SECTION, unassigned_rows))
 
     # Single unified sheet with collapsible row outline structure (+ / -)
     ws = wb.active

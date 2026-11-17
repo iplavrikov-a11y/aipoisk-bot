@@ -80,7 +80,7 @@ TenderLex: https://tenderlex.ru. Онлайн-сервис для отделов
 - Реестр недобросовестных поставщиков (РНП): как проверить компанию и учредителей: https://tenderlex.ru/baza-znaniy/reestr-nedobrosovestnyh-postavshchikov-rnp-proverka
 - Бухгалтерская отчетность поставщика: экспресс-анализ финансовой устойчивости: https://tenderlex.ru/baza-znaniy/buhgalterskaya-otchetnost-postavshchika-analiz-finansov
 - Проверка производственных мощностей и складов поставщика: выездной технический аудит: https://tenderlex.ru/baza-znaniy/proverka-proizvodstvennyh-moshchnostei-i-skladov-postavshchika
-- Как заполнить таблицу показателей товара («Форму 2») по 44-ФЗ: https://tenderlex.ru/baza-znaniy/kak-zapolnit-formu-2-dlya-zayavki-44-fz-konkretnye-pokazateli
+- Как заполнить таблицу конкретных показателей товара по 44-ФЗ: https://tenderlex.ru/baza-znaniy/kak-zapolnit-formu-2-dlya-zayavki-44-fz-konkretnye-pokazateli
 - Как определить скрытого производителя по ТЗ в госзакупках: методы раскрытия 'заточек': https://tenderlex.ru/baza-znaniy/kak-opredelit-skrytogo-proizvoditelya-po-tz-44-fz
 - Мониторинг цен поставщиков по спецификациям: методика сбора, кластеризация и обоснование НМЦК: https://tenderlex.ru/baza-znaniy/monitoring-cen-postavshchikov-po-specifikaciyam
 

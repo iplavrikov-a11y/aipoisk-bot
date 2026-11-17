@@ -281,6 +281,9 @@ def create_human_challenge() -> dict[str, Any]:
     return {"token": f"{payload}.{sig}", "issued_at": ts}
 
 
+_CONSUMED_CHALLENGE_NONCES: dict[str, float] = {}
+
+
 def verify_human_challenge(token: str | None, *, min_elapsed_sec: float = 0.8, max_age_sec: int = 7200) -> tuple[bool, str]:
     raw = str(token or "").strip()
     if not raw:
@@ -297,11 +300,21 @@ def verify_human_challenge(token: str | None, *, min_elapsed_sec: float = 0.8, m
     expected_sig = hmac.new(_challenge_secret(), payload.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
     if not hmac.compare_digest(sig, expected_sig):
         return False, "invalid_challenge_sig"
-    age = time.time() - ts
+    now_ts = time.time()
+    age = now_ts - ts
     if age < min_elapsed_sec:
         return False, "submitted_too_fast"
     if age > max_age_sec:
         return False, "challenge_expired"
+    expired_nonces = [k for k, exp in _CONSUMED_CHALLENGE_NONCES.items() if exp < now_ts]
+    for k in expired_nonces:
+        _CONSUMED_CHALLENGE_NONCES.pop(k, None)
+    if payload in _CONSUMED_CHALLENGE_NONCES:
+        return False, "challenge_replayed"
+    if len(_CONSUMED_CHALLENGE_NONCES) >= 8192:
+        oldest_key = min(_CONSUMED_CHALLENGE_NONCES, key=_CONSUMED_CHALLENGE_NONCES.get)
+        _CONSUMED_CHALLENGE_NONCES.pop(oldest_key, None)
+    _CONSUMED_CHALLENGE_NONCES[payload] = ts + max_age_sec
     return True, "ok"
 
 

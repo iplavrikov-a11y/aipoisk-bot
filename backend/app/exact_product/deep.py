@@ -2979,9 +2979,9 @@ async def detect_exact_products_deep(
             else:
                 alt["confidence"] = round(min(0.95, real_conf), 2)
 
-    # 8. Автодобор параметров под ТЗ для Формы 2 (подготовка конкретных номиналов для заявки)
+    # 8. Автодобор параметров под ТЗ (подготовка конкретных номиналов для заявки)
     if progress_callback:
-        await progress_callback(88, "Автоподбор параметров для Формы 2...")
+        await progress_callback(88, "Автоподбор параметров для таблицы характеристик...")
     await auto_fill_ai_recommendations(positions)
 
     # 8.1 Финальная сверка и пересчет соответствия по всем позициям

@@ -175,6 +175,11 @@ def _safe_excel_text(value: Any) -> str:
 
 def next_invoice_number(db: Session) -> str:
     """Generate sequential invoice number: TL-2026-0001 (safe past 9999)."""
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(73918402)"))
+    elif bind is not None and bind.dialect.name == "sqlite" and not db.in_transaction():
+        db.execute(text("BEGIN IMMEDIATE"))
     year = now_utc().year
     prefix = f"TL-{year}-"
     rows = db.scalars(
@@ -546,10 +551,14 @@ def generate_invoice_pdf(invoice: Invoice, output_pdf_path: str) -> str:
                 pass
 
         # 2. Fallback to LibreOffice Calc from XLSX
-        tmp_xlsx = Path(tmp_dir) / f"{invoice.invoice_number}.xlsx"
+        safe_stem = re.sub(r"[^A-Za-z0-9_.-]", "_", str(invoice.invoice_number or "invoice")) or "invoice"
+        tmp_xlsx = Path(tmp_dir) / f"{safe_stem}.xlsx"
+        lo_profile = Path(tmp_dir) / "lo_profile"
+        lo_profile.mkdir(parents=True, exist_ok=True)
         generate_invoice_xlsx(invoice, str(tmp_xlsx))
         cmd_soffice = [
             "soffice",
+            f"-env:UserInstallation={lo_profile.as_uri()}",
             "--headless",
             "--convert-to",
             "pdf",
@@ -560,7 +569,7 @@ def generate_invoice_pdf(invoice: Invoice, output_pdf_path: str) -> str:
         res_soffice = subprocess.run(cmd_soffice, capture_output=True, text=True, timeout=30)
         if res_soffice.returncode != 0:
             raise RuntimeError(f"PDF conversion failed: {res_soffice.stderr or res_soffice.stdout}")
-        generated_pdf = Path(tmp_dir) / f"{invoice.invoice_number}.pdf"
+        generated_pdf = Path(tmp_dir) / f"{safe_stem}.pdf"
         if not generated_pdf.exists():
             raise FileNotFoundError(f"Generated PDF not found: {generated_pdf}")
         generated_pdf.replace(out_pdf)
@@ -821,16 +830,16 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
 
   <div class="no-print-toolbar">
     <div style="font-size: 13px; color: #475569; font-weight: 500;">
-      Счёт <b>№ {invoice.invoice_number}</b> от {date_str} г.
+      Счёт <b>№ {safe_invoice_number}</b> от {date_str} г.
     </div>
     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
       <button class="btn btn-primary" onclick="window.print()">
         🖨️ Распечатать
       </button>
-      <a class="btn btn-emerald" href="/api/customer/invoices/{invoice.id}/download?format=pdf" download>
+      <a class="btn btn-emerald" href="/api/customer/invoices/{escape(str(invoice.id or ''), quote=True)}/download?format=pdf" download>
         📥 Скачать PDF
       </a>
-      <a class="btn btn-outline" href="/api/customer/invoices/{invoice.id}/download?format=xlsx" download>
+      <a class="btn btn-outline" href="/api/customer/invoices/{escape(str(invoice.id or ''), quote=True)}/download?format=xlsx" download>
         📊 Скачать Excel (.xlsx)
       </a>
     </div>
@@ -869,7 +878,7 @@ def render_invoice_html(invoice: Invoice, *, embed_images: bool = True) -> str:
       </tr>
     </table>
 
-    <h1 class="title">Счет на оплату № {invoice.invoice_number} от {date_str} г.</h1>
+    <h1 class="title">Счет на оплату № {safe_invoice_number} от {date_str} г.</h1>
 
     <div class="info-row">
       <div class="info-label">Поставщик:</div>
@@ -1101,8 +1110,12 @@ async def notify_admin_telegram(invoice: Invoice, *, _allow_in_test: bool = Fals
     if phone_val:
         contacts_lines.append(f"<b>Телефон:</b> <code>{escape(phone_val)}</code>")
     if tg_val:
-        clean_tg = tg_val.lstrip("@").strip()
-        contacts_lines.append(f"<b>Telegram:</b> <a href=\"https://t.me/{clean_tg}\">@{escape(clean_tg)}</a>")
+        raw_tg = tg_val.lstrip("@").strip()
+        clean_tg = re.sub(r"[^A-Za-z0-9_]", "", raw_tg)[:64]
+        if clean_tg:
+            contacts_lines.append(f"<b>Telegram:</b> <a href=\"https://t.me/{escape(clean_tg, quote=True)}\">@{escape(clean_tg, quote=True)}</a>")
+        elif raw_tg:
+            contacts_lines.append(f"<b>Telegram:</b> <code>@{escape(raw_tg, quote=True)}</code>")
     contacts_block = ("\n" + "\n".join(contacts_lines)) if contacts_lines else ""
 
     text = (

@@ -87,7 +87,7 @@ def unsubscribe_client(db: Session, client_id: str, reason: str = "user_request"
     record_journey_event(
         db,
         client_id,
-        channel="web" if not client.telegram_id.isdigit() else "telegram",
+        channel="telegram" if str(client.telegram_id or "").isdigit() else "web",
         event_name="marketing_unsubscribed",
         outcome="success",
         reason_code=reason[:80],

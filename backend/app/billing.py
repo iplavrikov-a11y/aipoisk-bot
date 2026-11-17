@@ -524,12 +524,29 @@ def preload_clients_billing_cache(db: Session, client_ids: list[str], *, recent_
         month_map[str(cid)] = (s_used, r_used)
     db.info["legacy_month_usage_map"] = month_map
 
-    tx_rows = (
-        db.query(BillingTransaction)
-        .filter(BillingTransaction.client_id.in_(client_ids))
-        .order_by(BillingTransaction.created_at.desc())
-        .all()
-    )
+    if recent_limit > 0:
+        ranked_subq = (
+            db.query(
+                BillingTransaction.id.label("tx_id"),
+                func.row_number()
+                .over(
+                    partition_by=BillingTransaction.client_id,
+                    order_by=[BillingTransaction.created_at.desc(), BillingTransaction.id.desc()],
+                )
+                .label("rn"),
+            )
+            .filter(BillingTransaction.client_id.in_(client_ids))
+            .subquery()
+        )
+        tx_rows = (
+            db.query(BillingTransaction)
+            .join(ranked_subq, BillingTransaction.id == ranked_subq.c.tx_id)
+            .filter(ranked_subq.c.rn <= recent_limit)
+            .order_by(BillingTransaction.created_at.desc(), BillingTransaction.id.desc())
+            .all()
+        )
+    else:
+        tx_rows = []
     recent_map: dict[str, list[dict]] = {}
     for row in tx_rows:
         cid = str(row.client_id or "")
@@ -2333,3 +2350,120 @@ def _expire_price_monitoring_selections(db: Session, cutoff: datetime) -> int:
                 db.rollback()
                 raise
     return expired
+
+
+ACTIVE_RESERVATION_JOB_STATUSES = {
+    "draft",
+    "pending",
+    "queued",
+    "running",
+    "settling",
+    "needs_review",
+    STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+    STATUS_AWAITING_EXACT_SELECTION,
+    STATUS_AWAITING_POSITION_SELECTION,
+}
+
+
+def reconcile_stuck_client_reservations(
+    db: Session,
+    *,
+    client_ids: list[str] | None = None,
+) -> list[dict]:
+    """Reconcile Client.money_reserved_kopeks against actual non-terminal job reservations.
+
+    Also releases any orphaned ledger reservations belonging to jobs already in terminal states
+    (completed, failed, cancelled, resolved, expired, declined).
+    """
+    query = db.query(Client).filter(Client.money_reserved_kopeks > 0)
+    if client_ids is not None:
+        if not client_ids:
+            return []
+        query = query.filter(Client.id.in_(client_ids))
+    candidates = query.order_by(Client.id.asc()).all()
+    repaired: list[dict] = []
+
+    for candidate in candidates:
+        with _billing_client_lock(candidate.id):
+            client = db.get(Client, candidate.id)
+            if not client:
+                continue
+            db.refresh(client)
+            before_reserved = max(0, int(client.money_reserved_kopeks or 0))
+            before_balance = max(0, int(client.money_balance_kopeks or 0))
+            if before_reserved <= 0:
+                continue
+
+            client_jobs = db.query(Job).filter(Job.client_id == client.id).all()
+            tx_rows = (
+                db.query(
+                    BillingTransaction.job_id,
+                    BillingTransaction.kind,
+                    BillingTransaction.operation,
+                    func.coalesce(func.sum(BillingTransaction.units), 0),
+                    func.coalesce(func.sum(BillingTransaction.amount_kopeks), 0),
+                )
+                .filter(
+                    BillingTransaction.client_id == client.id,
+                    BillingTransaction.job_id.isnot(None),
+                    BillingTransaction.kind.in_(list(VALID_BILLING_KINDS)),
+                    BillingTransaction.operation.in_([OP_RESERVE, OP_CHARGE, OP_RELEASE]),
+                )
+                .group_by(
+                    BillingTransaction.job_id,
+                    BillingTransaction.kind,
+                    BillingTransaction.operation,
+                )
+                .all()
+            )
+            ledger_by_job_kind: dict[tuple[str, str], dict[str, tuple[int, int]]] = {}
+            for j_id, t_kind, t_op, sum_units, sum_amount in tx_rows:
+                if not j_id or not t_kind or not t_op:
+                    continue
+                ledger_by_job_kind.setdefault((str(j_id), str(t_kind)), {})[str(t_op)] = (
+                    int(sum_units or 0),
+                    int(sum_amount or 0),
+                )
+
+            expected_reserved = 0
+            released_orphan_jobs: list[str] = []
+
+            for job in client_jobs:
+                status_val = str(job.status or "").strip().lower()
+                for kind in VALID_BILLING_KINDS:
+                    ops = ledger_by_job_kind.get((job.id, kind))
+                    if not ops:
+                        continue
+                    res_u, res_a = ops.get(OP_RESERVE, (0, 0))
+                    chg_u, chg_a = ops.get(OP_CHARGE, (0, 0))
+                    rel_u, rel_a = ops.get(OP_RELEASE, (0, 0))
+                    rem_units = max(0, res_u - chg_u - rel_u)
+                    rem_amount = max(0, res_a - chg_a - rel_a)
+                    if status_val in ACTIVE_RESERVATION_JOB_STATUSES:
+                        expected_reserved += rem_amount
+                    elif rem_units > 0 or rem_amount > 0:
+                        _release_job_kind_reservation(
+                            db,
+                            job,
+                            kind,
+                            note=f"Автосверка резервов: возврат зависшего резерва завершённой задачи ({status_val})",
+                        )
+                        released_orphan_jobs.append(job.id)
+
+            db.flush()
+            current_reserved = max(0, int(client.money_reserved_kopeks or 0))
+            if current_reserved != expected_reserved or released_orphan_jobs:
+                client.money_reserved_kopeks = expected_reserved
+                db.commit()
+                repaired.append(
+                    {
+                        "client_id": client.id,
+                        "name": client.name or "",
+                        "balance_kopeks": before_balance,
+                        "reserved_before_kopeks": before_reserved,
+                        "reserved_after_kopeks": expected_reserved,
+                        "unfrozen_kopeks": before_reserved - expected_reserved,
+                        "released_orphan_jobs": sorted(set(released_orphan_jobs)),
+                    }
+                )
+    return repaired

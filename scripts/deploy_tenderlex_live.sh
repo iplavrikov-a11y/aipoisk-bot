@@ -101,6 +101,13 @@ job_restart_gate_process() {
     cd "$BACKEND_DIR"
     "$BACKEND_DIR/.venv/bin/python" -c '
 import sys
+from pathlib import Path
+from dotenv import load_dotenv
+
+env_file = Path("..").resolve() / ".env"
+if env_file.is_file():
+    load_dotenv(env_file, override=False)
+
 from app.db import engine
 
 with engine.connect() as connection:
@@ -284,7 +291,21 @@ cd "$ROOT_DIR"
 
 if [[ "$deploy_scope" != "site" ]]; then
   log "running backend tests"
-  PYTHONPATH="$BACKEND_DIR" pytest ${AIPOISK_DEPLOY_TESTS:-backend/tests} -q
+  (
+    cd "$BACKEND_DIR"
+    deploy_tests_raw="${AIPOISK_DEPLOY_TESTS:-tests}"
+    deploy_tests=()
+    for item in $deploy_tests_raw; do
+      deploy_tests+=("${item#backend/}")
+    done
+    if "$BACKEND_DIR/.venv/bin/python" -c "import pytest" >/dev/null 2>&1; then
+      env -u AIPOISK_DATABASE_URL -u AIPOISK_TEST_DATABASE_URL PYTHONPATH="$BACKEND_DIR" \
+        "$BACKEND_DIR/.venv/bin/python" -m pytest "${deploy_tests[@]}" -q
+    else
+      env -u AIPOISK_DATABASE_URL -u AIPOISK_TEST_DATABASE_URL PYTHONPATH="$BACKEND_DIR" \
+        pytest "${deploy_tests[@]}" -q
+    fi
+  )
 fi
 
 if [[ "$deploy_scope" == "full" ]]; then
@@ -303,6 +324,15 @@ elif [[ "$deploy_scope" == "site" ]]; then
 else
   # A backend-only deploy must not publish unrelated, uncommitted web assets.
   log "backend scope: leaving admin and site artifacts unchanged"
+fi
+
+if [[ "$deploy_scope" != "site" ]]; then
+  log "creating verified PostgreSQL backup before live deploy"
+  "$BACKEND_DIR/.venv/bin/python" "$ROOT_DIR/scripts/backup_postgres.py" \
+    --backup-dir "$BACKUP_DIR/pg" \
+    --prefix "tenderlex-before-live-deploy-$STAMP" \
+    --keep-count 10 \
+    --keep-days 14
 fi
 
 if [[ "$deploy_scope" != "site" && -f "$DB_PATH" ]]; then
@@ -363,6 +393,8 @@ else
     tenderlex-api.service \
     tenderlex-worker.service \
     tenderlex-bot.service
+  # Release SHARE table lock while all job services are stopped so startup DDL in init_db() cannot deadlock
+  release_job_restart_gate COMMIT
 
   log "ensuring compatible Playwright headless Chromium"
   "$BACKEND_DIR/.venv/bin/python" -m playwright install --only-shell chromium
@@ -371,7 +403,6 @@ else
     tenderlex-api.service \
     tenderlex-worker.service \
     tenderlex-bot.service
-  release_job_restart_gate COMMIT
   if [[ "$deploy_scope" == "full" ]]; then
     promote_site_release
     systemctl restart tenderlex-site.service
