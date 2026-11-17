@@ -4834,29 +4834,38 @@ async def _search_with_yandex(
                     if response.status_code == 200:
                         record_yandex_async_success()
                         requests_count += 1
-                        operation_id = str(response.json().get("id") or "")
+                        payload = response.json() or {}
+                        operation_id = str(payload.get("id") or "")
                         if operation_id:
                             raw_data = await _poll_yandex_operation(client, operation_id)
                             if raw_data is not None:
+                                last_provider_error = ""
                                 return _parse_yandex_xml(raw_data, query=query, geo_scope=geo_scope) if raw_data else []
                             last_provider_error = f"operation_poll_timeout:{operation_id}"
+                        else:
+                            inline_raw = payload.get("rawData") or (payload.get("response") or {}).get("rawData")
+                            if inline_raw is not None:
+                                last_provider_error = ""
+                                return _parse_yandex_xml(str(inline_raw), query=query, geo_scope=geo_scope) if inline_raw else []
                     elif response.status_code in (404, 501):
                         async_supported = False
                         last_provider_error = f"http_{response.status_code}"
                     elif response.status_code == 429:
-                        record_yandex_async_failure_429(15.0)
+                        record_yandex_async_failure_429(180.0)
                         last_provider_error = "http_429_rate_limited"
                     elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
                         last_provider_error = f"http_{response.status_code}_auth_or_billing"
                         notify_yandex_search_error(response.status_code, response.text, query=query)
+                        return []
                     else:
                         last_provider_error = f"http_{response.status_code}"
                 except Exception as async_exc:
                     last_provider_error = f"{type(async_exc).__name__}"
                     logger.debug("Yandex async search call failed: %s", async_exc)
 
-            # Fallback: Synchronous endpoint ONLY if async endpoint returned 404/501 or explicitly enabled via AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK=1
-            if (not async_supported or os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", "0") == "1") and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", "0") != "0":
+            # Fallback: Synchronous endpoint when searchAsync is rate-limited/unavailable/timed out
+            # (unless explicitly disabled via AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK=0).
+            if os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", "1") != "0":
                 try:
                     response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
                     if response.status_code == 429:
@@ -4864,10 +4873,12 @@ async def _search_with_yandex(
                         response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
                     if response.status_code == 200:
                         requests_count += 1
+                        last_provider_error = ""
                         data = response.json()
                         raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
                         if raw_data:
                             return _parse_yandex_xml(raw_data, query=query, geo_scope=geo_scope)
+                        return []
                     elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
                         last_provider_error = f"sync_http_{response.status_code}_auth_or_billing"
                         logger.warning("Yandex search auth/billing error: status=%s error=%s", response.status_code, response.text[:200])

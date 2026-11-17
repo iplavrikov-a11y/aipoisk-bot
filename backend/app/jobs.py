@@ -2826,24 +2826,28 @@ def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float =
     if not evidence.get("search") and isinstance(evidence.get("supplier_search"), dict):
         return extract_yandex_job_metrics(evidence["supplier_search"], price_per_request=price_per_request)
     req_count = 0
+    has_explicit_count = False
     search_info = evidence.get("search")
     if isinstance(search_info, dict):
         if "yandex_requests_count" in search_info:
-            req_count += int(search_info["yandex_requests_count"])
+            has_explicit_count = True
+            req_count += int(search_info["yandex_requests_count"] or 0)
     recovery_rounds = evidence.get("recovery_rounds", [])
     if isinstance(recovery_rounds, list):
         for r in recovery_rounds:
             if isinstance(r, dict):
                 r_search = r.get("search")
                 if isinstance(r_search, dict) and "yandex_requests_count" in r_search:
-                    req_count += int(r_search["yandex_requests_count"])
+                    has_explicit_count = True
+                    req_count += int(r_search["yandex_requests_count"] or 0)
                 elif "yandex_requests_count" in r:
-                    req_count += int(r["yandex_requests_count"])
-    if req_count == 0:
+                    has_explicit_count = True
+                    req_count += int(r["yandex_requests_count"] or 0)
+    if req_count == 0 and not has_explicit_count:
         queries = evidence.get("queries", [])
         reports = search_info.get("reports", []) if isinstance(search_info, dict) else []
         yandex_report = next((r for r in reports if isinstance(r, dict) and r.get("provider") == "yandex"), None)
-        if yandex_report and yandex_report.get("status") in ("ok", "error"):
+        if yandex_report and yandex_report.get("status") == "ok":
             added = yandex_report.get("added", 0)
             q_len = len(queries) if isinstance(queries, list) else 0
             pages_per_q = 2.0 if added > 50 else 1.5

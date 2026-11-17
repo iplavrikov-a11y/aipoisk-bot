@@ -243,7 +243,7 @@ class YandexSearchEngine:
         self.total_requests: int = 0
         self.async_requests: int = 0
         self.sync_requests: int = 0
-        self._async_supported: bool = is_yandex_async_available()
+        self._async_supported: bool = True
         self._consecutive_async_429: int = 0
         self._last_op_completed: bool = False
         self._last_v2_failed: bool = False
@@ -364,23 +364,27 @@ class YandexSearchEngine:
                                 if inline_raw:
                                     page_results = self._parse_v2_xml(inline_raw)
                                     async_completed = True
+                        elif async_resp.status_code in (404, 501):
+                            self._async_supported = False
                         elif async_resp.status_code == 429:
                             self._consecutive_async_429 += 1
-                            if self._consecutive_async_429 >= 2:
-                                record_yandex_async_failure_429(15.0)
-                                logger.warning(
-                                    "yandex_async_circuit_breaker_tripped",
-                                    consecutive_429=self._consecutive_async_429,
-                                    cooloff_sec=15,
-                                    msg="searchAsync 429 rate-limited, applying brief 15s cooloff without permanently disabling async",
-                                )
+                            record_yandex_async_failure_429(180.0)
+                            logger.warning(
+                                "yandex_async_circuit_breaker_tripped",
+                                consecutive_429=self._consecutive_async_429,
+                                cooloff_sec=180,
+                                msg="searchAsync 429 rate-limited after retries, applying 180s cooloff and falling back to sync",
+                            )
                         elif async_resp.status_code in (401, 402, 403) or "PermissionDenied" in async_resp.text:
+                            self._last_v2_failed = True
                             notify_yandex_search_error(async_resp.status_code, async_resp.text, query=search_query)
+                            return []
                     except Exception as async_exc:
                         logger.debug("exact_product yandex async search failed: %s", async_exc)
 
-                # Fallback path: Synchronous endpoint ONLY if explicitly opted in via AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK=1
-                if not async_completed and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", "0") == "1":
+                # Fallback path: Synchronous endpoint when searchAsync did not complete
+                # (unless explicitly disabled via AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK=0).
+                if not async_completed and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", "1") != "0":
                     try:
                         self.total_requests += 1
                         self.sync_requests += 1
@@ -465,9 +469,10 @@ class YandexSearchEngine:
 
                 data = response.json()
                 if data.get("done"):
-                    self._last_op_completed = True
-                    if "error" in data:
+                    if data.get("error"):
+                        logger.warning("yandex_v2_async_op_error", operation_id=operation_id, error=str(data.get("error"))[:200])
                         return []
+                    self._last_op_completed = True
 
                     raw_data = (data.get("response") or {}).get("rawData", "")
                     if raw_data:

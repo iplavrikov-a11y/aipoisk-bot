@@ -328,5 +328,168 @@ async def test_extractor_prioritizes_requisites_link_over_anchor_links():
     assert called_urls[1] == "https://zavod-mebeli.ru/company/rekvizity/"
 
 
+@pytest.mark.asyncio
+async def test_supplier_search_falls_back_to_sync_when_async_exhausts_429_retries(monkeypatch):
+    """When searchAsync exhausts retries with HTTP 429 (shared folder quota), _search_with_yandex must trip 180s cooloff and fall back to /v2/web/search by default."""
+    from app.supplier_search import _search_with_yandex
+    from app.exact_product.yandex_search import is_yandex_async_available, record_yandex_async_success
+
+    monkeypatch.delenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", raising=False)
+    record_yandex_async_success()
+
+    settings = SystemSettings(
+        yandex_search_folder_id="folder-1",
+        yandex_search_api_key="key-1",
+        yandex_search_price_per_request=0.0305,
+    )
+
+    resp_429 = MagicMock()
+    resp_429.status_code = 429
+    resp_429.text = "Rate limit exceeded"
+
+    sync_xml = """<?xml version="1.0" encoding="utf-8"?>
+<yandexsearch version="1.0">
+  <response date="20261117T120000">
+    <results>
+      <grouping>
+        <group>
+          <doc>
+            <url>https://armatura-zavod.ru/catalog</url>
+            <domain>armatura-zavod.ru</domain>
+            <title>Арматура А500С ГОСТ 34028 от производителя</title>
+            <passages><passage>Завод металлопроката, поставка арматуры оптом</passage></passages>
+          </doc>
+        </group>
+      </grouping>
+    </results>
+  </response>
+</yandexsearch>"""
+    resp_sync_200 = MagicMock()
+    resp_sync_200.status_code = 200
+    resp_sync_200.json.return_value = {"rawData": sync_xml}
+
+    post_calls: list[str] = []
+
+    async def fake_post(url, **kwargs):
+        post_calls.append(url)
+        if url.endswith("/searchAsync"):
+            return resp_429
+        return resp_sync_200
+
+    try:
+        with patch("httpx.AsyncClient.post", side_effect=fake_post), \
+             patch("asyncio.sleep", new_callable=AsyncMock):
+            candidates_1, reqs_1 = await _search_with_yandex(
+                settings,
+                ["арматура а500с производитель"],
+                max_results=5,
+                expand_queries=False,
+                max_pages_per_query=1,
+            )
+            assert len(candidates_1) == 1
+            assert candidates_1[0].domain == "armatura-zavod.ru"
+            assert reqs_1 == 1
+            assert is_yandex_async_available() is False
+            assert any(u.endswith("/v2/web/search") for u in post_calls)
+
+            # While circuit breaker is cooling off, subsequent call must go straight to sync /v2/web/search
+            post_calls.clear()
+            candidates_2, reqs_2 = await _search_with_yandex(
+                settings,
+                ["плита паг-14 завод"],
+                max_results=5,
+                expand_queries=False,
+                max_pages_per_query=1,
+            )
+            assert len(candidates_2) == 1
+            assert reqs_2 == 1
+            assert post_calls == ["https://searchapi.api.cloud.yandex.net/v2/web/search"]
+    finally:
+        record_yandex_async_success()
+
+
+@pytest.mark.asyncio
+async def test_yandex_search_engine_falls_back_to_sync_when_async_429_persists(monkeypatch):
+    """YandexSearchEngine (exact_product & price_monitoring) must fall back to V2_API_URL when searchAsync returns persistent 429 or operation error."""
+    from app.exact_product.yandex_search import is_yandex_async_available, record_yandex_async_success
+
+    monkeypatch.delenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", raising=False)
+    record_yandex_async_success()
+
+    resp_429 = MagicMock()
+    resp_429.status_code = 429
+    resp_429.text = "Rate limit exceeded"
+
+    sync_xml = """<?xml version="1.0" encoding="utf-8"?>
+<yandexsearch version="1.0">
+  <response date="20261117T120000">
+    <results>
+      <grouping>
+        <group>
+          <doc>
+            <url>https://georeshetka-zavod.ru/sd-30</url>
+            <domain>georeshetka-zavod.ru</domain>
+            <title>Георешетка двуосная СД-30 производитель</title>
+            <headline>Производство геосинтетики</headline>
+          </doc>
+        </group>
+      </grouping>
+    </results>
+  </response>
+</yandexsearch>"""
+    resp_sync_200 = MagicMock()
+    resp_sync_200.status_code = 200
+    resp_sync_200.json.return_value = {"rawData": sync_xml}
+
+    mock_client = AsyncMock()
+    called_urls: list[str] = []
+
+    async def fake_post(url, **kwargs):
+        called_urls.append(url)
+        if url.endswith("/searchAsync"):
+            return resp_429
+        return resp_sync_200
+
+    mock_client.post.side_effect = fake_post
+
+    try:
+        engine = YandexSearchEngine("test-folder", "test-key")
+        with patch.object(engine, "_get_client", return_value=mock_client), \
+             patch("asyncio.sleep", new_callable=AsyncMock):
+            results = await engine.search("Георешетка двуосная СД-30", max_results=5, enrich_query=True, max_pages=1)
+            assert len(results) == 1
+            assert results[0].domain == "georeshetka-zavod.ru"
+            assert engine.V2_API_URL in called_urls
+            assert engine.sync_requests == 1
+            assert is_yandex_async_available() is False
+    finally:
+        record_yandex_async_success()
+
+
+def test_extract_yandex_job_metrics_does_not_fabricate_requests_on_zero_error():
+    """When search_info explicitly tracks yandex_requests_count=0 on provider error, metrics must report (0, 0.0)."""
+    from app.jobs import extract_yandex_job_metrics
+
+    evidence = {
+        "queries": ["арматура а500с"] * 31,
+        "search": {
+            "yandex_requests_count": 0,
+            "yandex_cost_rub": 0.0,
+            "reports": [
+                {
+                    "provider": "yandex",
+                    "status": "error",
+                    "added": 0,
+                    "error": "RuntimeError: Yandex Search API unavailable: http_429_rate_limited",
+                }
+            ],
+        },
+    }
+    reqs, cost = extract_yandex_job_metrics(evidence, price_per_request=0.0305)
+    assert reqs == 0
+    assert cost == 0.0
+
+
+
 
 
