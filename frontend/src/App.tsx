@@ -88,6 +88,9 @@ type Client = {
   allowed_supplier_search: boolean
   allowed_procurement_report: boolean
   allowed_exact_product?: boolean
+  allowed_custom_batch_report?: boolean
+  custom_report_separate_tab?: boolean
+  custom_report_prompt?: string
   monthly_job_limit: number
   monthly_supplier_search_limit: number
   monthly_procurement_report_limit: number
@@ -3821,6 +3824,46 @@ function ClientsView({
                       </div>
                     </details>
                   )}
+                  <details className="compact-form-details price-settings-details">
+                    <summary>
+                      Кастомный пакетный анализ {client.allowed_custom_batch_report ? '· ВКЛ' : ''}
+                    </summary>
+                    <div className="price-settings-panel" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(client.allowed_custom_batch_report)}
+                          onChange={e => void patchClient(client, { allowed_custom_batch_report: e.currentTarget.checked })}
+                        />
+                        <span>Включить загрузку реестра закупок и индивидуальный промт</span>
+                      </label>
+                      {client.allowed_custom_batch_report && (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(client.custom_report_separate_tab)}
+                            onChange={e => void patchClient(client, { custom_report_separate_tab: e.currentTarget.checked })}
+                          />
+                          <span>Вынести в отдельную вкладку (сохранить стандартный «Анализ документации» без изменений)</span>
+                        </label>
+                      )}
+                      <label className="mini-field">
+                        <span>Индивидуальный промт клиента</span>
+                        <textarea
+                          rows={5}
+                          defaultValue={client.custom_report_prompt || ''}
+                          placeholder="Промт для модели Gemini с Google-поиском..."
+                          style={{ width: '100%', fontSize: 12, fontFamily: 'monospace' }}
+                          onBlur={e => {
+                            const val = e.currentTarget.value
+                            if (val !== (client.custom_report_prompt || '')) {
+                              void patchClient(client, { custom_report_prompt: val })
+                            }
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </details>
                 </div>
 
                 <details className="client-section client-merge-section merge-client-details danger-zone-details">

@@ -5,6 +5,14 @@ import "./cabinet-redesign.css";
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent, type MouseEvent } from "react";
 import { TelegramLoginWidget } from "@/components/telegram-login-widget";
+import {
+  BatchResultsReaderModal,
+  BatchSelectionModal,
+  BatchSheetSelectorModal,
+  type BatchRegistryPreviewData,
+  type BatchRegistryPreviewItem,
+  type BatchReportReaderData,
+} from "@/components/custom-batch-report-modals";
 import { ANALYTICS_CONSENT_KEY, trackGoal } from "@/lib/analytics";
 import { pendingSeoEntry } from "@/lib/seo-funnel";
 import {
@@ -61,7 +69,7 @@ import {
 } from "lucide-react";
 
 type JobMode = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product" | "price_monitoring";
-type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product" | "price_monitoring";
+type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product" | "price_monitoring" | "custom_batch_report";
 type SupplierSearchPolicy = "normal" | "minprom_registry_only" | "minprom_registry_priority";
 type GeoScope = "ru" | "cis" | "world";
 
@@ -198,6 +206,8 @@ type SessionPayload = {
     has_telegram?: boolean;
     allowed_price_monitoring?: boolean;
     allowed_geo_radius?: boolean;
+    allowed_custom_batch_report?: boolean;
+    custom_report_separate_tab?: boolean;
     geo_radius_surcharge_pct?: number;
   };
   balance?: {
@@ -319,6 +329,7 @@ type CustomerJob = {
   can_cancel: boolean;
   can_find_more_suppliers: boolean;
   can_start_supplier_search?: boolean;
+  is_custom_batch_report?: boolean;
   exact_product_selection?: PositionSelection | null;
   position_selection?: PositionSelection | null;
   exact_product_positions?: Array<{
@@ -532,6 +543,17 @@ const modeCopy: Record<Scenario, {
     textPlaceholder: "Например:\n1. Кислород газообразный технический, м3\n2. Подшипник 13630, шт\n3. Печь для бани Атмосфера М",
     hint: "ИИ найдёт до 5 реальных поставщиков с актуальными ценами, контактами, ИНН и ссылками на товар. Списание баланса происходит ТОЛЬКО за реально найденные позиции.",
     submit: "Запустить мониторинг цен",
+  },
+  custom_batch_report: {
+    mode: "procurement_report",
+    formSubtitle: "Загрузите таблицу закупок (Excel, CSV, Word), выберите нужные вкладки или вставьте номера извещений через запятую / столбиком.",
+    uploadTitle: "Загрузить таблицу или документацию",
+    uploadText: "Перетащите Excel/CSV/Word-выгрузку закупок или документацию (XLSX, XLS, CSV, DOCX, PDF, ZIP)",
+    multipleFiles: true,
+    sourceLabel: "Номера извещений (через запятую, столбиком) или ссылки на закупки",
+    sourcePlaceholder: "Вставьте один или несколько номеров извещений (через запятую или в столбик из Excel) либо ссылки на закупки",
+    hint: "Если в файле Excel несколько вкладок — система предложит выбрать одну или несколько вкладок. Можно также вставить перечень извещений текстом.",
+    submit: "Запустить пакетный анализ",
   },
 };
 
@@ -1949,6 +1971,12 @@ export function CabinetClient() {
   }
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
   const [quoteItemSearch, setQuoteItemSearch] = useState("");
+  const [batchPreview, setBatchPreview] = useState<BatchRegistryPreviewData | null>(null);
+  const [batchSelectedIds, setBatchSelectedIds] = useState<string[]>([]);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchModalError, setBatchModalError] = useState("");
+  const [batchReaderData, setBatchReaderData] = useState<BatchReportReaderData | null>(null);
+  const [batchReaderActiveIdx, setBatchReaderActiveIdx] = useState(0);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [showTariffs, setShowTariffs] = useState(false);
@@ -2132,7 +2160,19 @@ export function CabinetClient() {
 
   const csrf = session?.csrf_token || "";
   const authenticated = Boolean(session?.authenticated && session.user);
-  const selectedCopy = modeCopy[scenario];
+  const hasSeparateCustomBatchTab = Boolean(
+    session?.user?.allowed_custom_batch_report && session?.user?.custom_report_separate_tab
+  );
+  const isInlineCustomBatchMode = Boolean(
+    session?.user?.allowed_custom_batch_report && !session?.user?.custom_report_separate_tab
+  );
+  const isCustomBatchScenario =
+    scenario === "custom_batch_report" ||
+    (scenario === "procurement_report" && isInlineCustomBatchMode);
+  const selectedCopy =
+    scenario === "procurement_report" && isInlineCustomBatchMode
+      ? modeCopy.custom_batch_report
+      : modeCopy[scenario];
   const selectedMode = selectedCopy.mode;
   const acceptsSources = Boolean(selectedCopy.sourceLabel);
   const acceptsText = Boolean(selectedCopy.textLabel);
@@ -2421,10 +2461,187 @@ export function CabinetClient() {
     fileInputRef.current.files = transfer.files;
   }
 
+  async function inspectBatchRegistryFile(file: File, requestedSheets?: string[]) {
+    if (!csrf) return;
+    setBatchBusy(true);
+    setBatchModalError("");
+    setError("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      if (requestedSheets && requestedSheets.length > 0) {
+        form.append("sheet_names_json", JSON.stringify(requestedSheets));
+      }
+      const res = await fetch("/api/customer/jobs/batch-report/preview", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "x-csrf-token": csrf },
+        body: form,
+      });
+      const data = await readJson<{
+        is_registry: boolean;
+        filename: string;
+        sheet_name: string;
+        sheet_names: string[];
+        selected_sheets?: string[];
+        requires_sheet_selection?: boolean;
+        items: BatchRegistryPreviewItem[];
+        unit_price_kopeks: number;
+        unit_price_rub: number;
+        available_kopeks: number;
+        available_rub: number;
+      }>(res, { isUpload: true });
+      if (data.requires_sheet_selection && data.sheet_names.length > 1) {
+        setBatchPreview({
+          ...data,
+          file,
+          items: [],
+          requires_sheet_selection: true,
+        });
+        setBatchSelectedIds([]);
+      } else if (data.is_registry && data.items.length > 0) {
+        setBatchPreview({
+          ...data,
+          file,
+          requires_sheet_selection: false,
+        });
+        setBatchSelectedIds(data.items.slice(0, 60).map((it) => it.id));
+        clearSelectedFiles();
+      } else if (requestedSheets && requestedSheets.length > 0) {
+        setBatchModalError(
+          "В выбранных вкладках не найдено таблицы с номерами извещений. Выберите другие вкладки или закройте окно, чтобы запустить файл как документацию одной закупки."
+        );
+      }
+    } catch (err) {
+      if (requestedSheets && requestedSheets.length > 0) {
+        setBatchModalError(err instanceof Error ? err.message : String(err));
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  async function inspectBatchTextNotices(rawText: string) {
+    if (!csrf) return null;
+    const form = new FormData();
+    form.append("text_notices", rawText);
+    const res = await fetch("/api/customer/jobs/batch-report/preview", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "x-csrf-token": csrf },
+      body: form,
+    });
+    return await readJson<{
+      is_registry: boolean;
+      filename: string;
+      sheet_name: string;
+      sheet_names: string[];
+      selected_sheets?: string[];
+      requires_sheet_selection?: boolean;
+      items: BatchRegistryPreviewItem[];
+      unit_price_kopeks: number;
+      unit_price_rub: number;
+      available_kopeks: number;
+      available_rub: number;
+    }>(res);
+  }
+
+  async function confirmBatchReportLaunch() {
+    if (!csrf || !batchPreview) return;
+    const chosenSet = new Set(batchSelectedIds);
+    const selectedItems = batchPreview.items.filter((it) => chosenSet.has(it.id));
+    if (selectedItems.length === 0) {
+      setBatchModalError("Отметьте хотя бы одну закупку галочкой.");
+      return;
+    }
+    setBatchBusy(true);
+    setBatchModalError("");
+    try {
+      const res = await fetch("/api/customer/jobs/batch-report/create", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "x-csrf-token": csrf },
+        body: JSON.stringify({
+          filename: batchPreview.filename,
+          items: selectedItems,
+        }),
+      });
+      await readJson(res);
+      trackGoal("task_started", { module: "procurement_report" });
+      setBatchPreview(null);
+      setBatchSelectedIds([]);
+      setSourceUrls("");
+      clearSelectedFiles();
+      setMessage(`Запущен пакетный анализ: ${selectedItems.length} зак.`);
+      setJobsPage(1);
+      await loadSession({ background: true });
+      await loadJobs(1).catch(() => {});
+    } catch (err) {
+      setBatchModalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  async function openBatchReportReader(jobId: string, resetIndex = true) {
+    try {
+      const res = await fetch(`/api/customer/jobs/${jobId}/batch-report`, CUSTOMER_JOB_FETCH_OPTIONS);
+      const data = await readJson<BatchReportReaderData>(res);
+      setBatchReaderData(data);
+      if (resetIndex) {
+        const firstReady = data.items.findIndex((it) => it.status === "completed");
+        setBatchReaderActiveIdx(firstReady >= 0 ? firstReady : 0);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function downloadBatchItemDocx(jobId: string, itemIndex: number, fallbackFilename: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/customer/jobs/${jobId}/batch-report/download/${itemIndex}`,
+        CUSTOMER_JOB_FETCH_OPTIONS
+      );
+      if (!response.ok) throw new Error(parseError(await response.text()));
+      downloadBlob(
+        await response.blob(),
+        filenameFromResponse(response, fallbackFilename || "Анализ_закупки.docx")
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!batchReaderData) return;
+    if (batchReaderData.status !== "pending" && batchReaderData.status !== "running") return;
+    const timer = window.setInterval(() => {
+      void openBatchReportReader(batchReaderData.job_id, false);
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [batchReaderData?.job_id, batchReaderData?.status]);
+
   function filesFromList(fileList: FileList | null) {
     const files = Array.from(fileList || []);
     const limited = selectedCopy.multipleFiles ? files.slice(0, maxFiles) : files.slice(0, 1);
     syncSelectedFiles(limited);
+    const shouldAutoInspectBatch =
+      Boolean(session?.user?.allowed_custom_batch_report) &&
+      (scenario === "custom_batch_report" ||
+        (scenario === "procurement_report" && !session?.user?.custom_report_separate_tab));
+    if (shouldAutoInspectBatch && limited.length === 1) {
+      const ext = limited[0].name.toLowerCase();
+      if (ext.endsWith(".xlsx") || ext.endsWith(".xls") || ext.endsWith(".csv") || ext.endsWith(".docx")) {
+        void inspectBatchRegistryFile(limited[0]);
+      }
+    }
   }
 
   function clearSelectedFiles() {
@@ -2467,7 +2684,7 @@ export function CabinetClient() {
 
     const params = new URLSearchParams(window.location.search);
     const scenarioParam = params.get("scenario") || params.get("mode");
-    const validScenarios: Scenario[] = ["procurement_report", "supplier_search", "analysis_and_suppliers", "exact_product", "price_monitoring"];
+    const validScenarios: Scenario[] = ["procurement_report", "supplier_search", "analysis_and_suppliers", "exact_product", "price_monitoring", "custom_batch_report"];
     if (scenarioParam === "doc_analysis") {
       setScenario("procurement_report");
       if (typeof window !== "undefined") {
@@ -3023,6 +3240,9 @@ export function CabinetClient() {
       setJobsPage(1);
       setJobsTotal(0);
       setFindMoreConfirmJob(null);
+      setBatchPreview(null);
+      setBatchSelectedIds([]);
+      setBatchReaderData(null);
       // Clean all user data from memory/form inputs
       setName("");
       setEmail("");
@@ -3145,6 +3365,12 @@ export function CabinetClient() {
     }
   }
 
+  useEffect(() => {
+    if (session?.authenticated && scenario === "custom_batch_report" && !hasSeparateCustomBatchTab) {
+      setScenario("procurement_report");
+    }
+  }, [session?.authenticated, scenario, hasSeparateCustomBatchTab]);
+
   async function submitJob(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!csrf) return;
@@ -3154,8 +3380,9 @@ export function CabinetClient() {
       setError("Подтвердите email по ссылке из письма, чтобы запускать следующие задачи.");
       return;
     }
+    const useCustomBatchFlow = isCustomBatchScenario;
     const filesSig = selectedFiles.map((file) => `${file.name}:${file.size}:${file.lastModified}`).join("|");
-    const submitSignature = `${selectedMode}::${supplierSearchPolicy}::${geoScope}::${multiItemMode}::${acceptsText ? text.trim() : ""}::${acceptsSources ? sourceUrls.trim() : ""}::${filesSig}`;
+    const submitSignature = `${selectedMode}::${useCustomBatchFlow ? "custom" : "std"}::${supplierSearchPolicy}::${geoScope}::${multiItemMode}::${acceptsText ? text.trim() : ""}::${acceptsSources ? sourceUrls.trim() : ""}::${filesSig}`;
     const now = Date.now();
     if (lastJobSubmitRef.current.signature === submitSignature && now - lastJobSubmitRef.current.ts < 4000) {
       return;
@@ -3166,9 +3393,34 @@ export function CabinetClient() {
     setError("");
     setMessage("");
     try {
+      if (useCustomBatchFlow && selectedFiles.length === 0 && sourceUrls.trim()) {
+        const previewData = await inspectBatchTextNotices(sourceUrls);
+        if (previewData && previewData.is_registry && previewData.items.length > 0) {
+          const singleItem = previewData.items.length === 1 ? previewData.items[0] : null;
+          const isSingleStandardEis = Boolean(
+            singleItem &&
+            (/^\d{11}$|^\d{19}$/.test(singleItem.notice_number.trim()) || singleItem.eis_url)
+          );
+          if (previewData.items.length > 1 || !isSingleStandardEis) {
+            setBatchPreview({
+              ...previewData,
+              file: null,
+              requires_sheet_selection: false,
+            });
+            setBatchSelectedIds(previewData.items.slice(0, 60).map((it) => it.id));
+            setBatchModalError("");
+            lastJobSubmitRef.current = { signature: "", ts: 0 };
+            return;
+          }
+        }
+      }
+
       const form = new FormData();
       form.append("mode", selectedMode);
       form.append("supplier_search_policy", selectedMode === "procurement_report" ? "normal" : supplierSearchPolicy);
+      if (useCustomBatchFlow && selectedMode === "procurement_report") {
+        form.append("use_custom_prompt", "true");
+      }
       const isMinpromPolicy = supplierSearchPolicy === "minprom_registry_only" || supplierSearchPolicy === "minprom_registry_priority";
       const effectiveGeoScope = isMinpromPolicy ? "ru" : geoScope;
       form.append("geo_scope", effectiveGeoScope);
@@ -4623,16 +4875,39 @@ export function CabinetClient() {
             <p className="text-[11px] text-slate-500">{selectedCopy.formSubtitle}</p>
           </div>
 
-          <div className={`grid grid-cols-1 ${session?.user?.allowed_price_monitoring ? "sm:grid-cols-5" : "sm:grid-cols-4"} gap-1.5 p-1 bg-slate-100 border border-slate-200/90 rounded-xl`} role="tablist" aria-label="Тип задачи">
-            {(session?.user?.allowed_price_monitoring ? [
+          {(() => {
+            const visibleTabs: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
               ...scenarioOptions,
-              {
-                id: "price_monitoring" as const,
-                label: "Мониторинг цен",
-                description: "поиск цен и поставщиков по спецификации Excel",
-                icon: Coins,
-              },
-            ] : scenarioOptions).map((item) => {
+              ...(session?.user?.allowed_price_monitoring
+                ? [
+                    {
+                      id: "price_monitoring" as const,
+                      label: "Мониторинг цен",
+                      description: "поиск цен и поставщиков по спецификации Excel",
+                      icon: Coins,
+                    },
+                  ]
+                : []),
+              ...(hasSeparateCustomBatchTab
+                ? [
+                    {
+                      id: "custom_batch_report" as const,
+                      label: "Пакетный анализ",
+                      description: "выгрузки Excel/CSV/Word и список извещений",
+                      icon: FileSpreadsheet,
+                    },
+                  ]
+                : []),
+            ];
+            const colsClass =
+              visibleTabs.length >= 6
+                ? "sm:grid-cols-3 lg:grid-cols-6"
+                : visibleTabs.length === 5
+                ? "sm:grid-cols-5"
+                : "sm:grid-cols-4";
+            return (
+          <div className={`grid grid-cols-1 ${colsClass} gap-1.5 p-1 bg-slate-100 border border-slate-200/90 rounded-xl`} role="tablist" aria-label="Тип задачи">
+            {visibleTabs.map((item) => {
               const ItemIcon = item.icon;
               const isSelected = scenario === item.id;
               return (
@@ -4680,6 +4955,8 @@ export function CabinetClient() {
               );
             })}
           </div>
+            );
+          })()}
 
           {scenario === "supplier_search" || scenario === "analysis_and_suppliers" ? (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-1.5 bg-slate-50 border border-slate-200/90 rounded-xl">
@@ -4796,7 +5073,7 @@ export function CabinetClient() {
                 className="hidden"
                 type="file"
                 multiple
-                accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.zip,.rar,.7z"
+                accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.zip,.rar,.7z"
                 onChange={handleFileInput}
               />
               <div className="flex items-center gap-2.5 min-w-0">
@@ -4814,6 +5091,13 @@ export function CabinetClient() {
                 </span>
               </div>
             </div>
+
+            {batchBusy && !batchPreview ? (
+              <div className="p-2.5 bg-teal-50 border border-teal-200 rounded-xl text-xs font-bold text-teal-900 flex items-center gap-2">
+                <Loader2 size={15} className="animate-spin text-teal-700 shrink-0" />
+                <span>Читаем перечень закупок из файла и подготавливаем окно выбора...</span>
+              </div>
+            ) : null}
 
             {selectedFiles.length ? (
               <div className="p-2.5 bg-slate-50 border border-slate-200/80 rounded-xl space-y-2">
@@ -4835,18 +5119,24 @@ export function CabinetClient() {
                     </li>
                   ))}
                 </ul>
-                <div className="pt-1 flex flex-wrap items-center justify-between gap-2.5">
-                  <button
-                    className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs sm:text-sm font-extrabold rounded-xl shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed border border-teal-500/40"
-                    type="submit"
-                    disabled={busy}
-                  >
-                    {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Sparkles size={15} className="text-emerald-200" aria-hidden="true" />}
-                    <span>{selectedCopy.submit} ({selectedFiles.length} {declensionFiles(selectedFiles.length)})</span>
-                    <ArrowRight size={15} className="ml-0.5" aria-hidden="true" />
-                  </button>
-                  <span className="text-[11px] text-slate-500 font-medium">Готово к анализу и проверке</span>
-                </div>
+                {!acceptsSources && !acceptsText ? (
+                  <div className="pt-1 flex flex-wrap items-center justify-between gap-2.5">
+                    <button
+                      className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs sm:text-sm font-extrabold rounded-xl shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed border border-teal-500/40"
+                      type="submit"
+                      disabled={busy}
+                    >
+                      {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Sparkles size={15} className="text-emerald-200" aria-hidden="true" />}
+                      <span>{selectedCopy.submit} ({selectedFiles.length} {declensionFiles(selectedFiles.length)})</span>
+                      <ArrowRight size={15} className="ml-0.5" aria-hidden="true" />
+                    </button>
+                    <span className="text-[11px] text-slate-500 font-medium">Готово к анализу и проверке</span>
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-slate-500 font-medium">
+                    Готово к запуску — нажмите «{selectedCopy.submit}» ниже.
+                  </div>
+                )}
               </div>
             ) : null}
 
@@ -4896,20 +5186,34 @@ export function CabinetClient() {
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 w-full">
                   <label className="flex flex-col gap-1 text-xs font-bold text-slate-700 flex-1 min-w-0">
                     <span className="text-[11px]">{selectedCopy.sourceLabel}</span>
-                    <input
-                      className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs h-[38px]"
-                      value={sourceUrls}
-                      onChange={(event) => setSourceUrls(event.target.value)}
-                      placeholder={selectedCopy.sourcePlaceholder}
-                    />
+                    {isCustomBatchScenario ? (
+                      <textarea
+                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs resize-y min-h-[54px]"
+                        rows={2}
+                        value={sourceUrls}
+                        onChange={(event) => setSourceUrls(event.target.value)}
+                        placeholder={selectedCopy.sourcePlaceholder}
+                      />
+                    ) : (
+                      <input
+                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs h-[38px]"
+                        value={sourceUrls}
+                        onChange={(event) => setSourceUrls(event.target.value)}
+                        placeholder={selectedCopy.sourcePlaceholder}
+                      />
+                    )}
                   </label>
                   <button
-                    className="px-5 h-[38px] bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs font-extrabold rounded-lg shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 whitespace-nowrap border border-teal-500/40"
+                    className={`px-5 ${isCustomBatchScenario ? "h-[54px]" : "h-[38px]"} bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs font-extrabold rounded-lg shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 whitespace-nowrap border border-teal-500/40`}
                     type="submit"
                     disabled={busy}
                   >
                     {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
-                    <span>{selectedCopy.submit}</span>
+                    <span>
+                      {selectedFiles.length > 0
+                        ? `${selectedCopy.submit} (${selectedFiles.length} ${declensionFiles(selectedFiles.length)})`
+                        : selectedCopy.submit}
+                    </span>
                   </button>
                 </div>
                 {scenario === "procurement_report" && selectedFiles.length === 0 ? (
@@ -4944,7 +5248,11 @@ export function CabinetClient() {
                   disabled={busy}
                 >
                   {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
-                  <span>{selectedCopy.submit}</span>
+                  <span>
+                    {selectedFiles.length > 0
+                      ? `${selectedCopy.submit} (${selectedFiles.length} ${declensionFiles(selectedFiles.length)})`
+                      : selectedCopy.submit}
+                  </span>
                 </button>
               </div>
             ) : null}
@@ -5365,6 +5673,25 @@ export function CabinetClient() {
                           >
                             <XCircle size={14} className="text-rose-600" aria-hidden="true" />
                             <span>Отменить</span>
+                          </button>
+                        ) : null}
+                        {job.is_custom_batch_report && job.status !== "cancelled" && job.status !== "failed" ? (
+                          <button
+                            type="button"
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-colors shadow-xs cursor-pointer shrink-0 border ${
+                              isUnviewed
+                                ? "bg-teal-600 hover:bg-teal-700 text-white border-teal-600 ring-2 ring-teal-400/80 font-bold"
+                                : "bg-teal-600 hover:bg-teal-700 text-white border-teal-600 font-bold"
+                            }`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              markJobAsViewed(job.id);
+                              void openBatchReportReader(job.id, true);
+                            }}
+                            disabled={busy}
+                          >
+                            <Eye size={14} aria-hidden="true" />
+                            <span>{job.status === "running" || job.status === "pending" ? "Смотреть ход разбора" : "Открыть ответы ИИ"}</span>
                           </button>
                         ) : null}
                         {job.result_files?.length ? (
@@ -5790,6 +6117,68 @@ export function CabinetClient() {
           </div>
         ) : null}
       </section>
+
+      {batchPreview && batchPreview.requires_sheet_selection && batchPreview.sheet_names.length > 1 ? (
+        <BatchSheetSelectorModal
+          preview={batchPreview}
+          busy={batchBusy}
+          error={batchModalError}
+          onConfirmSheets={(chosenSheets) => {
+            if (batchPreview.file) {
+              void inspectBatchRegistryFile(batchPreview.file, chosenSheets);
+            }
+          }}
+          onClose={() => {
+            if (!batchBusy) {
+              setBatchPreview(null);
+              setBatchSelectedIds([]);
+              setBatchModalError("");
+            }
+          }}
+        />
+      ) : batchPreview ? (
+        <BatchSelectionModal
+          preview={batchPreview}
+          selectedIds={batchSelectedIds}
+          busy={batchBusy}
+          error={batchModalError}
+          onToggleItem={(id) =>
+            setBatchSelectedIds((prev) =>
+              prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+            )
+          }
+          onSelectAllVisible={(visibleIds) =>
+            setBatchSelectedIds((prev) => Array.from(new Set([...prev, ...visibleIds])).slice(0, 60))
+          }
+          onClearAll={() => setBatchSelectedIds([])}
+          onOpenSheetSelector={() => {
+            setBatchModalError("");
+            setBatchPreview((prev) => (prev ? { ...prev, requires_sheet_selection: true } : null));
+          }}
+          onConfirm={() => void confirmBatchReportLaunch()}
+          onClose={() => {
+            if (!batchBusy) {
+              setBatchPreview(null);
+              setBatchSelectedIds([]);
+              setBatchModalError("");
+            }
+          }}
+        />
+      ) : null}
+
+      {batchReaderData ? (
+        <BatchResultsReaderModal
+          data={batchReaderData}
+          activeIndex={batchReaderActiveIdx}
+          onSelectIndex={setBatchReaderActiveIdx}
+          onDownloadItemDocx={(jobId, idx, fname) => void downloadBatchItemDocx(jobId, idx, fname)}
+          onDownloadAllZip={(jobId) => {
+            const found = jobs.find((j) => j.id === jobId);
+            if (found) void downloadJob(found);
+          }}
+          onClose={() => setBatchReaderData(null)}
+        />
+      ) : null}
 
       {quoteRequestModal ? (
         <div
@@ -7778,6 +8167,19 @@ export function CabinetClient() {
                       <span>Выбрать «Мониторинг цен»</span>
                       <ArrowRight size={14} />
                     </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {helpModalTab === "custom_batch_report" ? (
+                <div className="space-y-4">
+                  <div className="p-4 bg-teal-50/70 border border-teal-200/80 rounded-2xl">
+                    <h3 className="font-extrabold text-teal-950 text-sm mb-1">
+                      Пакетный анализ закупок по индивидуальному шаблону
+                    </h3>
+                    <p className="text-teal-900 text-xs leading-relaxed">
+                      Позволяет загружать выгрузки тендеров в Excel, CSV и Word (с выбором одной или нескольких вкладок) или вставлять номера извещений через запятую / столбиком. Для каждой закупки система готовит отдельный отчёт в Word с кликабельными ссылками и списывает оплату только за фактически найденную документацию.
+                    </p>
                   </div>
                 </div>
               ) : null}

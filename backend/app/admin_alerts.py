@@ -3,7 +3,7 @@ System and infrastructure alert dispatcher for TenderLex administrator/owner.
 
 Notifies the owner via Telegram (AIPOISK_OWNER_TELEGRAM_ID) when critical services fail:
 - Yandex Search API (balance depleted, 403 PermissionDenied, quota errors)
-- AI providers (401 invalid key, 402 payment required, 429 quota exhaustion)
+- AI providers (final authorization, billing, rate limit or availability failures)
 - DaData / external data sources
 - Unhandled customer job failures caused by external service outages
 
@@ -27,6 +27,17 @@ import jwt
 from .config import config
 
 logger = logging.getLogger(__name__)
+
+AI_PROVIDER_ERROR_REASONS = {
+    401: "Провайдер отклонил авторизацию",
+    402: "Провайдер требует оплату",
+    403: "Провайдер отказал в доступе",
+    429: "Провайдер ограничил запросы к модели (лимит запросов или квота)",
+    500: "Внутренняя ошибка провайдера",
+    502: "Шлюз провайдера получил ошибку от вышестоящего сервиса",
+    503: "Модель или шлюз провайдера временно недоступны",
+    504: "Шлюз провайдера не дождался ответа",
+}
 
 DEFAULT_YANDEX_BILLING_ACCOUNT_ID = "dn2i7mph462v2u6ff922"
 DEFAULT_YANDEX_FOLDER_ID = "b1gmnp1u8urslual8ht8"
@@ -376,37 +387,30 @@ def notify_ai_provider_error(
     provider: str,
     model: str,
     status_code: int,
-    error_text: str,
     *,
-    job_info: str = "",
+    attempted_models: list[str] | None = None,
 ) -> None:
-    """Triggered when an AI provider returns 401, 402, 429, or quota error."""
-    is_critical = status_code in (401, 402) or "quota" in error_text.lower() or "insufficient" in error_text.lower()
-    if not is_critical and status_code != 429:
+    """Report the last provider failure when the AI call cannot recover."""
+    reason = AI_PROVIDER_ERROR_REASONS.get(status_code)
+    if reason is None:
         return
 
-    title = "🚨 <b>TenderLex: Сбой AI-провайдера!</b>" if is_critical else "⚠️ <b>TenderLex: Лимит запросов к AI!</b>"
-    reason = "Закончился баланс / Неверный API-ключ" if is_critical else "Превышен лимит запросов (Rate Limit)"
-
     msg_lines = [
-        title,
+        "🚨 <b>TenderLex: Сбой AI-провайдера!</b>",
         "",
         f"<b>Провайдер:</b> <code>{html.escape(provider)}</code> ({html.escape(model)})",
-        f"<b>Причина:</b> {reason}",
-        f"<b>Статус:</b> <code>HTTP {status_code}</code>",
+        f"<b>Последний отказ провайдера:</b> {reason}",
+        f"<b>Код:</b> <code>HTTP {status_code}</code>",
+        "Запрос завершился без результата после доступных попыток.",
     ]
-    if error_text:
-        safe_err = html.escape(error_text[:250].replace("\n", " "))
-        msg_lines.append(f"<b>Ошибка:</b> <code>{safe_err}</code>")
-    if job_info:
-        msg_lines.append(f"<b>Задача:</b> {html.escape(job_info)}")
-
-    msg_lines.append("")
-    msg_lines.append(f"👉 <i>Проверьте баланс и API-ключ провайдера {html.escape(provider)} в настройках админки.</i>")
+    if attempted_models and len(attempted_models) > 1:
+        msg_lines.append(f"<b>Выбранные модели:</b> {html.escape(', '.join(attempted_models))}")
 
     full_text = "\n".join(msg_lines)
-    key = f"ai_provider_fail_{provider}"
-    record_incident(f"ai_{provider}", f"Сбой {provider} ({reason})", error_text[:200], level="critical" if is_critical else "warning")
+    key = f"ai_provider_fail_{provider}_{status_code}"
+    record_incident(
+        f"ai_{provider}", f"Сбой {provider} ({reason})", f"{model} · HTTP {status_code}", level="critical",
+    )
     dispatch_telegram_admin_alert(full_text, deduplicate_key=key, throttle_seconds=1800)
 
 

@@ -106,7 +106,7 @@ def _ensure_postgres_number_triggers(connection) -> None:
         )
 
 
-SCHEMA_MIGRATION_VERSION = "2026-11-16-deep-review-v2"
+SCHEMA_MIGRATION_VERSION = "2026-11-18-custom-batch-report-v2"
 _PG_INIT_ADVISORY_LOCK_KEY = 73948102
 
 
@@ -291,6 +291,13 @@ def _ensure_schema() -> None:
             "allowed_exact_product": "BOOLEAN DEFAULT 1",
             "allowed_price_monitoring": "BOOLEAN DEFAULT 0",
             "allowed_geo_radius": "BOOLEAN DEFAULT 0",
+            "allowed_custom_batch_report": (
+                "BOOLEAN DEFAULT FALSE" if connection.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"
+            ),
+            "custom_report_separate_tab": (
+                "BOOLEAN DEFAULT FALSE" if connection.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"
+            ),
+            "custom_report_prompt": "TEXT DEFAULT ''",
             "monthly_supplier_search_limit": "INTEGER DEFAULT 100",
             "monthly_procurement_report_limit": "INTEGER DEFAULT 100",
             "money_balance_kopeks": "INTEGER DEFAULT 0",

@@ -35,6 +35,11 @@
 - **NEVER use caching for task execution, supplier searches, product checks, company verifications, market data, or AI reasoning.**
 - Every client task MUST be executed fresh in real-time. Client specifications, technical requirements, and market conditions change dynamically (companies open/close, product lines discontinue, websites change). Reusing cached results is strictly forbidden because it yields outdated information.
 
+## Customer Result Guarantee & Fallback Safety
+
+- **Customer delivery always comes first:** Every active customer job MUST receive a completed, useful result. Never disable—or recommend disabling—a working fallback path (including paid Yandex synchronous search fallback `v2/web/search` or reserve AI/search providers) if doing so creates any risk that a customer receives no answer or a failed job.
+- **Check incident & git history before proposing critical changes:** Before proposing to turn off, throttle, or replace any search/AI fallback or quota mechanism, inspect `git log` and recent failed jobs to verify whether disabling it previously caused customer-visible failures (for example, `b854770` restored Yandex sync fallback after disabling it left customers without results on 429 bursts). Cheaper/free channels may only be added **ahead of** a proven paid safety net, never by removing the last-resort fallback.
+
 ## Public Site Contract
 
 - Tariffs and contacts are managed from the existing admin panel and exposed to the site through a safe public backend endpoint.

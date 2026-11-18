@@ -843,8 +843,14 @@ def _is_registry_fallback_report(rows: list[dict]) -> bool:
 
 def _format_supplier_location(row: dict) -> str:
     city = str(row.get("supplier_city") or row.get("city") or "").strip()
+    if not city:
+        raw_region = str(row.get("region") or "").strip()
+        if raw_region and raw_region.lower() not in {"россия", "рф"}:
+            city = re.sub(r"^(?:г\.?|город)\s+", "", raw_region, flags=re.I).strip()
     if city:
-        city = city[0].upper() + city[1:]
+        city = re.sub(r"^(?:г\.?|город)\s+", "", city, flags=re.I).strip()
+        if city:
+            city = city[0].upper() + city[1:]
     country = str(row.get("supplier_country") or row.get("country") or "").strip()
     dist = row.get("supplier_distance_km")
     within = row.get("supplier_distance_within_radius")
@@ -903,6 +909,13 @@ def _supplier_registry_note(row: dict) -> str:
         return ""
     match = row.get("minprom_registry_match") if isinstance(row.get("minprom_registry_match"), dict) else {}
     if match.get("matched"):
+        has_phone = bool(str(row.get("phone") or "").strip())
+        has_email = bool(str(row.get("email") or "").strip())
+        if not has_phone and not has_email:
+            inn = re.sub(r"\D+", "", str(match.get("inn") or row.get("inn") or ""))
+            if inn:
+                return f"Прямая запись реестра ГИСП (ИНН {inn}); открытые телефон и email сайта не опубликованы."
+            return "Прямая запись реестра ГИСП; открытые телефон и email сайта не опубликованы."
         # Registry number is already displayed in the dedicated 'Реестр Минпромторга' column
         return ""
     status = str(row.get("minprom_registry_status") or "").strip().lower()
@@ -1122,7 +1135,14 @@ def _write_markdown_docx(
             r.font.bold = True
             r.font.size = Pt(11)
             r.font.color.rgb = dark_emerald
-        elif line.startswith(("- ", "* ", "1. ", "2. ", "3. ", "4. ", "5. ")):
+        elif line.startswith(("- ", "* ")):
+            paragraph = doc.add_paragraph()
+            paragraph.paragraph_format.left_indent = Inches(0.15)
+            paragraph.paragraph_format.line_spacing = 1.1
+            paragraph.paragraph_format.space_before = Pt(1)
+            paragraph.paragraph_format.space_after = Pt(2)
+            _add_markdown_runs(paragraph, f"• {line[2:].strip()}", font_size=Pt(9.5), font_color=text_dark)
+        elif re.match(r"^\d+\.\s+", line):
             paragraph = doc.add_paragraph()
             paragraph.paragraph_format.left_indent = Inches(0.15)
             paragraph.paragraph_format.line_spacing = 1.1
@@ -1234,19 +1254,24 @@ def _add_markdown_table(doc, lines: list[str], index: int) -> int:
             paragraph.paragraph_format.line_spacing = 1.05
             paragraph.paragraph_format.space_before = Pt(2)
             paragraph.paragraph_format.space_after = Pt(2)
-            value = _remove_okpd_codes(row[col_index] if col_index < len(row) else "")
-            _add_markdown_runs(paragraph, value)
-
             if row_index == 0:
+                value = _remove_okpd_codes(row[col_index] if col_index < len(row) else "")
+                _add_markdown_runs(
+                    paragraph,
+                    value,
+                    font_size=Pt(8),
+                    font_color=RGBColor(255, 255, 255),
+                    force_bold=True,
+                )
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                for run in paragraph.runs:
-                    run.bold = True
-                    run.font.size = Pt(8)
-                    run.font.color.rgb = RGBColor(255, 255, 255)
             else:
-                for run in paragraph.runs:
-                    run.font.size = Pt(7.5)
-                    run.font.color.rgb = RGBColor(15, 23, 42)
+                value = _remove_okpd_codes(row[col_index] if col_index < len(row) else "")
+                _add_markdown_runs(
+                    paragraph,
+                    value,
+                    font_size=Pt(7.5),
+                    font_color=RGBColor(15, 23, 42),
+                )
                 if col_index == 0:
                     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
@@ -1305,29 +1330,257 @@ def _apply_table_column_widths(table, widths: list[int] | None) -> None:
                 paragraph.paragraph_format.space_after = 0
 
 
+def _append_docx_hyperlink(
+    paragraph,
+    url: str,
+    label: str,
+    *,
+    font_size=None,
+    bold: bool = False,
+    italic: bool = False,
+    link_color_hex: str = "0563C1",
+) -> None:
+    import docx.opc.constants as opc_constants
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    clean_url = str(url or "").strip()
+    clean_label = clean_xml_compatible(label or clean_url)
+    if not clean_url.startswith(("http://", "https://")):
+        run = paragraph.add_run(clean_label)
+        run.bold = bold
+        run.italic = italic
+        if font_size is not None:
+            run.font.size = font_size
+        return
+
+    part = paragraph.part
+    r_id = part.relate_to(clean_url, opc_constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), r_id)
+
+    new_run = OxmlElement("w:r")
+    r_pr = OxmlElement("w:rPr")
+
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), link_color_hex)
+    r_pr.append(color)
+
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    r_pr.append(underline)
+
+    if bold:
+        r_pr.append(OxmlElement("w:b"))
+    if italic:
+        r_pr.append(OxmlElement("w:i"))
+    if font_size is not None:
+        half_pts = str(int(round(font_size.pt * 2)))
+        sz = OxmlElement("w:sz")
+        sz.set(qn("w:val"), half_pts)
+        r_pr.append(sz)
+        sz_cs = OxmlElement("w:szCs")
+        sz_cs.set(qn("w:val"), half_pts)
+        r_pr.append(sz_cs)
+
+    new_run.append(r_pr)
+    text_el = OxmlElement("w:t")
+    text_el.set(qn("xml:space"), "preserve")
+    text_el.text = clean_label
+    new_run.append(text_el)
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+
+
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+_BARE_URL_RE = re.compile(r"https?://[^\s<>\]\"']+")
+_MD_INLINE_RE = re.compile(r"(`[^`\n]+`|(?<!\*)\*[^*\n]+\*(?!\*))")
+
+
+def _emit_plain_with_breaks(
+    paragraph,
+    text: str,
+    *,
+    font_size=None,
+    font_color=None,
+    bold: bool = False,
+    italic: bool = False,
+) -> None:
+    if not text:
+        return
+    for line_index, segment in enumerate(text.split("\n")):
+        if line_index:
+            paragraph.add_run().add_break()
+        if not segment:
+            continue
+        run = paragraph.add_run(segment)
+        run.bold = bold
+        run.italic = italic
+        if font_size is not None:
+            run.font.size = font_size
+        if font_color is not None:
+            run.font.color.rgb = font_color
+
+
+def _emit_inline_segment(
+    paragraph,
+    text: str,
+    *,
+    font_size=None,
+    font_color=None,
+    bold: bool = False,
+) -> None:
+    if not text:
+        return
+    pos = 0
+    for m in _MD_LINK_RE.finditer(text):
+        if m.start() > pos:
+            _emit_bare_urls_and_styles(
+                paragraph,
+                text[pos : m.start()],
+                font_size=font_size,
+                font_color=font_color,
+                bold=bold,
+            )
+        raw_label = re.sub(r"[*_`]+", "", m.group(1)).strip() or m.group(2)
+        _append_docx_hyperlink(
+            paragraph,
+            m.group(2),
+            raw_label,
+            font_size=font_size,
+            bold=bold,
+        )
+        pos = m.end()
+    if pos < len(text):
+        _emit_bare_urls_and_styles(
+            paragraph,
+            text[pos:],
+            font_size=font_size,
+            font_color=font_color,
+            bold=bold,
+        )
+
+
+def _emit_bare_urls_and_styles(
+    paragraph,
+    text: str,
+    *,
+    font_size=None,
+    font_color=None,
+    bold: bool = False,
+) -> None:
+    pos = 0
+    for m in _BARE_URL_RE.finditer(text):
+        if m.start() > pos:
+            _emit_italic_and_code(
+                paragraph,
+                text[pos : m.start()],
+                font_size=font_size,
+                font_color=font_color,
+                bold=bold,
+            )
+        url = m.group(0)
+        trailing = ""
+        while url and url[-1] in ".,;:!?)":
+            if url[-1] == ")" and url.count("(") >= url.count(")"):
+                break
+            trailing = url[-1] + trailing
+            url = url[:-1]
+        if url.startswith(("http://", "https://")):
+            _append_docx_hyperlink(paragraph, url, url, font_size=font_size, bold=bold)
+        if trailing:
+            _emit_plain_with_breaks(
+                paragraph, trailing, font_size=font_size, font_color=font_color, bold=bold
+            )
+        pos = m.end()
+    if pos < len(text):
+        _emit_italic_and_code(
+            paragraph,
+            text[pos:],
+            font_size=font_size,
+            font_color=font_color,
+            bold=bold,
+        )
+
+
+def _emit_italic_and_code(
+    paragraph,
+    text: str,
+    *,
+    font_size=None,
+    font_color=None,
+    bold: bool = False,
+) -> None:
+    if not text:
+        return
+    parts = _MD_INLINE_RE.split(text)
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("`") and part.endswith("`") and len(part) >= 2:
+            _emit_plain_with_breaks(
+                paragraph,
+                part[1:-1],
+                font_size=font_size,
+                font_color=font_color,
+                bold=bold,
+            )
+        elif part.startswith("*") and part.endswith("*") and len(part) >= 2:
+            _emit_plain_with_breaks(
+                paragraph,
+                part[1:-1],
+                font_size=font_size,
+                font_color=font_color,
+                bold=bold,
+                italic=True,
+            )
+        else:
+            _emit_plain_with_breaks(
+                paragraph,
+                part,
+                font_size=font_size,
+                font_color=font_color,
+                bold=bold,
+            )
+
+
 def _add_markdown_runs(
     paragraph,
     text: str,
     *,
     font_size=None,
     font_color=None,
+    force_bold: bool = False,
 ) -> None:
-    text = clean_xml_compatible(text)
-    parts = re.split(r"(\*\*[^*]+\*\*)", str(text or ""))
-    for part in parts:
-        if not part:
-            continue
-        bold = part.startswith("**") and part.endswith("**")
-        value = part[2:-2] if bold else part
-        for line_index, segment in enumerate(value.split("\n")):
-            if line_index:
-                paragraph.add_run().add_break()
-            run = paragraph.add_run(segment)
-            run.bold = bold
-            if font_size is not None:
-                run.font.size = font_size
-            if font_color is not None:
-                run.font.color.rgb = font_color
+    cleaned = clean_xml_compatible(text)
+    pos = 0
+    for m in _MD_BOLD_RE.finditer(cleaned):
+        if m.start() > pos:
+            _emit_inline_segment(
+                paragraph,
+                cleaned[pos : m.start()],
+                font_size=font_size,
+                font_color=font_color,
+                bold=force_bold,
+            )
+        _emit_inline_segment(
+            paragraph,
+            m.group(1),
+            font_size=font_size,
+            font_color=font_color,
+            bold=True,
+        )
+        pos = m.end()
+    if pos < len(cleaned):
+        _emit_inline_segment(
+            paragraph,
+            cleaned[pos:],
+            font_size=font_size,
+            font_color=font_color,
+            bold=force_bold,
+        )
 
 
 def _remove_okpd_codes(text: str) -> str:

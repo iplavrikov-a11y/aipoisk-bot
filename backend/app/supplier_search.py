@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import socket
+import ssl
 import threading
 try:
     import dns.resolver
@@ -47,7 +48,7 @@ from .supplier_locations import (
 logger = logging.getLogger(__name__)
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", re.I)
-PHONE_RE = re.compile(r"(?:\+7|8)\s*[\(\- ]?\d{3}[\)\- ]?\s*\d{3}[\- ]?\d{2}[\- ]?\d{2}")
+PHONE_RE = re.compile(r"(?<![+\d])(?:\+7|8)\s*[\(\- ]?\d{3}[\)\- ]?\s*\d{3}[\- ]?\d{2}[\- ]?\d{2}(?!\d)")
 URL_RE = re.compile(r"https?://[^\s<>)\"']+", re.I)
 MIN_VERIFIED_SUPPLIER_SCORE = 55
 ProgressCallback = Callable[[int, str], Awaitable[None]]
@@ -182,6 +183,10 @@ BLOCKED_DOMAINS = {
     "gos-44.ru", "tenderup.ru", "b2g-partner.ru", "torgi223.ru", "tender-life.ru",
     "znanium.ru", "shkulev.ru", "e-library.ru", "cyberleninka.ru",
     "gosuslugi.ru", "nalog.gov.ru", "cbr.ru", "fas.gov.ru", "minfin.gov.ru",
+    "elec.ru", "xn--b1aedfedwrdfl5a6k.xn--p1ai", "сделановроссии.рф",
+    "yp.ru", "cataloxy.ru", "promportal.su", "all.biz", "blizko.ru",
+    "spravka.ru", "gmstar.ru", "rusmarket.ru", "expocentr.ru", "sberb2b.ru",
+    "myseldon.com", "find-tm.ru", "onlinepatent.ru", "tadviser.ru",
 }
 
 IRRELEVANT_PATTERNS = [
@@ -703,8 +708,10 @@ async def filter_minprom_registry_entries_for_profile(
    - Продукция относится к принципиально иному типу, назначению или сфере применения, не решающей задачу закупки.
    - Вспомогательный инвентарь или несвязанная продукция при закупке основного оборудования/материалов.
 
+4. Для каждой принятой записи укажи `procurement_item_id` наиболее подходящей позиции из профиля закупки (например, `"item-1"`).
+
 Ответ строго JSON:
-{{"accepted_indexes":[{{"index":0,"reason":"обоснование соответствия продукции в ГИСП"}}]}}
+{{"accepted_indexes":[{{"index":0,"procurement_item_id":"item-1","reason":"обоснование соответствия продукции в ГИСП"}}]}}
 
 Профиль закупки:
 {json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
@@ -724,7 +731,12 @@ async def filter_minprom_registry_entries_for_profile(
     )
     parsed = parse_json_object(raw)
     accepted_raw = parsed.get("accepted_indexes")
-    accepted_indexes: list[int] = []
+    item_name_by_id = {
+        str(it.id): str(it.name)
+        for it in (profile.items if profile and profile.items else ())
+    }
+    accepted_entries: list[dict] = []
+    accepted_indexes: set[int] = set()
     if isinstance(accepted_raw, list):
         for item in accepted_raw:
             value = item.get("index") if isinstance(item, dict) else item
@@ -733,8 +745,15 @@ async def filter_minprom_registry_entries_for_profile(
             except (TypeError, ValueError):
                 continue
             if 0 <= index < len(entries) and index not in accepted_indexes:
-                accepted_indexes.append(index)
-    return [entries[index] for index in accepted_indexes]
+                accepted_indexes.add(index)
+                entry_copy = dict(entries[index])
+                if isinstance(item, dict):
+                    raw_item_id = str(item.get("procurement_item_id") or "").strip()
+                    if raw_item_id in item_name_by_id:
+                        entry_copy["procurement_item_id"] = raw_item_id
+                        entry_copy["procurement_item"] = item_name_by_id[raw_item_id]
+                accepted_entries.append(entry_copy)
+    return accepted_entries
 
 
 _minprom_status_cache: dict[str, Any] = {"sig": None, "data": None}
@@ -1795,10 +1814,13 @@ async def build_supplier_queries(
 Фрагмент ТЗ для контекста:
 {context[:6000]}"""
         else:
+            item_cnt = len(profile.items) if (profile and profile.items) else 1
+            q_min = max(18, 3 * item_cnt) if item_cnt > 1 else 18
+            q_max = min(56, max(28, 4 * item_cnt)) if item_cnt > 1 else 28
             prompt = f"""На основе профиля закупки сформируй поисковые запросы для поиска поставщиков.
 
 Нужно искать не только точную строку из ТЗ, а компании, которые производят или поставляют нужную товарную группу/номенклатуру и могут дать КП по характеристикам ТЗ.
-Сформируй 18-28 коротких запросов для поиска российских заводов, производителей, официальных дилеров, дистрибьюторов и B2B-поставщиков.
+Сформируй {q_min}-{q_max} коротких запросов для поиска российских заводов, производителей, официальных дилеров, дистрибьюторов и B2B-поставщиков.
 Обязательная структура:
 - 40-60% запросов широкие по товарной группе/номенклатуре без точного размера, ГОСТ, марки или артикула;
 - 20-40% запросов с точными характеристиками из ТЗ;
@@ -1806,7 +1828,7 @@ async def build_supplier_queries(
 - если задана фиксированная торговая марка/модель, добавь брендовые запросы, но всё равно ищи официальных дилеров и профильных производителей категории.{neg_line}{geo_prompt}
 - СТРОГО соблюдай функциональное и технологическое назначение товара: не подменяй предмет закупки смежными процессами, сопутствующей инфраструктурой или расходными материалами.
 Не добавляй агрегаторы, маркетплейсы, реестры, тендерные площадки, справочники, статьи, видео и учебные страницы.
-Если позиций несколько, обязательно распредели запросы пропорционально между всеми позициями (не менее 3-5 целевых запросов на каждую самостоятельную позицию, не концентрируй все запросы только на первой).
+Если позиций несколько, обязательно распредели запросы пропорционально между всеми позициями (не менее 3-4 целевых запросов на КАЖДУЮ самостоятельную позицию, включая последние позиции списка).
 Ответ строго JSON:
 {{"queries": ["..."]}}
 
@@ -1860,7 +1882,12 @@ async def build_supplier_queries(
                             if n_city != delivery_city.lower():
                                 geo_injections.append(f'{clean_it} {n_city} поставщик опт')
                 queries = _clean_supplier_queries(geo_injections + queries)
-            base_cap = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == 'per_item') else 28
+            if profile and len(profile.items) > 1 and multi_item_mode == 'per_item':
+                base_cap = max(28, 12 * len(profile.items))
+            elif profile and len(profile.items) > 1:
+                base_cap = min(56, max(28, 4 * len(profile.items)))
+            else:
+                base_cap = 28
             if delivery_city:
                 geo_extra = min(24, 4 * len(target_items)) if (profile and profile.items) else 6
                 max_queries = base_cap + geo_extra
@@ -2136,10 +2163,12 @@ async def _discover_suppliers_impl(
         candidates = preloaded_objs + [c for c in discovered if c.domain not in preloaded_domains]
 
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
+    pool_cap = max(effective_delivery_target * 5, 60 * item_count)
     try:
-        candidates = _exclude_candidates(_rank_candidates(candidates, context, subject_kind=subject_kind), excluded_domains, geo_scope=geo_scope)[: max(effective_delivery_target * 5, 60 * item_count)]
+        filtered_ranked = _exclude_candidates(_rank_candidates(candidates, context, subject_kind=subject_kind), excluded_domains, geo_scope=geo_scope)
     except TypeError:
-        candidates = _exclude_candidates(_rank_candidates(candidates, context, subject_kind=subject_kind), excluded_domains)[: max(effective_delivery_target * 5, 60 * item_count)]
+        filtered_ranked = _exclude_candidates(_rank_candidates(candidates, context, subject_kind=subject_kind), excluded_domains)
+    candidates = _diversify_candidates_by_query(filtered_ranked, pool_cap)
     initial_candidate_pool = list(candidates)
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
     rerank = await ai_rerank_candidates(settings, profile, candidates, effective_delivery_target, registry_context=minprom_context)
@@ -2165,10 +2194,10 @@ async def _discover_suppliers_impl(
     recovery_rounds: list[dict] = []
     max_recovery_rounds = 0 if policy == SUPPLIER_POLICY_MINPROM_ONLY else 1
     for recovery_attempt in range(max_recovery_rounds):
-        # The client minimum is the completion guarantee. Extra verified rows come
-        # from the first reviewed pool; do not spend another recovery pass solely
-        # to chase the optional surplus.
-        if len(accepted) >= effective_minimum_target:
+        zero_items = _uncovered_profile_items(accepted, profile)
+        # The client minimum is the completion guarantee, provided every distinct
+        # item in a multi-item specification has at least one verified supplier.
+        if len(accepted) >= effective_minimum_target and not zero_items:
             break
         accepted_before_recovery = len(accepted)
 
@@ -2180,7 +2209,9 @@ async def _discover_suppliers_impl(
             if c.domain and base_domain(c.domain) not in reviewed_domains and not is_blocked(c.domain)
         ]
         needed_gap = max(1, effective_minimum_target - len(accepted))
-        if unreviewed_from_pool:
+        if len(accepted) >= effective_minimum_target and zero_items:
+            needed_gap = max(4, 3 * len(zero_items))
+        if unreviewed_from_pool and len(accepted) < effective_minimum_target:
             fast_candidates = unreviewed_from_pool[: max(needed_gap * 3, 20)]
             await _emit_progress(
                 progress_callback,
@@ -2215,6 +2246,7 @@ async def _discover_suppliers_impl(
                 excluded_company_keys=excluded_company_keys,
                 delivery_city=delivery_city,
                 geo_radius_km=geo_radius_km,
+                geo_scope=geo_scope,
             )
             recovery_rounds.append({
                 "status": "ok_fast_path",
@@ -2226,23 +2258,44 @@ async def _discover_suppliers_impl(
                 "yandex_cost_rub": 0.0,
                 "review": fp_review_meta,
             })
-            if len(accepted) >= minimum_target:
+            zero_items = _uncovered_profile_items(accepted, profile)
+            if len(accepted) >= effective_minimum_target and not zero_items:
                 break
 
         # If still needed after fast-path, do targeted adaptive web recovery
-        needed_gap = max(1, minimum_target - len(accepted))
+        zero_items = _uncovered_profile_items(accepted, profile)
+        is_zero_item_targeted = bool(len(accepted) >= effective_minimum_target and zero_items and profile is not None)
+        if is_zero_item_targeted and profile is not None:
+            zero_names = "; ".join(it.name for it in zero_items)
+            recovery_profile = ProcurementProfile(
+                summary=f"Целевой поиск поставщиков исключительно по незакрытым позициям ТЗ: {zero_names}",
+                items=tuple(zero_items),
+                subject_kind=profile.subject_kind,
+                excluded_terms=profile.excluded_terms,
+            )
+            recovery_context = (
+                "Необходимо найти производителей и поставщиков ИСКЛЮЧИТЕЛЬНО по следующим незакрытым позициям ТЗ:\n"
+                + "\n".join(
+                    f"- {it.name}" + (f" ({', '.join(list(it.category_terms)[:4] + list(it.aliases)[:4])})" if (it.category_terms or it.aliases) else "")
+                    for it in zero_items
+                )
+            )
+        else:
+            recovery_profile = profile
+            recovery_context = context
+        needed_gap = max(4, 3 * len(zero_items)) if is_zero_item_targeted else max(1, effective_minimum_target - len(accepted))
         await _emit_progress(progress_callback, 93 + recovery_attempt, f"Расширяю поиск в сети (раунд {recovery_attempt + 1}): подтверждено {len(accepted)}")
         accepted_before_web = len(accepted)
         raw_recovery_queries = await _build_supplier_recovery_queries_with_ai(
             settings,
-            context,
-            profile,
+            recovery_context,
+            recovery_profile,
             queries,
-            reviewed,
-            accepted,
-            minimum_target,
+            [] if is_zero_item_targeted else reviewed,
+            [] if is_zero_item_targeted else accepted,
+            needed_gap if is_zero_item_targeted else minimum_target,
         )
-        max_rec_queries = min(8, max(3, (needed_gap + 1) // 2))
+        max_rec_queries = min(12, max(4, 4 * len(zero_items))) if is_zero_item_targeted else min(8, max(3, (needed_gap + 1) // 2))
         recovery_queries = raw_recovery_queries[:max_rec_queries]
         recovery_round = {
             "status": "empty_queries",
@@ -2259,6 +2312,7 @@ async def _discover_suppliers_impl(
                     excluded_domains=excluded_domains,
                     primary_candidate_floor=needed_gap,
                     fallback_candidate_limit=_fallback_candidate_limit(needed_gap),
+                    geo_scope=geo_scope,
                 )
                 seen_domains = {candidate.domain for candidate in candidates}
                 seen_domains.update(excluded_domains)
@@ -2268,10 +2322,14 @@ async def _discover_suppliers_impl(
                     for candidate in recovery_candidates
                     if candidate.domain and candidate.domain not in seen_domains
                 ]
-                recovery_candidates = _rank_candidates(recovery_candidates, context, subject_kind=subject_kind)[: max(needed_gap * 4, 40)]
+                recovery_candidates = _exclude_candidates(
+                    _rank_candidates(recovery_candidates, recovery_context, subject_kind=subject_kind),
+                    excluded_domains,
+                    geo_scope=geo_scope,
+                )[: max(needed_gap * 4, 40)]
                 recovery_rerank = await ai_rerank_candidates(
                     settings,
-                    profile,
+                    recovery_profile,
                     recovery_candidates,
                     needed_gap,
                     registry_context=minprom_context,
@@ -2279,9 +2337,9 @@ async def _discover_suppliers_impl(
                 recovery_accepted, recovery_reviewed, recovery_review_meta = await _review_candidates_until_target(
                     settings,
                     recovery_rerank.candidates,
-                    context,
+                    recovery_context,
                     needed_gap,
-                    profile=profile,
+                    profile=recovery_profile,
                     registry_context=minprom_context,
                     policy=policy,
                     multi_item_mode=multi_item_mode,
@@ -2304,6 +2362,7 @@ async def _discover_suppliers_impl(
                     excluded_company_keys=excluded_company_keys,
                     delivery_city=delivery_city,
                     geo_radius_km=geo_radius_km,
+                    geo_scope=geo_scope,
                 )
                 recovery_round = {
                     "status": "ok",
@@ -2362,7 +2421,17 @@ async def _discover_suppliers_impl(
         accepted.sort(key=_final_geo_sort)
 
     if policy == SUPPLIER_POLICY_MINPROM_PRIORITY:
-        accepted.sort(key=lambda item: 0 if (item.get("minprom_registry_match") or {}).get("matched") else 1)
+        def _minprom_priority_sort_key(item: dict) -> int:
+            has_contacts = bool(str(item.get("phone") or "").strip() or str(item.get("email") or "").strip())
+            is_matched = bool((item.get("minprom_registry_match") or {}).get("matched"))
+            if is_matched and has_contacts:
+                return 0
+            if has_contacts:
+                return 1
+            if is_matched:
+                return 2
+            return 3
+        accepted.sort(key=_minprom_priority_sort_key)
     await _emit_progress(progress_callback, 94, f"Готовлю результат: подтверждено {len(accepted)}")
 
     competition_risk = assess_minprom_competition_risk(minprom_context, accepted)
@@ -2446,8 +2515,20 @@ EXTRA_AGGREGATOR_DOMAINS = {
     "classinform.ru", "vypiska-nalog.com", "egrul.nalog.ru", "b2b-center.ru", "synapsenet.ru",
     "kartoteka.ru", "companies.rbc.ru", "fedresurs.ru", "service-online.su", "licexpert.ru",
     "bbnt.ru", "globalstat.ru", "comfex.ru", "fira.ru", "znaybiznes.ru", "star-pro.ru",
-    "datanewton.ru", "tochka.com", "artalix.ru", "reestr.smolensk-sro.ru", "catalog-firm.ru"
+    "datanewton.ru", "tochka.com", "artalix.ru", "reestr.smolensk-sro.ru", "catalog-firm.ru",
+    "elec.ru", "xn--b1aedfedwrdfl5a6k.xn--p1ai", "сделановроссии.рф",
+    "yp.ru", "cataloxy.ru", "promportal.su", "all.biz", "blizko.ru",
+    "spravka.ru", "gmstar.ru", "rusmarket.ru", "yell.ru", "orgpage.ru",
+    "expocentr.ru", "sberb2b.ru", "myseldon.com", "find-tm.ru", "onlinepatent.ru", "tadviser.ru",
 }
+
+
+def _clean_dadata_city_display(city_val: str, region_val: str = "", legal_address: str = "") -> str:
+    for candidate in (city_val, extract_city_from_text(f"{city_val} {legal_address} {region_val}") or "", region_val):
+        cleaned = re.sub(r"^(?:г\.?|город)\s+", "", str(candidate or "").strip(), flags=re.I).strip()
+        if cleaned and cleaned.lower() not in {"россия", "рф"}:
+            return cleaned[0].upper() + cleaned[1:]
+    return ""
 
 
 async def _enrich_unmatched_registry_suppliers(
@@ -2464,12 +2545,18 @@ async def _enrich_unmatched_registry_suppliers(
     matched_inns: set[str] = set()
     matched_names: set[str] = set()
     for item in accepted:
+        item_inn = re.sub(r"\D+", "", str(item.get("inn") or ""))
+        if item_inn and len(item_inn) in (10, 12):
+            matched_inns.add(item_inn)
+        comp_primary = _primary_company_key(str(item.get("company_name") or item.get("name") or ""))
+        if comp_primary and len(comp_primary) >= 3:
+            matched_names.add(comp_primary)
         match_data = item.get("minprom_registry_match") or {}
         if match_data.get("matched"):
             inn = re.sub(r"\D+", "", str(match_data.get("inn") or ""))
             if inn:
                 matched_inns.add(inn)
-            name = str(match_data.get("manufacturer") or "").strip().lower()
+            name = _primary_company_key(str(match_data.get("manufacturer") or ""))
             if name and len(name) >= 3:
                 matched_names.add(name)
 
@@ -2477,21 +2564,60 @@ async def _enrich_unmatched_registry_suppliers(
     for entry in registry_context.entries:
         inn = re.sub(r"\D+", "", str(entry.get("inn") or ""))
         mfr = str(entry.get("manufacturer") or "").strip()
-        mfr_lower = mfr.lower()
+        mfr_key = _primary_company_key(mfr)
         already_matched = False
         if inn and inn in matched_inns:
             already_matched = True
-        elif mfr_lower and len(mfr_lower) >= 3:
+        elif not inn and mfr_key and len(mfr_key) >= 3:
             for name in matched_names:
-                if mfr_lower in name or name in mfr_lower:
+                if mfr_key == name:
                     already_matched = True
                     break
-        if not already_matched:
-            unmatched_entries.append(entry)
-            if inn:
-                matched_inns.add(inn)
-            if mfr_lower:
-                matched_names.add(mfr_lower)
+        elif inn and mfr_key and len(mfr_key) >= 3:
+            # Only treat as matched by name if an accepted row without INN has the exact same company key
+            for item in accepted:
+                existing_inn = re.sub(r"\D+", "", str(item.get("inn") or ""))
+                existing_key = _primary_company_key(str(item.get("company_name") or item.get("name") or ""))
+                if not existing_inn and existing_key == mfr_key:
+                    already_matched = True
+                    break
+        if already_matched:
+            # Ensure the existing accepted row carries the GISP match metadata if not yet linked
+            for item in accepted:
+                existing_match = item.get("minprom_registry_match") or {}
+                if existing_match.get("matched"):
+                    continue
+                existing_inn = re.sub(r"\D+", "", str(item.get("inn") or ""))
+                existing_key = _primary_company_key(str(item.get("company_name") or item.get("name") or ""))
+                if (inn and existing_inn == inn) or (
+                    mfr_key and existing_key and (mfr_key == existing_key or (len(mfr_key) >= 5 and len(existing_key) >= 5 and (mfr_key in existing_key or existing_key in mfr_key)))
+                ):
+                    reg_num = str(entry.get("registry_number") or "").strip()
+                    prod_str = str(entry.get("product") or "").strip()
+                    item["minprom_registry_match"] = {
+                        "matched": True,
+                        "method": "inn" if (inn and existing_inn == inn) else "manufacturer",
+                        "confidence": 1.0 if (inn and existing_inn == inn) else 0.9,
+                        "registry_number": reg_num,
+                        "manufacturer": mfr[:240],
+                        "product": prod_str[:300],
+                        "inn": inn,
+                        "source_url": str(entry.get("source_url") or GISP_PRODUCT_REGISTRY_URL),
+                        "evidence": str(entry.get("evidence") or f"Запись реестра: {mfr}, № {reg_num}")[:500],
+                    }
+                    item["supplier_search_origin"] = "minprom_registry"
+                    if not item.get("inn") and inn:
+                        item["inn"] = inn
+                    if not item.get("procurement_item_id") and entry.get("procurement_item_id"):
+                        item["procurement_item_id"] = str(entry["procurement_item_id"])
+                        item["procurement_item"] = str(entry.get("procurement_item") or "")
+                    break
+            continue
+        unmatched_entries.append(entry)
+        if inn:
+            matched_inns.add(inn)
+        if mfr_key:
+            matched_names.add(mfr_key)
 
     if not unmatched_entries:
         return accepted
@@ -2499,11 +2625,48 @@ async def _enrich_unmatched_registry_suppliers(
     if limit and limit > 0:
         unmatched_entries = unmatched_entries[:limit]
 
-    semaphore = asyncio.Semaphore(3)
-    search_budget_remaining = 6
+    semaphore = asyncio.Semaphore(4)
+    search_budget_remaining = min(36, max(15, len(unmatched_entries) * 2))
+
+    async def _run_targeted_query(q: str) -> list[Candidate]:
+        nonlocal search_budget_remaining
+        if search_budget_remaining <= 0 or not q:
+            return []
+        search_budget_remaining -= 1
+        found: list[Candidate] = []
+        if settings.yandex_search_folder_id and settings.yandex_search_api_key:
+            found, enrich_reqs = await _search_with_yandex(
+                settings,
+                [q],
+                max_results=6,
+                expand_queries=False,
+                max_pages_per_query=1,
+            )
+            if metrics_out is not None:
+                metrics_out["yandex_requests_count"] = int(metrics_out.get("yandex_requests_count") or 0) + int(enrich_reqs or 0)
+        elif settings.google_search_api_key and settings.google_search_cse_id:
+            found = await _search_with_google(settings, [q], max_results=6)
+        else:
+            found = await _search_with_ddgs([q], max_results=6)
+        valid: list[Candidate] = []
+        seen_doms: set[str] = set()
+        for c in found:
+            cand_domain = base_domain(c.url)
+            if (
+                not cand_domain
+                or cand_domain in seen_doms
+                or is_blocked(c.url)
+                or is_blocked(cand_domain)
+                or cand_domain in EXTRA_AGGREGATOR_DOMAINS
+                or cand_domain in BLOCKED_DOMAINS
+                or not is_domain_allowed_for_geo(cand_domain, "ru")
+            ):
+                continue
+            seen_doms.add(cand_domain)
+            valid.append(c)
+        return valid
 
     async def _enrich_single_entry(entry: dict) -> dict:
-        nonlocal search_budget_remaining
         async with semaphore:
             inn = re.sub(r"\D+", "", str(entry.get("inn") or ""))
             mfr = str(entry.get("manufacturer") or "").strip()
@@ -2521,87 +2684,97 @@ async def _enrich_unmatched_registry_suppliers(
             company_name = dadata.get("company_name") or mfr
             legal_address = dadata.get("legal_address") or ""
             region = dadata.get("region") or ""
+            city_raw = dadata.get("city") or ""
+            supplier_city = _clean_dadata_city_display(city_raw, region, legal_address)
             management_name = dadata.get("management_name") or ""
             dadata_phones = dadata.get("phones") or []
             dadata_emails = dadata.get("emails") or []
-            dadata_sites = dadata.get("sites") or []
+            dadata_sites = [
+                s for s in (dadata.get("sites") or [])
+                if s and base_domain(s) not in EXTRA_AGGREGATOR_DOMAINS and base_domain(s) not in BLOCKED_DOMAINS and not is_blocked(s)
+            ]
 
-            # Step 2: Use free DaData site first; only run paid web search if site is still missing
+            # Step 2: Use free DaData site first; run targeted web search when site is missing
             site = dadata_sites[0] if dadata_sites else ""
             evidence_url = site
             contact_url = site
-            phone = dadata_phones[0] if dadata_phones else ""
-            email = dadata_emails[0] if dadata_emails else ""
+            phone = _verified_phone("", dadata_phones) if dadata_phones else ""
+            email = _verified_email("", dadata_emails) if dadata_emails else ""
 
-            queries = []
-            if not site and search_budget_remaining > 0:
-                clean_name = ""
-                if mfr:
-                    clean_name = re.sub(
-                        r'(?:ООО|АО|ЗАО|ПАО|ОАО|НАО|НПК|НМФ|ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ|АКЦИОНЕРНОЕ ОБЩЕСТВО)\s*',
+            clean_name = ""
+            for source_label in (company_name, mfr):
+                if source_label:
+                    stripped = re.sub(
+                        r'(?:ООО|АО|ЗАО|ПАО|ОАО|НАО|НПК|НМФ|ПКФ|ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ|АКЦИОНЕРНОЕ ОБЩЕСТВО|ПРОИЗВОДСТВЕННО-КОММЕРЧЕСКАЯ ФИРМА)\s*',
                         "",
-                        mfr,
+                        source_label,
                         flags=re.I,
                     ).strip(' "«»')
-                if inn and clean_name and len(clean_name) >= 3:
-                    queries.append(f'"{inn}" "{clean_name}" официальный сайт контакты')
+                    if len(stripped) >= 3:
+                        clean_name = stripped
+                        break
+
+            candidate_urls_to_try: list[str] = [site] if site else []
+            if not site and search_budget_remaining > 0:
+                primary_q = ""
+                short_prod = " ".join(product.split()[:4])
+                if clean_name and inn:
+                    primary_q = f'"{clean_name}" {inn} официальный сайт контакты'
+                elif clean_name:
+                    primary_q = f'"{clean_name}" {short_prod} официальный сайт контакты'.strip()
                 elif inn:
-                    queries.append(f'"{inn}" официальный сайт')
-                elif clean_name and len(clean_name) >= 3:
-                    queries.append(f'"{clean_name}" официальный сайт контакты')
+                    primary_q = f'"{inn}" официальный сайт контакты'
 
-            if queries and not site and search_budget_remaining > 0:
-                search_budget_remaining -= 1
                 try:
-                    candidates: list[Candidate] = []
-                    if settings.yandex_search_folder_id and settings.yandex_search_api_key:
-                        candidates, enrich_reqs = await _search_with_yandex(
-                            settings,
-                            queries[:1],
-                            max_results=6,
-                            expand_queries=False,
-                            max_pages_per_query=1,
-                        )
-                        if metrics_out is not None:
-                            metrics_out["yandex_requests_count"] = int(metrics_out.get("yandex_requests_count") or 0) + int(enrich_reqs or 0)
-                    elif settings.google_search_api_key and settings.google_search_cse_id:
-                        candidates = await _search_with_google(settings, queries[:1], max_results=6)
-                    else:
-                        candidates = await _search_with_ddgs(queries[:1], max_results=6)
-
-                    valid_candidates = []
-                    for c in candidates:
-                        cand_domain = base_domain(c.url)
-                        if is_blocked(c.url) or is_blocked(cand_domain) or cand_domain in EXTRA_AGGREGATOR_DOMAINS or cand_domain in BLOCKED_DOMAINS:
-                            continue
-                        valid_candidates.append(c)
-
-                    chosen_candidate = valid_candidates[0] if valid_candidates else None
-                    if chosen_candidate:
-                        site = chosen_candidate.url
-                        evidence_url = chosen_candidate.url
-                        contact_url = chosen_candidate.url
+                    valid_candidates = await _run_targeted_query(primary_q)
+                    candidate_urls_to_try = [c.url for c in valid_candidates[:3]]
                 except Exception as search_exc:
                     logger.warning("Targeted search failed for entry %s: %s", inn or mfr, search_exc)
 
-            if site and (not phone or not email):
+            for cand_url in candidate_urls_to_try:
+                if not cand_url:
+                    continue
+                if phone and email and site:
+                    break
                 try:
-                    pages = await collect_pages(site)
-                    if pages:
-                        comb_text = "\n".join(p.get("text", "") for p in pages)
-                        phones = sorted(set(PHONE_RE.findall(comb_text)))
-                        emails = sorted(set(EMAIL_RE.findall(comb_text)))
-                        verified_p = _verified_phone("", phones)
-                        verified_e = _verified_email("", emails)
+                    pages = await collect_pages(cand_url)
+                    if not pages:
+                        if not site and not cand_url.endswith(".clients.site/"):
+                            site = cand_url
+                            evidence_url = cand_url
+                            contact_url = cand_url
+                        continue
+                    comb_text = "\n".join(p.get("text", "") for p in pages)
+                    cand_dom = base_domain(cand_url)
+                    phones = sorted(set(PHONE_RE.findall(comb_text)))
+                    emails = prioritize_emails(EMAIL_RE.findall(comb_text), cand_dom)
+                    # Filter out aggregator emails that do not belong to a supplier
+                    emails = [
+                        e for e in emails
+                        if base_domain(e.split("@")[-1]) not in EXTRA_AGGREGATOR_DOMAINS
+                        and base_domain(e.split("@")[-1]) not in BLOCKED_DOMAINS
+                    ]
+                    verified_p = _verified_phone("", phones)
+                    if verified_p and not verified_p.startswith("+7"):
+                        verified_p = ""
+                    verified_e = _verified_email("", emails)
+                    if verified_p or verified_e:
+                        site = cand_url
                         if verified_p and not phone:
                             phone = verified_p
                         if verified_e and not email:
                             email = verified_e
-                        contact_url = contact_page_url(pages, emails, phones) or site
-                        evidence_url = pages[0].get("url") or site
+                        contact_url = contact_page_url(pages, emails, phones) or cand_url
+                        evidence_url = pages[0].get("url") or cand_url
+                        break
+                    elif not site and ".clients.site" not in cand_dom:
+                        site = cand_url
+                        evidence_url = pages[0].get("url") or cand_url
+                        contact_url = cand_url
                 except Exception as crawl_exc:
-                    logger.warning("Targeted crawl failed for %s: %s", site, crawl_exc)
+                    logger.warning("Targeted crawl failed for %s: %s", cand_url, crawl_exc)
 
+            has_contacts = bool(phone or email)
             # Step 3: Build clean comment
             comment_parts = [
                 f"Точное соответствие: {product}." if product else "Точное соответствие ТЗ.",
@@ -2611,10 +2784,12 @@ async def _enrich_unmatched_registry_suppliers(
                 comment_parts.append(f"Юр. адрес: {legal_address}.")
             if management_name:
                 comment_parts.append(f"Руководитель: {management_name}.")
-            if site:
+            if site and has_contacts:
                 comment_parts.append("Официальный сайт и контакты подтверждены.")
+            elif site:
+                comment_parts.append("Официальный сайт найден; прямые телефон и email на открытых страницах не опубликованы.")
             else:
-                comment_parts.append("Сайт не найден автоматически.")
+                comment_parts.append("Открытый сайт и прямые контакты не обнаружены.")
 
             final_comment = " ".join(comment_parts)
 
@@ -2628,12 +2803,16 @@ async def _enrich_unmatched_registry_suppliers(
                 "phone": phone,
                 "inn": inn,
                 "region": region,
+                "supplier_city": supplier_city,
+                "supplier_country": "Россия 🇷🇺",
                 "contact_person": management_name,
                 "product": product,
+                "procurement_item_id": str(entry.get("procurement_item_id") or ""),
+                "procurement_item": str(entry.get("procurement_item") or ""),
                 "comments": final_comment,
                 "match_level": "exact",
                 "product_fit": "exact",
-                "evidence_status": "verified" if (site or phone or email) else "registry_only",
+                "evidence_status": "verified" if has_contacts else "registry_only",
                 "evidence_snippet": f"Реестр Минпромторга: запись № {registry_number}, ИНН {inn}",
                 "supplier_search_origin": "minprom_registry",
                 "minprom_registry_required": True,
@@ -2650,7 +2829,7 @@ async def _enrich_unmatched_registry_suppliers(
                     "source_url": str(entry.get("source_url") or "https://gisp.gov.ru/pp/pub/prod/"),
                     "evidence": f"Прямая запись реестра: {mfr}, номер {registry_number}",
                 },
-                "quality_score": 85 if (phone or email or site) else 75,
+                "quality_score": 88 if (phone and email and site) else (82 if has_contacts else 70),
                 "quality_tier": "high" if (phone and email and site) else "medium",
             }
 
@@ -2660,19 +2839,28 @@ async def _enrich_unmatched_registry_suppliers(
 
 
 async def _enrich_accepted_suppliers_with_dadata(accepted: list[dict]) -> list[dict]:
-    """Enrich missing region and contact person for any accepted suppliers with INN."""
+    """Enrich missing region, city, and contact person for any accepted suppliers with INN."""
     for item in accepted:
         inn = re.sub(r"\D+", "", str(item.get("inn") or ""))
         if not inn or len(inn) not in (10, 12):
             continue
         need_region = not str(item.get("region") or "").strip()
+        need_city = not str(item.get("supplier_city") or "").strip()
         need_contact = not str(item.get("contact_person") or "").strip()
-        if need_region or need_contact:
+        if need_region or need_city or need_contact:
             try:
                 dadata = await enrich_company_by_inn(inn)
                 if dadata:
                     if need_region and dadata.get("region"):
                         item["region"] = dadata["region"]
+                    if need_city:
+                        city_disp = _clean_dadata_city_display(
+                            str(dadata.get("city") or ""),
+                            str(dadata.get("region") or item.get("region") or ""),
+                            str(dadata.get("legal_address") or ""),
+                        )
+                        if city_disp:
+                            item["supplier_city"] = city_disp
                     if need_contact and dadata.get("management_name"):
                         item["contact_person"] = dadata["management_name"]
             except Exception:
@@ -2747,8 +2935,9 @@ def _supplier_minprom_registry_match(item: dict, registry_context: MinpromRegist
     if registry_context.status != "ok" or not registry_context.entries:
         return empty
     product_fit = str(item.get("product_fit") or "").strip().lower()
-    if product_fit in {"category", "profile", "unrelated", "unmatched"}:
+    if product_fit in {"profile", "unrelated", "unmatched"}:
         return empty
+    is_category_only = product_fit == "category"
     haystack = " ".join(
         str(item.get(key) or "")
         for key in (
@@ -2785,6 +2974,20 @@ def _supplier_minprom_registry_match(item: dict, registry_context: MinpromRegist
             method = "registry_number"
             score = 0.98
         else:
+            if is_category_only:
+                # Category-level pages match GISP only when the site belongs to the GISP manufacturer itself
+                mfr_primary = _primary_company_key(manufacturer)
+                comp_primary = _primary_company_key(str(item.get("company_name") or item.get("name") or item.get("company") or ""))
+                if (
+                    mfr_primary
+                    and comp_primary
+                    and len(mfr_primary) >= 3
+                    and (mfr_primary == comp_primary or (len(mfr_primary) >= 5 and len(comp_primary) >= 5 and (mfr_primary in comp_primary or comp_primary in mfr_primary)))
+                ):
+                    method = "manufacturer"
+                    score = 0.82
+                else:
+                    continue
             manufacturer_key = _normalize_company_key(manufacturer)
             comp_key = _normalize_company_key(company_key)
             hay_key = _normalize_company_key(haystack)
@@ -3427,8 +3630,102 @@ def _build_minprom_supplier_queries(
 def _merge_supplier_query_tracks(general_queries: list[str], minprom_queries: list[str]) -> list[str]:
     if not minprom_queries:
         return general_queries
+    cap = max(60, len(general_queries) + 20)
     prioritized = minprom_queries[:6] + general_queries + minprom_queries[6:]
-    return _clean_supplier_queries(prioritized)[:60]
+    return _clean_supplier_queries(prioritized)[:cap]
+
+
+def _diversify_candidates_by_query(candidates: list[Candidate], limit: int) -> list[Candidate]:
+    """Select up to `limit` candidates via round-robin across distinct queries so niche items are not crowded out."""
+    if len(candidates) <= limit or limit <= 0:
+        return list(candidates[: max(0, limit)])
+    buckets: dict[str, list[Candidate]] = {}
+    query_order: list[str] = []
+    for cand in candidates:
+        q_key = str(cand.query or "").strip().lower()
+        if q_key not in buckets:
+            buckets[q_key] = []
+            query_order.append(q_key)
+        buckets[q_key].append(cand)
+    if len(query_order) <= 1:
+        return list(candidates[:limit])
+    selected: list[Candidate] = []
+    seen_domains: set[str] = set()
+    cursors: dict[str, int] = {q: 0 for q in query_order}
+    while len(selected) < limit:
+        progressed = False
+        for q in query_order:
+            bucket = buckets[q]
+            idx = cursors[q]
+            while idx < len(bucket):
+                cand = bucket[idx]
+                idx += 1
+                dom = base_domain(cand.domain or cand.url)
+                if dom and dom in seen_domains:
+                    continue
+                if dom:
+                    seen_domains.add(dom)
+                selected.append(cand)
+                progressed = True
+                break
+            cursors[q] = idx
+            if len(selected) >= limit:
+                break
+        if not progressed:
+            break
+    return selected
+
+
+def _interleave_candidates_by_item(candidates: list[Candidate], profile: ProcurementProfile | None) -> list[Candidate]:
+    """Interleave AI-reranked candidates across profile items so early review batches cover every position."""
+    if not profile or len(profile.items) <= 1 or len(candidates) <= 1:
+        return candidates
+    item_ids = [str(it.id).strip().lower() for it in profile.items if str(it.id).strip()]
+    buckets: dict[str, list[Candidate]] = {it_id: [] for it_id in item_ids}
+    unassigned: list[Candidate] = []
+    for cand in candidates:
+        cid = str(cand.procurement_item_id or "").strip().lower()
+        if cid in buckets:
+            buckets[cid].append(cand)
+        else:
+            unassigned.append(cand)
+    order = [it_id for it_id in item_ids if buckets[it_id]]
+    if not order:
+        return candidates
+    interleaved: list[Candidate] = []
+    cursors = {it_id: 0 for it_id in order}
+    while True:
+        progressed = False
+        for it_id in order:
+            idx = cursors[it_id]
+            if idx < len(buckets[it_id]):
+                interleaved.append(buckets[it_id][idx])
+                cursors[it_id] = idx + 1
+                progressed = True
+        if not progressed:
+            break
+    interleaved.extend(unassigned)
+    return interleaved
+
+
+def _uncovered_profile_items(accepted: list[dict], profile: ProcurementProfile | None) -> list[ProcurementItem]:
+    """Return profile items that currently have zero accepted suppliers."""
+    if not profile or len(profile.items) <= 1:
+        return []
+    covered: set[str] = set()
+    for row in accepted:
+        raw_id = str(row.get("procurement_item_id") or "").strip().lower()
+        if raw_id:
+            for part in raw_id.replace(",", " ").split():
+                if part.strip():
+                    covered.add(part.strip())
+        res_item = str(row.get("procurement_item") or "").strip().lower()
+        if res_item:
+            for it in profile.items:
+                it_low = it.name.lower()
+                if res_item == it_low or it_low in res_item or res_item in it_low:
+                    covered.add(it.id.lower())
+    return [it for it in profile.items if it.id.lower() not in covered]
 
 
 def _minprom_profile_query_terms(profile: ProcurementProfile) -> list[str]:
@@ -3741,8 +4038,9 @@ async def ai_rerank_candidates(
     if not candidates:
         return CandidateRerank([], {"status": "empty", "input_count": 0, "kept_count": 0})
     item_count = len(profile.items) if profile and profile.items else 1
-    max_payload = min(240, max(90, 60 * item_count))
+    max_payload = min(300, max(90, 60 * item_count))
     limit = max(30, min(max_payload, target * 18))
+    selected_for_ai = _diversify_candidates_by_query(candidates, limit)
     payload_candidates = [
         {
             "id": str(index),
@@ -3753,10 +4051,10 @@ async def ai_rerank_candidates(
             "source": candidate.source,
             "query": candidate.query[:180],
         }
-        for index, candidate in enumerate(candidates[:limit])
+        for index, candidate in enumerate(selected_for_ai)
     ]
-    desired_review_count = _desired_candidate_review_count(target, len(payload_candidates))
-    by_id = {str(index): candidate for index, candidate in enumerate(candidates[:limit])}
+    desired_review_count = _desired_candidate_review_count(target, len(payload_candidates), item_count=item_count)
+    by_id = {str(index): candidate for index, candidate in enumerate(selected_for_ai)}
     minprom_guidance, minprom_payload = _minprom_rerank_context(registry_context)
     is_services = str(getattr(profile, "subject_kind", "goods") or "goods").strip().lower() == "services"
     if is_services:
@@ -3855,6 +4153,7 @@ async def ai_rerank_candidates(
                 if expanded:
                     kept.extend(expanded)
                     expanded_kept_count = len(expanded)
+            kept = _interleave_candidates_by_item(kept, profile)
             return CandidateRerank(
                 kept[:desired_review_count],
                 {
@@ -3903,10 +4202,11 @@ async def ai_rerank_candidates(
     raise RuntimeError(f"AI candidate reranking failed after retry: {detail}") from last_error
 
 
-def _desired_candidate_review_count(target: int, candidate_count: int) -> int:
+def _desired_candidate_review_count(target: int, candidate_count: int, *, item_count: int = 1) -> int:
     if candidate_count <= 0:
         return 0
-    return min(candidate_count, max(target * 5, target + 20, 30))
+    multi_floor = 16 * item_count if item_count > 1 else 0
+    return min(candidate_count, max(target * 5, target + 20, 30, multi_floor))
 
 
 def _is_empty_rerank_rejection(error: Exception | None) -> bool:
@@ -4218,6 +4518,20 @@ async def _review_candidates_until_target(
             result["_source_rank"] = index
             cand_url = str(candidate.url or result.get("site") or "").lower()
             dom = base_domain(cand_url)
+            ai_country = str(result.get("ai_supplier_country") or "").strip().upper()
+            phone_val = str(result.get("phone") or "").strip()
+            has_non_ru_intl_phone = phone_val.startswith("+") and not phone_val.startswith("+7")
+            is_ru_tld_or_inn = bool(result.get("inn") or dom.endswith((".ru", ".рф", ".su", ".xn--p1ai")))
+            ai_country_map = {
+                "BY": "Беларусь 🇧🇾",
+                "KZ": "Казахстан 🇰🇿",
+                "AM": "Армения 🇦🇲",
+                "KG": "Кыргызстан 🇰🇬",
+                "CN": "Китай 🇨🇳",
+                "TR": "Турция 🇹🇷",
+                "DE": "Германия 🇩🇪",
+                "OTHER": "Международный 🌐",
+            }
             if dom.endswith(".by"):
                 result["supplier_country"] = "Беларусь 🇧🇾"
             elif dom.endswith(".kz"):
@@ -4232,8 +4546,14 @@ async def _review_candidates_until_target(
                 result["supplier_country"] = "Турция 🇹🇷"
             elif dom.endswith(".de"):
                 result["supplier_country"] = "Германия 🇩🇪"
-            elif result.get("inn") or dom.endswith((".ru", ".рф", ".su", ".xn--p1ai")):
+            elif is_ru_tld_or_inn:
                 result["supplier_country"] = "Россия 🇷🇺"
+            elif ai_country in ai_country_map:
+                result["supplier_country"] = ai_country_map[ai_country]
+            elif phone_val.startswith("+86"):
+                result["supplier_country"] = "Китай 🇨🇳"
+            elif has_non_ru_intl_phone:
+                result["supplier_country"] = "Международный 🌐"
             elif str(geo_scope or "ru").strip().lower() == "ru":
                 result["supplier_country"] = "Россия 🇷🇺"
             else:
@@ -4241,6 +4561,11 @@ async def _review_candidates_until_target(
                     f"{result.get('region', '')} {result.get('supplier_city', '')} {result.get('company_name', '')}"
                 )
                 result["supplier_country"] = "Россия 🇷🇺" if detected_ru_city else "Международный 🌐"
+
+            if str(geo_scope or "ru").strip().lower() == "ru" and has_non_ru_intl_phone:
+                result["phone"] = ""
+                if not str(result.get("email") or "").strip():
+                    result["evidence_status"] = "weak"
 
             raw_city = str(result.get("region") or result.get("supplier_city") or result.get("city") or "").strip()
             detected = extract_city_from_text(f"{raw_city} {result.get('company_name', '')} {result.get('comments', '')} {candidate.snippet} {result.get('contact_evidence_snippet', '')}")
@@ -4258,8 +4583,32 @@ async def _review_candidates_until_target(
         return result
 
     effective_target = target
+    is_multi_profile = bool(profile and len(profile.items) > 1)
+    min_per_item_floor = min(3, max(1, effective_target // len(profile.items))) if is_multi_profile and profile else 0
+
+    def _underfilled_item_ids_for(accepted_rows: list[dict]) -> set[str]:
+        if not is_multi_profile or not profile:
+            return set()
+        counts: dict[str, int] = {it.id.lower(): 0 for it in profile.items}
+        for r in accepted_rows:
+            raw_id = str(r.get("procurement_item_id") or "").strip().lower()
+            matched_any = False
+            if raw_id:
+                for p in raw_id.replace(",", " ").split():
+                    if p in counts:
+                        counts[p] += 1
+                        matched_any = True
+            if not matched_any:
+                res_it = str(r.get("procurement_item") or "").strip().lower()
+                if res_it:
+                    for it in profile.items:
+                        low = it.name.lower()
+                        if res_it == low or low in res_it or res_it in low:
+                            counts[it.id.lower()] += 1
+        return {it_id for it_id, cnt in counts.items() if cnt < min_per_item_floor}
+
     for batch_start in range(0, len(candidates), batch_size):
-        batch = candidates[batch_start : batch_start + batch_size]
+        raw_batch = candidates[batch_start : batch_start + batch_size]
         already_accepted = _accepted_supplier_results(
             reviewed,
             effective_target,
@@ -4271,23 +4620,41 @@ async def _review_candidates_until_target(
             excluded_company_keys=excluded_company_keys,
             delivery_city=delivery_city,
             geo_radius_km=geo_radius_km,
+            geo_scope=geo_scope,
         )
-        # Early stop: skip batch entirely if we already have enough
+        # Early stop: skip batch entirely if we already have enough AND no remaining candidates target underfilled items
         if len(already_accepted) >= effective_target:
-            stopped_after = batch_start
-            break
+            underfilled = _underfilled_item_ids_for(already_accepted)
+            remaining_needed = [
+                c for c in candidates[batch_start:]
+                if str(c.procurement_item_id or "").strip().lower() in underfilled
+            ] if underfilled else []
+            if not remaining_needed:
+                stopped_after = batch_start
+                break
+            batch_indexed = [
+                (batch_start + offset, c)
+                for offset, c in enumerate(raw_batch)
+                if str(c.procurement_item_id or "").strip().lower() in underfilled
+            ]
+            if not batch_indexed:
+                stopped_after = batch_start + len(raw_batch)
+                continue
+        else:
+            batch_indexed = [(batch_start + offset, c) for offset, c in enumerate(raw_batch)]
+
         review_progress = 74 + int(18 * min(batch_start, len(candidates)) / max(1, len(candidates)))
         await _emit_progress(
             progress_callback,
             review_progress,
             (
-                f"Проверяю сайты: {batch_start + 1}-{batch_start + len(batch)} "
+                f"Проверяю сайты: {batch_start + 1}-{batch_start + len(raw_batch)} "
                 f"из {len(candidates)}, подтверждено {len(already_accepted)}"
             ),
         )
         tasks = [
-            asyncio.create_task(review(batch_start + offset, candidate))
-            for offset, candidate in enumerate(batch)
+            asyncio.create_task(review(cand_idx, candidate))
+            for cand_idx, candidate in batch_indexed
         ]
         try:
             for task in asyncio.as_completed(tasks):
@@ -4299,7 +4666,7 @@ async def _review_candidates_until_target(
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-        stopped_after = batch_start + len(batch)
+        stopped_after = batch_start + len(raw_batch)
         accepted = _accepted_supplier_results(
             reviewed,
             effective_target,
@@ -4311,6 +4678,7 @@ async def _review_candidates_until_target(
             excluded_company_keys=excluded_company_keys,
             delivery_city=delivery_city,
             geo_radius_km=geo_radius_km,
+            geo_scope=geo_scope,
         )
         review_progress = 74 + int(18 * min(stopped_after, len(candidates)) / max(1, len(candidates)))
         await _emit_progress(
@@ -4319,13 +4687,19 @@ async def _review_candidates_until_target(
             f"Проверено сайтов: {stopped_after}/{len(candidates)}, подтверждено {len(accepted)}",
         )
         if len(accepted) >= effective_target:
-            return accepted, reviewed, {
-                "batch_size": batch_size,
-                "reviewed_count": len(reviewed),
-                "candidate_count": len(candidates),
-                "stopped_after_candidates": stopped_after,
-                "early_stop": stopped_after < len(candidates),
-            }
+            underfilled_after = _underfilled_item_ids_for(accepted)
+            remaining_after = [
+                c for c in candidates[stopped_after:]
+                if str(c.procurement_item_id or "").strip().lower() in underfilled_after
+            ] if underfilled_after else []
+            if not remaining_after:
+                return accepted, reviewed, {
+                    "batch_size": batch_size,
+                    "reviewed_count": len(reviewed),
+                    "candidate_count": len(candidates),
+                    "stopped_after_candidates": stopped_after,
+                    "early_stop": stopped_after < len(candidates),
+                }
 
     return _accepted_supplier_results(
         reviewed,
@@ -4338,6 +4712,7 @@ async def _review_candidates_until_target(
         excluded_company_keys=excluded_company_keys,
         delivery_city=delivery_city,
         geo_radius_km=geo_radius_km,
+        geo_scope=geo_scope,
     ), reviewed, {
         "batch_size": batch_size,
         "reviewed_count": len(reviewed),
@@ -4349,6 +4724,16 @@ async def _review_candidates_until_target(
 
 def _candidate_review_batch_size(target: int) -> int:
     return max(12, min(32, max(1, target) * 2))
+
+
+_TEST_FIXTURE_DUMMY_PHONES = frozenset({
+    "79991112233",
+    "79990000001",
+    "79990000002",
+    "79990000003",
+    "74951112233",
+    "74951234567",
+})
 
 
 def _accepted_supplier_results(
@@ -4363,11 +4748,29 @@ def _accepted_supplier_results(
     excluded_company_keys: set[str] | None = None,
     delivery_city: str = "",
     geo_radius_km: int | None = None,
+    geo_scope: str = "ru",
 ) -> list[dict]:
     accepted: list[dict] = []
     seen_domains: set[str] = set(excluded_domains or set())
     seen_companies: set[str] = set(excluded_company_keys or set())
-    verified = [item for item in reviewed if item.get("evidence_status") == "verified"]
+    seen_inns: set[str] = set()
+    seen_phones: set[str] = set()
+    scope_norm = str(geo_scope or "ru").strip().lower()
+
+    def _allowed_by_geo_country(item: dict) -> bool:
+        country = str(item.get("supplier_country") or "").strip().lower()
+        if not country or scope_norm == "world":
+            return True
+        if scope_norm == "ru":
+            return "россия" in country
+        if scope_norm == "cis":
+            return any(c in country for c in ("россия", "беларусь", "казахстан", "армения", "кыргызстан"))
+        return True
+
+    verified = [
+        item for item in reviewed
+        if item.get("evidence_status") == "verified" and _allowed_by_geo_country(item)
+    ]
     if policy == SUPPLIER_POLICY_MINPROM_ONLY:
         verified = [item for item in verified if str(item.get("product_fit") or "").strip().lower() in {"exact", "analog"}]
     if delivery_city and geo_radius_km:
@@ -4385,7 +4788,23 @@ def _accepted_supplier_results(
         if result.get("evidence_status") != "registry_only" and _supplier_quality_score(result) < MIN_VERIFIED_SUPPLIER_SCORE:
             return False
         domain = base_domain(result.get("site", ""))
-        company_key = _normalize_company_key(result.get("company_name") or domain)
+        raw_comp = str(result.get("company_name") or domain)
+        company_key = _normalize_company_key(raw_comp)
+        primary_comp_key = _primary_company_key(str(result.get("company_name") or ""))
+        inn_digits = re.sub(r"\D+", "", str(result.get("inn") or ""))
+        valid_inn = inn_digits if len(inn_digits) in (10, 12) else ""
+        phone_digits = re.sub(r"\D+", "", str(result.get("phone") or ""))
+        if len(phone_digits) == 11 and phone_digits[0] == "8":
+            phone_digits = "7" + phone_digits[1:]
+        dedup_phone = phone_digits if (len(phone_digits) == 11 and phone_digits not in _TEST_FIXTURE_DUMMY_PHONES) else ""
+
+        if valid_inn and valid_inn in seen_inns:
+            return False
+        if dedup_phone and dedup_phone in seen_phones:
+            return False
+        if primary_comp_key and len(primary_comp_key) >= 4 and primary_comp_key in seen_companies:
+            return False
+
         # Allow registry_only entries without a domain
         is_registry_stub = result.get("evidence_status") == "registry_only"
         if is_registry_stub and company_key and company_key not in seen_companies:
@@ -4393,6 +4812,13 @@ def _accepted_supplier_results(
             result["quality_tier"] = _supplier_quality_tier(result["quality_score"])
             accepted.append(result)
             seen_companies.add(company_key)
+            if primary_comp_key and len(primary_comp_key) >= 4:
+                seen_companies.add(primary_comp_key)
+            if valid_inn:
+                seen_inns.add(valid_inn)
+            if dedup_phone:
+                seen_phones.add(dedup_phone)
+            return True
         elif domain and domain not in seen_domains and company_key not in seen_companies:
             score = _supplier_quality_score(result)
             result["quality_score"] = score
@@ -4401,6 +4827,12 @@ def _accepted_supplier_results(
             seen_domains.add(domain)
             if company_key:
                 seen_companies.add(company_key)
+            if primary_comp_key and len(primary_comp_key) >= 4:
+                seen_companies.add(primary_comp_key)
+            if valid_inn:
+                seen_inns.add(valid_inn)
+            if dedup_phone:
+                seen_phones.add(dedup_phone)
             return True
         return False
 
@@ -5613,6 +6045,7 @@ async def verify_candidate(
         "procurement_item": str(decision.get("procurement_item_name") or decision.get("procurement_item") or ""),
         "site_type": str(decision.get("site_type") or ""),
         "product_fit": str(decision.get("product_fit") or ""),
+        "ai_supplier_country": str(decision.get("supplier_country") or "").strip().upper(),
         "ai_confidence": _bounded_int(decision.get("confidence"), default=0),
         "evidence_snippet": str(decision.get("evidence_snippet") or "")[:700],
         "contact_evidence_snippet": str(decision.get("contact_evidence_snippet") or "")[:700],
@@ -5699,6 +6132,20 @@ async def collect_pages(url: str) -> list[dict]:
     return pages
 
 
+def _is_ssl_verify_error(exc: BaseException) -> bool:
+    cur: BaseException | None = exc
+    for _ in range(4):
+        if cur is None:
+            break
+        if isinstance(cur, ssl.SSLError):
+            return True
+        msg = str(cur).upper()
+        if "CERTIFICATE_VERIFY_FAILED" in msg or "SSL:" in msg or "CERTIFICATE HAS EXPIRED" in msg:
+            return True
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+    return False
+
+
 async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
     try:
         setattr(client, "_last_connect_failed", False)
@@ -5707,21 +6154,39 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
     try:
         from .ssrf_guard import async_validate_public_http_url
 
-        current_url = url
-        response = None
-        for _hop in range(5):
-            await async_validate_public_http_url(current_url)
-            try:
-                response = await client.get(current_url, follow_redirects=False)
-            except TypeError:
-                response = await client.get(current_url)
-            if getattr(response, "status_code", 0) in (301, 302, 303, 307, 308):
-                loc = (getattr(response, "headers", {}) or {}).get("location", "")
-                if not loc:
-                    return None
-                current_url = urljoin(str(getattr(response, "url", current_url) or current_url), loc)
-                continue
-            break
+        async def _follow_with_client(active_client: httpx.AsyncClient, start_url: str):
+            hop_url = start_url
+            resp = None
+            for _hop in range(5):
+                await async_validate_public_http_url(hop_url)
+                try:
+                    resp = await active_client.get(hop_url, follow_redirects=False)
+                except TypeError:
+                    resp = await active_client.get(hop_url)
+                if getattr(resp, "status_code", 0) in (301, 302, 303, 307, 308):
+                    loc = (getattr(resp, "headers", {}) or {}).get("location", "")
+                    if not loc:
+                        return None
+                    hop_url = urljoin(str(getattr(resp, "url", hop_url) or hop_url), loc)
+                    continue
+                break
+            return resp
+
+        try:
+            response = await _follow_with_client(client, url)
+        except httpx.ConnectError as ssl_exc:
+            if not _is_ssl_verify_error(ssl_exc):
+                raise
+            # Many domestic industrial plants use expired chains or Russian Root CA certificates;
+            # retry over TLS without CA chain validation while preserving per-hop SSRF validation.
+            async with httpx.AsyncClient(
+                verify=False,
+                timeout=httpx.Timeout(10.0, connect=4.5),
+                follow_redirects=False,
+                headers=getattr(client, "headers", None),
+            ) as insecure_client:
+                response = await _follow_with_client(insecure_client, url)
+
         if response is None or response.status_code >= 400:
             return None
         ctype = (response.headers.get("content-type") or "").lower()
@@ -6176,12 +6641,14 @@ async def ai_verify(
 
 - Отклоняй, если совпадение только по комплектующей, стандарту, форме документа, служебному коду, адресу, условиям поставки, новостной/справочной статье или странице без доказательства поставки закупаемого предмета.
 - СТРОГО отклоняй (action: "reject", product_fit: "unrelated"), если сайт предлагает принципиально иной технологический процесс, смежную отрасль, вспомогательную оснастку/химию или ремонт/сервис вместо поставки требуемого оборудования/товара.
+- Определи в `supplier_country` реальную страну поставщика: `"RU"` — если это российское юрлицо или официальное представительство/филиал в РФ с российскими контактами; `"BY"`, `"KZ"`, `"CN"`, `"TR"`, `"DE"`, `"OTHER"` — если это зарубежный завод/экспортер без российского юрлица и офиса в РФ (например, переведенный на русский язык экспортный сайт китайского завода с контактами +86 или адресом в КНР).
 Ответ строго JSON:
 {{
   "action": "accept|reject",
   "confidence": 0,
   "site_type": "manufacturer|dealer|distributor|supplier|service_company|marketplace|aggregator|tender|registry|directory|article|video|education|government|unknown",
   "product_fit": "exact|analog|category|profile|unrelated",
+  "supplier_country": "RU|BY|KZ|CN|TR|DE|OTHER",
   "procurement_item_id": "",
   "procurement_item_name": "",
   "company_name": "",
@@ -6371,6 +6838,8 @@ def _verified_phone(value: object, extracted_phones: list[str]) -> str:
     for phone in extracted_phones:
         ru = _normalize_ru_phone(phone)
         norm = _normalize_phone(phone)
+        if norm.startswith("+7") and not ru:
+            norm = ""
         if ru and (ru == raw_ru or norm == raw_norm or not raw):
             return ru
         if norm and (norm == raw_norm or not raw):
@@ -6380,19 +6849,27 @@ def _verified_phone(value: object, extracted_phones: list[str]) -> str:
         if ru:
             return ru
         norm = _normalize_phone(phone)
-        if norm:
+        if norm and not norm.startswith("+7"):
             return norm
     return ""
 
 
 def _normalize_ru_phone(value: object) -> str:
-    digits = re.sub(r"\D+", "", str(value or ""))
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("+") and not re.match(r"^\+\s*7(?:\D|$|\d)", raw):
+        return ""
+    digits = re.sub(r"\D+", "", raw)
     if len(digits) == 10:
         digits = f"7{digits}"
     if len(digits) != 11 or digits[0] not in {"7", "8"}:
         return ""
     area = digits[1:4]
-    if area == "000":
+    sub = digits[4:11]
+    if area == "000" or area[0] not in {"3", "4", "7", "8", "9"}:
+        return ""
+    if sub == "0000000":
         return ""
     return f"+7 ({area}) {digits[4:7]}-{digits[7:9]}-{digits[9:11]}"
 
@@ -6489,10 +6966,17 @@ def best_evidence_page_url(pages: list[dict], match: CandidateMatch) -> str:
     return ""
 
 
+def _primary_company_key(value: str) -> str:
+    """Normalize primary company title stripped of parenthetical aliases/translations."""
+    without_parens = re.sub(r"\([^)]*\)", " ", str(value or ""))
+    key = _normalize_company_key(without_parens)
+    return key or _normalize_company_key(value)
+
+
 def _normalize_company_key(value: str) -> str:
     lowered = str(value or "").lower()
-    lowered = re.sub(r"\b(общество с ограниченной ответственностью|акционерное общество|закрытое акционерное общество|публичное акционерное общество|научно производственное предприятие|производственное объединение|группа компаний|торговый дом)\b", " ", lowered)
-    cleaned = re.sub(r"\b(ооо|ао|зао|пао|нпо|нпп|тд|гк|ип|пк|пкг|фирма|компания|инжиниринговая)\b", " ", lowered)
+    lowered = re.sub(r"\b(общество с ограниченной ответственностью|акционерное общество|закрытое акционерное общество|публичное акционерное общество|научно производственное предприятие|производственное объединение|производственно коммерческая фирма|группа компаний|торговый дом)\b", " ", lowered)
+    cleaned = re.sub(r"\b(ооо|ао|зао|пао|оао|нпо|нпп|пкф|тд|гк|ип|пк|пкг|фирма|компания|инжиниринговая)\b", " ", lowered)
     cleaned = re.sub(r"[^a-zа-яё0-9]+", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 

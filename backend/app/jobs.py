@@ -39,11 +39,12 @@ from .billing import (
     effective_job_unit_price_kopeks,
     release_job_kind_reservation,
     release_job_reservation,
+    settle_batch_procurement_report_job,
     expire_stale_confirmations,
 )
 from .config import config
 from .db import SessionLocal
-from .models import BillingTransaction, Job, JobFile, JobSource, SupplierResult, SystemSettings, now_utc
+from .models import BillingTransaction, Client, Job, JobFile, JobSource, SupplierResult, SystemSettings, now_utc
 from .procurement_sources import (
     SOURCE_KIND_PROCUREMENT_URL,
     SOURCE_KIND_TENDERPLAN_NOTICE,
@@ -842,6 +843,11 @@ def _process_job_sync(job_id: str) -> None:
             return
         _check_cancelled(job_id, db=db, job=job)
         settings = get_or_create_settings(db)
+        batch_spec_file = job_dir(job.id) / "input" / "custom_batch_spec.json"
+        if job.mode == MODE_PROCUREMENT_REPORT and batch_spec_file.is_file():
+            stage = "custom_batch_report"
+            _process_custom_batch_procurement_report(db, job, settings, batch_spec_file)
+            return
         stage = "extract_documents"
         _set_job(db, job, status="running", progress=3, message="Начинаю обработку документов")
         parsed: list[tuple[str, str]] = []
@@ -1378,21 +1384,49 @@ def _analysis_report_title(job: Job, subject: str) -> str:
     return f"Анализ документации: {source}" if source else "Анализ документации"
 
 
+_GENERIC_EXACT_SUBJECTS = {
+    "подбор товара и аналогов",
+    "подбор аналогов",
+    "подбор товаров",
+    "подбор товара",
+    "точный товар и аналоги",
+    "technical assignment",
+    "technical_assignment",
+    "спецификация",
+    "спецификация тз",
+    "техническое задание",
+    "тз",
+}
+
+
+def _strip_job_mode_prefixes(value: str) -> str:
+    cleaned = str(value or "").strip()
+    while True:
+        updated = re.sub(
+            r"^(?:\[Админ\]\s*|(?:Подбор товара и аналогов|Подбор аналогов|Подбор товаров|Подбор товара|Анализ закупки|Анализ документации|Анализ\s*\+\s*поиск|ТЗ)\s*:\s*)+",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned
+
+
 def _set_customer_job_title_from_subject(job: Job, subject: str) -> None:
-    item = _short_label(subject)
+    item = _short_label(_strip_job_mode_prefixes(subject))
     if not item:
         return
-    item = re.sub(r"^(?:Подбор товаров|Подбор товара|Анализ закупки|Анализ документации|ТЗ)\s*:\s*", "", item, flags=re.IGNORECASE).strip()
-    if not item:
-        return
+    admin_prefix = "[Админ] " if getattr(job, "is_admin_rerun", False) else ""
     if job.mode == MODE_PROCUREMENT_REPORT:
-        job.title = f"Анализ закупки: {item}"
+        job.title = f"{admin_prefix}Анализ закупки: {item}"
     elif job.mode == MODE_ANALYSIS_AND_SUPPLIERS:
-        job.title = f"Анализ + поиск: {item}"
+        job.title = f"{admin_prefix}Анализ + поиск: {item}"
     elif job.mode == MODE_SUPPLIER_SEARCH:
-        job.title = f"ТЗ: {item}"
+        job.title = f"{admin_prefix}ТЗ: {item}"
     elif job.mode == MODE_EXACT_PRODUCT:
-        job.title = f"Подбор товаров: {item}"
+        job.title = f"{admin_prefix}Подбор товаров: {item}"
 
 
 def _update_customer_job_title_from_ai(job: Job, subject: str) -> None:
@@ -1878,9 +1912,284 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     db.commit()
 
 
+def _write_atomic_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _process_custom_batch_procurement_report(
+    db: Session,
+    job: Job,
+    settings: SystemSettings,
+    spec_file: Path,
+) -> None:
+    from .custom_batch_runner import (
+        CUSTOM_BATCH_RESULTS_FILENAME,
+        execute_custom_batch_items,
+    )
+
+    _check_cancelled(job.id)
+    _populate_job_ai_metadata(job, settings, job.mode)
+    spec = parse_json_dict(spec_file.read_text(encoding="utf-8"))
+    items = [it for it in (spec.get("items") or []) if isinstance(it, dict)]
+    if not items:
+        settle_batch_procurement_report_job(db, job, completed_count=0)
+        _set_job(db, job, status="failed", progress=100, message="Список закупок пуст", error="Список закупок пуст")
+        job.completed_at = now_utc()
+        db.commit()
+        return
+
+    client = db.get(Client, job.client_id) if job.client_id else None
+    custom_prompt = str(getattr(client, "custom_report_prompt", "") or "").strip()
+    if not custom_prompt:
+        custom_prompt = str(spec.get("custom_prompt") or "").strip()
+
+    out_dir = job_dir(job.id) / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results_path = out_dir / CUSTOM_BATCH_RESULTS_FILENAME
+    total = len(items)
+
+    initial_rows = [
+        {
+            "index": idx,
+            "id": str(it.get("id") or f"item-{idx}"),
+            "notice_number": str(it.get("notice_number") or ""),
+            "title": str(it.get("title") or ""),
+            "nmck_raw": str(it.get("nmck_raw") or ""),
+            "publication_date": str(it.get("publication_date") or ""),
+            "deadline_date": str(it.get("deadline_date") or ""),
+            "procurement_type": str(it.get("procurement_type") or ""),
+            "status": "pending",
+            "report_markdown": "",
+            "ai_model": "",
+            "sources": [],
+            "error": "",
+            "docx_filename": "",
+        }
+        for idx, it in enumerate(items)
+    ]
+    _write_atomic_json(
+        results_path,
+        {
+            "is_custom_batch_report": True,
+            "total_count": total,
+            "completed_count": 0,
+            "failed_count": 0,
+            "items": initial_rows,
+        },
+    )
+    _set_job(db, job, status="running", progress=8, message=f"Выгружаю и анализирую закупки: 0 из {total}")
+
+    def _on_item_done(idx: int, item_res: dict, all_rows: list[dict]) -> None:
+        if item_res.get("status") == "completed" and item_res.get("report_markdown"):
+            safe_num = re.sub(r"[^\wА-Яа-яЁё.-]+", "_", str(item_res.get("notice_number") or f"{idx + 1}"))[:28]
+            safe_title = document_parser.sanitize_filename(str(item_res.get("title") or "Закупка"))
+            safe_stem = Path(safe_title).stem[:44].strip(" ._") or "Закупка"
+            docx_name = f"Анализ_{safe_num}_{safe_stem}.docx"
+            docx_path = out_dir / docx_name
+            write_procurement_docx(
+                docx_path,
+                str(item_res["report_markdown"]),
+                title=f"Закупка № {item_res.get('notice_number') or ''} — {item_res.get('title') or ''}".strip(" —"),
+            )
+            item_res["docx_filename"] = docx_name
+        done_cnt = sum(1 for r in all_rows if r.get("status") in {"completed", "failed"})
+        comp_cnt = sum(1 for r in all_rows if r.get("status") == "completed")
+        fail_cnt = sum(1 for r in all_rows if r.get("status") == "failed")
+        _write_atomic_json(
+            results_path,
+            {
+                "is_custom_batch_report": True,
+                "total_count": total,
+                "completed_count": comp_cnt,
+                "failed_count": fail_cnt,
+                "items": all_rows,
+            },
+        )
+        pct = min(95, 10 + int(85 * done_cnt / max(1, total)))
+        _set_job(
+            db,
+            job,
+            status="running",
+            progress=pct,
+            message=f"Готово закупок: {comp_cnt} из {total}" + (f" (пропущено: {fail_cnt})" if fail_cnt else ""),
+        )
+
+    final_rows = asyncio.run(
+        execute_custom_batch_items(
+            settings,
+            custom_prompt=custom_prompt,
+            items=items,
+            on_item_done=_on_item_done,
+            check_cancelled=lambda: _check_cancelled(job.id, db=db, job=job),
+        )
+    )
+    _check_cancelled(job.id, db=db, job=job)
+    completed_rows = [r for r in final_rows if r.get("status") == "completed" and r.get("docx_filename")]
+    completed_count = len(completed_rows)
+    failed_count = total - completed_count
+    _write_atomic_json(
+        results_path,
+        {
+            "is_custom_batch_report": True,
+            "total_count": total,
+            "completed_count": completed_count,
+            "failed_count": failed_count,
+            "items": final_rows,
+        },
+    )
+
+    if completed_count <= 0:
+        settle_batch_procurement_report_job(db, job, completed_count=0)
+        first_err = next((str(r.get("error") or "") for r in final_rows if r.get("error")), "")
+        _set_job(
+            db,
+            job,
+            status="failed",
+            progress=100,
+            message="Не удалось выгрузить документацию по выбранным закупкам",
+            error=first_err or "Документация по выбранным закупкам недоступна",
+        )
+        job.completed_at = now_utc()
+        db.commit()
+        return
+
+    docx_paths = [out_dir / str(r["docx_filename"]) for r in completed_rows if (out_dir / str(r["docx_filename"])).exists()]
+    zip_path = zip_paths(out_dir / f"Пакетный_анализ_{completed_count}_зак.zip", docx_paths)
+    used_model = next((str(r.get("ai_model") or "") for r in completed_rows if r.get("ai_model")), "")
+    if used_model:
+        job.ai_model = used_model
+    output_files = [
+        {
+            "kind": "batch_zip",
+            "label": f"Скачать все ({completed_count} отч.)",
+            "path": str(zip_path),
+        }
+    ]
+    evidence_path = write_evidence(
+        out_dir / "evidence.json",
+        {
+            "mode": job.mode,
+            "is_custom_batch_report": True,
+            "total_count": total,
+            "completed_count": completed_count,
+            "failed_count": failed_count,
+            "output_files": output_files,
+            "ai_used": True,
+            "ai_model": used_model,
+        },
+    )
+    job.result_path = str(zip_path)
+    job.evidence_path = str(evidence_path)
+    job.verified_count = completed_count
+    settle_batch_procurement_report_job(db, job, completed_count=completed_count)
+    summary_msg = (
+        f"Пакетный анализ готов: {completed_count} из {total} закупок"
+        if failed_count > 0
+        else f"Пакетный анализ готов: {completed_count} зак."
+    )
+    _set_job(db, job, status="completed", progress=100, message=summary_msg)
+    job.completed_at = now_utc()
+    db.commit()
+
+
 def _process_procurement_report(db: Session, job: Job, settings, context: str) -> None:
     _check_cancelled(job.id)
     _populate_job_ai_metadata(job, settings, job.mode)
+    client = db.get(Client, job.client_id) if job.client_id else None
+    use_custom_prompt = bool(
+        client
+        and bool(getattr(client, "allowed_custom_batch_report", False))
+        and str(getattr(client, "custom_report_prompt", "") or "").strip()
+        and (
+            not bool(getattr(client, "custom_report_separate_tab", False))
+            or bool(read_dobor_context(job).get("use_custom_prompt"))
+        )
+    )
+    if use_custom_prompt:
+        from .custom_batch_runner import (
+            CUSTOM_BATCH_RESULTS_FILENAME,
+            run_custom_prompt_with_gemini_search,
+        )
+
+        _set_job(db, job, progress=45, message="ИИ готовит анализ по индивидуальному шаблону")
+        custom_res = asyncio.run(
+            run_custom_prompt_with_gemini_search(
+                settings,
+                custom_prompt=str(client.custom_report_prompt),
+                document_context=context,
+                procurement_label=str(job.title or ""),
+            )
+        )
+        _check_cancelled(job.id)
+        out_dir = job_dir(job.id) / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        subject = _subject_from_report_text(custom_res.markdown) or str(job.title or "Анализ закупки")
+        report_title = _analysis_report_title(job, subject)
+        stem = _result_stem(job, subject)
+        docx_path = write_procurement_docx(
+            out_dir / _result_filename("analysis", stem, ".docx"),
+            custom_res.markdown,
+            title=report_title,
+        )
+        notice_val = job.sources[0].value if job.sources else ""
+        _write_atomic_json(
+            out_dir / CUSTOM_BATCH_RESULTS_FILENAME,
+            {
+                "is_custom_batch_report": True,
+                "total_count": 1,
+                "completed_count": 1,
+                "failed_count": 0,
+                "items": [
+                    {
+                        "index": 0,
+                        "id": "single-0",
+                        "notice_number": str(notice_val or ""),
+                        "title": subject,
+                        "nmck_raw": "",
+                        "publication_date": "",
+                        "deadline_date": "",
+                        "procurement_type": "",
+                        "status": "completed",
+                        "report_markdown": custom_res.markdown,
+                        "ai_model": custom_res.model,
+                        "sources": custom_res.sources,
+                        "error": "",
+                        "docx_filename": docx_path.name,
+                    }
+                ],
+            },
+        )
+        evidence_path = write_evidence(
+            out_dir / "evidence.json",
+            {
+                "mode": job.mode,
+                "is_custom_batch_report": True,
+                "total_count": 1,
+                "completed_count": 1,
+                "failed_count": 0,
+                "subject": subject,
+                "sources": _job_sources_evidence(job),
+                "files": _job_files_evidence(job),
+                "output_files": [{"kind": "analysis", "label": "Скачать разбор (.docx)", "path": str(docx_path)}],
+                "ai_used": True,
+                "ai_model": custom_res.model,
+            },
+        )
+        if custom_res.model:
+            job.ai_model = custom_res.model
+        job.result_path = str(docx_path)
+        job.evidence_path = str(evidence_path)
+        job.verified_count = 1
+        _set_customer_job_title_from_subject(job, subject)
+        _set_job(db, job, status="completed", progress=100, message="Анализ документации готов")
+        charge_job_reservation(db, job, note="Результат готов")
+        job.completed_at = now_utc()
+        db.commit()
+        return
+
     _set_job(db, job, progress=45, message="ИИ готовит анализ документации")
     result = asyncio.run(generate_procurement_report(settings, context))
     _check_cancelled(job.id)
@@ -2012,7 +2321,10 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     if not chosen_positions:
         raise ValueError("Выбранные позиции не найдены. Создайте новый подбор.")
     _set_job(db, job, progress=15, message="Интеллектуальный анализ ТЗ и планирование поиска (ИИ)")
-    subject = job.title or "Спецификация ТЗ"
+    initial_clean_title = _strip_job_mode_prefixes(_clean_label(job.title or ""))
+    if initial_clean_title.lower() in _GENERIC_EXACT_SUBJECTS:
+        initial_clean_title = ""
+    subject = initial_clean_title or "Спецификация ТЗ"
 
     async def _progress_callback(progress: int, message: str) -> None:
         _check_cancelled(job.id, db=db, job=job)
@@ -2022,33 +2334,36 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
         job.id, analyze_exact_product(
             settings,
             context,
-            procurement_title=job.title,
+            procurement_title=initial_clean_title,
             progress_callback=_progress_callback,
             selected_positions=chosen_positions,
         )
     ))
     _check_cancelled(job.id, db=db, job=job)
     _set_job(db, job, progress=85, message="Формирую официальный отчёт в формате Word (характеристики и аналоги)")
-    extracted_subj = (
-        report.procurement_title
-        or (report.positions[0].name_in_tz if report.positions else "")
-        or (report.positions[0].identified_model if report.positions else "")
-        or job.title
-        or "Спецификация ТЗ"
-    )
-    clean_subj = _clean_label(extracted_subj)
-    clean_subj = re.sub(r"^(?:Подбор товаров|Подбор товара|Анализ закупки|Анализ документации|ТЗ)\s*:\s*", "", clean_subj, flags=re.IGNORECASE).strip()
-    if not clean_subj or clean_subj.lower() in {"подбор товара и аналогов", "подбор товаров", "точный товар и аналоги"}:
-        clean_subj = _source_title(job) or "Спецификация ТЗ"
-        clean_subj = re.sub(r"^(?:Подбор товаров|Подбор товара|Анализ закупки|Анализ документации|ТЗ)\s*:\s*", "", clean_subj, flags=re.IGNORECASE).strip()
-    subject = clean_subj
+    candidate_subjects = [
+        report.procurement_title,
+        report.positions[0].name_in_tz if report.positions else "",
+        report.positions[0].identified_model if report.positions else "",
+        initial_clean_title,
+        _source_title(job),
+    ]
+    clean_subj = ""
+    for cand_subj in candidate_subjects:
+        candidate_clean = _strip_job_mode_prefixes(_clean_label(cand_subj or ""))
+        if candidate_clean and candidate_clean.lower() not in _GENERIC_EXACT_SUBJECTS:
+            clean_subj = candidate_clean
+            break
+    subject = clean_subj or "Спецификация ТЗ"
+    if not report.procurement_title or _strip_job_mode_prefixes(_clean_label(report.procurement_title)).lower() in _GENERIC_EXACT_SUBJECTS or "[админ]" in report.procurement_title.lower():
+        report.procurement_title = subject
 
     out_dir = job_dir(job.id) / "output"
     stem = _result_stem(job, subject)
     docx_path = write_exact_product_docx(
         out_dir / _result_filename("exact_product", stem, ".docx"),
         report,
-        title=f"Подбор товаров: {subject}" if subject else "Подбор товара, характеристики и аналоги",
+        title=f"Подбор товара и аналогов: {subject}" if subject else "Подбор товара и аналогов",
     )
     output_files = [
         _output_artifact("exact_product", "Подбор товара и аналоги", docx_path, KIND_EXACT_PRODUCT),

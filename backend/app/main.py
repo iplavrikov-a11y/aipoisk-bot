@@ -83,7 +83,9 @@ from .billing import (
     reconcile_stuck_client_reservations,
     release_job_reservation,
     list_tariffs,
+    money_balance_summary,
     recent_billing_transactions,
+    reserve_batch_procurement_report_job,
     reserve_job_units,
     tariff_to_dict,
     transaction_to_dict,
@@ -1910,6 +1912,7 @@ async def customer_create_job_route(
     supplier_search_policy: str = Form(default=SUPPLIER_POLICY_NORMAL),
     multi_item_mode: str = Form(default="balanced"),
     auto_confirm_strategy: bool = Form(default=False),
+    use_custom_prompt: bool = Form(default=False),
     delivery_city: str = Form(default=""),
     geo_radius_km: int | None = Form(default=None),
     geo_scope: str = Form(default="ru"),
@@ -1926,6 +1929,7 @@ async def customer_create_job_route(
         supplier_search_policy=supplier_search_policy,
         multi_item_mode=multi_item_mode,
         auto_confirm_strategy=auto_confirm_strategy,
+        use_custom_prompt=use_custom_prompt,
         delivery_city=delivery_city,
         geo_radius_km=geo_radius_km,
         geo_scope=geo_scope,
@@ -1946,6 +1950,267 @@ def customer_job_detail_api(
 ) -> dict:
     job = _customer_job_or_404(db, job_id, context)
     return customer_job_to_dict(job, include_files=True)
+
+
+@app.post("/api/customer/jobs/batch-report/preview")
+async def customer_batch_report_preview_route(
+    request: Request,
+    file: UploadFile | None = File(default=None),
+    sheet_name: str = Form(default=""),
+    sheet_names_json: str = Form(default=""),
+    text_notices: str = Form(default=""),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    client = context.user.client
+    if not client or not bool(getattr(client, "allowed_custom_batch_report", False)):
+        raise HTTPException(status_code=403, detail="Пакетный режим анализа не активирован для этого аккаунта.")
+    settings = get_or_create_settings(db)
+    from .custom_batch_registry import parse_procurement_registry_file, parse_procurement_text_list
+
+    cleaned_notices = str(text_notices or "").strip()
+    if cleaned_notices:
+        preview = parse_procurement_text_list(cleaned_notices)
+    elif file is not None:
+        raw = await file.read()
+        if len(raw) > 15 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Размер файла превышает 15 МБ.")
+        requested_sheets: list[str] | None = None
+        if str(sheet_names_json or "").strip():
+            try:
+                parsed_sheets = json.loads(sheet_names_json)
+                if isinstance(parsed_sheets, list):
+                    requested_sheets = [str(x) for x in parsed_sheets if isinstance(x, str) and x.strip()]
+            except Exception:
+                requested_sheets = None
+        try:
+            preview = await parse_procurement_registry_file(
+                settings,
+                filename=file.filename or "registry.xlsx",
+                content=raw,
+                requested_sheet=str(sheet_name or "").strip(),
+                requested_sheets=requested_sheets,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        raise HTTPException(status_code=400, detail="Передайте файл или список номеров извещений.")
+
+    unit_price = effective_price_kopeks(db, client, KIND_PROCUREMENT_REPORT)
+    money_info = money_balance_summary(db, client)
+    return {
+        "is_registry": preview.is_registry,
+        "filename": preview.filename,
+        "sheet_name": preview.sheet_name,
+        "sheet_names": preview.sheet_names,
+        "selected_sheets": preview.selected_sheets,
+        "requires_sheet_selection": preview.requires_sheet_selection,
+        "items": preview.items,
+        "unit_price_kopeks": unit_price,
+        "unit_price_rub": round(unit_price / 100, 2),
+        "available_kopeks": money_info["available_kopeks"],
+        "available_rub": money_info["available_rub"],
+    }
+
+
+@app.post("/api/customer/jobs/batch-report/create")
+async def customer_batch_report_create_route(
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    client = context.user.client
+    if not client or not client.is_active:
+        raise HTTPException(status_code=403, detail="Доступ отключён.")
+    if not bool(getattr(client, "allowed_custom_batch_report", False)):
+        raise HTTPException(status_code=403, detail="Пакетный режим анализа не активирован для этого аккаунта.")
+    if not context.user.is_email_verified and not _unverified_user_can_launch_first_job(db, context.user):
+        raise HTTPException(
+            status_code=403,
+            detail="Подтвердите email по ссылке из письма, чтобы продолжить запуск задач.",
+        )
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Некорректный формат запроса.")
+    raw_items = body.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise HTTPException(status_code=400, detail="Выберите хотя бы одну закупку для анализа.")
+    if len(raw_items) > 60:
+        raise HTTPException(status_code=400, detail="За один запуск можно выбрать до 60 закупок.")
+
+    from .procurement_sources import normalize_source_url
+
+    clean_items: list[dict] = []
+    for idx, it in enumerate(raw_items):
+        if not isinstance(it, dict):
+            continue
+        num = str(it.get("notice_number") or "").strip()[:80]
+        if not num:
+            continue
+        clean_items.append(
+            {
+                "id": str(it.get("id") or f"item-{idx}")[:40],
+                "row_no": idx + 1,
+                "notice_number": num,
+                "title": str(it.get("title") or f"Закупка {num}").strip()[:500],
+                "nmck_raw": str(it.get("nmck_raw") or "").strip()[:80],
+                "publication_date": str(it.get("publication_date") or "").strip()[:60],
+                "deadline_date": str(it.get("deadline_date") or "").strip()[:60],
+                "procurement_type": str(it.get("procurement_type") or "").strip()[:80],
+                "eis_url": normalize_source_url(str(it.get("eis_url") or "")),
+                "etp_url": normalize_source_url(str(it.get("etp_url") or "")),
+                "customer_inn": str(it.get("customer_inn") or "").strip()[:40],
+                "customer_name": str(it.get("customer_name") or "").strip()[:300],
+            }
+        )
+    if not clean_items:
+        raise HTTPException(status_code=400, detail="Не найдено корректных номеров извещений в выбранных строках.")
+
+    settings = get_or_create_settings(db)
+    src_name = Path(str(body.get("filename") or "Выгрузка")).stem[:40].strip() or "Выгрузка"
+    job_title = f"Пакетный анализ ({len(clean_items)} зак.): {src_name}"
+    job = create_job(
+        db,
+        client_id=client.id,
+        created_by_telegram_id=f"web:{context.user.id}",
+        mode=MODE_PROCUREMENT_REPORT,
+        title=job_title,
+        target_suppliers=supplier_target_for_client(settings, client),
+        files=[],
+        sources=[],
+        initial_status="draft",
+    )
+    spec_path = job_dir(job.id) / "input" / "custom_batch_spec.json"
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(
+        json.dumps(
+            {
+                "filename": src_name,
+                "items": clean_items,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    try:
+        reserve_batch_procurement_report_job(
+            db,
+            client,
+            job,
+            procurement_count=len(clean_items),
+        )
+    except BillingError as exc:
+        try:
+            db.delete(job)
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    job.status = "pending"
+    job.file_count = len(clean_items)
+    job.message = f"В очереди: {len(clean_items)} зак."
+    db.commit()
+    enqueue_job(job.id)
+    return {"batch": False, "count": 1, "job": customer_job_to_dict(job)}
+
+
+@app.get("/api/customer/jobs/{job_id}/batch-report")
+def customer_batch_report_detail_route(
+    job_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    results_file = job_dir(job.id) / "output" / "custom_batch_results.json"
+    if results_file.is_file():
+        payload = parse_json_dict(results_file.read_text(encoding="utf-8"))
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        return {
+            "job_id": job.id,
+            "title": human_job_title(job),
+            "status": job.status,
+            "progress": job.progress,
+            "message": job.message or "",
+            "total_count": int(payload.get("total_count") or len(items)),
+            "completed_count": int(payload.get("completed_count") or 0),
+            "failed_count": int(payload.get("failed_count") or 0),
+            "items": items,
+        }
+    spec_file = job_dir(job.id) / "input" / "custom_batch_spec.json"
+    if spec_file.is_file():
+        spec = parse_json_dict(spec_file.read_text(encoding="utf-8"))
+        raw_items = spec.get("items") if isinstance(spec.get("items"), list) else []
+        pending_items = [
+            {
+                "index": idx,
+                "id": str(it.get("id") or f"item-{idx}"),
+                "notice_number": str(it.get("notice_number") or ""),
+                "title": str(it.get("title") or ""),
+                "nmck_raw": str(it.get("nmck_raw") or ""),
+                "publication_date": str(it.get("publication_date") or ""),
+                "deadline_date": str(it.get("deadline_date") or ""),
+                "procurement_type": str(it.get("procurement_type") or ""),
+                "status": "pending",
+                "report_markdown": "",
+                "sources": [],
+                "error": "",
+                "docx_filename": "",
+            }
+            for idx, it in enumerate(raw_items)
+            if isinstance(it, dict)
+        ]
+        return {
+            "job_id": job.id,
+            "title": human_job_title(job),
+            "status": job.status,
+            "progress": job.progress,
+            "message": job.message or "",
+            "total_count": len(pending_items),
+            "completed_count": 0,
+            "failed_count": 0,
+            "items": pending_items,
+        }
+    raise HTTPException(status_code=404, detail="Пакетный разбор для этой задачи не найден.")
+
+
+@app.get("/api/customer/jobs/{job_id}/batch-report/download/{item_index}")
+def customer_batch_report_item_download_route(
+    job_id: str,
+    item_index: int,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+):
+    job = _customer_job_or_404(db, job_id, context)
+    _ensure_customer_job_result_delivery_allowed(job)
+    results_file = job_dir(job.id) / "output" / "custom_batch_results.json"
+    if not results_file.is_file():
+        raise HTTPException(status_code=404, detail="Файлы разбора ещё не сформированы.")
+    payload = parse_json_dict(results_file.read_text(encoding="utf-8"))
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    if item_index < 0 or item_index >= len(items) or not isinstance(items[item_index], dict):
+        raise HTTPException(status_code=404, detail="Позиция разбора не найдена.")
+    docx_name = str(items[item_index].get("docx_filename") or "").strip()
+    if not docx_name:
+        raise HTTPException(status_code=404, detail="Word-файл для этой закупки недоступен.")
+    out_dir = (job_dir(job.id) / "output").resolve()
+    resolved = (out_dir / Path(docx_name).name).resolve()
+    try:
+        resolved.relative_to(out_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Некорректное имя файла.") from exc
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Файл отчёта не найден на сервере.")
+    return FileResponse(
+        resolved,
+        filename=resolved.name,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 
@@ -1983,10 +2248,10 @@ def customer_job_retry_api(
             status_code=409,
             detail="Задача уже была оплачена и завершена. Создайте новую задачу.",
         )
-    if policy:
+    if isinstance(policy, str) and policy:
         normalized = _normalize_supplier_search_policy_for_job(job.mode, policy)
         job.supplier_search_policy = normalized
-    if multi_item_mode in ("balanced", "per_item"):
+    if isinstance(multi_item_mode, str) and multi_item_mode in ("balanced", "per_item"):
         job.multi_item_mode = multi_item_mode
     if job.client and not getattr(job, "is_admin_rerun", False):
         supplier_search_count = 1
@@ -5877,9 +6142,9 @@ def retry_job(
         if created:
             enqueue_job(child.id)
         return {"success": True, "job": job_to_dict(child)}
-    if policy:
+    if isinstance(policy, str) and policy:
         job.supplier_search_policy = _normalize_supplier_search_policy_for_job(job.mode, policy)
-    if multi_item_mode in ("balanced", "per_item"):
+    if isinstance(multi_item_mode, str) and multi_item_mode in ("balanced", "per_item"):
         job.multi_item_mode = multi_item_mode
         update_dobor_context_dict(job, {"multi_item_confirmed": True})
     if job.client and not getattr(job, "is_admin_rerun", False):
@@ -5930,6 +6195,10 @@ def admin_rerun_job(
         raise HTTPException(status_code=404, detail="Job not found")
     # Direct service calls (including regression tests) receive FastAPI's
     # parameter descriptors rather than their route-resolved defaults.
+    if not isinstance(policy, str):
+        policy = None
+    if not isinstance(multi_item_mode, str):
+        multi_item_mode = None
     if not isinstance(revision, str):
         revision = None
     if not isinstance(selected_item_ids, list):
@@ -8570,6 +8839,8 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "client_id": user.client_id,
         "allowed_price_monitoring": is_pm_allowed,
         "allowed_geo_radius": is_geo_allowed,
+        "allowed_custom_batch_report": bool(user.client and getattr(user.client, "allowed_custom_batch_report", False)),
+        "custom_report_separate_tab": bool(user.client and getattr(user.client, "custom_report_separate_tab", False)),
         "geo_radius_surcharge_pct": configured_geo_surcharge_pct(settings),
         "is_trial": client_uses_trial_access(db, user.client) if user.client else False,
         "created_at": user.created_at.isoformat() if user.created_at else None,
@@ -8759,6 +9030,10 @@ def customer_job_to_dict(
         "admin_supplement_at": job.admin_supplement_at.isoformat() if getattr(job, "admin_supplement_at", None) else None,
         "chat_messages": chat_list,
         "unread_admin_messages_count": unread_admin_cnt,
+        "is_custom_batch_report": bool(
+            (job_dir(job.id) / "output" / "custom_batch_results.json").is_file()
+            or (job_dir(job.id) / "input" / "custom_batch_spec.json").is_file()
+        ),
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
@@ -8842,6 +9117,7 @@ async def create_customer_job_api(
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
     multi_item_mode: str = "balanced",
     auto_confirm_strategy: bool = False,
+    use_custom_prompt: bool = False,
     delivery_city: str = "",
     geo_radius_km: int | None = None,
     geo_scope: str = "ru",
@@ -8986,6 +9262,12 @@ async def create_customer_job_api(
                 job,
                 {"multi_item_confirmed": True, "auto_confirm_strategy": True, "selected_item_ids": None},
             )
+        if (
+            use_custom_prompt
+            and mode == MODE_PROCUREMENT_REPORT
+            and bool(getattr(client, "allowed_custom_batch_report", False))
+        ):
+            update_dobor_context_dict(job, {"use_custom_prompt": True})
         reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
         job.status = "pending"
         job.message = "Задача создана"
@@ -10027,6 +10309,8 @@ def _customer_job_title_for_subject(mode: str, subject: str) -> str:
     if mode == MODE_SUPPLIER_SEARCH:
         return f"ТЗ: {value}"
     if mode == MODE_PROCUREMENT_REPORT:
+        if value.lower().startswith("пакетный анализ"):
+            return value
         return f"Анализ закупки: {value}"
     if mode == MODE_ANALYSIS_AND_SUPPLIERS:
         return f"Анализ + поиск: {value}"
@@ -10469,6 +10753,9 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "allowed_procurement_report": client.allowed_procurement_report,
         "allowed_exact_product": getattr(client, "allowed_exact_product", True),
         "allowed_price_monitoring": getattr(client, "allowed_price_monitoring", False),
+        "allowed_custom_batch_report": bool(getattr(client, "allowed_custom_batch_report", False)),
+        "custom_report_separate_tab": bool(getattr(client, "custom_report_separate_tab", False)),
+        "custom_report_prompt": str(getattr(client, "custom_report_prompt", "") or ""),
         "monthly_job_limit": client.monthly_job_limit,
         "monthly_supplier_search_limit": client.monthly_supplier_search_limit,
         "monthly_procurement_report_limit": client.monthly_procurement_report_limit,

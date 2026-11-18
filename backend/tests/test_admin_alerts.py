@@ -122,14 +122,24 @@ class AdminAlertsTestCase(unittest.IsolatedAsyncioTestCase):
     @patch("app.admin_alerts.dispatch_telegram_admin_alert")
     def test_notify_ai_provider_error(self, mock_dispatch: AsyncMock) -> None:
         # Rate limit / 429
-        notify_ai_provider_error("OpenRouter", "gpt-4", 429, "Rate limit exceeded")
+        notify_ai_provider_error("OpenRouter", "gpt-4", 429)
         self.assertEqual(mock_dispatch.call_count, 1)
         args, kwargs = mock_dispatch.call_args
         self.assertIn("OpenRouter", args[0])
 
         mock_dispatch.reset_mock()
         # 401 Unauthorized
-        notify_ai_provider_error("Gemini", "gemini-flash", 401, "API key expired")
+        notify_ai_provider_error("Gemini", "gemini-flash", 401)
         self.assertEqual(mock_dispatch.call_count, 1)
         args, kwargs = mock_dispatch.call_args
         self.assertIn("Сбой AI-провайдера", args[0])
+
+    @patch("app.admin_alerts.dispatch_telegram_admin_alert")
+    def test_gemini_429_is_reported_as_rate_limit(self, mock_dispatch) -> None:
+        notify_ai_provider_error("Gemini", "gemini-3.8-flash-high", 429)
+
+        mock_dispatch.assert_called_once()
+        message = mock_dispatch.call_args.args[0]
+        self.assertIn("лимит запросов", message.lower())
+        self.assertNotIn("баланс", message.lower())
+        self.assertNotIn("API-ключ", message)

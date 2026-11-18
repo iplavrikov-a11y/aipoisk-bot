@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import logging
 import os
 import random
 import re
@@ -15,8 +16,11 @@ from typing import Any, Callable
 
 import httpx
 
-from .models import SystemSettings, parse_json_dict, parse_json_list
+from .admin_alerts import AI_PROVIDER_ERROR_REASONS, notify_ai_provider_error
 from .document_parser import clean_surrogates
+from .models import SystemSettings, parse_json_dict, parse_json_list
+
+logger = logging.getLogger(__name__)
 
 AI_ROUTING_FALLBACK_PRIMARY = "__primary__"
 AI_ROUTING_FALLBACK_LIGHT = "__light__"
@@ -623,17 +627,11 @@ async def _post_llm_request(
             if response.status_code >= 400:
                 detail = response.text.strip()[:500]
                 retriable = response.status_code in _RETRIABLE_STATUS
-                if response.status_code in (401, 402, 429) or "quota" in detail.lower() or "insufficient" in detail.lower():
-                    try:
-                        from .admin_alerts import notify_ai_provider_error
-                        notify_ai_provider_error(
-                            provider=selection.provider_name or selection.provider_id,
-                            model=selection.model,
-                            status_code=response.status_code,
-                            error_text=detail,
-                        )
-                    except Exception:
-                        pass
+                if response.status_code in AI_PROVIDER_ERROR_REASONS:
+                    logger.warning(
+                        "AI request rejected: provider=%s model=%s status=%s attempt=%d",
+                        selection.provider_id, selection.model, response.status_code, attempt + 1,
+                    )
                 last_error = LLMError(
                     f"{selection.provider_name}:{selection.model} HTTP {response.status_code}: "
                     f"{detail or response.reason_phrase}",
@@ -731,6 +729,7 @@ async def call_llm(
     request_attempt_limit = _max_request_attempts()
     request_budget = _RequestAttemptBudget(request_attempt_limit)
     last_error: Exception | None = None
+    last_provider_failure: tuple[ModelSelection, int] | None = None
     attempted_models: list[str] = []
     trace: list[dict[str, Any]] = []
     for index, selection in enumerate(attempts):
@@ -830,6 +829,9 @@ async def call_llm(
             )
             if isinstance(exc, LLMError) and exc.status is not None:
                 trace_item["http_status"] = exc.status
+            provider_status = request_metadata.get("last_status")
+            if phase == "request" and provider_status in AI_PROVIDER_ERROR_REASONS:
+                last_provider_failure = (selection, provider_status)
             trace.append(trace_item)
             if metadata is not None:
                 metadata.update(
@@ -857,6 +859,17 @@ async def call_llm(
         )
     if last_error is None:
         raise RuntimeError("AI model selection failed")
+    if last_provider_failure is not None:
+        failed_selection, status_code = last_provider_failure
+        try:
+            notify_ai_provider_error(
+                provider=failed_selection.provider_name or failed_selection.provider_id,
+                model=failed_selection.model,
+                status_code=status_code,
+                attempted_models=attempted_models,
+            )
+        except Exception:
+            logger.exception("Could not dispatch the AI provider alert")
     raise RuntimeError(
         f"{_safe_error_text(last_error)}; tried models: {', '.join(attempted_models)}"
     ) from last_error

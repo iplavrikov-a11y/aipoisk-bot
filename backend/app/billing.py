@@ -2238,6 +2238,143 @@ def finalize_internal_exact_product_job(db: Session, job: Job) -> None:
     _finalize_internal_job(db, job, expected_mode=KIND_EXACT_PRODUCT)
 
 
+def reserve_batch_procurement_report_job(
+    db: Session,
+    client: Client,
+    job: Job,
+    *,
+    procurement_count: int,
+) -> int:
+    """Reserve N units of procurement_report atomically for a custom batch job."""
+    units = max(1, int(procurement_count or 1))
+    with _billing_client_lock(client.id):
+        db.refresh(client)
+        _initialize_legacy_balance_if_needed(db, client, exclude_job_id=job.id)
+        if _job_reserved_remaining(db, job.id, KIND_PROCUREMENT_REPORT) > 0 or _job_has_operation(
+            db, job.id, KIND_PROCUREMENT_REPORT, OP_CHARGE
+        ):
+            return _job_reserved_amount_remaining(db, job.id, KIND_PROCUREMENT_REPORT)
+        error = access_error_for_units(db, client, {KIND_PROCUREMENT_REPORT: units})
+        if error:
+            raise BillingError(error)
+        amount = _reservable_amount_for_kind(db, client, KIND_PROCUREMENT_REPORT, units, job=job)
+        if amount > 0:
+            client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0)) + amount
+        unit_price = (amount // units) if amount > 0 else 0
+        note = (
+            f"Резерв пакетного анализа: {units} зак. по {unit_price / 100:.2f} ₽"
+            if amount > 0
+            else f"Резерв пакетного анализа: {units} зак."
+        )
+        db.add(
+            BillingTransaction(
+                client_id=client.id,
+                job_id=job.id,
+                kind=KIND_PROCUREMENT_REPORT,
+                operation=OP_RESERVE,
+                units=units,
+                amount_kopeks=amount,
+                balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
+                reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
+                note=note,
+                created_by="system",
+            )
+        )
+        db.commit()
+        return amount
+
+
+def settle_batch_procurement_report_job(
+    db: Session,
+    job: Job,
+    *,
+    completed_count: int,
+) -> bool:
+    """Charge only for successfully analyzed procurements in a batch job and refund unused reserve."""
+    with _billing_client_lock(str(job.client_id or job.id)):
+        current = _current_billing_job(db, job)
+        if current.mode != MODE_PROCUREMENT_REPORT:
+            raise BillingError("Это не задача анализа документации.")
+        if current.status in {"completed", "partial", "failed"}:
+            return _job_has_operation(db, current.id, KIND_PROCUREMENT_REPORT, OP_CHARGE)
+        if current.status != "running":
+            raise BillingError("Задача пакетного анализа больше не выполняется; списание запрещено.")
+        completed = max(0, int(completed_count or 0))
+        client = db.get(Client, current.client_id) if current.client_id else None
+        charged = False
+        if client:
+            db.refresh(client)
+            reserve_units = _job_reserved_remaining(db, current.id, KIND_PROCUREMENT_REPORT)
+            reserve_amount = _job_reserved_amount_remaining(db, current.id, KIND_PROCUREMENT_REPORT)
+            if completed <= 0:
+                _release_job_kind_reservation(
+                    db,
+                    current,
+                    KIND_PROCUREMENT_REPORT,
+                    note="Пакетный анализ: нет завершённых закупок, резерв возвращён",
+                )
+            elif reserve_units > 1 and completed < reserve_units:
+                billable_units = min(reserve_units, completed)
+                unused_units = reserve_units - billable_units
+                if reserve_amount > 0:
+                    unit_price = reserve_amount // reserve_units
+                    charge_amount = billable_units * unit_price
+                    unused_amount = reserve_amount - charge_amount
+                    client.money_reserved_kopeks = max(
+                        0, int(client.money_reserved_kopeks or 0) - reserve_amount
+                    )
+                    client.money_balance_kopeks = max(
+                        0, int(client.money_balance_kopeks or 0) - charge_amount
+                    )
+                    charge_note = (
+                        f"Пакетный анализ закупок: выполнено {billable_units} из {reserve_units} зак. "
+                        f"по {unit_price / 100:.2f} ₽"
+                    )
+                else:
+                    charge_amount = 0
+                    unused_amount = 0
+                    charge_note = f"Пакетный анализ закупок: выполнено {billable_units} из {reserve_units} зак."
+                db.add(
+                    BillingTransaction(
+                        client_id=client.id,
+                        job_id=current.id,
+                        kind=KIND_PROCUREMENT_REPORT,
+                        operation=OP_CHARGE,
+                        units=billable_units,
+                        amount_kopeks=charge_amount,
+                        balance_after_kopeks=int(client.money_balance_kopeks or 0),
+                        reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
+                        note=charge_note,
+                        created_by="system",
+                    )
+                )
+                charged = True
+                if unused_units > 0 or unused_amount > 0:
+                    db.add(
+                        BillingTransaction(
+                            client_id=client.id,
+                            job_id=current.id,
+                            kind=KIND_PROCUREMENT_REPORT,
+                            operation=OP_RELEASE,
+                            units=unused_units,
+                            amount_kopeks=unused_amount,
+                            balance_after_kopeks=int(client.money_balance_kopeks or 0),
+                            reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
+                            note=f"Возврат резерва за необработанные закупки ({unused_units} шт.)",
+                            created_by="system",
+                        )
+                    )
+            else:
+                charged = _charge_job_kind_reservation_locked(
+                    db,
+                    current,
+                    KIND_PROCUREMENT_REPORT,
+                    note=f"Пакетный анализ закупок завершён ({completed} зак.)",
+                )
+        db.commit()
+        return charged
+
+
 
 def cancel_exact_product_job(db: Session, job: Job, *, note: str, message: str) -> bool:
     """A stale request cannot cancel a settled exact-product report."""
