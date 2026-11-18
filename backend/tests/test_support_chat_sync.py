@@ -16,6 +16,8 @@ from app.main import (
     admin_client_chat_get,
     admin_client_chat_post,
     admin_dialog_block,
+    admin_dialog_close,
+    admin_dialog_reopen,
     admin_dialog_unblock,
     admin_dialogs_list,
     admin_dialogs_mark_all_read,
@@ -782,4 +784,114 @@ async def test_preset_burst_limit_structural_without_nl_matching_and_infra_ip_pr
     # Infrastructure and private IPs can never be blocked
     for non_blockable in ("79.133.182.215", "202.71.13.57", "127.0.0.1", "::1", "10.0.0.8", "192.168.0.5", "172.20.0.1"):
         assert sc.is_blockable_ip(non_blockable) == ""
+
+
+@pytest.mark.asyncio
+async def test_admin_dialogs_close_reopen_job_capping_and_attach_job_files(test_env):
+    db = test_env.db
+    client = Client(
+        name="ООО Крупный Заказчик",
+        client_number=101,
+        telegram_id="880011",
+        username="bigclient",
+        notes="VIP клиент",
+        money_balance_kopeks=150000,
+    )
+    db.add(client)
+    db.flush()
+
+    # Create 30 jobs for the same client (exceeds 25-job cap in dialogs list)
+    result_file_path = test_env.tmp_path / "expert_report.docx"
+    result_file_path.write_bytes(b"PK\x03\x04fake-docx-content")
+
+    created_jobs = []
+    for idx in range(30):
+        j = Job(
+            client_id=client.id,
+            job_number=2000 + idx,
+            mode="procurement_report",
+            title=f"ТЗ #{2000 + idx}",
+            status="completed" if idx == 0 else "failed",
+            verified_count=5 if idx == 0 else 0,
+            admin_supplement_path=str(result_file_path) if idx == 0 else "",
+        )
+        db.add(j)
+        created_jobs.append(j)
+    db.flush()
+
+    # Put a chat message on the oldest job (#2000) so it must stay prioritized in sidebar summary
+    db.add(
+        JobChatMessage(
+            client_id=client.id,
+            job_id=created_jobs[0].id,
+            sender_role="client",
+            message="Проверьте отчёт по самой старой задаче",
+            channel="web",
+            is_read_by_admin=False,
+        )
+    )
+    db.add(
+        JobChatMessage(
+            client_id=client.id,
+            job_id="",
+            sender_role="client",
+            message="Общий вопрос",
+            channel="web",
+            is_read_by_admin=False,
+        )
+    )
+    db.commit()
+
+    # 1. Dialogs list caps job badges to 25 while reporting full jobs_count=30 and prioritizing chatted job
+    dialogs_payload = admin_dialogs_list(db=db)
+    target_dialog = next(d for d in dialogs_payload["dialogs"] if d["client_id"] == client.id)
+    assert target_dialog["jobs_count"] == 30
+    assert target_dialog["jobs_with_chat_count"] == 1
+    assert target_dialog["needs_reply"] is True
+    assert len(target_dialog["jobs"]) == 25
+    assert any(j["job_id"] == created_jobs[0].id for j in target_dialog["jobs"])
+
+    # 2. Enriched admin_client_chat_get returns all 30 jobs, balance, notes, and result_files
+    detail = admin_client_chat_get(client.id, db=db)
+    assert detail["client"]["notes"] == "VIP клиент"
+    assert detail["client"]["available_kopeks"] == 150000
+    assert detail["client"]["dialog_status"] == "open"
+    assert detail["general_messages_count"] == 1
+    assert len(detail["jobs"]) == 30
+    job0_summary = next(j for j in detail["jobs"] if j["job_id"] == created_jobs[0].id)
+    assert job0_summary["chat_messages_count"] == 1
+    assert job0_summary["has_result"] is True
+    assert len(job0_summary["result_files"]) == 1
+    assert job0_summary["result_files"][0]["kind"] == "admin_supplement"
+
+    # 3. Close dialog -> status becomes closed, closing system note logged, then reopen
+    close_res = await admin_dialog_close(client.id, payload={"send_closing_note": False}, db=db)
+    assert close_res["ok"] is True
+    assert close_res["dialog_status"] == "closed"
+    state = db.query(SupportDialogState).filter(SupportDialogState.client_id == client.id).first()
+    assert state is not None and state.status == "closed"
+
+    reopen_res = await admin_dialog_reopen(client.id, db=db)
+    assert reopen_res["ok"] is True
+    assert reopen_res["dialog_status"] == "open"
+    db.expire_all()
+    assert db.query(SupportDialogState).filter(SupportDialogState.client_id == client.id).first().status == "open"
+
+    # 4. Attach existing job result file via attach_job_files when replying
+    attach_payload = json.dumps([{"job_id": created_jobs[0].id, "kind": "admin_supplement"}])
+    post_res = await admin_client_chat_post(
+        client_id=client.id,
+        message="Направляю готовый файл из задачи",
+        job_id=created_jobs[0].id,
+        notify_telegram=False,
+        attach_job_files=attach_payload,
+        db=db,
+    )
+    assert post_res["ok"] is True
+    last_msg = post_res["messages"][-1]
+    atts = last_msg["attachments"]
+    assert len(atts) == 1
+    assert atts[0]["name"] == "expert_report.docx"
+    assert atts[0]["size"] == len(b"PK\x03\x04fake-docx-content")
+
 

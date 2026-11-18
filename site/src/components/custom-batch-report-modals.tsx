@@ -1,8 +1,11 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Check,
   CheckCircle2,
   Clock3,
@@ -12,6 +15,9 @@ import {
   FileSpreadsheet,
   FileText,
   Loader2,
+  Maximize2,
+  Minimize2,
+  Move,
   Search,
   Sparkles,
   X,
@@ -28,6 +34,7 @@ export type BatchRegistryPreviewItem = {
   nmck_raw: string;
   publication_date: string;
   deadline_date: string;
+  deadline_ts?: number | null;
   procurement_type: string;
   eis_url: string;
   etp_url: string;
@@ -80,6 +87,61 @@ export type BatchReportReaderData = {
 function formatRub(kopeks: number): string {
   const rub = kopeks / 100;
   return `${rub.toLocaleString("ru-RU", { maximumFractionDigits: 2 })} ₽`;
+}
+
+type BatchSortField = "default" | "deadline" | "price";
+type BatchSortDirection = "asc" | "desc";
+
+function getItemDeadlineTs(item: BatchRegistryPreviewItem): number | null {
+  if (typeof item.deadline_ts === "number" && Number.isFinite(item.deadline_ts)) {
+    return item.deadline_ts;
+  }
+  const raw = String(item.deadline_date || "")
+    .replace(/\(?\s*(?:МСК|MSK|UTC\+?3)\s*\)?/gi, "")
+    .trim();
+  if (!raw) return null;
+
+  const ruMatch = raw.match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})(?:[,\sT]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (ruMatch) {
+    let year = Number(ruMatch[3]);
+    if (year < 100) year += 2000;
+    const month = Number(ruMatch[2]);
+    const day = Number(ruMatch[1]);
+    const hour = Number(ruMatch[4] || 0);
+    const minute = Number(ruMatch[5] || 0);
+    const second = Number(ruMatch[6] || 0);
+    const ms = Date.UTC(year, month - 1, day, hour, minute, second);
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  const isoMatch = raw.match(/(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (isoMatch) {
+    const ms = Date.UTC(
+      Number(isoMatch[1]),
+      Number(isoMatch[2]) - 1,
+      Number(isoMatch[3]),
+      Number(isoMatch[4] || 0),
+      Number(isoMatch[5] || 0),
+      Number(isoMatch[6] || 0)
+    );
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getItemNmckValue(item: BatchRegistryPreviewItem): number | null {
+  if (typeof item.nmck_value === "number" && Number.isFinite(item.nmck_value)) {
+    return item.nmck_value;
+  }
+  const raw = String(item.nmck_raw || "")
+    .replace(/[\u00a0\s₽рубRUB]/gi, "")
+    .replace(/,/g, ".")
+    .replace(/\.+$/, "");
+  if (!raw) return null;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : null;
 }
 
 export function BatchSheetSelectorModal({
@@ -252,22 +314,58 @@ export function BatchSelectionModal({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [sortField, setSortField] = useState<BatchSortField>("default");
+  const [sortDirection, setSortDirection] = useState<BatchSortDirection>("asc");
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const activeSheets = preview.selected_sheets && preview.selected_sheets.length > 0
     ? preview.selected_sheets
     : (preview.sheet_name ? [preview.sheet_name] : []);
 
+  function handleSortToggle(field: "deadline" | "price") {
+    if (sortField === field) {
+      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortField(field);
+    setSortDirection(field === "deadline" ? "asc" : "desc");
+  }
+
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return preview.items;
-    return preview.items.filter(
-      (it) =>
-        it.notice_number.toLowerCase().includes(q) ||
-        it.title.toLowerCase().includes(q) ||
-        it.nmck_raw.toLowerCase().includes(q) ||
-        it.procurement_type.toLowerCase().includes(q)
-    );
-  }, [preview.items, query]);
+    const base = !q
+      ? preview.items
+      : preview.items.filter(
+          (it) =>
+            it.notice_number.toLowerCase().includes(q) ||
+            it.title.toLowerCase().includes(q) ||
+            it.nmck_raw.toLowerCase().includes(q) ||
+            it.deadline_date.toLowerCase().includes(q) ||
+            it.procurement_type.toLowerCase().includes(q)
+        );
+    if (sortField === "default") {
+      return base;
+    }
+    const copy = [...base];
+    copy.sort((a, b) => {
+      if (sortField === "deadline") {
+        const aVal = getItemDeadlineTs(a);
+        const bVal = getItemDeadlineTs(b);
+        if (aVal === null && bVal === null) return (a.row_no || 0) - (b.row_no || 0);
+        if (aVal === null) return 1;
+        if (bVal === null) return -1;
+        if (aVal !== bVal) return sortDirection === "asc" ? aVal - bVal : bVal - aVal;
+        return (a.row_no || 0) - (b.row_no || 0);
+      }
+      const aPrice = getItemNmckValue(a);
+      const bPrice = getItemNmckValue(b);
+      if (aPrice === null && bPrice === null) return (a.row_no || 0) - (b.row_no || 0);
+      if (aPrice === null) return 1;
+      if (bPrice === null) return -1;
+      if (aPrice !== bPrice) return sortDirection === "asc" ? aPrice - bPrice : bPrice - aPrice;
+      return (a.row_no || 0) - (b.row_no || 0);
+    });
+    return copy;
+  }, [preview.items, query, sortField, sortDirection]);
 
   const selectedCount = selectedIds.length;
   const totalCostKopeks = selectedCount * preview.unit_price_kopeks;
@@ -336,7 +434,71 @@ export function BatchSelectionModal({
             ) : null}
           </div>
 
-          <div className="flex items-center gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <div className="flex items-center gap-1.5 mr-1">
+              <span className="text-[11px] font-semibold text-slate-500 hidden sm:inline">
+                Сортировка:
+              </span>
+              <button
+                type="button"
+                disabled={busy || filteredItems.length <= 1}
+                onClick={() => handleSortToggle("deadline")}
+                title={
+                  sortField === "deadline"
+                    ? sortDirection === "asc"
+                      ? "Сначала ближайший срок подачи заявок (нажмите для обратного порядка)"
+                      : "Сначала поздний срок подачи заявок (нажмите для сортировки по ближайшим)"
+                    : "Сортировать по дате окончания подачи заявки"
+                }
+                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg font-bold border transition-colors cursor-pointer disabled:opacity-50 ${
+                  sortField === "deadline"
+                    ? "bg-teal-600 text-white border-teal-600 shadow-2xs"
+                    : "bg-slate-50 hover:bg-teal-50 text-slate-700 border-slate-200 hover:border-teal-300"
+                }`}
+              >
+                {sortField === "deadline" ? (
+                  sortDirection === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} />
+                ) : (
+                  <ArrowUpDown size={13} />
+                )}
+                <span>По дате окончания</span>
+              </button>
+              <button
+                type="button"
+                disabled={busy || filteredItems.length <= 1}
+                onClick={() => handleSortToggle("price")}
+                title={
+                  sortField === "price"
+                    ? sortDirection === "desc"
+                      ? "Сначала самая высокая цена (нажмите для сортировки по возрастанию)"
+                      : "Сначала самая низкая цена (нажмите для сортировки по убыванию)"
+                    : "Сортировать по цене (НМЦК)"
+                }
+                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg font-bold border transition-colors cursor-pointer disabled:opacity-50 ${
+                  sortField === "price"
+                    ? "bg-teal-600 text-white border-teal-600 shadow-2xs"
+                    : "bg-slate-50 hover:bg-teal-50 text-slate-700 border-slate-200 hover:border-teal-300"
+                }`}
+              >
+                {sortField === "price" ? (
+                  sortDirection === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} />
+                ) : (
+                  <ArrowUpDown size={13} />
+                )}
+                <span>По цене</span>
+              </button>
+              {sortField !== "default" ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setSortField("default")}
+                  title="Вернуть исходный порядок строк"
+                  className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg font-semibold transition-colors cursor-pointer"
+                >
+                  Сброс
+                </button>
+              ) : null}
+            </div>
             <button
               type="button"
               disabled={busy}
@@ -376,8 +538,34 @@ export function BatchSelectionModal({
                     <th className="w-10 px-3 py-2.5 text-center">✓</th>
                     <th className="px-3 py-2.5 w-44">Номер извещения</th>
                     <th className="px-3 py-2.5">Наименование закупки</th>
-                    <th className="px-3 py-2.5 w-32 text-right">НМЦК</th>
-                    <th className="px-3 py-2.5 w-36">Срок приёма заявок</th>
+                    <th className="px-3 py-2.5 w-32 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleSortToggle("price")}
+                        className="inline-flex items-center justify-end gap-1 w-full hover:text-teal-700 transition-colors cursor-pointer"
+                      >
+                        <span>НМЦК</span>
+                        {sortField === "price" ? (
+                          sortDirection === "asc" ? <ArrowUp size={12} className="text-teal-700" /> : <ArrowDown size={12} className="text-teal-700" />
+                        ) : (
+                          <ArrowUpDown size={12} className="text-slate-400" />
+                        )}
+                      </button>
+                    </th>
+                    <th className="px-3 py-2.5 w-40">
+                      <button
+                        type="button"
+                        onClick={() => handleSortToggle("deadline")}
+                        className="inline-flex items-center gap-1 hover:text-teal-700 transition-colors cursor-pointer"
+                      >
+                        <span>Окончание подачи</span>
+                        {sortField === "deadline" ? (
+                          sortDirection === "asc" ? <ArrowUp size={12} className="text-teal-700" /> : <ArrowDown size={12} className="text-teal-700" />
+                        ) : (
+                          <ArrowUpDown size={12} className="text-slate-400" />
+                        )}
+                      </button>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200/80 bg-white">
@@ -501,6 +689,15 @@ export function BatchSelectionModal({
   );
 }
 
+type WindowRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type ResizeDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
 export function BatchResultsReaderModal({
   data,
   activeIndex,
@@ -517,9 +714,158 @@ export function BatchResultsReaderModal({
   onClose: () => void;
 }) {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [isMaximized, setIsMaximized] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
+  const [winRect, setWinRect] = useState<WindowRect | null>(null);
+  const interactionRef = useRef<
+    | {
+        mode: "drag";
+        startX: number;
+        startY: number;
+        origRect: WindowRect;
+      }
+    | {
+        mode: "resize";
+        dir: ResizeDirection;
+        startX: number;
+        startY: number;
+        origRect: WindowRect;
+      }
+    | null
+  >(null);
+
   const safeIdx = activeIndex >= 0 && activeIndex < data.items.length ? activeIndex : 0;
   const activeItem = data.items[safeIdx] || null;
   const isSingle = data.items.length <= 1;
+
+  useEffect(() => {
+    const computeInitial = (): WindowRect => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const width = Math.min(vw - 32, 1360);
+      const height = Math.min(vh - 32, Math.max(520, Math.round(vh * 0.9)));
+      return {
+        x: Math.max(16, Math.round((vw - width) / 2)),
+        y: Math.max(16, Math.round((vh - height) / 2)),
+        width,
+        height,
+      };
+    };
+
+    const syncViewport = () => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const desktop = vw >= 640;
+      setIsDesktop(desktop);
+      if (!desktop) return;
+      setWinRect((prev) => {
+        if (!prev) return computeInitial();
+        const width = Math.min(prev.width, vw - 16);
+        const height = Math.min(prev.height, vh - 16);
+        const x = Math.min(Math.max(prev.x, -(width - 160)), vw - 160);
+        const y = Math.min(Math.max(prev.y, 8), vh - 64);
+        return { x, y, width, height };
+      });
+    };
+
+    syncViewport();
+    window.addEventListener("resize", syncViewport);
+    return () => window.removeEventListener("resize", syncViewport);
+  }, []);
+
+  useEffect(() => {
+    const onPointerMove = (e: PointerEvent) => {
+      const act = interactionRef.current;
+      if (!act) return;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const dx = e.clientX - act.startX;
+      const dy = e.clientY - act.startY;
+      const minW = Math.min(540, vw - 24);
+      const minH = Math.min(380, vh - 24);
+
+      if (act.mode === "drag") {
+        const nextX = Math.min(
+          Math.max(act.origRect.x + dx, -(act.origRect.width - 160)),
+          vw - 160
+        );
+        const nextY = Math.min(Math.max(act.origRect.y + dy, 8), vh - 64);
+        setWinRect({
+          ...act.origRect,
+          x: nextX,
+          y: nextY,
+        });
+        return;
+      }
+
+      let { x, y, width, height } = act.origRect;
+      const rightEdge = act.origRect.x + act.origRect.width;
+      const bottomEdge = act.origRect.y + act.origRect.height;
+
+      if (act.dir.includes("e")) {
+        const maxW = vw - act.origRect.x - 8;
+        width = Math.max(minW, Math.min(maxW, act.origRect.width + dx));
+      }
+      if (act.dir.includes("s")) {
+        const maxH = vh - act.origRect.y - 8;
+        height = Math.max(minH, Math.min(maxH, act.origRect.height + dy));
+      }
+      if (act.dir.includes("w")) {
+        const nextLeft = Math.max(8, Math.min(rightEdge - minW, act.origRect.x + dx));
+        width = rightEdge - nextLeft;
+        x = nextLeft;
+      }
+      if (act.dir.includes("n")) {
+        const nextTop = Math.max(8, Math.min(bottomEdge - minH, act.origRect.y + dy));
+        height = bottomEdge - nextTop;
+        y = nextTop;
+      }
+
+      setWinRect({ x, y, width, height });
+    };
+
+    const onPointerUp = () => {
+      if (interactionRef.current) {
+        interactionRef.current = null;
+        document.body.style.userSelect = "";
+      }
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      document.body.style.userSelect = "";
+    };
+  }, []);
+
+  function startDrag(e: React.PointerEvent<HTMLDivElement>) {
+    if (!isDesktop || isMaximized || !winRect || e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button, a, input, select, textarea")) return;
+    e.preventDefault();
+    document.body.style.userSelect = "none";
+    interactionRef.current = {
+      mode: "drag",
+      startX: e.clientX,
+      startY: e.clientY,
+      origRect: winRect,
+    };
+  }
+
+  function startResize(dir: ResizeDirection, e: React.PointerEvent<HTMLDivElement>) {
+    if (!isDesktop || isMaximized || !winRect || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    document.body.style.userSelect = "none";
+    interactionRef.current = {
+      mode: "resize",
+      dir,
+      startX: e.clientX,
+      startY: e.clientY,
+      origRect: winRect,
+    };
+  }
 
   function copyMarkdown(item: BatchReportResultItem) {
     if (!item.report_markdown) return;
@@ -529,30 +875,129 @@ export function BatchResultsReaderModal({
     });
   }
 
+  const dialogStyle: React.CSSProperties | undefined = isMaximized
+    ? {
+        position: "fixed",
+        left: 10,
+        top: 10,
+        width: "calc(100vw - 20px)",
+        height: "calc(100vh - 20px)",
+        maxWidth: "none",
+      }
+    : isDesktop && winRect
+    ? {
+        position: "fixed",
+        left: winRect.x,
+        top: winRect.y,
+        width: winRect.width,
+        height: winRect.height,
+        maxWidth: "none",
+      }
+    : undefined;
+
   return (
     <div
-      className="fixed inset-0 z-50 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-2 sm:p-5"
+      className="fixed inset-0 z-50 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label="Результаты анализа закупок"
     >
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="text-sm sm:text-base font-extrabold text-slate-900 truncate">
-              {data.title}
-            </h3>
-            <p className="text-xs text-slate-500">
-              Готово: <strong className="text-emerald-700">{data.completed_count}</strong> из{" "}
-              {data.total_count}
-              {data.failed_count > 0 ? ` · Без документации: ${data.failed_count}` : ""}
-              {data.status === "running" || data.status === "pending"
-                ? " · Обработка продолжается..."
-                : ""}
-            </p>
+      <div
+        style={dialogStyle}
+        className="relative bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-7xl h-[92vh] flex flex-col overflow-hidden"
+      >
+        {isDesktop && !isMaximized ? (
+          <>
+            <div
+              onPointerDown={(e) => startResize("n", e)}
+              className="absolute top-0 left-3 right-3 h-1.5 cursor-ns-resize z-30"
+              aria-hidden="true"
+            />
+            <div
+              onPointerDown={(e) => startResize("s", e)}
+              className="absolute bottom-0 left-3 right-3 h-2 cursor-ns-resize z-30"
+              aria-hidden="true"
+            />
+            <div
+              onPointerDown={(e) => startResize("w", e)}
+              className="absolute left-0 top-3 bottom-3 w-2 cursor-ew-resize z-30"
+              aria-hidden="true"
+            />
+            <div
+              onPointerDown={(e) => startResize("e", e)}
+              className="absolute right-0 top-3 bottom-3 w-2 cursor-ew-resize z-30"
+              aria-hidden="true"
+            />
+            <div
+              onPointerDown={(e) => startResize("nw", e)}
+              className="absolute top-0 left-0 w-3.5 h-3.5 cursor-nwse-resize z-40"
+              aria-hidden="true"
+            />
+            <div
+              onPointerDown={(e) => startResize("ne", e)}
+              className="absolute top-0 right-0 w-3.5 h-3.5 cursor-nesw-resize z-40"
+              aria-hidden="true"
+            />
+            <div
+              onPointerDown={(e) => startResize("sw", e)}
+              className="absolute bottom-0 left-0 w-3.5 h-3.5 cursor-nesw-resize z-40"
+              aria-hidden="true"
+            />
+            <div
+              onPointerDown={(e) => startResize("se", e)}
+              title="Потяните, чтобы изменить размер окна по диагонали"
+              className="absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize z-40 flex items-end justify-end p-1 text-slate-400 hover:text-teal-700 transition-colors"
+              aria-label="Изменить размер окна по диагонали"
+            >
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+                <path
+                  d="M10 1L1 10M10 5L5 10M10 9L9 10"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </div>
+          </>
+        ) : null}
+
+        <div
+          onPointerDown={startDrag}
+          onDoubleClick={(e) => {
+            if (!(e.target as HTMLElement).closest("button, a")) {
+              setIsMaximized((prev) => !prev);
+            }
+          }}
+          title={
+            isDesktop && !isMaximized
+              ? "Перетащите заголовок для перемещения окна; двойной клик — на весь экран"
+              : undefined
+          }
+          className={`px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3 ${
+            isDesktop && !isMaximized ? "cursor-grab active:cursor-grabbing select-none" : ""
+          }`}
+        >
+          <div className="min-w-0 flex items-center gap-2.5 flex-1">
+            {isDesktop && !isMaximized ? (
+              <Move size={15} className="text-slate-400 shrink-0" aria-hidden="true" />
+            ) : null}
+            <div className="min-w-0">
+              <h3 className="text-sm sm:text-base font-extrabold text-slate-900 truncate">
+                {data.title}
+              </h3>
+              <p className="text-xs text-slate-500">
+                Готово: <strong className="text-emerald-700">{data.completed_count}</strong> из{" "}
+                {data.total_count}
+                {data.failed_count > 0 ? ` · Без документации: ${data.failed_count}` : ""}
+                {data.status === "running" || data.status === "pending"
+                  ? " · Обработка продолжается..."
+                  : ""}
+                {isDesktop && !isMaximized ? " · Можно перетаскивать и растягивать за края/углы" : ""}
+              </p>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center gap-1.5 ml-auto shrink-0">
             {data.completed_count > 1 && data.status === "completed" ? (
               <button
                 type="button"
@@ -561,6 +1006,17 @@ export function BatchResultsReaderModal({
               >
                 <Download size={14} />
                 <span>Скачать все (.zip)</span>
+              </button>
+            ) : null}
+            {isDesktop ? (
+              <button
+                type="button"
+                onClick={() => setIsMaximized((prev) => !prev)}
+                className="p-2 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-200/60 transition-colors cursor-pointer"
+                title={isMaximized ? "Обычный размер окна" : "Развернуть на весь экран"}
+                aria-label={isMaximized ? "Обычный размер окна" : "Развернуть на весь экран"}
+              >
+                {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
               </button>
             ) : null}
             <button
@@ -574,9 +1030,9 @@ export function BatchResultsReaderModal({
           </div>
         </div>
 
-        <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
+        <div className="flex-1 flex flex-col md:flex-row min-h-0 min-w-0 overflow-hidden">
           {!isSingle ? (
-            <aside className="w-full md:w-80 shrink-0 border-b md:border-b-0 md:border-r border-slate-200 bg-slate-50/60 overflow-y-auto max-h-48 md:max-h-none p-2.5 space-y-1.5">
+            <aside className="w-full md:w-72 shrink-0 border-b md:border-b-0 md:border-r border-slate-200 bg-slate-50/60 overflow-y-auto max-h-48 md:max-h-none p-2.5 space-y-1.5">
               {data.items.map((item, idx) => {
                 const isSelected = idx === safeIdx;
                 return (
@@ -622,10 +1078,10 @@ export function BatchResultsReaderModal({
             </aside>
           ) : null}
 
-          <main className="flex-1 overflow-y-auto p-4 sm:p-6 bg-white">
+          <main className="flex-1 min-w-0 overflow-y-auto overflow-x-auto p-4 sm:p-6 bg-slate-50/75">
             {activeItem ? (
-              <div>
-                <div className="pb-3.5 mb-4 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 mb-4 shadow-2xs flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mb-1">
                       {activeItem.notice_number ? (

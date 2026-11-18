@@ -598,3 +598,205 @@ def test_html_stub_detection_and_non_seller_source_filtering():
     )
     assert _is_html_stub_response(html_resp) is True
     assert _is_html_stub_response(docx_resp) is False
+
+
+def test_parse_deadline_timestamp_ms_supports_ru_iso_and_datetime():
+    from app.custom_batch_registry import parse_deadline_timestamp_ms
+
+    ts_ru_time = parse_deadline_timestamp_ms("20.11.2026 08:00")
+    ts_ru_msk = parse_deadline_timestamp_ms("20.11.2026 09:30 МСК")
+    ts_ru_date = parse_deadline_timestamp_ms("19.11.2026")
+    ts_iso = parse_deadline_timestamp_ms("2026-11-21T10:00:00+03:00")
+    ts_obj = parse_deadline_timestamp_ms(dt.datetime(2026, 11, 20, 8, 0))
+
+    assert isinstance(ts_ru_time, int)
+    assert ts_ru_time == ts_obj
+    assert ts_ru_date < ts_ru_time < ts_ru_msk < ts_iso
+    assert parse_deadline_timestamp_ms("") is None
+    assert parse_deadline_timestamp_ms("не указано") is None
+
+
+@pytest.mark.asyncio
+async def test_enrich_registry_preview_items_fills_missing_deadlines_without_overwriting(db_session: Session):
+    import httpx
+    from app.custom_batch_registry import enrich_registry_preview_items
+
+    items = [
+        {
+            "id": "excel1",
+            "row_no": 1,
+            "notice_number": "0332300328126000079",
+            "title": "Аппарат наркозный (из Excel)",
+            "nmck_value": 5617000.0,
+            "nmck_raw": "5 617 000 ₽",
+            "publication_date": "13.11.2026",
+            "deadline_date": "20.11.2026 08:00",
+            "deadline_ts": None,
+            "customer_name": "",
+            "eis_url": "",
+        },
+        {
+            "id": "text1",
+            "row_no": 2,
+            "notice_number": "32616579502",
+            "title": "Закупка 32616579502",
+            "nmck_value": None,
+            "nmck_raw": "",
+            "publication_date": "",
+            "deadline_date": "",
+            "deadline_ts": None,
+            "customer_name": "",
+            "eis_url": "",
+        },
+    ]
+
+    # 2026-11-30 10:00 MSK -> 2026-11-30 07:00 UTC -> 1796022000000 ms
+    def _mock_handler(request: httpx.Request) -> httpx.Response:
+        num = request.url.params.get("number")
+        if num == "32616579502":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "_id": "t2",
+                        "number": "32616579502",
+                        "orderName": "Поставка автомобилей",
+                        "maxPrice": 18300000,
+                        "submissionCloseDateTime": 1796022000000,
+                        "publicationDateTime": 1794599244000,
+                        "customers": [{"name": "ООО Тест Заказчик"}],
+                        "status": 1,
+                    }
+                ],
+            )
+        return httpx.Response(200, json=[])
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(_mock_handler)
+
+    def _patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    with (
+        patch("app.custom_batch_registry.config.tenderplan_api_token", "test-token"),
+        patch("app.custom_batch_registry.httpx.AsyncClient", side_effect=_patched_client),
+    ):
+        await enrich_registry_preview_items(items)
+
+    # First item already had deadline_date/title/nmck: only deadline_ts is computed locally
+    assert items[0]["title"] == "Аппарат наркозный (из Excel)"
+    assert items[0]["deadline_date"] == "20.11.2026 08:00"
+    assert isinstance(items[0]["deadline_ts"], int)
+
+    # Second item was missing all metadata: enriched live with MSK deadline_date, timestamp, title, and price
+    assert items[1]["title"] == "Поставка автомобилей"
+    assert items[1]["deadline_date"] == "30.11.2026 10:00"
+    assert items[1]["deadline_ts"] == 1796022000000
+    assert items[1]["nmck_value"] == 18300000.0
+    assert "18 300 000" in items[1]["nmck_raw"]
+    assert items[1]["customer_name"] == "ООО Тест Заказчик"
+
+
+def test_preview_route_enriches_text_notice_deadlines(db_session: Session):
+    client, _, token, csrf = _create_client_with_web_user(db_session, allowed_batch=True, balance_kopeks=50_000)
+
+    async def _fake_enrich(items):
+        for it in items:
+            it["deadline_date"] = "25.11.2026 09:00"
+            it["deadline_ts"] = 1795586400000
+            it["title"] = f"Оснащение для закупки {it['notice_number']}"
+            it["nmck_value"] = 450000.0
+            it["nmck_raw"] = "450 000 ₽"
+        return items
+
+    with TestClient(app) as tc:
+        tc.cookies.set(CUSTOMER_COOKIE, token)
+        with patch("app.custom_batch_registry.enrich_registry_preview_items", side_effect=_fake_enrich):
+            resp = tc.post(
+                "/api/customer/jobs/batch-report/preview",
+                headers={CSRF_HEADER: csrf},
+                data={"text_notices": "0329300294326000004"},
+            )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["is_registry"] is True
+    assert payload["items"][0]["deadline_date"] == "25.11.2026 09:00"
+    assert payload["items"][0]["deadline_ts"] == 1795586400000
+    assert payload["items"][0]["nmck_value"] == 450000.0
+
+
+def test_write_procurement_docx_renders_structured_cards_callouts_and_status_tables(tmp_path: Path):
+    import zipfile
+    from xml.etree import ElementTree as ET
+    from docx import Document
+    from app.report_builder import write_procurement_docx
+
+    md = """### 1. Краткое резюме и условия закупки
+
+* **Заказчик:** ГБУЗ Тест
+* **Срок поставки:** 10 рабочих дней
+* **Ключевые «подводные камни» ТЗ:**
+  1. **Национальный режим (ПП РФ № 1875):** действует ограничение.
+     * *Правовой вывод:* требуется запись ГИСП.
+
+---
+
+### 2. Сравнительная таблица
+
+| Позиция | Требование ТЗ | Предлагаемый товар | Статус | Примечание |
+|---|---|---|---|---|
+| Позиция 1 | Термос 6 л | Термос ТГн-6 | **Соответствует** | Полное совпадение |
+| Позиция 2 | Кастрюля 50 л | Кастрюля АМЕТ | **Условно соответствует** | Сверить объём |
+| Позиция 3 | Крышка 10 л | Нет в наличии | **Отклонение** | Снято с производства |
+
+### 3. Финансовый расчёт и Вердикт
+
+ИТОГОВЫЙ ВЕРДИКТ: Заходить только с оптовым КП от завода.
+
+| Показатель | Значение |
+|---|---|
+| НМЦК | **266 538,00 ₽** |
+| Себестоимость | ~207 100 ₽ |
+"""
+    out = write_procurement_docx(tmp_path / "structured_report.docx", md, title="Поставка термосов")
+    assert out.exists()
+
+    doc = Document(out)
+    assert len(doc.tables) == 2
+
+    # 2-col KPI table gets 2900 / 7137 width split
+    with zipfile.ZipFile(out) as archive:
+        xml = archive.read("word/document.xml")
+
+    root = ET.fromstring(xml)
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+    # Check tblCellMar is present on tables
+    assert len(root.findall(".//w:tblPr/w:tblCellMar", ns)) == 2
+
+    # 2nd table is 2-col KV table
+    kv_cols = [
+        int(col.attrib[f"{{{ns['w']}}}w"])
+        for col in root.findall(".//w:tbl[2]/w:tblGrid/w:gridCol", ns)
+    ]
+    assert kv_cols == [2900, 7137]
+
+    # Check comparison table includes status dot markers
+    cmp_table_text = "\n".join(c.text for r in doc.tables[0].rows for c in r.cells)
+    assert "● Соответствует" in cmp_table_text
+    assert "● Условно соответствует" in cmp_table_text
+    assert "● Отклонение" in cmp_table_text
+
+    # Check section headings keep shading + keepNext, and standalone --- before ### 2 was skipped cleanly
+    p_texts = [p.text for p in doc.paragraphs]
+    assert "1. Краткое резюме и условия закупки" in p_texts
+    assert "ИТОГОВЫЙ ВЕРДИКТ: Заходить только с оптовым КП от завода." in p_texts
+
+    shd_fills = {
+        el.attrib.get(f"{{{ns['w']}}}fill")
+        for el in root.findall(".//w:pPr/w:shd", ns)
+    }
+    assert "F0FDFA" in shd_fills  # section header teal tint
+    assert "ECFDF5" in shd_fills  # verdict emerald tint
+    assert root.find(".//w:pPr/w:keepNext", ns) is not None

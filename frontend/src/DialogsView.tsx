@@ -1,182 +1,77 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { DialogSidebar } from './dialogs/DialogSidebar'
+import { DialogThread } from './dialogs/DialogThread'
+import { DialogContextPanel } from './dialogs/DialogContextPanel'
 import {
-  MessageSquare,
-  Search,
-  Send,
-  Paperclip,
-  Check,
-  CheckCheck,
-  Ban,
-  ShieldCheck,
-  ExternalLink,
-  User,
-  Phone,
-  Mail,
-  Loader2,
-  FileText,
-  Download,
-  RefreshCw,
-  Clock,
-  Sparkles,
-  Tag,
-} from 'lucide-react'
+  ChatMessage,
+  DialogClientCandidate,
+  DialogClientProfile,
+  DialogItem,
+  DialogJobSummary,
+  DialogQueueTab,
+  PendingJobFileAttachment,
+} from './dialogs/types'
 
-export interface DialogJobSummary {
-  job_id: string
-  job_number?: number | null
-  job_title: string
-  job_mode: string
-  job_mode_label: string
-  job_status: string
-}
-
-export interface DialogItem {
-  client_id: string
-  client_number?: number | null
-  client_name: string
-  client_email: string
-  client_phone: string
-  visitor_contact?: string
-  is_guest?: boolean
-  guest_session_id?: string
-  telegram_id: string
-  last_channel?: string
-  topic_linked?: boolean
-  dialog_status?: string
-  is_blocked?: boolean
-  last_message: string
-  last_message_at: string | null
-  last_sender_role: 'admin' | 'client'
-  unread_admin_count: number
-  total_messages: number
-  jobs: DialogJobSummary[]
-  job_id?: string
-  job_number?: number | null
-  job_title?: string
-  job_mode?: string
-  job_mode_label?: string
-  job_status?: string
-}
-
-export interface ChatAttachment {
-  index: number
-  name: string
-  label: string
-  size: number
-  url: string
-  customer_url: string
-}
-
-export interface ChatMessage {
-  id: string
-  job_id: string
-  client_id: string
-  guest_session_id?: string
-  channel?: string
-  sender_role: 'admin' | 'client'
-  message: string
-  attachments: ChatAttachment[]
-  is_read_by_client: boolean
-  is_read_by_admin: boolean
-  created_at: string | null
-  job_number?: number | null
-  job_title?: string
-  job_mode_label?: string
-  job_info?: DialogJobSummary | null
-}
-
-function channelBadgeLabel(channel?: string): string {
-  switch (channel) {
-    case 'guest_web':
-      return '🌐 Чат на сайте'
-    case 'web':
-      return '🌐 Кабинет'
-    case 'tg_bot':
-      return '✈️ TG-бот'
-    case 'tg_dm':
-      return '💬 ЛС бота'
-    case 'tg_topic':
-      return '🗂 Группа TG'
-    case 'admin_web':
-      return '🖥 Админ-панель'
-    case 'system':
-      return '⚙️ Система'
-    default:
-      return ''
-  }
-}
-
-function formatDate(iso?: string | null): string {
-  if (!iso) return ''
-  try {
-    const d = new Date(iso)
-    return d.toLocaleString('ru-RU', {
-      day: '2-digit',
-      month: '2-digit',
-      year: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-  } catch {
-    return iso
-  }
-}
-
-function formatRelativeTime(iso?: string | null): string {
-  if (!iso) return ''
-  try {
-    const d = new Date(iso)
-    const now = new Date()
-    const diffMs = now.getTime() - d.getTime()
-    const diffMin = Math.floor(diffMs / 60000)
-    if (diffMin < 1) return 'только что'
-    if (diffMin < 60) return `${diffMin} мин. назад`
-    const diffHours = Math.floor(diffMin / 60)
-    if (diffHours < 24) return `${diffHours} ч. назад`
-    return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
-  } catch {
-    return ''
-  }
-}
+export type { DialogItem, DialogJobSummary, ChatMessage }
 
 export function DialogsView({
+  clients = [],
+  initialClientId = '',
+  onClearInitialClient,
   onOpenJob,
+  onOpenClient,
   onUnreadCountChange,
 }: {
-  onOpenJob?: (jobId: string) => void
+  clients?: DialogClientCandidate[]
+  initialClientId?: string
+  onClearInitialClient?: () => void
+  onOpenJob?: (jobId: string, clientId?: string, jobNumber?: number | null) => void
+  onOpenClient?: (clientId: string) => void
   onUnreadCountChange?: (count: number) => void
 }) {
   const [dialogs, setDialogs] = useState<DialogItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [filterUnread, setFilterUnread] = useState(false)
+  const [queueTab, setQueueTab] = useState<DialogQueueTab>('all')
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(initialClientId || null)
   const [activeJobFilter, setActiveJobFilter] = useState<string>('all')
 
+  const [clientProfile, setClientProfile] = useState<DialogClientProfile | null>(null)
   const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([])
   const [clientJobs, setClientJobs] = useState<DialogJobSummary[]>([])
+  const [generalMessagesCount, setGeneralMessagesCount] = useState<number>(0)
   const [loadingMessages, setLoadingMessages] = useState(false)
+
   const [replyText, setReplyText] = useState('')
   const [replyJobId, setReplyJobId] = useState<string>('')
   const [files, setFiles] = useState<File[]>([])
+  const [pendingJobFiles, setPendingJobFiles] = useState<PendingJobFileAttachment[]>([])
   const [notifyTelegram, setNotifyTelegram] = useState(true)
   const [sending, setSending] = useState(false)
   const [markingAllRead, setMarkingAllRead] = useState(false)
   const [blockingAction, setBlockingAction] = useState(false)
+  const [statusActionLoading, setStatusActionLoading] = useState(false)
+  const [showContextPanel, setShowContextPanel] = useState(true)
   const [error, setError] = useState('')
 
-  const messagesEndRef = useRef<HTMLDivElement>(null)
   const dialogsInFlightRef = useRef(false)
   const hasLoadedDialogsRef = useRef(false)
   const selectedClientIdRef = useRef<string | null>(null)
   const messagesAbortRef = useRef<AbortController | null>(null)
   const messagesReqSeqRef = useRef(0)
-  const lastScrollKeyRef = useRef('')
+  const composerRef = useRef<HTMLTextAreaElement | null>(null)
 
   const token = localStorage.getItem('tenderlex_admin_token') || sessionStorage.getItem('tenderlex_admin_token') || ''
   const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
 
   selectedClientIdRef.current = selectedClientId
+
+  useEffect(() => {
+    if (initialClientId) {
+      setSelectedClientId(initialClientId)
+      onClearInitialClient?.()
+    }
+  }, [initialClientId])
 
   async function loadDialogs(selectFirst = false, silent = false) {
     if (silent && dialogsInFlightRef.current) return
@@ -230,26 +125,43 @@ export function DialogsView({
         if (reqSeq !== messagesReqSeqRef.current || selectedClientIdRef.current !== clientId) {
           return
         }
-        setActiveMessages(data.messages || [])
-        const jobs: DialogJobSummary[] = data.jobs || []
-        setClientJobs(jobs)
+        const loadedMsgs: ChatMessage[] = data.messages || []
+        const loadedJobs: DialogJobSummary[] = data.jobs || []
+        const loadedProfile: DialogClientProfile | null = data.client || null
+
+        setActiveMessages(loadedMsgs)
+        setClientJobs(loadedJobs)
+        setClientProfile(loadedProfile)
+        setGeneralMessagesCount(
+          typeof data.general_messages_count === 'number'
+            ? data.general_messages_count
+            : loadedMsgs.filter(m => !m.job_id).length
+        )
+
         if (!silent) {
-          // Reset reply context or default to latest job on thread switch
-          setReplyJobId(jobs.length > 0 ? jobs[0].job_id : '')
+          // Default reply context to the job of the latest message if present, else newest job with chat, else empty
+          const latestMsgWithJob = [...loadedMsgs].reverse().find(m => Boolean(m.job_id))
+          if (latestMsgWithJob?.job_id) {
+            setReplyJobId(latestMsgWithJob.job_id)
+          } else {
+            const firstChatted = loadedJobs.find(j => (j.chat_messages_count || 0) > 0)
+            setReplyJobId(firstChatted ? firstChatted.job_id : '')
+          }
           setActiveJobFilter('all')
+          setFiles([])
+          setPendingJobFiles([])
         }
 
-        const serverBlocked = typeof data.client?.is_blocked === 'boolean' ? data.client.is_blocked : undefined
-        // Update local dialog unread badge to 0 and sync block state
+        const serverBlocked = typeof loadedProfile?.is_blocked === 'boolean' ? loadedProfile.is_blocked : undefined
+        const serverStatus = loadedProfile?.dialog_status
         setDialogs(prev =>
           prev.map(d =>
             d.client_id === clientId
               ? {
                   ...d,
                   unread_admin_count: 0,
-                  ...(serverBlocked !== undefined
-                    ? { is_blocked: serverBlocked, dialog_status: serverBlocked ? 'blocked' : (d.dialog_status === 'blocked' ? 'open' : d.dialog_status) }
-                    : {}),
+                  ...(serverBlocked !== undefined ? { is_blocked: serverBlocked } : {}),
+                  ...(serverStatus ? { dialog_status: serverStatus } : {}),
                 }
               : d
           )
@@ -274,7 +186,7 @@ export function DialogsView({
   }
 
   useEffect(() => {
-    void loadDialogs(true)
+    void loadDialogs(!initialClientId)
     return () => {
       messagesAbortRef.current?.abort()
     }
@@ -287,6 +199,8 @@ export function DialogsView({
       messagesAbortRef.current?.abort()
       setActiveMessages([])
       setClientJobs([])
+      setClientProfile(null)
+      setGeneralMessagesCount(0)
       setLoadingMessages(false)
     }
   }, [selectedClientId])
@@ -333,42 +247,14 @@ export function DialogsView({
     }
   }, [])
 
-  const selectedDialog = dialogs.find(d => d.client_id === selectedClientId)
-
-  const filteredDialogs = dialogs.filter(d => {
-    if (filterUnread && d.unread_admin_count === 0) return false
-    if (!searchQuery.trim()) return true
-    const q = searchQuery.toLowerCase()
-    const matchesClient =
-      d.client_name.toLowerCase().includes(q) ||
-      d.client_email.toLowerCase().includes(q) ||
-      d.client_phone.toLowerCase().includes(q) ||
-      d.last_message.toLowerCase().includes(q) ||
-      (d.client_number && String(d.client_number).includes(q))
-    const matchesJobs = d.jobs && d.jobs.some(j =>
-      j.job_title.toLowerCase().includes(q) ||
-      (j.job_number && String(j.job_number).includes(q))
-    )
-    return matchesClient || Boolean(matchesJobs)
-  })
-
-  // Messages filtered by selected job filter within the thread
-  const displayedMessages = activeMessages.filter(m => {
-    if (activeJobFilter === 'all') return true
-    if (activeJobFilter === 'general') return !m.job_id
-    return m.job_id === activeJobFilter
-  })
+  const selectedDialog = dialogs.find(d => d.client_id === selectedClientId) || null
+  const totalUnread = dialogs.reduce((sum, d) => sum + (d.unread_admin_count || 0), 0)
 
   useEffect(() => {
-    const lastId = displayedMessages.length > 0 ? displayedMessages[displayedMessages.length - 1].id : ''
-    const scrollKey = `${selectedClientId || ''}:${activeJobFilter}:${lastId}:${displayedMessages.length}`
-    if (scrollKey === lastScrollKeyRef.current) return
-    const prevClient = lastScrollKeyRef.current.split(':')[0]
-    lastScrollKeyRef.current = scrollKey
-    if (displayedMessages.length > 0) {
-      messagesEndRef.current?.scrollIntoView({ behavior: prevClient === (selectedClientId || '') ? 'smooth' : 'auto' })
+    if (hasLoadedDialogsRef.current) {
+      onUnreadCountChange?.(totalUnread)
     }
-  }, [selectedClientId, activeJobFilter, displayedMessages.length])
+  }, [totalUnread])
 
   async function handleMarkAllRead() {
     if (markingAllRead) return
@@ -381,8 +267,7 @@ export function DialogsView({
         headers: authHeaders,
       })
       if (!res.ok) {
-        const errText = await res.text()
-        throw new Error(errText || 'Не удалось отметить диалоги прочитанными')
+        throw new Error((await res.text()) || 'Не удалось отметить диалоги прочитанными')
       }
       setDialogs(prev => prev.map(d => ({ ...d, unread_admin_count: 0 })))
       setActiveMessages(prev => prev.map(m => (m.sender_role === 'client' ? { ...m, is_read_by_admin: true } : m)))
@@ -395,11 +280,12 @@ export function DialogsView({
   }
 
   async function handleToggleBlock() {
-    if (!selectedDialog || blockingAction) return
-    const currentlyBlocked = Boolean(selectedDialog.is_blocked)
+    const cid = clientProfile?.id || selectedDialog?.client_id
+    if (!cid || blockingAction) return
+    const currentlyBlocked = Boolean(clientProfile?.is_blocked ?? selectedDialog?.is_blocked)
     const endpoint = currentlyBlocked
-      ? `/api/admin/dialogs/${encodeURIComponent(selectedDialog.client_id)}/unblock`
-      : `/api/admin/dialogs/${encodeURIComponent(selectedDialog.client_id)}/block`
+      ? `/api/admin/dialogs/${encodeURIComponent(cid)}/unblock`
+      : `/api/admin/dialogs/${encodeURIComponent(cid)}/block`
 
     setBlockingAction(true)
     setError('')
@@ -411,14 +297,16 @@ export function DialogsView({
         body: currentlyBlocked ? undefined : JSON.stringify({}),
       })
       if (!res.ok) {
-        const errText = await res.text()
-        throw new Error(errText || 'Не удалось изменить статус блокировки')
+        throw new Error((await res.text()) || 'Не удалось изменить статус блокировки')
       }
       const data = await res.json()
       const nextBlocked = Boolean(data.is_blocked)
+      setClientProfile(prev =>
+        prev ? { ...prev, is_blocked: nextBlocked, dialog_status: nextBlocked ? 'blocked' : 'open' } : prev
+      )
       setDialogs(prev =>
         prev.map(d =>
-          d.client_id === selectedDialog.client_id
+          d.client_id === cid
             ? {
                 ...d,
                 is_blocked: nextBlocked,
@@ -438,11 +326,62 @@ export function DialogsView({
     }
   }
 
+  async function handleCloseOrReopen() {
+    const cid = clientProfile?.id || selectedDialog?.client_id
+    if (!cid || statusActionLoading) return
+    const curStatus = clientProfile?.dialog_status || selectedDialog?.dialog_status || 'open'
+    const isClosed = curStatus === 'closed'
+    const endpoint = isClosed
+      ? `/api/admin/dialogs/${encodeURIComponent(cid)}/reopen`
+      : `/api/admin/dialogs/${encodeURIComponent(cid)}/close`
+
+    setStatusActionLoading(true)
+    setError('')
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: isClosed ? undefined : JSON.stringify({ send_closing_note: false }),
+      })
+      if (!res.ok) {
+        throw new Error((await res.text()) || 'Не удалось обновить статус диалога')
+      }
+      const nextStatus = isClosed ? 'open' : 'closed'
+      setClientProfile(prev => (prev ? { ...prev, dialog_status: nextStatus } : prev))
+      setDialogs(prev =>
+        prev.map(d =>
+          d.client_id === cid
+            ? { ...d, dialog_status: nextStatus, needs_reply: nextStatus === 'closed' ? false : d.needs_reply }
+            : d
+        )
+      )
+    } catch (err: any) {
+      setError(err.message || 'Ошибка изменения статуса диалога')
+    } finally {
+      setStatusActionLoading(false)
+    }
+  }
+
+  async function handleSaveNotes(clientId: string, notes: string) {
+    const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}`, {
+      method: 'PATCH',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ notes }),
+    })
+    if (!res.ok) {
+      setError((await res.text()) || 'Не удалось сохранить заметку')
+      return
+    }
+    setClientProfile(prev => (prev && prev.id === clientId ? { ...prev, notes } : prev))
+  }
+
   async function handleSendReply(e?: React.FormEvent) {
     if (e) e.preventDefault()
     if (!selectedClientId) return
     const text = replyText.trim()
-    if (!text && files.length === 0) return
+    if (!text && files.length === 0 && pendingJobFiles.length === 0) return
 
     setSending(true)
     setError('')
@@ -451,6 +390,12 @@ export function DialogsView({
       formData.append('message', text)
       formData.append('job_id', replyJobId || '')
       formData.append('notify_telegram', String(notifyTelegram))
+      if (pendingJobFiles.length > 0) {
+        formData.append(
+          'attach_job_files',
+          JSON.stringify(pendingJobFiles.map(jf => ({ job_id: jf.job_id, kind: jf.kind })))
+        )
+      }
       files.forEach(f => formData.append('files', f))
       if (files[0]) formData.append('file', files[0])
 
@@ -461,28 +406,36 @@ export function DialogsView({
         body: formData,
       })
       if (!res.ok) {
-        const errText = await res.text()
-        throw new Error(errText || 'Ошибка отправки')
+        throw new Error((await res.text()) || 'Ошибка отправки')
       }
       const data = await res.json()
-      setActiveMessages(data.messages || [])
+      const updatedMsgs: ChatMessage[] = data.messages || []
+      setActiveMessages(updatedMsgs)
       setReplyText('')
       setFiles([])
+      setPendingJobFiles([])
 
-      // Update dialog snippet in left list
-      setDialogs(prev =>
-        prev.map(d =>
-          d.client_id === selectedClientId
-            ? {
-                ...d,
-                last_message: text || '📎 Прикреплен файл',
-                last_sender_role: 'admin',
-                last_message_at: new Date().toISOString(),
-                total_messages: d.total_messages + 1,
-              }
-            : d
+      // Refresh dialog list silently if this was a brand-new dialog not yet in the list
+      const existsInList = dialogs.some(d => d.client_id === selectedClientId)
+      if (!existsInList) {
+        void loadDialogs(false, true)
+      } else {
+        setDialogs(prev =>
+          prev.map(d =>
+            d.client_id === selectedClientId
+              ? {
+                  ...d,
+                  dialog_status: 'open',
+                  needs_reply: false,
+                  last_message: text || '📎 Прикреплен файл',
+                  last_sender_role: 'admin',
+                  last_message_at: new Date().toISOString(),
+                  total_messages: updatedMsgs.length || d.total_messages + 1,
+                }
+              : d
+          )
         )
-      )
+      }
     } catch (err: any) {
       setError(err.message || 'Не удалось отправить сообщение')
     } finally {
@@ -490,619 +443,96 @@ export function DialogsView({
     }
   }
 
-  const totalUnread = dialogs.reduce((sum, d) => sum + (d.unread_admin_count || 0), 0)
-
-  useEffect(() => {
-    if (hasLoadedDialogsRef.current) {
-      onUnreadCountChange?.(totalUnread)
-    }
-  }, [totalUnread])
-
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 120px)', minHeight: 520, gap: 14, background: '#f8fafc', padding: '12px 14px', borderRadius: 10, border: '1px solid #e2e8f0' }}>
-      {/* Left Column: Client Dialogs List */}
-      <div style={{ width: 340, minWidth: 300, display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: 8, border: '1px solid #e2e8f0', overflow: 'hidden' }}>
-        {/* Top filter bar */}
-        <div style={{ padding: '10px 12px', borderBottom: '1px solid #f1f5f9', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, fontSize: 13, color: '#1e293b' }}>
-              <MessageSquare size={16} color="#0d9488" />
-              <span>Диалоги с клиентами</span>
-              {totalUnread > 0 && (
-                <span style={{ background: '#ef4444', color: '#fff', fontSize: 10.5, fontWeight: 700, padding: '1px 6px', borderRadius: 10 }}>
-                  +{totalUnread}
-                </span>
-              )}
-            </div>
-            <button
-              type="button"
-              className="ghost small-text"
-              onClick={() => loadDialogs(false)}
-              disabled={loading}
-              title="Обновить список"
-              style={{ padding: 4, height: 'auto', color: '#64748b' }}
-            >
-              <RefreshCw size={13} className={loading ? 'spin' : ''} />
-            </button>
-          </div>
+    <div
+      className="dialogs-workspace"
+      style={{
+        display: 'flex',
+        height: 'calc(100vh - 114px)',
+        minHeight: 540,
+        gap: 12,
+        background: '#f1f5f9',
+        padding: 10,
+        borderRadius: 12,
+        border: '1px solid #e2e8f0',
+        overflow: 'hidden',
+      }}
+    >
+      <DialogSidebar
+        dialogs={dialogs}
+        clients={clients}
+        loading={loading}
+        selectedClientId={selectedClientId}
+        onSelectClient={cid => setSelectedClientId(cid)}
+        queueTab={queueTab}
+        onQueueTabChange={setQueueTab}
+        searchQuery={searchQuery}
+        onSearchQueryChange={setSearchQuery}
+        totalUnread={totalUnread}
+        markingAllRead={markingAllRead}
+        onMarkAllRead={() => void handleMarkAllRead()}
+        onRefresh={() => void loadDialogs(false)}
+      />
 
-          {/* Search box */}
-          <div style={{ position: 'relative' }}>
-            <Search size={13} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }} />
-            <input
-              type="text"
-              placeholder="Поиск по клиенту, задаче..."
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              style={{ width: '100%', padding: '6px 8px 6px 26px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 6, background: '#f8fafc' }}
-            />
-          </div>
+      <DialogThread
+        selectedDialog={selectedDialog}
+        clientProfile={clientProfile}
+        messages={activeMessages}
+        clientJobs={clientJobs}
+        generalMessagesCount={generalMessagesCount}
+        loadingMessages={loadingMessages}
+        activeJobFilter={activeJobFilter}
+        onJobFilterChange={setActiveJobFilter}
+        replyJobId={replyJobId}
+        onReplyJobIdChange={setReplyJobId}
+        replyText={replyText}
+        onReplyTextChange={setReplyText}
+        files={files}
+        onFilesChange={setFiles}
+        pendingJobFiles={pendingJobFiles}
+        onRemovePendingJobFile={idx => setPendingJobFiles(prev => prev.filter((_, i) => i !== idx))}
+        onAddPendingJobFile={item =>
+          setPendingJobFiles(prev =>
+            prev.some(x => x.job_id === item.job_id && x.kind === item.kind) ? prev : [...prev, item].slice(0, 10)
+          )
+        }
+        notifyTelegram={notifyTelegram}
+        onNotifyTelegramChange={setNotifyTelegram}
+        sending={sending}
+        error={error}
+        blockingAction={blockingAction}
+        statusActionLoading={statusActionLoading}
+        onToggleBlock={() => void handleToggleBlock()}
+        onCloseOrReopen={() => void handleCloseOrReopen()}
+        onSendReply={handleSendReply}
+        onOpenJob={onOpenJob}
+        showContextPanel={showContextPanel}
+        onToggleContextPanel={() => setShowContextPanel(v => !v)}
+        composerRef={composerRef}
+      />
 
-          {/* Filter tabs */}
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button
-              type="button"
-              onClick={() => setFilterUnread(false)}
-              style={{
-                flex: 1,
-                fontSize: 11.5,
-                fontWeight: 600,
-                padding: '4px 8px',
-                borderRadius: 5,
-                border: 'none',
-                background: !filterUnread ? '#0d9488' : '#f1f5f9',
-                color: !filterUnread ? '#fff' : '#64748b',
-                cursor: 'pointer',
-              }}
-            >
-              Все ({dialogs.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setFilterUnread(true)}
-              style={{
-                flex: 1,
-                fontSize: 11.5,
-                fontWeight: 600,
-                padding: '4px 8px',
-                borderRadius: 5,
-                border: 'none',
-                background: filterUnread ? '#ef4444' : '#f1f5f9',
-                color: filterUnread ? '#fff' : '#64748b',
-                cursor: 'pointer',
-              }}
-            >
-              Непрочитанные ({totalUnread})
-            </button>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => void handleMarkAllRead()}
-            disabled={markingAllRead || totalUnread === 0}
-            title="Отметить все входящие сообщения во всех диалогах как прочитанные"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 6,
-              width: '100%',
-              padding: '5px 8px',
-              fontSize: 11,
-              fontWeight: 600,
-              borderRadius: 5,
-              border: totalUnread > 0 ? '1px solid #99f6e4' : '1px solid #e2e8f0',
-              background: totalUnread > 0 ? '#f0fdfa' : '#f8fafc',
-              color: totalUnread > 0 ? '#0f766e' : '#94a3b8',
-              cursor: markingAllRead || totalUnread === 0 ? 'default' : 'pointer',
-              opacity: markingAllRead ? 0.7 : 1,
-            }}
-          >
-            {markingAllRead ? <Loader2 size={12} className="spin" /> : <CheckCheck size={13} />}
-            <span>{totalUnread > 0 ? `Отметить все прочитанными (${totalUnread})` : 'Все диалоги прочитаны'}</span>
-          </button>
-        </div>
-
-        {/* Scrollable list */}
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          {loading && dialogs.length === 0 ? (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 160, color: '#94a3b8', fontSize: 12, gap: 8 }}>
-              <Loader2 size={16} className="spin" />
-              <span>Загрузка диалогов...</span>
-            </div>
-          ) : filteredDialogs.length === 0 ? (
-            <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>
-              {filterUnread ? 'Нет непрочитанных диалогов' : 'Диалоги не найдены'}
-            </div>
-          ) : (
-            filteredDialogs.map(d => {
-              const isSelected = d.client_id === selectedClientId
-              return (
-                <div
-                  key={d.client_id}
-                  onClick={() => setSelectedClientId(d.client_id)}
-                  style={{
-                    padding: '10px 12px',
-                    borderBottom: '1px solid #f1f5f9',
-                    background: isSelected ? '#f0fdfa' : '#fff',
-                    borderLeft: isSelected ? '3px solid #0d9488' : '3px solid transparent',
-                    cursor: 'pointer',
-                    transition: 'background 0.15s ease',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
-                    <span style={{ fontSize: 12.5, fontWeight: 700, color: isSelected ? '#0f766e' : '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 190 }}>
-                      {d.client_name}
-                    </span>
-                    <span style={{ fontSize: 10.5, color: '#94a3b8', flexShrink: 0 }}>
-                      {formatRelativeTime(d.last_message_at)}
-                    </span>
-                  </div>
-
-                  {/* Client Subtext / Contacts & Job Chips */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 4 }}>
-                    {d.is_blocked && (
-                      <span style={{ fontSize: 10, fontWeight: 700, background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', padding: '1px 5px', borderRadius: 3 }}>
-                        🚫 Заблокирован
-                      </span>
-                    )}
-                    {d.is_guest && (
-                      <span style={{ fontSize: 10, fontWeight: 700, background: '#f1f5f9', color: '#475569', padding: '1px 5px', borderRadius: 3 }}>
-                        🌐 Гость сайта
-                      </span>
-                    )}
-                    {d.topic_linked && (
-                      <span style={{ fontSize: 10, fontWeight: 600, background: '#ecfdf5', color: '#047857', padding: '1px 5px', borderRadius: 3 }}>
-                        🗂 TG-тема
-                      </span>
-                    )}
-                    {d.client_phone && (
-                      <span style={{ fontSize: 10.5, color: '#0f766e', fontWeight: 600, marginRight: 4 }}>
-                        {d.client_phone}
-                      </span>
-                    )}
-                    {d.jobs && d.jobs.length > 0 && d.jobs.slice(0, 3).map(j => (
-                      <span
-                        key={j.job_id}
-                        style={{
-                          fontSize: 10,
-                          fontWeight: 700,
-                          background: '#e0f2fe',
-                          color: '#0369a1',
-                          padding: '1px 5px',
-                          borderRadius: 3,
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        #{j.job_number || j.job_id.slice(0, 4)}
-                      </span>
-                    ))}
-                    {d.jobs && d.jobs.length > 3 && (
-                      <span style={{ fontSize: 10, color: '#94a3b8' }}>
-                        +{d.jobs.length - 3}
-                      </span>
-                    )}
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
-                    <p style={{ margin: 0, fontSize: 11.5, color: d.unread_admin_count > 0 ? '#1e293b' : '#64748b', fontWeight: d.unread_admin_count > 0 ? 600 : 400, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}>
-                      {d.last_sender_role === 'admin' && <span style={{ color: '#0d9488', marginRight: 4 }}>Вы:</span>}
-                      {d.last_message || 'Диалог с клиентом'}
-                    </p>
-                    {d.unread_admin_count > 0 && (
-                      <span style={{ background: '#ef4444', color: '#fff', fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 8, flexShrink: 0 }}>
-                        +{d.unread_admin_count}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )
-            })
-          )}
-        </div>
-      </div>
-
-      {/* Right Column: Unified Client Dialogue Thread */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: 8, border: '1px solid #e2e8f0', overflow: 'hidden' }}>
-        {selectedDialog ? (
-          <>
-            {/* Thread Header */}
-            <div style={{ padding: '10px 16px', borderBottom: '1px solid #f1f5f9', background: '#fafafa', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#1e293b' }}>
-                    {selectedDialog.client_name}
-                  </h4>
-                  {selectedDialog.is_guest && (
-                    <span style={{ background: '#e0f2fe', color: '#0369a1', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 4 }}>
-                      Гость сайта
-                    </span>
-                  )}
-                  {selectedDialog.client_number && (
-                    <span style={{ background: '#f1f5f9', color: '#475569', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 4 }}>
-                      Клиент #{selectedDialog.client_number}
-                    </span>
-                  )}
-                  {selectedDialog.is_blocked && (
-                    <span style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 4 }}>
-                      Заблокирован
-                    </span>
-                  )}
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, fontSize: 11, color: '#64748b', flexWrap: 'wrap' }}>
-                  {selectedDialog.client_phone && (
-                    <a href={`tel:${selectedDialog.client_phone}`} style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#0f766e', textDecoration: 'none', fontWeight: 600 }}>
-                      <Phone size={12} />
-                      <span>{selectedDialog.client_phone}</span>
-                    </a>
-                  )}
-                  {selectedDialog.client_email && (
-                    <a href={`mailto:${selectedDialog.client_email}`} style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#475569', textDecoration: 'none' }}>
-                      <Mail size={12} />
-                      <span>{selectedDialog.client_email}</span>
-                    </a>
-                  )}
-                  {selectedDialog.telegram_id && (
-                    <span style={{ color: '#0284c7' }}>
-                      ✈️ {selectedDialog.telegram_id}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                {/* Job filter chips */}
-                {clientJobs.length > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 10.5, color: '#64748b', fontWeight: 600 }}>Фильтр:</span>
-                    <button
-                      type="button"
-                      onClick={() => setActiveJobFilter('all')}
-                      style={{
-                        border: 'none',
-                        fontSize: 10.5,
-                        fontWeight: 600,
-                        padding: '3px 7px',
-                        borderRadius: 4,
-                        cursor: 'pointer',
-                        background: activeJobFilter === 'all' ? '#0d9488' : '#f1f5f9',
-                        color: activeJobFilter === 'all' ? '#fff' : '#475569',
-                      }}
-                    >
-                      Все ({activeMessages.length})
-                    </button>
-                    {clientJobs.map(j => (
-                      <button
-                        key={j.job_id}
-                        type="button"
-                        onClick={() => setActiveJobFilter(j.job_id)}
-                        style={{
-                          border: 'none',
-                          fontSize: 10.5,
-                          fontWeight: 600,
-                          padding: '3px 7px',
-                          borderRadius: 4,
-                          cursor: 'pointer',
-                          background: activeJobFilter === j.job_id ? '#0284c7' : '#f1f5f9',
-                          color: activeJobFilter === j.job_id ? '#fff' : '#475569',
-                        }}
-                        title={j.job_title}
-                      >
-                        #{j.job_number || j.job_id.slice(0, 4)}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => setActiveJobFilter('general')}
-                      style={{
-                        border: 'none',
-                        fontSize: 10.5,
-                        fontWeight: 600,
-                        padding: '3px 7px',
-                        borderRadius: 4,
-                        cursor: 'pointer',
-                        background: activeJobFilter === 'general' ? '#64748b' : '#f1f5f9',
-                        color: activeJobFilter === 'general' ? '#fff' : '#475569',
-                      }}
-                    >
-                      Общие
-                    </button>
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => void handleToggleBlock()}
-                  disabled={blockingAction}
-                  title={
-                    selectedDialog.is_blocked
-                      ? 'Снять блокировку и восстановить доступ пользователю'
-                      : 'Заблокировать пользователя (чат на сайте, кабинет, бот и IP)'
-                  }
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 5,
-                    padding: '5px 10px',
-                    borderRadius: 6,
-                    fontSize: 11.5,
-                    fontWeight: 600,
-                    cursor: blockingAction ? 'default' : 'pointer',
-                    opacity: blockingAction ? 0.7 : 1,
-                    border: selectedDialog.is_blocked ? '1px solid #86efac' : '1px solid #fecaca',
-                    background: selectedDialog.is_blocked ? '#f0fdf4' : '#fef2f2',
-                    color: selectedDialog.is_blocked ? '#15803d' : '#dc2626',
-                  }}
-                >
-                  {blockingAction ? (
-                    <Loader2 size={13} className="spin" />
-                  ) : selectedDialog.is_blocked ? (
-                    <ShieldCheck size={13} />
-                  ) : (
-                    <Ban size={13} />
-                  )}
-                  <span>{selectedDialog.is_blocked ? 'Разблокировать' : 'Заблокировать'}</span>
-                </button>
-              </div>
-            </div>
-
-            {selectedDialog.is_blocked && (
-              <div style={{ padding: '7px 16px', background: '#fef2f2', borderBottom: '1px solid #fecaca', color: '#991b1b', fontSize: 11.5, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Ban size={13} />
-                <span>Пользователь заблокирован: отправка сообщений с сайта, вход в кабинет и обращения в бота ограничены.</span>
-              </div>
-            )}
-
-            {/* Messages Thread */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, background: '#f8fafc' }}>
-              {loadingMessages ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94a3b8', fontSize: 12, gap: 8 }}>
-                  <Loader2 size={16} className="spin" />
-                  <span>Загрузка сообщений...</span>
-                </div>
-              ) : displayedMessages.length === 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94a3b8', fontSize: 12, gap: 6 }}>
-                  <MessageSquare size={28} color="#cbd5e1" />
-                  <span>{activeJobFilter !== 'all' ? 'По этой задаче пока нет сообщений.' : 'В диалоге с клиентом пока нет сообщений. Напишите первое сообщение.'}</span>
-                </div>
-              ) : (
-                displayedMessages.map(msg => {
-                  const isAdmin = msg.sender_role === 'admin'
-                  return (
-                    <div
-                      key={msg.id}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: isAdmin ? 'flex-end' : 'flex-start',
-                        maxWidth: '85%',
-                        alignSelf: isAdmin ? 'flex-end' : 'flex-start',
-                      }}
-                    >
-                      {/* Context badge if tied to a job */}
-                      {msg.job_id ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3, fontSize: 10, color: '#0369a1', background: '#e0f2fe', padding: '1px 7px', borderRadius: 4, fontWeight: 600 }}>
-                          <span>📌 Задача #{msg.job_number || msg.job_id.slice(0, 4)}: {msg.job_title}</span>
-                          {onOpenJob && (
-                            <button
-                              type="button"
-                              onClick={() => onOpenJob(msg.job_id)}
-                              style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#0284c7', padding: 0, display: 'flex', alignItems: 'center' }}
-                              title="Открыть карточку задачи"
-                            >
-                              <ExternalLink size={10} />
-                            </button>
-                          )}
-                        </div>
-                      ) : (
-                        <div style={{ marginBottom: 3, fontSize: 10, color: '#64748b', fontWeight: 500 }}>
-                          💬 Общий чат поддержки
-                        </div>
-                      )}
-
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, fontSize: 10.5, color: '#64748b', flexWrap: 'wrap' }}>
-                        {isAdmin ? (
-                          <>
-                            <span style={{ fontWeight: 700, color: '#0d9488' }}>Вы (Эксперт TenderLex)</span>
-                            {msg.channel && channelBadgeLabel(msg.channel) && (
-                              <span style={{ fontSize: 10, color: '#475569', background: '#f1f5f9', padding: '0 5px', borderRadius: 4 }}>
-                                {channelBadgeLabel(msg.channel)}
-                              </span>
-                            )}
-                            <span>·</span>
-                            <span>{formatDate(msg.created_at)}</span>
-                          </>
-                        ) : (
-                          <>
-                            <span style={{ fontWeight: 700, color: '#1e293b' }}>
-                              {selectedDialog.is_guest ? `Гость (${selectedDialog.client_name})` : `Клиент (${selectedDialog.client_name})`}
-                            </span>
-                            {msg.channel && channelBadgeLabel(msg.channel) && (
-                              <span style={{ fontSize: 10, color: '#475569', background: '#f1f5f9', padding: '0 5px', borderRadius: 4 }}>
-                                {channelBadgeLabel(msg.channel)}
-                              </span>
-                            )}
-                            <span>·</span>
-                            <span>{formatDate(msg.created_at)}</span>
-                          </>
-                        )}
-                      </div>
-
-                      <div
-                        style={{
-                          background: isAdmin ? '#f0fdfa' : '#fff',
-                          border: isAdmin ? '1px solid #99f6e4' : '1px solid #e2e8f0',
-                          borderRadius: isAdmin ? '10px 10px 2px 10px' : '10px 10px 10px 2px',
-                          padding: '8px 12px',
-                          fontSize: 12,
-                          color: '#1e293b',
-                          whiteSpace: 'pre-wrap',
-                          lineHeight: 1.5,
-                          boxShadow: '0 1px 2px rgba(0,0,0,0.03)',
-                        }}
-                      >
-                        {msg.message}
-
-                        {/* Attachments */}
-                        {msg.attachments && msg.attachments.length > 0 && (
-                          <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6, borderTop: isAdmin ? '1px solid #ccfbf1' : '1px solid #f1f5f9', paddingTop: 6 }}>
-                            {msg.attachments.map(att => (
-                              <a
-                                key={att.index}
-                                href={att.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                download
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 5,
-                                  background: isAdmin ? '#ccfbf1' : '#f1f5f9',
-                                  color: isAdmin ? '#0f766e' : '#334155',
-                                  fontSize: 11,
-                                  padding: '3px 8px',
-                                  borderRadius: 5,
-                                  textDecoration: 'none',
-                                  fontWeight: 600,
-                                }}
-                              >
-                                <Download size={11} />
-                                <span>{att.name}</span>
-                              </a>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )
-                })
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-
-            {/* Reply Input Form */}
-            <form onSubmit={handleSendReply} style={{ padding: '10px 14px', borderTop: '1px solid #e2e8f0', background: '#fff' }}>
-              {error && (
-                <div style={{ marginBottom: 8, padding: '4px 8px', background: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626', fontSize: 11, borderRadius: 5 }}>
-                  {error}
-                </div>
-              )}
-
-              {/* Task context selector */}
-              {clientJobs.length > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontSize: 11, color: '#475569' }}>
-                  <span style={{ fontWeight: 600 }}>Контекст ответа:</span>
-                  <select
-                    value={replyJobId}
-                    onChange={e => setReplyJobId(e.target.value)}
-                    style={{ fontSize: 11, padding: '3px 6px', borderRadius: 4, border: '1px solid #cbd5e1', background: '#f8fafc', color: '#1e293b' }}
-                  >
-                    <option value="">Общий диалог (без привязки к задаче)</option>
-                    {clientJobs.map(j => (
-                      <option key={j.job_id} value={j.job_id}>
-                        Задача #{j.job_number || j.job_id.slice(0, 4)}: {j.job_title}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {files.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-                  {files.map((f, i) => (
-                    <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#f0fdfa', border: '1px solid #99f6e4', color: '#0f766e', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>
-                      📎 {f.name}
-                      <button
-                        type="button"
-                        onClick={() => setFiles(prev => prev.filter((_, idx) => idx !== i))}
-                        style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#0f766e', fontWeight: 700, padding: 0 }}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-                <div style={{ flex: 1 }}>
-                  <textarea
-                    rows={2}
-                    value={replyText}
-                    onChange={e => setReplyText(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                        e.preventDefault()
-                        handleSendReply()
-                      }
-                    }}
-                    placeholder="Напишите ответ клиенту... (Ctrl+Enter для отправки)"
-                    style={{ width: '100%', padding: '8px 10px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 6, resize: 'vertical' }}
-                  />
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
-                  {selectedDialog.telegram_id && (
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: '#0284c7', cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={notifyTelegram}
-                        onChange={e => setNotifyTelegram(e.target.checked)}
-                      />
-                      <span>Уведомить в Telegram</span>
-                    </label>
-                  )}
-
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#64748b', cursor: 'pointer', padding: '5px 8px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#f8fafc' }}>
-                      <Paperclip size={13} />
-                      <span>Файл</span>
-                      <input
-                        type="file"
-                        multiple
-                        style={{ display: 'none' }}
-                        accept=".xlsx,.xls,.docx,.doc,.pdf,.zip,.rar,.7z,.txt,.png,.jpg,.jpeg,.webp"
-                        onChange={e => {
-                          if (e.target.files) {
-                            setFiles(Array.from(e.target.files))
-                          }
-                        }}
-                      />
-                    </label>
-
-                    <button
-                      type="submit"
-                      disabled={sending || (!replyText.trim() && files.length === 0)}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        background: '#0d9488',
-                        color: '#fff',
-                        border: 'none',
-                        padding: '6px 14px',
-                        borderRadius: 6,
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {sending ? <Loader2 size={13} className="spin" /> : <Send size={13} />}
-                      <span>Отправить</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </form>
-          </>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94a3b8', fontSize: 13, gap: 8 }}>
-            <MessageSquare size={36} color="#cbd5e1" />
-            <span>Выберите диалог слева для просмотра и ответа</span>
-          </div>
-        )}
-      </div>
+      {showContextPanel && (selectedDialog || clientProfile) && (
+        <DialogContextPanel
+          client={clientProfile}
+          jobs={clientJobs}
+          generalMessagesCount={generalMessagesCount}
+          activeJobFilter={activeJobFilter}
+          onSelectJobFilter={jid => setActiveJobFilter(jid)}
+          onSetReplyJob={jid => {
+            setReplyJobId(jid)
+            composerRef.current?.focus()
+          }}
+          onAttachJobFile={item => {
+            setPendingJobFiles(prev =>
+              prev.some(x => x.job_id === item.job_id && x.kind === item.kind) ? prev : [...prev, item].slice(0, 10)
+            )
+            composerRef.current?.focus()
+          }}
+          onOpenJob={onOpenJob}
+          onOpenClient={onOpenClient}
+          onSaveNotes={handleSaveNotes}
+        />
+      )}
     </div>
   )
 }

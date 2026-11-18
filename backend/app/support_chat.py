@@ -1890,7 +1890,7 @@ async def close_support_dialog(
     state.updated_at = now_utc()
     if state.guest_session_id:
         guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == state.guest_session_id).first()
-        if guest:
+        if guest and guest.status != "blocked":
             guest.status = "closed"
             guest.updated_at = now_utc()
     db.query(JobChatMessage).filter(
@@ -1924,6 +1924,97 @@ async def close_support_dialog(
             {"chat_id": group_id, "message_thread_id": int(state.telegram_thread_id)},
             allow_in_test=allow_in_test,
         )
+
+
+async def close_support_dialog_by_client_id(
+    db: Session,
+    *,
+    client_id: str,
+    send_closing_note: bool = False,
+    allow_in_test: bool = False,
+) -> dict[str, Any]:
+    dialog_key, normalized_client_id, guest_sid = normalize_dialog_key(client_id)
+    if not normalized_client_id:
+        raise ValueError("Не указан идентификатор диалога.")
+    if guest_sid:
+        guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == guest_sid).first()
+        has_msg = bool(db.query(JobChatMessage.id).filter(JobChatMessage.client_id == normalized_client_id).first())
+        if not guest and not has_msg:
+            raise ValueError("Гостевой диалог не найден.")
+    else:
+        client = db.query(Client).filter(Client.id == normalized_client_id).first()
+        if not client:
+            raise ValueError("Клиент не найден.")
+
+    state = get_or_create_dialog_state(
+        db,
+        client_id=normalized_client_id,
+        guest_session_id=guest_sid,
+    )
+    if state.status == "blocked":
+        raise ValueError("Диалог заблокирован — сначала снимите блокировку.")
+    await close_support_dialog(
+        db,
+        state=state,
+        send_closing_note=send_closing_note,
+        allow_in_test=allow_in_test,
+    )
+    return {
+        "ok": True,
+        "client_id": normalized_client_id,
+        "dialog_key": dialog_key,
+        "dialog_status": "closed",
+    }
+
+
+async def reopen_support_dialog(
+    db: Session,
+    *,
+    client_id: str,
+    allow_in_test: bool = False,
+) -> dict[str, Any]:
+    dialog_key, normalized_client_id, guest_sid = normalize_dialog_key(client_id)
+    if not normalized_client_id:
+        raise ValueError("Не указан идентификатор диалога.")
+    if guest_sid:
+        guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == guest_sid).first()
+        has_msg = bool(db.query(JobChatMessage.id).filter(JobChatMessage.client_id == normalized_client_id).first())
+        if not guest and not has_msg:
+            raise ValueError("Гостевой диалог не найден.")
+        if guest and guest.status == "blocked":
+            raise ValueError("Диалог заблокирован — используйте разблокировку.")
+        if guest and guest.status == "closed":
+            guest.status = "open"
+            guest.updated_at = now_utc()
+    else:
+        client = db.query(Client).filter(Client.id == normalized_client_id).first()
+        if not client:
+            raise ValueError("Клиент не найден.")
+
+    state = get_or_create_dialog_state(
+        db,
+        client_id=normalized_client_id,
+        guest_session_id=guest_sid,
+    )
+    if state.status == "blocked":
+        raise ValueError("Диалог заблокирован — используйте разблокировку.")
+    state.status = "open"
+    state.updated_at = now_utc()
+    db.commit()
+
+    group_id = get_configured_support_group_id(db)
+    if group_id and state.telegram_group_id == group_id and int(state.telegram_thread_id or 0) > 0:
+        await _tg_api_post(
+            "reopenForumTopic",
+            {"chat_id": group_id, "message_thread_id": int(state.telegram_thread_id)},
+            allow_in_test=allow_in_test,
+        )
+    return {
+        "ok": True,
+        "client_id": normalized_client_id,
+        "dialog_key": dialog_key,
+        "dialog_status": "open",
+    }
 
 
 def _upsert_blocked_actor(

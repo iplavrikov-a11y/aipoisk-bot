@@ -1405,11 +1405,18 @@ export function App() {
   const [loading, setLoading] = useState(false)
   const [showServerModal, setShowServerModal] = useState(false)
   const [selectedClientForJobs, setSelectedClientForJobs] = useState<string>('')
+  const [selectedClientForDialogs, setSelectedClientForDialogs] = useState<string>('')
+  const [selectedJobForView, setSelectedJobForView] = useState<{ jobId: string; clientId?: string; jobNumber?: number | null } | null>(null)
   const loadAllRef = useRef<(force?: boolean) => Promise<void>>(() => Promise.resolve())
 
   function handleNavigateToClientJobs(clientId: string) {
     setSelectedClientForJobs(clientId)
     setView('jobs')
+  }
+
+  function handleNavigateToClientDialog(clientId: string) {
+    setSelectedClientForDialogs(clientId)
+    setView('dialogs')
   }
 
   const [toasts, setToasts] = useState<AdminToast[]>([])
@@ -2011,6 +2018,7 @@ export function App() {
               passwordResets={passwordResets}
               onChange={loadAll}
               onNavigateToClientJobs={handleNavigateToClientJobs}
+              onNavigateToClientDialog={handleNavigateToClientDialog}
               onNavigateToMcp={() => setView('mcp')}
               isSyncing={isClientsSyncing}
               lastSyncAt={lastClientsSyncAt}
@@ -2028,6 +2036,9 @@ export function App() {
               clients={clients}
               selectedClientId={selectedClientForJobs}
               onClearSelectedClient={() => setSelectedClientForJobs('')}
+              selectedJob={selectedJobForView}
+              onClearSelectedJob={() => setSelectedJobForView(null)}
+              onNavigateToClientDialog={handleNavigateToClientDialog}
               onChange={async jobId => {
                 if (jobId) {
                   const updated = await api<Job>(`/api/jobs/${jobId}`)
@@ -2042,7 +2053,12 @@ export function App() {
         {isReady && view === 'dialogs' && (
           <AdminErrorBoundary sectionName="Диалоги">
             <DialogsView
-              onOpenJob={jobId => {
+              clients={clients}
+              initialClientId={selectedClientForDialogs}
+              onClearInitialClient={() => setSelectedClientForDialogs('')}
+              onOpenClient={handleSelectClient}
+              onOpenJob={(jobId, clientId, jobNumber) => {
+                setSelectedJobForView({ jobId, clientId, jobNumber })
                 setView('jobs')
               }}
               onUnreadCountChange={count => {
@@ -2679,6 +2695,7 @@ function ClientsView({
   passwordResets,
   onChange,
   onNavigateToClientJobs,
+  onNavigateToClientDialog,
   onNavigateToMcp,
   isSyncing,
   lastSyncAt,
@@ -2691,6 +2708,7 @@ function ClientsView({
   passwordResets: PasswordResetRequest[]
   onChange: () => Promise<void>
   onNavigateToClientJobs?: (clientId: string) => void
+  onNavigateToClientDialog?: (clientId: string) => void
   onNavigateToMcp?: () => void
   isSyncing?: boolean
   lastSyncAt?: number
@@ -2720,6 +2738,7 @@ function ClientsView({
   useEffect(() => {
     if (selectedClientIdFromParent) {
       setSelectedClientId(selectedClientIdFromParent)
+      setExpandedClients(prev => ({ ...prev, [selectedClientIdFromParent]: true }))
       setPage(1)
     }
   }, [selectedClientIdFromParent])
@@ -3450,6 +3469,18 @@ function ClientsView({
                       <MoreHorizontal size={15} />
                     </summary>
                     <div className="client-actions-popover">
+                      {onNavigateToClientDialog && (
+                        <button
+                          className="small-text"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onNavigateToClientDialog(client.id)
+                          }}
+                        >
+                          <MessageSquare size={13} />
+                          Диалог с клиентом
+                        </button>
+                      )}
                       {onNavigateToClientJobs && (
                         <button
                           className="small-text"
@@ -4130,6 +4161,9 @@ function JobsView({
   clients = [],
   selectedClientId = '',
   onClearSelectedClient,
+  selectedJob = null,
+  onClearSelectedJob,
+  onNavigateToClientDialog,
   onChange,
   loading = false,
 }: {
@@ -4137,6 +4171,9 @@ function JobsView({
   clients?: Client[]
   selectedClientId?: string
   onClearSelectedClient?: () => void
+  selectedJob?: { jobId: string; clientId?: string; jobNumber?: number | null } | null
+  onClearSelectedJob?: () => void
+  onNavigateToClientDialog?: (clientId: string) => void
   onChange: (jobId?: string) => Promise<void>
   loading?: boolean
 }) {
@@ -4204,6 +4241,37 @@ function JobsView({
     }
   }, [selectedClientId])
 
+  useEffect(() => {
+    if (!selectedJob?.jobId) return
+    const target = jobs.find(j => j.id === selectedJob.jobId)
+    if (selectedJob.clientId) {
+      setClientFilter(selectedJob.clientId)
+    } else if (target?.client_id) {
+      setClientFilter(target.client_id)
+    } else {
+      setClientFilter('')
+    }
+    setStatusFilter('')
+    setModeFilter('')
+    setPolicyFilter('')
+    if (target && (target.is_internal || (target.is_admin_rerun && target.parent_job_id))) {
+      setShowInternalJobs(true)
+    }
+    if (selectedJob.jobNumber) {
+      setQuery(`#${selectedJob.jobNumber}`)
+    } else {
+      setQuery(selectedJob.jobId)
+    }
+    setPage(1)
+    setExpandedJobs(prev => ({ ...prev, [selectedJob.jobId]: true }))
+    if (!jobDetails[selectedJob.jobId]) {
+      api<JobDetail>(`/api/jobs/${selectedJob.jobId}`)
+        .then(payload => setJobDetails(current => ({ ...current, [selectedJob.jobId]: payload })))
+        .catch(err => setJobDetails(current => ({ ...current, [selectedJob.jobId]: { detail_error: formatError(err) } })))
+    }
+    onClearSelectedJob?.()
+  }, [selectedJob])
+
   const recentClientOptions = useMemo(() => {
     const jobCounts: Record<string, number> = {}
     for (const j of jobs) {
@@ -4257,6 +4325,7 @@ function JobsView({
       const resultNames = (job.result_files || []).map(f => f.filename)
       const rerunNumber = job.admin_rerun?.job_number
       return [
+        job.id,
         job.job_number ? `#${job.job_number}` : '',
         job.job_number ? String(job.job_number) : '',
         job.client_number ? `#${job.client_number}` : '',
@@ -5016,6 +5085,18 @@ function JobsView({
                     <span className="pill-filename" title={inputFiles[0].original_filename}>{inputFiles[0].original_filename}</span>
                   </button>
                 ) : null}
+
+                {/* Open client dialog button */}
+                {job.client_id && onNavigateToClientDialog && (
+                  <button
+                    type="button"
+                    className="icon-button small"
+                    onClick={() => onNavigateToClientDialog(job.client_id)}
+                    title="Открыть диалог с клиентом"
+                  >
+                    <MessageSquare size={13} />
+                  </button>
+                )}
 
                 {/* Supplement button */}
                 <button

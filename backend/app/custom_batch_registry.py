@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import datetime as dt
 import io
@@ -13,13 +14,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
+from zoneinfo import ZoneInfo
 
+import httpx
 import openpyxl
 
 from .ai import call_llm, parse_json_object
+from .config import config
 from .document_parser import clean_xml_compatible, extract_text, sanitize_filename
 from .models import SystemSettings
 from .procurement_sources import normalize_source_url, official_notice_number_from_url
+
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +48,7 @@ COLUMN_MAPPING_SYSTEM_PROMPT = """Ты — ИИ-анализатор струк�
    - title: название / наименование объекта закупки / предмет закупки (необязательно, null если нет)
    - nmck: НМЦ / НМЦК / начальная (максимальная) цена (необязательно, null если нет)
    - publication_date: дата публикации / размещения (необязательно)
-   - deadline_date: окончание приема заявок / срок подачи заявок (необязательно)
+   - deadline_date: дата и время окончания приема заявок / срок подачи заявок / подача заявок до (выбирай именно окончание приема заявок, НЕ путай с датой проведения отбора, аукциона или подведения итогов)
    - procurement_type: тип торгов / закон (44-ФЗ, 223-ФЗ, малые закупки и т.п., необязательно)
    - eis_url: ссылка на ЕИС (необязательно)
    - etp_url: ЭТП / ссылка на площадку (необязательно)
@@ -147,6 +153,92 @@ def _format_cell_value(val: Any) -> str:
     if isinstance(val, dt.date):
         return val.strftime("%d.%m.%Y")
     return clean_xml_compatible(str(val)).strip()
+
+
+_RU_DEADLINE_RE = re.compile(
+    r"(\d{1,2})\.(\d{1,2})\.(\d{2,4})(?:[,\sT]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?"
+)
+_ISO_DEADLINE_RE = re.compile(
+    r"(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?"
+)
+
+
+def _format_msk_datetime_from_epoch(value: Any, *, with_time: bool = True) -> tuple[str, int | None]:
+    if value in (None, "", False):
+        return "", None
+    try:
+        numeric = float(value)
+        if numeric <= 0:
+            return "", None
+        if numeric > 10_000_000_000:
+            ms = int(round(numeric))
+            sec = numeric / 1000.0
+        else:
+            sec = numeric
+            ms = int(round(numeric * 1000.0))
+        parsed = dt.datetime.fromtimestamp(sec, dt.timezone.utc).astimezone(MOSCOW_TZ)
+        if not with_time:
+            return parsed.strftime("%d.%m.%Y"), ms
+        if parsed.hour == 0 and parsed.minute == 0 and parsed.second == 0:
+            return parsed.strftime("%d.%m.%Y"), ms
+        return parsed.strftime("%d.%m.%Y %H:%M"), ms
+    except (TypeError, ValueError, OSError):
+        return "", None
+
+
+def parse_deadline_timestamp_ms(value: Any) -> int | None:
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    if isinstance(value, dt.datetime):
+        aware = value if value.tzinfo else value.replace(tzinfo=MOSCOW_TZ)
+        return int(round(aware.timestamp() * 1000))
+    if isinstance(value, dt.date):
+        aware = dt.datetime(value.year, value.month, value.day, tzinfo=MOSCOW_TZ)
+        return int(round(aware.timestamp() * 1000))
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric <= 0:
+            return None
+        return int(round(numeric if numeric > 10_000_000_000 else numeric * 1000.0))
+
+    raw = clean_xml_compatible(str(value)).strip()
+    if not raw:
+        return None
+    cleaned = re.sub(r"\(?\s*(?:МСК|MSK|UTC\+?3)\s*\)?", "", raw, flags=re.IGNORECASE).strip()
+
+    m_ru = _RU_DEADLINE_RE.search(cleaned)
+    if m_ru:
+        day, month, year = int(m_ru.group(1)), int(m_ru.group(2)), int(m_ru.group(3))
+        if year < 100:
+            year += 2000
+        hour = int(m_ru.group(4) or 0)
+        minute = int(m_ru.group(5) or 0)
+        second = int(m_ru.group(6) or 0)
+        try:
+            aware = dt.datetime(year, month, day, hour, minute, second, tzinfo=MOSCOW_TZ)
+            return int(round(aware.timestamp() * 1000))
+        except ValueError:
+            return None
+
+    m_iso = _ISO_DEADLINE_RE.search(cleaned)
+    if m_iso:
+        year, month, day = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
+        hour = int(m_iso.group(4) or 0)
+        minute = int(m_iso.group(5) or 0)
+        second = int(m_iso.group(6) or 0)
+        try:
+            aware = dt.datetime(year, month, day, hour, minute, second, tzinfo=MOSCOW_TZ)
+            return int(round(aware.timestamp() * 1000))
+        except ValueError:
+            return None
+
+    try:
+        iso_dt = dt.datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        if iso_dt.tzinfo is None:
+            iso_dt = iso_dt.replace(tzinfo=MOSCOW_TZ)
+        return int(round(iso_dt.timestamp() * 1000))
+    except ValueError:
+        return None
 
 
 def _parse_nmck(val: Any) -> tuple[float | None, str]:
@@ -440,6 +532,7 @@ async def _parse_xlsx_registry(
                     "nmck_raw": nmck_raw[:80],
                     "publication_date": pub_date[:60],
                     "deadline_date": dead_date[:60],
+                    "deadline_ts": parse_deadline_timestamp_ms(dead_date),
                     "procurement_type": proc_type[:80],
                     "eis_url": eis_url[:1000],
                     "etp_url": etp_url[:1000],
@@ -524,6 +617,7 @@ async def _parse_csv_registry(
                 "nmck_raw": nmck_raw[:80],
                 "publication_date": pub_date[:60],
                 "deadline_date": dead_date[:60],
+                "deadline_ts": parse_deadline_timestamp_ms(dead_date),
                 "procurement_type": proc_type[:80],
                 "eis_url": "",
                 "etp_url": "",
@@ -581,6 +675,7 @@ async def _parse_docx_registry(
                 "nmck_raw": nmck_raw[:80],
                 "publication_date": clean_xml_compatible(str(item.get("publication_date") or "")).strip()[:60],
                 "deadline_date": clean_xml_compatible(str(item.get("deadline_date") or "")).strip()[:60],
+                "deadline_ts": parse_deadline_timestamp_ms(item.get("deadline_date")),
                 "procurement_type": clean_xml_compatible(str(item.get("procurement_type") or "")).strip()[:80],
                 "eis_url": "",
                 "etp_url": etp_u[:1000],
@@ -666,6 +761,7 @@ def parse_procurement_text_list(raw_text: str) -> RegistryPreviewResult:
                 "nmck_raw": "",
                 "publication_date": "",
                 "deadline_date": "",
+                "deadline_ts": None,
                 "procurement_type": proc_type,
                 "eis_url": eis_url[:1000],
                 "etp_url": etp_url[:1000],
@@ -677,3 +773,163 @@ def parse_procurement_text_list(raw_text: str) -> RegistryPreviewResult:
             break
 
     return RegistryPreviewResult(bool(items), "Список извещений", "Текстовый ввод", ["Текстовый ввод"], items)
+
+
+def _extract_search_candidates(payload: Any) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            tid = str(node.get("_id") or node.get("id") or "").strip()
+            if tid and (node.get("number") or node.get("orderName")) and tid not in seen_ids:
+                seen_ids.add(tid)
+                candidates.append(node)
+            for val in node.values():
+                _walk(val)
+        elif isinstance(node, list):
+            for elem in node:
+                _walk(elem)
+
+    _walk(payload)
+    return candidates
+
+
+def _pick_best_search_match(candidates: list[dict[str, Any]], notice_number: str) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    exact = str(notice_number or "").strip()
+    digits = re.sub(r"\D+", "", exact)
+    exact_matches = [c for c in candidates if str(c.get("number") or "").strip() == exact]
+    if not exact_matches and digits:
+        exact_matches = [
+            c
+            for c in candidates
+            if re.sub(r"\D+", "", str(c.get("number") or "").strip()) == digits
+        ]
+    pool = exact_matches or (candidates if len(candidates) == 1 else [])
+    if not pool:
+        return None
+    pool.sort(
+        key=lambda c: (
+            1 if c.get("submissionCloseDateTime") else 0,
+            1 if c.get("status") == 1 else 0,
+            1 if c.get("maxPrice") is not None else 0,
+            1 if c.get("orderName") else 0,
+        ),
+        reverse=True,
+    )
+    return pool[0]
+
+
+async def enrich_registry_preview_items(
+    items: list[dict[str, Any]],
+    *,
+    max_items: int = 60,
+    total_timeout_seconds: float = 8.0,
+) -> list[dict[str, Any]]:
+    """Enrich parsed registry preview rows with live source metadata (deadline_date, price, title) when missing.
+
+    Never reads/writes a cache: every preview enrichment runs live against the source API.
+    """
+    if not items:
+        return items
+
+    needs_enrichment: list[dict[str, Any]] = []
+    for it in items:
+        if it.get("deadline_ts") is None and it.get("deadline_date"):
+            it["deadline_ts"] = parse_deadline_timestamp_ms(it.get("deadline_date"))
+        notice_num = str(it.get("notice_number") or "").strip()
+        raw_title = str(it.get("title") or "").strip()
+        missing_deadline = not str(it.get("deadline_date") or "").strip()
+        missing_title = not raw_title or raw_title == f"Закупка {notice_num}"
+        missing_price = it.get("nmck_value") is None and not str(it.get("nmck_raw") or "").strip()
+        if notice_num and (missing_deadline or missing_title or missing_price):
+            needs_enrichment.append(it)
+
+    token = str(config.tenderplan_api_token or "").strip()
+    if not token or not needs_enrichment:
+        return items
+
+    base_url = str(config.tenderplan_base_url or "https://tenderplan.ru").rstrip("/")
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    sem = asyncio.Semaphore(6)
+
+    async def _enrich_one(client: httpx.AsyncClient, item: dict[str, Any]) -> None:
+        exact_num = str(item.get("notice_number") or "").strip()
+        digits = re.sub(r"\D+", "", exact_num)
+        if not digits or len(digits) < 6:
+            return
+        queries = [exact_num]
+        if digits != exact_num:
+            queries.append(digits)
+
+        matched: dict[str, Any] | None = None
+        async with sem:
+            for q_num in queries:
+                try:
+                    resp = await client.get(f"{base_url}/api/search/tender", params={"number": q_num})
+                    if resp.status_code >= 400:
+                        continue
+                    cands = _extract_search_candidates(resp.json())
+                    matched = _pick_best_search_match(cands, exact_num)
+                    if matched is not None:
+                        break
+                except Exception:
+                    continue
+
+        if not matched:
+            return
+
+        if not str(item.get("deadline_date") or "").strip():
+            dead_str, dead_ms = _format_msk_datetime_from_epoch(
+                matched.get("submissionCloseDateTime"), with_time=True
+            )
+            if dead_str:
+                item["deadline_date"] = dead_str[:60]
+                item["deadline_ts"] = dead_ms
+
+        if not str(item.get("publication_date") or "").strip():
+            pub_str, _ = _format_msk_datetime_from_epoch(
+                matched.get("publicationDateTime"), with_time=False
+            )
+            if pub_str:
+                item["publication_date"] = pub_str[:60]
+
+        cur_title = str(item.get("title") or "").strip()
+        order_name = clean_xml_compatible(str(matched.get("orderName") or "")).strip()
+        if order_name and (not cur_title or cur_title == f"Закупка {exact_num}"):
+            item["title"] = order_name[:500]
+
+        if item.get("nmck_value") is None and not str(item.get("nmck_raw") or "").strip():
+            max_price = matched.get("maxPrice")
+            if max_price not in (None, ""):
+                nmck_val, nmck_raw = _parse_nmck(max_price)
+                if nmck_val is not None:
+                    item["nmck_value"] = nmck_val
+                    item["nmck_raw"] = nmck_raw[:80]
+
+        if not str(item.get("customer_name") or "").strip():
+            customers = matched.get("customers")
+            if isinstance(customers, list):
+                names = [
+                    clean_xml_compatible(str(c.get("name") or "")).strip()
+                    for c in customers
+                    if isinstance(c, dict) and str(c.get("name") or "").strip()
+                ]
+                if names:
+                    item["customer_name"] = "; ".join(names)[:300]
+
+        if not str(item.get("eis_url") or "").strip():
+            href = normalize_source_url(str(matched.get("href") or "").strip())
+            if href and "zakupki.gov.ru" in href:
+                item["eis_url"] = href[:1000]
+
+    try:
+        async with httpx.AsyncClient(timeout=4.0, headers=headers) as client:
+            tasks = [_enrich_one(client, it) for it in needs_enrichment[:max_items]]
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=total_timeout_seconds)
+    except Exception:
+        pass
+
+    return items

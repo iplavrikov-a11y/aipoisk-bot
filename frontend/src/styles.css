@@ -5579,3 +5579,50 @@ a.server-api-card.warning:hover {
   border-color: #cbd5e1 !important;
   color: #0f172a !important;
 }
+
+/* Dialogs 3-column workspace polish */
+.dialogs-workspace button:hover:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.dialogs-workspace *::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.dialogs-workspace *::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dialogs-workspace *::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+}
+
+.dialogs-workspace *::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+@media (max-width: 1380px) {
+  .dialogs-sidebar-col {
+    width: 276px !important;
+    min-width: 240px !important;
+  }
+  .dialogs-context-col {
+    width: 300px !important;
+    min-width: 260px !important;
+  }
+}
+
+@media (max-width: 1120px) {
+  .dialogs-workspace {
+    flex-direction: column !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  .dialogs-sidebar-col,
+  .dialogs-context-col {
+    width: 100% !important;
+    max-height: 360px;
+  }
+}
