@@ -32,6 +32,6 @@ export const metadata: Metadata = {
 
 export default async function CabinetPage() {
   const siteData = await getSiteData();
-  const initialTrialBalanceRub = Math.max(0, siteData.trial?.balance_rub ?? 495);
+  const initialTrialBalanceRub = Math.max(0, siteData.trial?.balance_rub ?? 250);
   return <CabinetClient initialTrialBalanceRub={initialTrialBalanceRub} />;
 }

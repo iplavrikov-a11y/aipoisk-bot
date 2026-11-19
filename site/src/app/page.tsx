@@ -113,7 +113,7 @@ function computeHomePricing(siteData: PublicSitePayload): HomePricingSummary {
   const expressFromRub = Math.max(1, Math.round(expressRub * bestRatio));
   const monitoringFromRub = Math.max(1, Math.round(monitoringRub * bestRatio));
   const minPkgTaskRub = Math.min(searchFromRub, exactFromRub, reportFromRub, expressFromRub);
-  const trialRub = Math.max(0, siteData.trial?.balance_rub ?? 495);
+  const trialRub = Math.max(0, siteData.trial?.balance_rub ?? 250);
 
   return {
     searchRub,

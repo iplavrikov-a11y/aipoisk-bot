@@ -1680,7 +1680,7 @@ function CustomerJobChat({
   );
 }
 
-export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBalanceRub?: number }) {
+export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBalanceRub?: number }) {
   const [nowTs, setNowTs] = useState(() => Date.now());
   const [session, setSession] = useState<SessionPayload | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);

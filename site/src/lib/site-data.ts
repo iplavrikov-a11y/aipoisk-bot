@@ -183,7 +183,7 @@ const fallbackData: PublicSitePayload = {
   },
   trial: {
     enabled: false,
-    balance_rub: 495,
+    balance_rub: 250,
     supplier_search_limit: 1,
     procurement_report_limit: 1,
     file_limit: 10,
