@@ -1,5 +1,28 @@
 # TenderLex: Project Status
 
+## Актуальное состояние — 19 ноября 2026 (Москва, ч. 2) — «Экспресс-оценка закупок» для всех клиентов (30 ₽), поддержка изображений/скриншотов (OCR + ИИ-зрение) и мультизапуск полного «Анализа документации» (до 10 закупок)
+
+**Индивидуальный пакетный анализ выведен в общедоступный специнструмент «Экспресс-оценка закупок» с отдельным тарифом и управлением из админки, во всём кабинете открыта загрузка изображений и скриншотов таблиц, а в полном «Анализе документации» добавлен мультизапуск до 10 закупок за один шаг**:
+
+1. **Общедоступная «Экспресс-оценка закупок» (`backend/app/models.py`, `backend/app/db.py`, `backend/app/billing.py`, `backend/app/custom_batch_runner.py`, `backend/app/jobs.py`, `backend/app/main.py`, `frontend/src/App.tsx`, `site/src/app/cabinet/cabinet-client.tsx`, `site/src/components/custom-batch-report-modals.tsx`)**:
+   * Введён отдельный тарифный вид `custom_batch_report` (по умолчанию **30 ₽ / закупку**, настраивается в админке и переопределяется индивидуально по клиентам) и глобальные настройки в `SystemSettings` (`batch_report_default_price_kopeks`, `batch_report_access_mode` = `all|granular|disabled`, `batch_report_max_items` = 30, `batch_report_default_prompt`) с миграцией схемы PostgreSQL (`SCHEMA_MIGRATION_VERSION = "2026-11-19-express-assessment-v1"`).
+   * Идемпотентная миграция `_migrate_legacy_custom_batch_overrides()` автоматически перенесла персональные цены прежних VIP-клиентов (`15 ₽` / `1 ₽`) в `custom_batch_report`, сохранив их личный промт и повышенный лимит до 60 закупок.
+   * Для всех остальных клиентов подключён встроенный 5-блочный промт `DEFAULT_EXPRESS_ASSESSMENT_PROMPT` (с отображением сроков оплаты, актуальным ПП РФ № 1875 и заметкой с рекомендацией полного анализа перед подачей заявки), доступный для редактирования в админке (`GET/POST /api/batch-report/settings`).
+   * Работает для 1 закупки (в т.ч. `use_custom_prompt=true` в `POST /api/customer/jobs` тарифицируется по `custom_batch_report`) и для списков до 30 закупок; в просмотрщике ответов добавлена кнопка **«Разобрать детально»**, переносящая номер закупки в полный «Анализ документации» в 1 клик.
+
+2. **Поддержка изображений, скриншотов и PDF/TXT (`backend/app/document_parser.py`, `backend/app/custom_batch_registry.py`, `backend/app/main.py`, `site/src/app/cabinet/cabinet-client.tsx`)**:
+   * Расширены `ALLOWED_UPLOAD_EXTENSIONS` и поле выбора файлов кабинета форматами `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tif`, `.tiff`.
+   * Усилен `_extract_image_ocr` (масштабирование мелких скриншотов + резервный вызов Gemini Vision при слабом OCR), а `parse_procurement_registry_file` теперь разбирает скриншоты/фото таблиц (через Gemini Vision с fallback на OCR), PDF и TXT, отличая реестр закупок от фото/ТЗ одной процедуры.
+
+3. **Мультизапуск в полном «Анализе документации» до 10 закупок (`backend/app/main.py`, `site/src/components/custom-batch-report-modals.tsx`, `site/src/app/cabinet/cabinet-client.tsx`)**:
+   * Расширен `POST /api/customer/jobs/batch-report/preview` параметром `target_mode` (`custom_batch_report` | `procurement_report`) и добавлен атомарный эндпоинт `POST /api/customer/jobs/procurement-report/batch-create` (лимит до 10 закупок, полная предварительная проверка баланса, создание отдельной полноценной задачи `procurement_report` по каждой выбранной закупке с Запросом КП и отчётами).
+   * В кабинете одиночный номер/файл запускается сразу без лишних окон, а список из 2+ номеров или файл-реестр открывают окно выбора с ценой и сроками подачи.
+
+4. **Верификация и деплой**:
+   * Регрессионные тесты `backend/tests/test_custom_batch_report.py` (**21 passed**) + полный прогон бэкенд-тестов при деплое (`100% pass`), `cd frontend && npm run build` (`frontend/dist/assets/index-O8k9Zr8P.js`), `cd site && npm run typecheck && npm run build` (`105/105`), боевой деплой `./scripts/deploy_tenderlex_live.sh` (`live deploy verified`, все 4 службы `active`, `127.0.0.1:8088` и `127.0.0.1:3093` — `HTTP 200`, VIP-тарифы и миграция PostgreSQL проверены на живой БД).
+
+---
+
 ## Актуальное состояние — 19 ноября 2026 (Москва) — Прозрачные ИИ-автоответы в админ-диалогах, обязательные уведомления и автопривязка гостевого чата к клиенту, синхронизация живых тарифов и обновление веб-кабинета
 
 **Доработан контур ИИ-поддержки первой линии и диалогов админ-панели, автоматизирована склейка гостевых обращений с зарегистрированными клиентами, синхронизированы живые тарифы по всем каналам и завершено обновление интерфейсов личного кабинета**:

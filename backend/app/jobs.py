@@ -1927,6 +1927,7 @@ def _process_custom_batch_procurement_report(
 ) -> None:
     from .custom_batch_runner import (
         CUSTOM_BATCH_RESULTS_FILENAME,
+        DEFAULT_EXPRESS_ASSESSMENT_PROMPT,
         execute_custom_batch_items,
     )
 
@@ -1945,6 +1946,10 @@ def _process_custom_batch_procurement_report(
     custom_prompt = str(getattr(client, "custom_report_prompt", "") or "").strip()
     if not custom_prompt:
         custom_prompt = str(spec.get("custom_prompt") or "").strip()
+    if not custom_prompt:
+        custom_prompt = str(getattr(settings, "batch_report_default_prompt", "") or "").strip()
+    if not custom_prompt:
+        custom_prompt = DEFAULT_EXPRESS_ASSESSMENT_PROMPT
 
     out_dir = job_dir(job.id) / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2057,7 +2062,7 @@ def _process_custom_batch_procurement_report(
         return
 
     docx_paths = [out_dir / str(r["docx_filename"]) for r in completed_rows if (out_dir / str(r["docx_filename"])).exists()]
-    zip_path = zip_paths(out_dir / f"Пакетный_анализ_{completed_count}_зак.zip", docx_paths)
+    zip_path = zip_paths(out_dir / f"Экспресс_оценка_{completed_count}_зак.zip", docx_paths)
     used_model = next((str(r.get("ai_model") or "") for r in completed_rows if r.get("ai_model")), "")
     if used_model:
         job.ai_model = used_model
@@ -2086,9 +2091,9 @@ def _process_custom_batch_procurement_report(
     job.verified_count = completed_count
     settle_batch_procurement_report_job(db, job, completed_count=completed_count)
     summary_msg = (
-        f"Пакетный анализ готов: {completed_count} из {total} закупок"
+        f"Экспресс-оценка готова: {completed_count} из {total} закупок"
         if failed_count > 0
-        else f"Пакетный анализ готов: {completed_count} зак."
+        else f"Экспресс-оценка готова: {completed_count} зак."
     )
     _set_job(db, job, status="completed", progress=100, message=summary_msg)
     job.completed_at = now_utc()
@@ -2099,26 +2104,31 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
     _check_cancelled(job.id)
     _populate_job_ai_metadata(job, settings, job.mode)
     client = db.get(Client, job.client_id) if job.client_id else None
-    use_custom_prompt = bool(
+    dobor_ctx = read_dobor_context(job)
+    explicit_custom_prompt = bool(dobor_ctx.get("use_custom_prompt"))
+    legacy_inline_custom_prompt = bool(
         client
         and bool(getattr(client, "allowed_custom_batch_report", False))
         and str(getattr(client, "custom_report_prompt", "") or "").strip()
-        and (
-            not bool(getattr(client, "custom_report_separate_tab", False))
-            or bool(read_dobor_context(job).get("use_custom_prompt"))
-        )
+        and not bool(getattr(client, "custom_report_separate_tab", False))
     )
-    if use_custom_prompt:
+    if explicit_custom_prompt or legacy_inline_custom_prompt:
         from .custom_batch_runner import (
             CUSTOM_BATCH_RESULTS_FILENAME,
+            DEFAULT_EXPRESS_ASSESSMENT_PROMPT,
             run_custom_prompt_with_gemini_search,
         )
 
-        _set_job(db, job, progress=45, message="ИИ готовит анализ по индивидуальному шаблону")
+        effective_prompt = (
+            str(getattr(client, "custom_report_prompt", "") or "").strip()
+            or str(getattr(settings, "batch_report_default_prompt", "") or "").strip()
+            or DEFAULT_EXPRESS_ASSESSMENT_PROMPT
+        )
+        _set_job(db, job, progress=45, message="ИИ готовит экспресс-оценку закупки")
         custom_res = asyncio.run(
             run_custom_prompt_with_gemini_search(
                 settings,
-                custom_prompt=str(client.custom_report_prompt),
+                custom_prompt=effective_prompt,
                 document_context=context,
                 procurement_label=str(job.title or ""),
             )
@@ -2126,7 +2136,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
         _check_cancelled(job.id)
         out_dir = job_dir(job.id) / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
-        subject = _subject_from_report_text(custom_res.markdown) or str(job.title or "Анализ закупки")
+        subject = _subject_from_report_text(custom_res.markdown) or str(job.title or "Экспресс-оценка закупки")
         report_title = _analysis_report_title(job, subject)
         stem = _result_stem(job, subject)
         docx_path = write_procurement_docx(
@@ -2173,7 +2183,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
                 "subject": subject,
                 "sources": _job_sources_evidence(job),
                 "files": _job_files_evidence(job),
-                "output_files": [{"kind": "analysis", "label": "Скачать разбор (.docx)", "path": str(docx_path)}],
+                "output_files": [{"kind": "analysis", "label": "Скачать оценку (.docx)", "path": str(docx_path)}],
                 "ai_used": True,
                 "ai_model": custom_res.model,
             },
@@ -2184,8 +2194,8 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
         job.evidence_path = str(evidence_path)
         job.verified_count = 1
         _set_customer_job_title_from_subject(job, subject)
-        _set_job(db, job, status="completed", progress=100, message="Анализ документации готов")
-        charge_job_reservation(db, job, note="Результат готов")
+        settle_batch_procurement_report_job(db, job, completed_count=1)
+        _set_job(db, job, status="completed", progress=100, message="Экспресс-оценка готова")
         job.completed_at = now_utc()
         db.commit()
         return

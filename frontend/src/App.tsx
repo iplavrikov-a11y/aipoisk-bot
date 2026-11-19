@@ -3879,7 +3879,7 @@ function ClientsView({
                     <details className="compact-form-details price-settings-details">
                       <summary>Индивидуальные цены</summary>
                       <div className="price-settings-panel">
-                        {(['supplier_search', 'exact_product', 'procurement_report', 'supplier_search_extra', 'price_monitoring'] as const).map(kind => {
+                        {(['supplier_search', 'exact_product', 'procurement_report', 'supplier_search_extra', 'price_monitoring', 'custom_batch_report'] as const).map(kind => {
                           const price = client.usage?.effective_prices?.[kind]
                           const fallbackKopeks = price?.price_kopeks || 0
                           return (
@@ -3908,7 +3908,7 @@ function ClientsView({
                   )}
                   <details className="compact-form-details price-settings-details">
                     <summary>
-                      Кастомный пакетный анализ {client.allowed_custom_batch_report ? '· ВКЛ' : ''}
+                      Индивидуальная экспресс-оценка {client.allowed_custom_batch_report ? '· VIP' : ''}
                     </summary>
                     <div className="price-settings-panel" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                       <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
@@ -3917,7 +3917,7 @@ function ClientsView({
                           checked={Boolean(client.allowed_custom_batch_report)}
                           onChange={e => void patchClient(client, { allowed_custom_batch_report: e.currentTarget.checked })}
                         />
-                        <span>Включить загрузку реестра закупок и индивидуальный промт</span>
+                        <span>Персональный доступ и расширенный лимит (до 60 закупок)</span>
                       </label>
                       {client.allowed_custom_batch_report && (
                         <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
@@ -3930,11 +3930,11 @@ function ClientsView({
                         </label>
                       )}
                       <label className="mini-field">
-                        <span>Индивидуальный промт клиента</span>
+                        <span>Индивидуальный промт клиента (переопределяет общий шаблон)</span>
                         <textarea
                           rows={5}
                           defaultValue={client.custom_report_prompt || ''}
-                          placeholder="Промт для модели Gemini с Google-поиском..."
+                          placeholder="Оставьте пустым, чтобы использовать общий шаблон экспресс-оценки..."
                           style={{ width: '100%', fontSize: 12, fontFamily: 'monospace' }}
                           onBlur={e => {
                             const val = e.currentTarget.value
@@ -4056,6 +4056,7 @@ function humanBillingKind(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор поставщиков'
   if (kind === 'exact_product') return 'Подбор товара и аналогов'
   if (kind === 'price_monitoring') return 'Мониторинг цен'
+  if (kind === 'custom_batch_report') return 'Экспресс-оценка закупок'
   return kind === 'procurement_report' ? 'Анализ документации' : 'Поиск поставщиков'
 }
 
@@ -4063,6 +4064,7 @@ function priceBillingLabel(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор'
   if (kind === 'exact_product') return 'Подбор товара'
   if (kind === 'price_monitoring') return 'Мониторинг цен'
+  if (kind === 'custom_batch_report') return 'Экспресс-оценка'
   return kind === 'procurement_report' ? 'Анализ' : 'Поиск'
 }
 
@@ -6483,6 +6485,13 @@ function BillingView({
   const [geoSaving, setGeoSaving] = useState(false)
   const [geoSaved, setGeoSaved] = useState(false)
   const [pmPriceRub, setPmPriceRub] = useState<number>(50)
+  const [batchPriceRub, setBatchPriceRub] = useState<number>(30)
+  const [batchAccessMode, setBatchAccessMode] = useState<'all' | 'granular' | 'disabled'>('all')
+  const [batchMaxItems, setBatchMaxItems] = useState<number>(30)
+  const [batchDefaultPrompt, setBatchDefaultPrompt] = useState<string>('')
+  const [batchBuiltinPrompt, setBatchBuiltinPrompt] = useState<string>('')
+  const [batchSaving, setBatchSaving] = useState(false)
+  const [batchSaved, setBatchSaved] = useState(false)
 
   useEffect(() => {
     if (settings) {
@@ -6497,6 +6506,32 @@ function BillingView({
       .then(data => {
         if (active && typeof data?.default_price_rub === 'number') {
           setPmPriceRub(Math.round(data.default_price_rub))
+        }
+      })
+      .catch(() => {})
+    api<{
+      default_price_rub?: number
+      access_mode?: string
+      max_items?: number
+      default_prompt?: string
+      builtin_default_prompt?: string
+    }>('/api/batch-report/settings')
+      .then(data => {
+        if (!active || !data) return
+        if (typeof data.default_price_rub === 'number') {
+          setBatchPriceRub(Math.round(data.default_price_rub))
+        }
+        if (data.access_mode === 'all' || data.access_mode === 'granular' || data.access_mode === 'disabled') {
+          setBatchAccessMode(data.access_mode)
+        }
+        if (typeof data.max_items === 'number') {
+          setBatchMaxItems(Math.max(1, Math.min(60, Math.round(data.max_items))))
+        }
+        if (typeof data.default_prompt === 'string') {
+          setBatchDefaultPrompt(data.default_prompt)
+        }
+        if (typeof data.builtin_default_prompt === 'string') {
+          setBatchBuiltinPrompt(data.builtin_default_prompt)
         }
       })
       .catch(() => {})
@@ -6543,6 +6578,60 @@ function BillingView({
     } catch (err) {
       setBillingError(formatError(err))
       return false
+    }
+  }
+
+  async function saveBatchReportRate(nextRub: number): Promise<boolean> {
+    setBillingError('')
+    try {
+      const updated = await api<{ default_price_rub?: number }>('/api/batch-report/settings', {
+        method: 'POST',
+        body: JSON.stringify({ default_price_rub: Math.max(0, Math.round(nextRub)) }),
+      })
+      if (typeof updated?.default_price_rub === 'number') {
+        setBatchPriceRub(Math.round(updated.default_price_rub))
+      } else {
+        setBatchPriceRub(Math.max(0, Math.round(nextRub)))
+      }
+      await onChange()
+      return true
+    } catch (err) {
+      setBillingError(formatError(err))
+      return false
+    }
+  }
+
+  async function saveBatchReportSettings() {
+    setBatchSaving(true)
+    setBillingError('')
+    try {
+      const updated = await api<{
+        default_price_rub?: number
+        access_mode?: string
+        max_items?: number
+        default_prompt?: string
+      }>('/api/batch-report/settings', {
+        method: 'POST',
+        body: JSON.stringify({
+          default_price_rub: Math.max(0, Math.round(batchPriceRub)),
+          access_mode: batchAccessMode,
+          max_items: Math.max(1, Math.min(60, Math.round(batchMaxItems))),
+          default_prompt: batchDefaultPrompt,
+        }),
+      })
+      if (typeof updated?.default_price_rub === 'number') setBatchPriceRub(Math.round(updated.default_price_rub))
+      if (updated?.access_mode === 'all' || updated?.access_mode === 'granular' || updated?.access_mode === 'disabled') {
+        setBatchAccessMode(updated.access_mode)
+      }
+      if (typeof updated?.max_items === 'number') setBatchMaxItems(Math.round(updated.max_items))
+      if (typeof updated?.default_prompt === 'string') setBatchDefaultPrompt(updated.default_prompt)
+      await onChange()
+      setBatchSaved(true)
+      setTimeout(() => setBatchSaved(false), 2500)
+    } catch (err) {
+      setBillingError(formatError(err))
+    } finally {
+      setBatchSaving(false)
     }
   }
 
@@ -7025,11 +7114,122 @@ function BillingView({
                 </td>
                 <td></td>
               </tr>
+              <tr>
+                <td>
+                  <span className="module-pill-tag price_monitoring">6. Экспресс-оценка</span>
+                </td>
+                <td>
+                  <span className="tariff-static-desc">1 закупка (подбор товара, поставщики, маржа)</span>
+                </td>
+                <td style={{ textAlign: 'center' }}>
+                  <span style={{ fontWeight: 600, color: '#475569' }}>1</span>
+                </td>
+                <td style={{ textAlign: 'right' }}>
+                  <TariffEditableInput
+                    className="t-input number"
+                    type="number"
+                    min={0}
+                    step={1}
+                    style={{ fontWeight: 600 }}
+                    value={batchPriceRub}
+                    onCommit={val => saveBatchReportRate(Number(val))}
+                  />
+                </td>
+                <td>
+                  <div className="task-cost-wrap">
+                    <span className="task-cost-price">{batchPriceRub} ₽ / зак.</span>
+                    <span className="task-cost-badge base">по факту</span>
+                  </div>
+                </td>
+                <td style={{ textAlign: 'center' }}>
+                  <span className="sync-note">
+                    {batchAccessMode === 'all' ? 'Всем' : batchAccessMode === 'granular' ? 'Выборочно' : 'Выкл'}
+                  </span>
+                </td>
+                <td></td>
+              </tr>
             </tbody>
           </table>
         </div>
         <div className="tariff-summary-footer">
           Комбо «Анализ + поиск» рассчитывается автоматически: {searchBaseRub} ₽ + {reportBaseRub} ₽ = <strong>{comboBaseRub} ₽</strong>
+        </div>
+      </div>
+
+      <div className="surface-card" style={{ padding: '18px 20px', marginTop: 18 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Экспресс-оценка закупок — доступ, лимит и общий шаблон</h3>
+            <p className="field-help" style={{ margin: '4px 0 0' }}>
+              Общий инструмент для клиентов (от 1 закупки или выгрузка Excel). Личный промпт в карточке клиента всегда имеет приоритет над общим шаблоном.
+            </p>
+          </div>
+          {batchSaved && <span style={{ fontSize: 12, fontWeight: 600, color: '#059669' }}>Сохранено</span>}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
+          <label className="mini-field">
+            <span>Кому доступен инструмент</span>
+            <select
+              value={batchAccessMode}
+              onChange={e => setBatchAccessMode(e.target.value as 'all' | 'granular' | 'disabled')}
+            >
+              <option value="all">Всем клиентам</option>
+              <option value="granular">Только выбранным (в карточке клиента)</option>
+              <option value="disabled">Отключено для всех</option>
+            </select>
+          </label>
+          <label className="mini-field">
+            <span>Лимит закупок за 1 запуск (обычные клиенты)</span>
+            <input
+              type="number"
+              min={1}
+              max={60}
+              value={batchMaxItems}
+              onChange={e => setBatchMaxItems(Math.max(1, Math.min(60, Number(e.target.value) || 1)))}
+            />
+          </label>
+          <label className="mini-field">
+            <span>Базовая цена за 1 закупку, ₽</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={batchPriceRub}
+              onChange={e => setBatchPriceRub(Math.max(0, Number(e.target.value) || 0))}
+            />
+          </label>
+        </div>
+        <label className="mini-field" style={{ marginBottom: 10 }}>
+          <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <span>Общий шаблон инструкции для ИИ (оставьте пустым для встроенного шаблона)</span>
+            {batchBuiltinPrompt && (
+              <button
+                type="button"
+                className="secondary-button small"
+                onClick={() => setBatchDefaultPrompt(batchBuiltinPrompt)}
+              >
+                Подставить встроенный шаблон
+              </button>
+            )}
+          </span>
+          <textarea
+            rows={7}
+            value={batchDefaultPrompt}
+            onChange={e => setBatchDefaultPrompt(e.target.value)}
+            placeholder="Если оставить пустым — используется встроенный шаблон экспресс-оценки (5 блоков: резюме, товар со ссылкой, поставщики, логистика, маржа + заметка о перепроверке)."
+            style={{ width: '100%', fontSize: 12, fontFamily: 'monospace', resize: 'vertical' }}
+          />
+        </label>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={batchSaving}
+            onClick={() => void saveBatchReportSettings()}
+          >
+            <Save size={14} />
+            <span>{batchSaving ? 'Сохраняю...' : 'Сохранить настройки экспресс-оценки'}</span>
+          </button>
         </div>
       </div>
     </section>

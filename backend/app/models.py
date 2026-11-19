@@ -97,6 +97,10 @@ class SystemSettings(Base):
     price_monitoring_filter_foreign: Mapped[bool] = mapped_column(Boolean, default=True)
     price_monitoring_max_variation_pct: Mapped[float] = mapped_column(Float, default=33.0)
     price_monitoring_access_mode: Mapped[str] = mapped_column(String(32), default="all")
+    batch_report_default_price_kopeks: Mapped[int] = mapped_column(Integer, default=3000)
+    batch_report_access_mode: Mapped[str] = mapped_column(String(32), default="all")
+    batch_report_max_items: Mapped[int] = mapped_column(Integer, default=30)
+    batch_report_default_prompt: Mapped[str] = mapped_column(Text, default="")
     geo_radius_search_enabled_global: Mapped[bool] = mapped_column(Boolean, default=False)
     geo_radius_surcharge_pct: Mapped[float] = mapped_column(Float, default=30.0)
     support_telegram_group_id: Mapped[str] = mapped_column(String(64), default="")
@@ -178,6 +182,10 @@ class SystemSettings(Base):
             "price_monitoring_filter_foreign": getattr(self, "price_monitoring_filter_foreign", True),
             "price_monitoring_max_variation_pct": getattr(self, "price_monitoring_max_variation_pct", 33.0),
             "price_monitoring_access_mode": getattr(self, "price_monitoring_access_mode", "all") or "all",
+            "batch_report_default_price_kopeks": int(getattr(self, "batch_report_default_price_kopeks", 3000) or 3000),
+            "batch_report_access_mode": getattr(self, "batch_report_access_mode", "all") or "all",
+            "batch_report_max_items": int(getattr(self, "batch_report_max_items", 30) or 30),
+            "batch_report_default_prompt": str(getattr(self, "batch_report_default_prompt", "") or ""),
             "support_telegram_group_id": getattr(self, "support_telegram_group_id", "") or "",
             "support_admin_telegram_ids": getattr(self, "support_admin_telegram_ids", "") or "",
             "support_mirror_admin_replies_to_bot": bool(getattr(self, "support_mirror_admin_replies_to_bot", True)),

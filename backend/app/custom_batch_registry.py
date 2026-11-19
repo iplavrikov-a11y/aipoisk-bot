@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
 import datetime as dt
 import io
@@ -19,7 +20,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import openpyxl
 
-from .ai import call_llm, parse_json_object
+from .ai import call_llm, custom_provider_map, parse_json_object
 from .config import config
 from .document_parser import clean_xml_compatible, extract_text, sanitize_filename
 from .models import SystemSettings
@@ -29,7 +30,9 @@ MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_REGISTRY_EXTENSIONS = {".xlsx", ".xls", ".csv", ".docx"}
+IMAGE_REGISTRY_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+TEXT_DOC_REGISTRY_EXTENSIONS = {".docx", ".doc", ".pdf", ".txt"}
+ALLOWED_REGISTRY_EXTENSIONS = {".xlsx", ".xls", ".csv"} | TEXT_DOC_REGISTRY_EXTENSIONS | IMAGE_REGISTRY_EXTENSIONS
 MAX_REGISTRY_BYTES = 15 * 1024 * 1024
 MAX_ZIP_ENTRIES = 2500
 MAX_ZIP_UNCOMPRESSED_BYTES = 80 * 1024 * 1024
@@ -77,6 +80,30 @@ DOCX_REGISTRY_SYSTEM_PROMPT = """Ты — ИИ-анализатор закупо
 Определи, является ли переданный документ списком/реестром тендеров (достаточно перечня номеров извещений; название закупки, НМЦК, даты и остальные поля НЕ обязательны и могут отсутствовать — например, в списке котировок или перечне из одних номеров), или это документация/ТЗ одной конкретной закупки.
 Если это ТЗ/контракт/извещение ОДНОЙ закупки — верни {"is_procurement_table": false, "items": []}.
 Если это список/таблица тендеров с номерами извещений — извлеки все закупки в JSON (отсутствующие необязательные поля оставляй пустыми / null):
+{
+  "is_procurement_table": true,
+  "items": [
+    {
+      "notice_number": "строка номера извещения",
+      "title": "наименование закупки или пусто",
+      "nmck_value": null,
+      "nmck_raw": "сумма или пусто",
+      "publication_date": "ДД.ММ.ГГГГ или пусто",
+      "deadline_date": "ДД.ММ.ГГГГ ЧЧ:ММ или пусто",
+      "procurement_type": "44-ФЗ / 223-ФЗ / Малые закупки или пусто",
+      "etp_url": "https://... или пусто",
+      "customer_inn": "ИНН или пусто",
+      "customer_name": "Заказчик или пусто"
+    }
+  ]
+}"""
+
+
+IMAGE_REGISTRY_SYSTEM_PROMPT = """Ты — ИИ-анализатор скриншотов и фотографий закупочных таблиц/документов.
+Посмотри на изображение и определи:
+- Если это скриншот или фото списка/реестра закупок (таблица тендеров, выгрузка из поисковика закупок, перечень номеров извещений ЕИС/ЭТП) — верни `"is_procurement_table": true` и максимально точно извлеки все строки закупок (особенно внимательно переписывай цифры номеров извещений!).
+- Если это фото/скриншот ТЗ, спецификации товаров, договора или карточки ОДНОЙ закупки без списка других тендеров — верни `{"is_procurement_table": false, "items": []}`.
+Ответ строго JSON без комментариев:
 {
   "is_procurement_table": true,
   "items": [
@@ -322,9 +349,16 @@ async def parse_procurement_registry_file(
     if not content or len(content) > MAX_REGISTRY_BYTES:
         raise ValueError("Файл пуст или превышает допустимый размер (15 МБ).")
 
+    if suffix in IMAGE_REGISTRY_EXTENSIONS:
+        return await _parse_image_registry(settings, safe_name, content)
+
     if suffix == ".docx":
         _validate_zip_container(content)
-        return await _parse_docx_registry(settings, safe_name, content)
+        return await _parse_text_document_registry(settings, safe_name, content, sheet_label="Документ")
+
+    if suffix in TEXT_DOC_REGISTRY_EXTENSIONS:
+        label = "PDF" if suffix == ".pdf" else ("Текст" if suffix == ".txt" else "Документ")
+        return await _parse_text_document_registry(settings, safe_name, content, sheet_label=label)
 
     if suffix == ".csv":
         return await _parse_csv_registry(settings, safe_name, content)
@@ -630,41 +664,31 @@ async def _parse_csv_registry(
     return RegistryPreviewResult(bool(items), safe_name, "CSV", ["CSV"], items)
 
 
-async def _parse_docx_registry(
-    settings: SystemSettings,
+def _build_registry_result_from_llm_payload(
+    parsed: Any,
     safe_name: str,
-    raw_bytes: bytes,
+    sheet_label: str,
 ) -> RegistryPreviewResult:
-    with tempfile.TemporaryDirectory(prefix="tlx_docx_") as tmpdir:
-        doc_path = Path(tmpdir) / safe_name
-        doc_path.write_bytes(raw_bytes)
-        extracted, _ = extract_text(doc_path)
-    if not extracted or len(extracted.strip()) < 7:
-        return RegistryPreviewResult(False, safe_name, "Документ", ["Документ"], [])
-    raw = await call_llm(
-        settings,
-        f"Извлеки реестр закупок из документа:\n\n{extracted[:60000]}",
-        system_prompt=DOCX_REGISTRY_SYSTEM_PROMPT,
-        tier="light",
-        json_mode=True,
-        timeout_seconds=40.0,
-        temperature=0.0,
-    )
-    parsed = parse_json_object(raw)
     if not isinstance(parsed, dict) or not parsed.get("is_procurement_table"):
-        return RegistryPreviewResult(False, safe_name, "Документ", ["Документ"], [])
+        return RegistryPreviewResult(False, safe_name, sheet_label, [sheet_label], [])
     raw_items = parsed.get("items") if isinstance(parsed.get("items"), list) else []
     items: list[dict[str, Any]] = []
+    seen_nums: set[str] = set()
     for item in raw_items[:MAX_REGISTRY_ITEMS]:
         if not isinstance(item, dict):
             continue
         num = clean_xml_compatible(str(item.get("notice_number") or "")).strip()
         if not num:
             continue
+        dedupe_key = num.lower()
+        if dedupe_key in seen_nums:
+            continue
+        seen_nums.add(dedupe_key)
         nmck_val, nmck_raw = _parse_nmck(item.get("nmck_value") or item.get("nmck_raw"))
         if item.get("nmck_raw") and not nmck_raw:
             nmck_raw = clean_xml_compatible(str(item.get("nmck_raw"))).strip()
         etp_u = normalize_source_url(str(item.get("etp_url") or "").strip())
+        eis_u = normalize_source_url(str(item.get("eis_url") or "").strip())
         items.append(
             {
                 "id": uuid.uuid4().hex[:12],
@@ -677,13 +701,145 @@ async def _parse_docx_registry(
                 "deadline_date": clean_xml_compatible(str(item.get("deadline_date") or "")).strip()[:60],
                 "deadline_ts": parse_deadline_timestamp_ms(item.get("deadline_date")),
                 "procurement_type": clean_xml_compatible(str(item.get("procurement_type") or "")).strip()[:80],
-                "eis_url": "",
+                "eis_url": eis_u[:1000],
                 "etp_url": etp_u[:1000],
                 "customer_inn": clean_xml_compatible(str(item.get("customer_inn") or "")).strip()[:40],
                 "customer_name": clean_xml_compatible(str(item.get("customer_name") or "")).strip()[:300],
             }
         )
-    return RegistryPreviewResult(bool(items), safe_name, "Документ", ["Документ"], items)
+    return RegistryPreviewResult(bool(items), safe_name, sheet_label, [sheet_label], items)
+
+
+async def _parse_text_document_registry(
+    settings: SystemSettings,
+    safe_name: str,
+    raw_bytes: bytes,
+    *,
+    sheet_label: str = "Документ",
+) -> RegistryPreviewResult:
+    with tempfile.TemporaryDirectory(prefix="tlx_doc_") as tmpdir:
+        doc_path = Path(tmpdir) / safe_name
+        doc_path.write_bytes(raw_bytes)
+        extracted, _ = extract_text(doc_path)
+    if not extracted or len(extracted.strip()) < 7:
+        return RegistryPreviewResult(False, safe_name, sheet_label, [sheet_label], [])
+    raw = await call_llm(
+        settings,
+        f"Извлеки реестр закупок из документа:\n\n{extracted[:60000]}",
+        system_prompt=DOCX_REGISTRY_SYSTEM_PROMPT,
+        tier="light",
+        json_mode=True,
+        timeout_seconds=40.0,
+        temperature=0.0,
+    )
+    parsed = parse_json_object(raw)
+    return _build_registry_result_from_llm_payload(parsed, safe_name, sheet_label)
+
+
+async def _parse_docx_registry(
+    settings: SystemSettings,
+    safe_name: str,
+    raw_bytes: bytes,
+) -> RegistryPreviewResult:
+    return await _parse_text_document_registry(settings, safe_name, raw_bytes, sheet_label="Документ")
+
+
+async def _extract_registry_json_with_vision(
+    settings: SystemSettings,
+    image_bytes: bytes,
+    mime_type: str,
+) -> dict[str, Any] | None:
+    providers = custom_provider_map(settings)
+    gemini_prov = providers.get("gemini")
+    if not gemini_prov:
+        return None
+    raw_base = str(gemini_prov.get("baseUrl") or "http://127.0.0.1:8318/v1").strip().rstrip("/")
+    if raw_base.endswith("/v1"):
+        raw_base = raw_base[:-3]
+    api_key = str(gemini_prov.get("apiKey") or "").strip()
+    if not api_key:
+        return None
+    light_model = str(getattr(settings, "light_model", "") or "").strip()
+    candidates = list(
+        dict.fromkeys(
+            m
+            for m in [light_model, "gemini-3.8-flash-high", "gemini-3-flash", "gemini-2.5-flash"]
+            if m and "gemini" in m.lower()
+        )
+    )
+    if not candidates:
+        candidates = ["gemini-3.8-flash-high", "gemini-3-flash"]
+
+    b64_data = base64.b64encode(image_bytes).decode("ascii")
+    payload = {
+        "systemInstruction": {"parts": [{"text": IMAGE_REGISTRY_SYSTEM_PROMPT}]},
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": "Проанализируй изображение и верни строго JSON."},
+                    {"inlineData": {"mimeType": mime_type, "data": b64_data}},
+                ],
+            }
+        ],
+        "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            for model_id in candidates[:3]:
+                resp = await client.post(
+                    f"{raw_base}/v1beta/models/{model_id}:generateContent",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                )
+                if resp.status_code >= 400:
+                    continue
+                data = resp.json()
+                cands = data.get("candidates") if isinstance(data, dict) else None
+                if not isinstance(cands, list) or not cands:
+                    continue
+                parts = ((cands[0].get("content") or {}).get("parts") or [])
+                raw_text = "\n".join(str(p.get("text") or "") for p in parts if isinstance(p, dict)).strip()
+                parsed = parse_json_object(raw_text)
+                if isinstance(parsed, dict):
+                    return parsed
+    except Exception as exc:
+        logger.debug("Vision registry extraction fallback to OCR: %s", exc)
+    return None
+
+
+async def _parse_image_registry(
+    settings: SystemSettings,
+    safe_name: str,
+    raw_bytes: bytes,
+) -> RegistryPreviewResult:
+    from PIL import Image, ImageOps
+
+    Image.MAX_IMAGE_PIXELS = 45_000_000
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as img:
+            normalized = ImageOps.exif_transpose(img)
+            if normalized.mode not in ("RGB", "L"):
+                normalized = normalized.convert("RGB")
+            w, h = normalized.size
+            if max(w, h) > 2048:
+                ratio = 2048.0 / float(max(w, h))
+                normalized = normalized.resize(
+                    (max(1, int(w * ratio)), max(1, int(h * ratio))),
+                    Image.Resampling.LANCZOS,
+                )
+            buf = io.BytesIO()
+            normalized.save(buf, format="JPEG", quality=90, optimize=True)
+            prepared_jpeg = buf.getvalue()
+    except Exception as exc:
+        raise ValueError("Не удалось прочитать изображение. Проверьте, что файл не повреждён.") from exc
+
+    vision_parsed = await _extract_registry_json_with_vision(settings, prepared_jpeg, "image/jpeg")
+    if isinstance(vision_parsed, dict):
+        return _build_registry_result_from_llm_payload(vision_parsed, safe_name, "Изображение")
+
+    # Fallback: OCR via document_parser + standard LLM extraction
+    return await _parse_text_document_registry(settings, safe_name, raw_bytes, sheet_label="Изображение")
 
 
 _ALPHA_NOTICE_RE = re.compile(r"^[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9\-_/]{4,40}$")

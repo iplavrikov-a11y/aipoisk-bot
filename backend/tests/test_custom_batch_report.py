@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.billing import (
+    KIND_CUSTOM_BATCH_REPORT,
     KIND_PROCUREMENT_REPORT,
     OP_CHARGE,
     OP_RELEASE,
@@ -45,6 +46,8 @@ def _create_client_with_web_user(
     allowed_batch: bool,
     balance_kopeks: int = 10_000,
     override_price_kopeks: int = 1500,
+    override_kind: str = KIND_CUSTOM_BATCH_REPORT,
+    custom_prompt: str = "Тестовый промт аналитика",
 ) -> tuple[Client, WebUser, str, str]:
     cid = new_id()
     client = Client(
@@ -55,7 +58,7 @@ def _create_client_with_web_user(
         is_active=True,
         allowed_procurement_report=True,
         allowed_custom_batch_report=allowed_batch,
-        custom_report_prompt="Тестовый промт аналитика",
+        custom_report_prompt=custom_prompt,
         money_balance_kopeks=balance_kopeks,
         money_reserved_kopeks=0,
     )
@@ -65,7 +68,7 @@ def _create_client_with_web_user(
         db.add(
             ClientTariffOverride(
                 client_id=client.id,
-                kind=KIND_PROCUREMENT_REPORT,
+                kind=override_kind,
                 price_kopeks=override_price_kopeks,
                 is_enabled=True,
                 note="15 руб за закупку",
@@ -196,7 +199,12 @@ def test_batch_billing_reserves_and_partially_settles_at_15_rub(db_session: Sess
 
 def test_batch_endpoints_enforce_permission_csrf_ownership_and_path_safety(db_session: Session):
     db = db_session
-    regular_client, _, reg_token, reg_csrf = _create_client_with_web_user(db, allowed_batch=False)
+    settings = get_or_create_settings(db)
+    prev_access_mode = settings.batch_report_access_mode
+    settings.batch_report_access_mode = "granular"
+    db.commit()
+
+    regular_client, _, reg_token, reg_csrf = _create_client_with_web_user(db, allowed_batch=False, override_price_kopeks=0)
     vip_client, _, vip_token, vip_csrf = _create_client_with_web_user(
         db,
         allowed_batch=True,
@@ -205,73 +213,78 @@ def test_batch_endpoints_enforce_permission_csrf_ownership_and_path_safety(db_se
     )
     xlsx_bytes = _make_sample_xlsx_bytes()
 
-    with TestClient(app) as tc:
-        # 1. Non-allowed client gets 403
-        tc.cookies.set(CUSTOMER_COOKIE, reg_token)
-        r_denied = tc.post(
-            "/api/customer/jobs/batch-report/preview",
-            headers={CSRF_HEADER: reg_csrf},
-            files={"file": ("list.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-        )
-        assert r_denied.status_code == 403
-
-        # 2. VIP client without CSRF gets 403
-        tc.cookies.set(CUSTOMER_COOKIE, vip_token)
-        r_no_csrf = tc.post(
-            "/api/customer/jobs/batch-report/create",
-            json={"filename": "list.xlsx", "items": [{"notice_number": "32616532998", "title": "Термосы"}]},
-        )
-        assert r_no_csrf.status_code == 403
-
-        # 3. VIP client creates batch job cleanly
-        with patch("app.main.enqueue_job"):
-            r_ok = tc.post(
-                "/api/customer/jobs/batch-report/create",
-                headers={CSRF_HEADER: vip_csrf},
-                json={
-                    "filename": "list.xlsx",
-                    "items": [
-                        {"id": "a1", "notice_number": "32616532998", "title": "Термосы", "nmck_raw": "1 008 386 ₽"},
-                        {"id": "a2", "notice_number": "0329300294326000004", "title": "Прицеп", "nmck_raw": "211 333 ₽"},
-                    ],
-                },
+    try:
+        with TestClient(app) as tc:
+            # 1. Non-allowed client gets 403 when access_mode is granular
+            tc.cookies.set(CUSTOMER_COOKIE, reg_token)
+            r_denied = tc.post(
+                "/api/customer/jobs/batch-report/preview",
+                headers={CSRF_HEADER: reg_csrf},
+                files={"file": ("list.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
             )
-        assert r_ok.status_code == 200
-        job_id = r_ok.json()["job"]["id"]
-        assert r_ok.json()["job"]["is_custom_batch_report"] is True
+            assert r_denied.status_code == 403
 
-        # 4. Regular client cannot read VIP client's batch report (404)
-        tc.cookies.set(CUSTOMER_COOKIE, reg_token)
-        r_other = tc.get(f"/api/customer/jobs/{job_id}/batch-report")
-        assert r_other.status_code == 404
+            # 2. VIP client without CSRF gets 403
+            tc.cookies.set(CUSTOMER_COOKIE, vip_token)
+            r_no_csrf = tc.post(
+                "/api/customer/jobs/batch-report/create",
+                json={"filename": "list.xlsx", "items": [{"notice_number": "32616532998", "title": "Термосы"}]},
+            )
+            assert r_no_csrf.status_code == 403
 
-        # 5. Path traversal filename inside custom_batch_results.json is safely sanitized/confined
-        out_dir = job_dir(job_id) / "output"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "custom_batch_results.json").write_text(
-            json.dumps(
-                {
-                    "is_custom_batch_report": True,
-                    "total_count": 1,
-                    "completed_count": 1,
-                    "failed_count": 0,
-                    "items": [
-                        {
-                            "index": 0,
-                            "notice_number": "32616532998",
-                            "title": "Термосы",
-                            "status": "completed",
-                            "report_markdown": "ok",
-                            "docx_filename": "../../etc/passwd",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        tc.cookies.set(CUSTOMER_COOKIE, vip_token)
-        r_trav = tc.get(f"/api/customer/jobs/{job_id}/batch-report/download/0")
-        assert r_trav.status_code == 404
+            # 3. VIP client creates batch job cleanly
+            with patch("app.main.enqueue_job"):
+                r_ok = tc.post(
+                    "/api/customer/jobs/batch-report/create",
+                    headers={CSRF_HEADER: vip_csrf},
+                    json={
+                        "filename": "list.xlsx",
+                        "items": [
+                            {"id": "a1", "notice_number": "32616532998", "title": "Термосы", "nmck_raw": "1 008 386 ₽"},
+                            {"id": "a2", "notice_number": "0329300294326000004", "title": "Прицеп", "nmck_raw": "211 333 ₽"},
+                        ],
+                    },
+                )
+            assert r_ok.status_code == 200
+            job_id = r_ok.json()["job"]["id"]
+            assert r_ok.json()["job"]["is_custom_batch_report"] is True
+
+            # 4. Regular client cannot read VIP client's batch report (404)
+            tc.cookies.set(CUSTOMER_COOKIE, reg_token)
+            r_other = tc.get(f"/api/customer/jobs/{job_id}/batch-report")
+            assert r_other.status_code == 404
+
+            # 5. Path traversal filename inside custom_batch_results.json is safely sanitized/confined
+            out_dir = job_dir(job_id) / "output"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "custom_batch_results.json").write_text(
+                json.dumps(
+                    {
+                        "is_custom_batch_report": True,
+                        "total_count": 1,
+                        "completed_count": 1,
+                        "failed_count": 0,
+                        "items": [
+                            {
+                                "index": 0,
+                                "notice_number": "32616532998",
+                                "title": "Термосы",
+                                "status": "completed",
+                                "report_markdown": "ok",
+                                "docx_filename": "../../etc/passwd",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            tc.cookies.set(CUSTOMER_COOKIE, vip_token)
+            r_trav = tc.get(f"/api/customer/jobs/{job_id}/batch-report/download/0")
+            assert r_trav.status_code == 404
+    finally:
+        settings = get_or_create_settings(db)
+        settings.batch_report_access_mode = prev_access_mode
+        db.commit()
 
 
 @pytest.mark.asyncio
@@ -845,3 +858,357 @@ def test_customer_jobs_filter_by_custom_batch_report(db_session: Session):
         assert payload["total"] == 1
         assert [it["id"] for it in payload["items"]] == [batch_job_id]
         assert plain_job.id not in [it["id"] for it in payload["items"]]
+
+
+def test_express_assessment_open_for_all_30_rub_item_caps_and_single_job_billing(db_session: Session):
+    db = db_session
+    settings = get_or_create_settings(db)
+    prev_mode = settings.batch_report_access_mode
+    prev_price = settings.batch_report_default_price_kopeks
+    prev_max = settings.batch_report_max_items
+    settings.batch_report_access_mode = "all"
+    settings.batch_report_default_price_kopeks = 3000
+    settings.batch_report_max_items = 30
+    db.commit()
+
+    reg_client, _, reg_token, reg_csrf = _create_client_with_web_user(
+        db,
+        allowed_batch=False,
+        balance_kopeks=150_000,  # 1500 ₽
+        override_price_kopeks=0,
+        custom_prompt="",
+    )
+    vip_client, _, vip_token, vip_csrf = _create_client_with_web_user(
+        db,
+        allowed_batch=True,
+        balance_kopeks=150_000,
+        override_price_kopeks=1500,  # 15 ₽
+    )
+
+    try:
+        with TestClient(app) as tc:
+            # Regular client gets access automatically, 30 ₽ price, max 30 items
+            tc.cookies.set(CUSTOMER_COOKIE, reg_token)
+            sess = tc.get("/api/customer/auth/session").json()
+            assert sess["user"]["allowed_custom_batch_report"] is True
+            assert sess["user"]["custom_report_separate_tab"] is True
+            assert sess["user"]["batch_report_max_items"] == 30
+            assert sess["balance"]["effective_prices"]["custom_batch_report"]["price_kopeks"] == 3000
+
+            # 31 items exceeds regular cap -> 400
+            items_31 = [{"id": f"i{i}", "notice_number": f"32616532{i:03d}", "title": f"Тендер {i}"} for i in range(31)]
+            r_over = tc.post(
+                "/api/customer/jobs/batch-report/create",
+                headers={CSRF_HEADER: reg_csrf},
+                json={"filename": "many.xlsx", "items": items_31},
+            )
+            assert r_over.status_code == 400
+
+            # Single-item launch via /api/customer/jobs with use_custom_prompt=true charges 30 ₽ (not 99 ₽)
+            with patch("app.main.enqueue_job"):
+                r_single = tc.post(
+                    "/api/customer/jobs",
+                    headers={CSRF_HEADER: reg_csrf},
+                    data={
+                        "mode": "procurement_report",
+                        "source_urls": "0329300294326000004",
+                        "use_custom_prompt": "true",
+                    },
+                )
+            assert r_single.status_code == 200
+            single_job = r_single.json()["job"]
+            assert single_job["is_custom_batch_report"] is True
+            db.refresh(reg_client)
+            assert reg_client.money_reserved_kopeks == 3000
+
+            # VIP client keeps 60-item cap and 15 ₽ override
+            tc.cookies.set(CUSTOMER_COOKIE, vip_token)
+            vip_sess = tc.get("/api/customer/auth/session").json()
+            assert vip_sess["user"]["batch_report_max_items"] == 60
+            assert vip_sess["balance"]["effective_prices"]["custom_batch_report"]["price_kopeks"] == 1500
+            with patch("app.main.enqueue_job"):
+                r_vip_31 = tc.post(
+                    "/api/customer/jobs/batch-report/create",
+                    headers={CSRF_HEADER: vip_csrf},
+                    json={"filename": "vip31.xlsx", "items": items_31},
+                )
+            assert r_vip_31.status_code == 200
+            db.refresh(vip_client)
+            assert vip_client.money_reserved_kopeks == 31 * 1500
+    finally:
+        settings = get_or_create_settings(db)
+        settings.batch_report_access_mode = prev_mode
+        settings.batch_report_default_price_kopeks = prev_price
+        settings.batch_report_max_items = prev_max
+        db.commit()
+
+
+def test_admin_batch_report_settings_and_legacy_override_migration(db_session: Session):
+    from app.db import _migrate_legacy_custom_batch_overrides
+    from app.security import _admin_token
+
+    db = db_session
+    settings = get_or_create_settings(db)
+    prev_state = (
+        settings.batch_report_access_mode,
+        settings.batch_report_default_price_kopeks,
+        settings.batch_report_max_items,
+        settings.batch_report_default_prompt,
+    )
+
+    # Create a legacy VIP client who only has a procurement_report override (15 ₽)
+    legacy_vip, _, _, _ = _create_client_with_web_user(
+        db,
+        allowed_batch=True,
+        balance_kopeks=10_000,
+        override_price_kopeks=1500,
+        override_kind=KIND_PROCUREMENT_REPORT,
+    )
+    # And a non-VIP client with a procurement_report override (must NOT be copied)
+    non_vip, _, _, _ = _create_client_with_web_user(
+        db,
+        allowed_batch=False,
+        balance_kopeks=10_000,
+        override_price_kopeks=2000,
+        override_kind=KIND_PROCUREMENT_REPORT,
+    )
+
+    _migrate_legacy_custom_batch_overrides()
+    db.expire_all()
+
+    vip_override = (
+        db.query(ClientTariffOverride)
+        .filter(
+            ClientTariffOverride.client_id == legacy_vip.id,
+            ClientTariffOverride.kind == KIND_CUSTOM_BATCH_REPORT,
+        )
+        .first()
+    )
+    non_vip_override = (
+        db.query(ClientTariffOverride)
+        .filter(
+            ClientTariffOverride.client_id == non_vip.id,
+            ClientTariffOverride.kind == KIND_CUSTOM_BATCH_REPORT,
+        )
+        .first()
+    )
+    assert vip_override is not None
+    assert vip_override.price_kopeks == 1500
+    assert non_vip_override is None
+
+    # Test admin settings GET / POST + disabled mode enforcement
+    admin_headers = {"X-Admin-Token": _admin_token()}
+    _, _, reg_token, reg_csrf = _create_client_with_web_user(db, allowed_batch=False, override_price_kopeks=0)
+    try:
+        with TestClient(app) as tc:
+            r_get = tc.get("/api/batch-report/settings", headers=admin_headers)
+            assert r_get.status_code == 200
+            assert r_get.json()["builtin_default_prompt"]
+
+            r_post = tc.post(
+                "/api/batch-report/settings",
+                headers=admin_headers,
+                json={
+                    "default_price_rub": 35.0,
+                    "access_mode": "disabled",
+                    "max_items": 25,
+                    "default_prompt": "Кастомный общий шаблон",
+                },
+            )
+            assert r_post.status_code == 200
+            data = r_post.json()
+            assert data["default_price_kopeks"] == 3500
+            assert data["access_mode"] == "disabled"
+            assert data["max_items"] == 25
+            assert data["default_prompt"] == "Кастомный общий шаблон"
+
+            # When disabled, regular client gets 403
+            tc.cookies.set(CUSTOMER_COOKIE, reg_token)
+            r_dis = tc.post(
+                "/api/customer/jobs/batch-report/create",
+                headers={CSRF_HEADER: reg_csrf},
+                json={"filename": "a.xlsx", "items": [{"notice_number": "32616532998", "title": "Т"}]},
+            )
+            assert r_dis.status_code == 403
+
+            # Public site reflects updated price
+            r_pub = tc.get("/api/public/site")
+            assert r_pub.status_code == 200
+            assert r_pub.json()["function_prices"]["custom_batch_report"]["price_kopeks"] == 3500
+    finally:
+        settings = get_or_create_settings(db)
+        (
+            settings.batch_report_access_mode,
+            settings.batch_report_default_price_kopeks,
+            settings.batch_report_max_items,
+            settings.batch_report_default_prompt,
+        ) = prev_state
+        db.commit()
+
+
+@pytest.mark.asyncio
+async def test_parse_image_and_txt_registries_via_vision_and_text(db_session: Session):
+    from PIL import Image
+
+    settings = get_or_create_settings(db_session)
+
+    # Create a real small PNG screenshot in memory
+    img = Image.new("RGB", (320, 120), color=(255, 255, 255))
+    png_buf = io.BytesIO()
+    img.save(png_buf, format="PNG")
+    png_bytes = png_buf.getvalue()
+
+    # 1. Screenshot of a procurement table -> Vision extracts 2 items
+    vision_table = {
+        "is_procurement_table": True,
+        "items": [
+            {"notice_number": "0329300294326000004", "title": "Поставка прицепа", "nmck_raw": "211 333 ₽"},
+            {"notice_number": "32616532998", "title": "Поставка термосов", "nmck_raw": "1 008 386 ₽"},
+        ],
+    }
+    with patch(
+        "app.custom_batch_registry._extract_registry_json_with_vision",
+        new=AsyncMock(return_value=vision_table),
+    ):
+        res_img = await parse_procurement_registry_file(
+            settings,
+            filename="screenshot.png",
+            content=png_bytes,
+        )
+    assert res_img.is_registry is True
+    assert res_img.sheet_name == "Изображение"
+    assert [it["notice_number"] for it in res_img.items] == ["0329300294326000004", "32616532998"]
+
+    # 2. Screenshot of a single TZ -> Vision returns is_procurement_table=False
+    with patch(
+        "app.custom_batch_registry._extract_registry_json_with_vision",
+        new=AsyncMock(return_value={"is_procurement_table": False, "items": []}),
+    ):
+        res_tz = await parse_procurement_registry_file(
+            settings,
+            filename="tz_photo.webp",
+            content=png_bytes,
+        )
+    assert res_tz.is_registry is False
+    assert res_tz.items == []
+
+    # 3. TXT registry file
+    txt_ai = json.dumps(
+        {
+            "is_procurement_table": True,
+            "items": [{"notice_number": "0329300294326000004", "title": "Прицеп"}],
+        }
+    )
+    with patch("app.custom_batch_registry.call_llm", new=AsyncMock(return_value=txt_ai)):
+        res_txt = await parse_procurement_registry_file(
+            settings,
+            filename="tenders.txt",
+            content="0329300294326000004 Прицеп\n".encode("utf-8"),
+        )
+    assert res_txt.is_registry is True
+    assert len(res_txt.items) == 1
+
+
+def test_full_procurement_report_batch_preview_create_and_image_upload(db_session: Session):
+    from PIL import Image
+    from app.billing import effective_price_kopeks
+
+    db = db_session
+    settings = get_or_create_settings(db)
+    prev_mode = settings.batch_report_access_mode
+    settings.batch_report_access_mode = "disabled"  # Full analysis multi-launch must still work!
+    db.commit()
+
+    client, _, token, csrf = _create_client_with_web_user(
+        db,
+        allowed_batch=False,
+        balance_kopeks=0,
+        override_price_kopeks=0,
+    )
+    unit_price = effective_price_kopeks(db, client, KIND_PROCUREMENT_REPORT)
+    # Balance enough for 3 full analyses, not enough for 4
+    client.money_balance_kopeks = unit_price * 3 + 500
+    db.commit()
+
+    try:
+        with TestClient(app) as tc:
+            tc.cookies.set(CUSTOMER_COOKIE, token)
+
+            # 1. Preview with target_mode=procurement_report works even when express assessment is disabled
+            with patch("app.custom_batch_registry.enrich_registry_preview_items", new=AsyncMock(return_value=[])):
+                r_prev = tc.post(
+                    "/api/customer/jobs/batch-report/preview",
+                    headers={CSRF_HEADER: csrf},
+                    data={
+                        "text_notices": "0329300294326000004\n32616532998",
+                        "target_mode": "procurement_report",
+                    },
+                )
+            assert r_prev.status_code == 200
+            prev_data = r_prev.json()
+            assert prev_data["target_mode"] == "procurement_report"
+            assert prev_data["max_items"] == 10
+            assert prev_data["unit_price_kopeks"] == unit_price
+            assert len(prev_data["items"]) == 2
+
+            # 2. Exceeding 10 items -> 400
+            items_11 = [{"notice_number": f"32616532{i:03d}", "title": f"Тендер {i}"} for i in range(11)]
+            r_cap = tc.post(
+                "/api/customer/jobs/procurement-report/batch-create",
+                headers={CSRF_HEADER: csrf},
+                json={"items": items_11},
+            )
+            assert r_cap.status_code == 400
+
+            # 3. Insufficient balance for 4 items -> 403 and zero jobs created
+            r_poor = tc.post(
+                "/api/customer/jobs/procurement-report/batch-create",
+                headers={CSRF_HEADER: csrf},
+                json={"items": items_11[:4]},
+            )
+            assert r_poor.status_code == 403
+            db.refresh(client)
+            assert client.money_reserved_kopeks == 0
+
+            # 4. Creating 3 separate full procurement_report jobs succeeds atomically
+            enqueued: list[str] = []
+            with patch("app.main.enqueue_job", side_effect=lambda jid: enqueued.append(jid)):
+                r_ok = tc.post(
+                    "/api/customer/jobs/procurement-report/batch-create",
+                    headers={CSRF_HEADER: csrf},
+                    json={
+                        "items": [
+                            {"notice_number": "0329300294326000004", "title": "Поставка прицепа"},
+                            {"notice_number": "32616532998", "title": "Поставка термосов"},
+                            {"notice_number": "0373200649326000016", "title": "Закупка 0373200649326000016"},
+                        ]
+                    },
+                )
+            assert r_ok.status_code == 200
+            body = r_ok.json()
+            assert body["batch"] is True
+            assert body["count"] == 3
+            assert len(body["jobs"]) == 3
+            assert len(enqueued) == 3
+            assert all(j["mode"] == "procurement_report" for j in body["jobs"])
+            assert all(not j["is_custom_batch_report"] for j in body["jobs"])
+            db.refresh(client)
+            assert client.money_reserved_kopeks == 3 * unit_price
+
+            # 5. Uploading a .webp image directly in regular /api/customer/jobs works
+            client.money_balance_kopeks = unit_price * 5
+            db.commit()
+            img_buf = io.BytesIO()
+            Image.new("RGB", (100, 100), color=(240, 240, 240)).save(img_buf, format="WEBP")
+            with patch("app.main.enqueue_job"):
+                r_img_job = tc.post(
+                    "/api/customer/jobs",
+                    headers={CSRF_HEADER: csrf},
+                    data={"mode": "procurement_report"},
+                    files={"files": ("tz_scan.webp", img_buf.getvalue(), "image/webp")},
+                )
+            assert r_img_job.status_code == 200
+    finally:
+        settings = get_or_create_settings(db)
+        settings.batch_report_access_mode = prev_mode
+        db.commit()

@@ -106,7 +106,7 @@ def _ensure_postgres_number_triggers(connection) -> None:
         )
 
 
-SCHEMA_MIGRATION_VERSION = "2026-11-18-custom-batch-report-v2"
+SCHEMA_MIGRATION_VERSION = "2026-11-19-express-assessment-v1"
 _PG_INIT_ADVISORY_LOCK_KEY = 73948102
 
 
@@ -255,6 +255,10 @@ def _ensure_schema() -> None:
             "price_monitoring_filter_foreign": "BOOLEAN DEFAULT 1",
             "price_monitoring_max_variation_pct": "REAL DEFAULT 33.0",
             "price_monitoring_access_mode": "VARCHAR(32) DEFAULT 'all'",
+            "batch_report_default_price_kopeks": "INTEGER DEFAULT 3000",
+            "batch_report_access_mode": "VARCHAR(32) DEFAULT 'all'",
+            "batch_report_max_items": "INTEGER DEFAULT 30",
+            "batch_report_default_prompt": "TEXT DEFAULT ''",
             "geo_radius_search_enabled_global": "BOOLEAN DEFAULT 0",
             "geo_radius_surcharge_pct": "REAL DEFAULT 30.0",
             "support_telegram_group_id": "VARCHAR(64) DEFAULT ''",
@@ -805,6 +809,57 @@ def _ensure_default_tariffs() -> None:
 
         if changed:
             db.commit()
+    finally:
+        db.close()
+    _migrate_legacy_custom_batch_overrides()
+
+
+def _migrate_legacy_custom_batch_overrides() -> None:
+    """Preserve per-client custom prices for legacy VIP batch-analysis clients."""
+    from .models import Client, ClientTariffOverride
+
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = Session()
+    try:
+        vip_clients = db.query(Client).filter(Client.allowed_custom_batch_report.is_(True)).all()
+        if not vip_clients:
+            return
+        changed = False
+        for client in vip_clients:
+            existing = (
+                db.query(ClientTariffOverride)
+                .filter(
+                    ClientTariffOverride.client_id == client.id,
+                    ClientTariffOverride.kind == "custom_batch_report",
+                )
+                .first()
+            )
+            if existing:
+                continue
+            legacy_override = (
+                db.query(ClientTariffOverride)
+                .filter(
+                    ClientTariffOverride.client_id == client.id,
+                    ClientTariffOverride.kind == "procurement_report",
+                    ClientTariffOverride.is_enabled.is_(True),
+                )
+                .first()
+            )
+            if legacy_override and int(legacy_override.price_kopeks or 0) > 0:
+                db.add(
+                    ClientTariffOverride(
+                        client_id=client.id,
+                        kind="custom_batch_report",
+                        price_kopeks=int(legacy_override.price_kopeks),
+                        is_enabled=True,
+                        note="Перенесено из индивидуальной цены анализа документации",
+                    )
+                )
+                changed = True
+        if changed:
+            db.commit()
+    except Exception:
+        db.rollback()
     finally:
         db.close()
 

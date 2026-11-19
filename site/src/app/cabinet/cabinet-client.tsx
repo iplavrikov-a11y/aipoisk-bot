@@ -210,6 +210,7 @@ type SessionPayload = {
     allowed_geo_radius?: boolean;
     allowed_custom_batch_report?: boolean;
     custom_report_separate_tab?: boolean;
+    batch_report_max_items?: number;
     geo_radius_surcharge_pct?: number;
   };
   balance?: {
@@ -510,7 +511,7 @@ const modeCopy: Record<Scenario, {
     title: "Подбор товара и аналогов",
     formSubtitle: "Определение точной модели по характеристикам ТЗ, проверка реестра Минпромторга и таблица сравнения аналогов (.docx).",
     uploadTitle: "Прикрепить файл ТЗ или спецификацию",
-    uploadText: "Перетащите файлы сюда или выберите с компьютера (PDF, DOCX, XLSX, TXT, ZIP)",
+    uploadText: "Перетащите файлы или фото/скриншот ТЗ сюда (PDF, DOCX, XLSX, PNG, JPG, TXT, ZIP)",
     multipleFiles: true,
     textLabel: "Характеристики объекта закупки текстом",
     textPlaceholder: "Вставьте наименование и параметры из ТЗ: мощность, размеры, материал, ГОСТ и другие требования...",
@@ -522,23 +523,23 @@ const modeCopy: Record<Scenario, {
     title: "Поиск поставщиков",
     formSubtitle: "Подбор производителей и поставщиков под вашу спецификацию с проверенными контактами отделов продаж и проектом запроса КП.",
     uploadTitle: "Прикрепить техническое задание или смету",
-    uploadText: "Перетащите файлы ТЗ сюда или выберите с компьютера (PDF, DOCX, XLSX, ZIP, RAR)",
+    uploadText: "Перетащите файлы ТЗ или фото/скриншот сюда (PDF, DOCX, XLSX, PNG, JPG, ZIP, RAR)",
     multipleFiles: true,
     textLabel: "Список позиций или текст технического задания",
     textPlaceholder: "Например: кабель силовой ВВГнг(А)-LS 3×2,5 ГОСТ 31996-2012 — 1 500 м, доставка в Казань...",
-    hint: "Можно прикрепить сразу несколько файлов закупки или архив — система объединит их в единый расчёт.",
+    hint: "Можно прикрепить сразу несколько файлов закупки, архив или фото/скриншот ТЗ — система объединит их в единый расчёт.",
     submit: "Запустить поиск поставщиков",
   },
   procurement_report: {
     mode: "procurement_report",
     title: "Анализ документации",
     formSubtitle: "Разбор извещения, проекта контракта и требований закупки: сроки, оплата, обеспечение, нацрежим, риски и вопросы заказчику.",
-    uploadTitle: "Или прикрепите файлы закупочной документации",
-    uploadText: "Проект контракта, извещение, требования или архив (PDF, DOCX, XLSX, ZIP)",
+    uploadTitle: "Или прикрепите файлы закупки, фото/скриншот или таблицу закупок",
+    uploadText: "ТЗ, контракт, фото/скриншот или список до 10 закупок (PDF, DOCX, XLSX, PNG, JPG, ZIP)",
     multipleFiles: true,
-    sourceLabel: "Номер извещения ЕИС (11 или 19 цифр) или прямая ссылка на zakupki.gov.ru",
-    sourcePlaceholder: "Например: 0173200001424000001 или https://zakupki.gov.ru/...",
-    hint: "Поддерживаются номера процедур и прямые ссылки ЕИС (44-ФЗ / 223-ФЗ), а также загруженные файлы закупки.",
+    sourceLabel: "Номера извещений ЕИС (1 или до 10 шт. в столбик / через запятую) или ссылки на закупки",
+    sourcePlaceholder: "Например: 0173200001424000001 (или сразу несколько номеров / ссылок в столбик)...",
+    hint: "Можно указать одну закупку (запустится сразу) или сразу список до 10 закупок — перед запуском вы выберете нужные.",
     submit: "Запустить анализ документации",
   },
   analysis_and_suppliers: {
@@ -546,7 +547,7 @@ const modeCopy: Record<Scenario, {
     title: "Анализ + поиск поставщиков",
     formSubtitle: "Комплексный разбор рисков закупочной документации и одновременный подбор поставщиков под предмет контракта.",
     uploadTitle: "Или прикрепите комплект документов закупки",
-    uploadText: "Документация закупки, техническое задание или архив (PDF, DOCX, XLSX, ZIP)",
+    uploadText: "Документация закупки, техническое задание, фото/скриншот или архив (PDF, DOCX, XLSX, PNG, JPG, ZIP)",
     multipleFiles: true,
     sourceLabel: "Номер извещения ЕИС (11 или 19 цифр) или прямая ссылка на zakupki.gov.ru",
     sourcePlaceholder: "Например: 0173200001424000001 или https://zakupki.gov.ru/...",
@@ -558,24 +559,24 @@ const modeCopy: Record<Scenario, {
     title: "Мониторинг цен по спецификации",
     formSubtitle: "Поиск актуальных рыночных цен, ИНН и ссылок на поставщиков по каждой позиции вашей спецификации.",
     uploadTitle: "Прикрепить спецификацию или ведомость",
-    uploadText: "Таблицы и документы со списком позиций (XLSX, DOCX, PDF, TXT, ZIP — до 1 000 строк)",
+    uploadText: "Таблицы, документы и фото/скриншоты со списком позиций (XLSX, DOCX, PDF, PNG, JPG, TXT, ZIP — до 1 000 строк)",
     multipleFiles: true,
     textLabel: "Или вставьте перечень позиций построчно",
     textPlaceholder: "1. Кислород газообразный технический, м3\n2. Подшипник 13630, шт.\n3. Клапан обратный 19с53нж Ду100, шт.",
-    hint: "Можно загрузить Excel или Word до 1 000 строк — перед запуском вы выберете нужные позиции.",
+    hint: "Можно загрузить Excel, Word или фото таблицы до 1 000 строк — перед запуском вы выберете нужные позиции.",
     submit: "Запустить мониторинг цен",
   },
   custom_batch_report: {
     mode: "procurement_report",
-    title: "Пакетный анализ закупок",
-    formSubtitle: "Массовая проверка выгрузки извещений из таблицы Excel / CSV / Word или списка номеров процедур.",
-    uploadTitle: "Или загрузите таблицу с перечнем закупок",
-    uploadText: "Выгрузка реестра закупок или архив документации (XLSX, XLS, CSV, DOCX, PDF, ZIP)",
+    title: "Экспресс-оценка закупок",
+    formSubtitle: "Быстрый коммерческий просчёт от 1 закупки или выгрузки: подходящий товар со ссылкой, заводы-поставщики, логистика и маржа.",
+    uploadTitle: "Или загрузите таблицу / скриншот с перечнем закупок (или файл ТЗ)",
+    uploadText: "Выгрузка реестра закупок, фото/скриншот таблицы или документация (XLSX, CSV, DOCX, PDF, PNG, JPG, ZIP)",
     multipleFiles: true,
-    sourceLabel: "Номера извещений (через запятую или в столбик) либо ссылки на закупки",
-    sourcePlaceholder: "Вставьте список номеров извещений (в столбик из Excel или через запятую)...",
-    hint: "Если в книге Excel несколько листов — перед стартом откроется выбор нужных вкладок и строк.",
-    submit: "Запустить пакетный анализ",
+    sourceLabel: "Номера извещений (от 1 шт., в столбик или через запятую) либо ссылки на закупки",
+    sourcePlaceholder: "Вставьте 1 или несколько номеров извещений (в столбик из Excel или через запятую)...",
+    hint: "Работает для 1 закупки, списка номеров, Excel, Word, PDF или скриншота таблицы (с выбором строк перед запуском).",
+    submit: "Запустить экспресс-оценку",
   },
 };
 
@@ -793,7 +794,7 @@ function tariffDisplayName(tariff: Tariff) {
 }
 
 function modeDisplayName(job: CustomerJob) {
-  if (job.is_custom_batch_report) return "Пакетный анализ";
+  if (job.is_custom_batch_report) return "Экспресс-оценка";
   const policy = (job as unknown as { supplier_search_policy?: string }).supplier_search_policy;
   const policyLabel =
     policy === "registry_only" || policy === "minprom_registry_only"
@@ -821,18 +822,18 @@ function formatCleanJobTitle(job: CustomerJob): string {
   let title = String(job.human_title || "").trim();
   if (!title) return modeDisplayName(job);
 
-  // Clean truncated batch titles: "Пакетный анализ 3 зак" / "Пакетный анализ (10 зак.): Выгрузка"
-  const batchWithTail = title.match(/^Пакетный анализ\s*\(?(\d+)\s*зак\.?\)?\s*[:—-]\s*(.+)$/i);
+  // Clean truncated batch titles: "Экспресс-оценка (10 зак.): Выгрузка" / legacy "Пакетный анализ 3 зак"
+  const batchWithTail = title.match(/^(?:Экспресс-оценка|Пакетный анализ)\s*\(?(\d+)\s*зак\.?\)?\s*[:—-]\s*(.+)$/i);
   if (batchWithTail) {
     const n = Number(batchWithTail[1]);
     const word = pluralizeRu(n, ["закупка", "закупки", "закупок"]);
-    return `Пакетный анализ · ${n} ${word}: ${batchWithTail[2].trim()}`;
+    return `Экспресс-оценка · ${n} ${word}: ${batchWithTail[2].trim()}`;
   }
-  const batchOnly = title.match(/^Пакетный анализ\s*\(?(\d+)\s*зак\.?\)?$/i);
+  const batchOnly = title.match(/^(?:Экспресс-оценка|Пакетный анализ)\s*\(?(\d+)\s*зак\.?\)?$/i);
   if (batchOnly) {
     const n = Number(batchOnly[1]);
     const word = pluralizeRu(n, ["закупка", "закупки", "закупок"]);
-    return `Пакетный анализ · ${n} ${word}`;
+    return `Экспресс-оценка · ${n} ${word}`;
   }
 
   // Deduplicate stacked prefixes like "Анализ закупки: Анализ - Анализ закупки Поставка..."
@@ -2301,6 +2302,8 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
     const eff = session?.balance?.effective_prices;
     const fn = session?.function_prices;
     const reportPrice = Math.round(eff?.procurement_report?.price_rub ?? fn?.procurement_report?.price_rub ?? 99);
+    const batchPrice = Math.round(eff?.custom_batch_report?.price_rub ?? fn?.custom_batch_report?.price_rub ?? 30);
+    const batchMax = session?.user?.batch_report_max_items ?? 30;
     const supplierPrice = Math.round(eff?.supplier_search?.price_rub ?? fn?.supplier_search?.price_rub ?? 99);
     const exactPrice = Math.round(eff?.exact_product?.price_rub ?? fn?.exact_product?.price_rub ?? 99);
     const pmPrice = Math.round(eff?.price_monitoring?.price_rub ?? 50);
@@ -2308,7 +2311,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
     const geoNote = geoRadiusEnabled && session?.user?.allowed_geo_radius ? ` (+${geoPct}% приоритет доставки)` : "";
 
     if (isCustomBatchScenario) {
-      return `${reportPrice} ₽ за каждую выбранную закупку — список и итог подтверждаются перед запуском`;
+      return `${batchPrice} ₽ за каждую обработанную закупку (до ${batchMax} шт. за запуск) — за закрытые площадки 0 ₽`;
     }
     if (scenario === "procurement_report") {
       return `${reportPrice} ₽ с баланса — списание только по готовому отчёту`;
@@ -2614,7 +2617,11 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
     fileInputRef.current.files = transfer.files;
   }
 
-  async function inspectBatchRegistryFile(file: File, requestedSheets?: string[]) {
+  async function inspectBatchRegistryFile(
+    file: File,
+    requestedSheets?: string[],
+    targetMode: "custom_batch_report" | "procurement_report" = "custom_batch_report"
+  ) {
     if (!csrf) return;
     setBatchBusy(true);
     setBatchModalError("");
@@ -2622,6 +2629,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
     try {
       const form = new FormData();
       form.append("file", file);
+      form.append("target_mode", targetMode);
       if (requestedSheets && requestedSheets.length > 0) {
         form.append("sheet_names_json", JSON.stringify(requestedSheets));
       }
@@ -2632,6 +2640,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
         body: form,
       });
       const data = await readJson<{
+        target_mode?: "custom_batch_report" | "procurement_report";
         is_registry: boolean;
         filename: string;
         sheet_name: string;
@@ -2639,26 +2648,37 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
         selected_sheets?: string[];
         requires_sheet_selection?: boolean;
         items: BatchRegistryPreviewItem[];
+        max_items?: number;
         unit_price_kopeks: number;
         unit_price_rub: number;
         available_kopeks: number;
         available_rub: number;
       }>(res, { isUpload: true });
+      const resolvedTargetMode = data.target_mode || targetMode;
+      const minItemsToOpenModal =
+        resolvedTargetMode === "procurement_report" && !(requestedSheets && requestedSheets.length > 0) ? 2 : 1;
       if (data.requires_sheet_selection && data.sheet_names.length > 1) {
         setBatchPreview({
           ...data,
+          target_mode: resolvedTargetMode,
           file,
           items: [],
           requires_sheet_selection: true,
         });
         setBatchSelectedIds([]);
-      } else if (data.is_registry && data.items.length > 0) {
+      } else if (data.is_registry && data.items.length >= minItemsToOpenModal) {
+        const defaultCap =
+          resolvedTargetMode === "procurement_report"
+            ? 10
+            : session?.user?.batch_report_max_items || 30;
+        const limitCap = Math.max(1, data.max_items || defaultCap);
         setBatchPreview({
           ...data,
+          target_mode: resolvedTargetMode,
           file,
           requires_sheet_selection: false,
         });
-        setBatchSelectedIds(data.items.slice(0, 60).map((it) => it.id));
+        setBatchSelectedIds(data.items.slice(0, limitCap).map((it) => it.id));
         clearSelectedFiles();
       } else if (requestedSheets && requestedSheets.length > 0) {
         setBatchModalError(
@@ -2676,10 +2696,14 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
     }
   }
 
-  async function inspectBatchTextNotices(rawText: string) {
+  async function inspectBatchTextNotices(
+    rawText: string,
+    targetMode: "custom_batch_report" | "procurement_report" = "custom_batch_report"
+  ) {
     if (!csrf) return null;
     const form = new FormData();
     form.append("text_notices", rawText);
+    form.append("target_mode", targetMode);
     const res = await fetch("/api/customer/jobs/batch-report/preview", {
       method: "POST",
       credentials: "same-origin",
@@ -2687,6 +2711,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
       body: form,
     });
     return await readJson<{
+      target_mode?: "custom_batch_report" | "procurement_report";
       is_registry: boolean;
       filename: string;
       sheet_name: string;
@@ -2694,6 +2719,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
       selected_sheets?: string[];
       requires_sheet_selection?: boolean;
       items: BatchRegistryPreviewItem[];
+      max_items?: number;
       unit_price_kopeks: number;
       unit_price_rub: number;
       available_kopeks: number;
@@ -2709,10 +2735,14 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
       setBatchModalError("Отметьте хотя бы одну закупку галочкой.");
       return;
     }
+    const isFullAnalysis = batchPreview.target_mode === "procurement_report";
     setBatchBusy(true);
     setBatchModalError("");
     try {
-      const res = await fetch("/api/customer/jobs/batch-report/create", {
+      const endpoint = isFullAnalysis
+        ? "/api/customer/jobs/procurement-report/batch-create"
+        : "/api/customer/jobs/batch-report/create";
+      const res = await fetch(endpoint, {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json", "x-csrf-token": csrf },
@@ -2722,12 +2752,16 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
         }),
       });
       await readJson(res);
-      trackGoal("task_started", { module: "procurement_report" });
+      trackGoal("task_started", { module: isFullAnalysis ? "procurement_report" : "custom_batch_report" });
       setBatchPreview(null);
       setBatchSelectedIds([]);
       setSourceUrls("");
       clearSelectedFiles();
-      setMessage(`Запущен пакетный анализ: ${selectedItems.length} зак.`);
+      setMessage(
+        isFullAnalysis
+          ? `Запущено анализов документации: ${selectedItems.length} шт.`
+          : `Запущена экспресс-оценка: ${selectedItems.length} зак.`
+      );
       setJobsPage(1);
       await loadSession({ background: true });
       await loadJobs(1).catch(() => {});
@@ -2785,14 +2819,34 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
     const files = Array.from(fileList || []);
     const limited = selectedCopy.multipleFiles ? files.slice(0, maxFiles) : files.slice(0, 1);
     syncSelectedFiles(limited);
-    const shouldAutoInspectBatch =
+    const registryTargetMode: "custom_batch_report" | "procurement_report" | null =
       Boolean(session?.user?.allowed_custom_batch_report) &&
       (scenario === "custom_batch_report" ||
-        (scenario === "procurement_report" && !session?.user?.custom_report_separate_tab));
-    if (shouldAutoInspectBatch && limited.length === 1) {
+        (scenario === "procurement_report" && !session?.user?.custom_report_separate_tab))
+        ? "custom_batch_report"
+        : scenario === "procurement_report"
+          ? "procurement_report"
+          : null;
+    if (registryTargetMode && limited.length === 1) {
       const ext = limited[0].name.toLowerCase();
-      if (ext.endsWith(".xlsx") || ext.endsWith(".xls") || ext.endsWith(".csv") || ext.endsWith(".docx")) {
-        void inspectBatchRegistryFile(limited[0]);
+      const isInspectable = [
+        ".xlsx",
+        ".xls",
+        ".csv",
+        ".docx",
+        ".doc",
+        ".pdf",
+        ".txt",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".bmp",
+        ".tif",
+        ".tiff",
+      ].some((suffix) => ext.endsWith(suffix));
+      if (isInspectable) {
+        void inspectBatchRegistryFile(limited[0], undefined, registryTargetMode);
       }
     }
   }
@@ -3565,7 +3619,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
     setMessage("");
     try {
       if (useCustomBatchFlow && selectedFiles.length === 0 && sourceUrls.trim()) {
-        const previewData = await inspectBatchTextNotices(sourceUrls);
+        const previewData = await inspectBatchTextNotices(sourceUrls, "custom_batch_report");
         if (previewData && previewData.is_registry && previewData.items.length > 0) {
           const singleItem = previewData.items.length === 1 ? previewData.items[0] : null;
           const isSingleStandardEis = Boolean(
@@ -3573,12 +3627,35 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
             (/^\d{11}$|^\d{19}$/.test(singleItem.notice_number.trim()) || singleItem.eis_url)
           );
           if (previewData.items.length > 1 || !isSingleStandardEis) {
+            const limitCap = Math.max(1, previewData.max_items || session?.user?.batch_report_max_items || 30);
             setBatchPreview({
               ...previewData,
+              target_mode: "custom_batch_report",
               file: null,
               requires_sheet_selection: false,
             });
-            setBatchSelectedIds(previewData.items.slice(0, 60).map((it) => it.id));
+            setBatchSelectedIds(previewData.items.slice(0, limitCap).map((it) => it.id));
+            setBatchModalError("");
+            lastJobSubmitRef.current = { signature: "", ts: 0 };
+            return;
+          }
+        }
+      } else if (!useCustomBatchFlow && selectedMode === "procurement_report" && selectedFiles.length === 0 && sourceUrls.trim()) {
+        const candidateTokens = sourceUrls
+          .split(/[\r\n,;|\t ]+/)
+          .map((t) => t.trim())
+          .filter((t) => /\d{6,}/.test(t) || /^https?:\/\//i.test(t));
+        if (candidateTokens.length >= 2) {
+          const previewData = await inspectBatchTextNotices(sourceUrls, "procurement_report");
+          if (previewData && previewData.is_registry && previewData.items.length >= 2) {
+            const limitCap = Math.max(1, previewData.max_items || 10);
+            setBatchPreview({
+              ...previewData,
+              target_mode: "procurement_report",
+              file: null,
+              requires_sheet_selection: false,
+            });
+            setBatchSelectedIds(previewData.items.slice(0, limitCap).map((it) => it.id));
             setBatchModalError("");
             lastJobSubmitRef.current = { signature: "", ts: 0 };
             return;
@@ -4523,7 +4600,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                   ? [{ id: "price_monitoring" as const, label: "Мониторинг цен", icon: Coins }]
                   : []),
                 ...(hasSeparateCustomBatchTab
-                  ? [{ id: "custom_batch_report" as const, label: "Пакетный анализ", icon: FileSpreadsheet }]
+                  ? [{ id: "custom_batch_report" as const, label: "Экспресс-оценка", icon: FileSpreadsheet }]
                   : []),
               ];
               const renderSidebarTool = (item: { id: Scenario; label: string; icon: LucideIcon }) => {
@@ -5202,16 +5279,24 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                           </div>
                         );
                       })() : null}
-                      {hasBatchAnalysis ? (
-                        <div className={`px-2.5 py-1.5 ${reportIsOverride ? "bg-amber-50/80 border-amber-200 text-amber-950" : "bg-white border-[#e5e9e2] text-slate-800"} border rounded-lg flex items-center justify-between gap-2 text-xs font-medium`}>
-                          <span className="min-w-0 leading-snug font-semibold text-slate-800">
-                            {hasPriceMonitoring ? "6" : "5"}. Пакетный анализ (за закупку)
-                          </span>
-                          <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
-                            {formatRubles(reportPriceKopeks)}
-                          </b>
-                        </div>
-                      ) : null}
+                      {hasBatchAnalysis ? (() => {
+                        const batchPriceKopeks =
+                          session?.balance?.effective_prices?.custom_batch_report?.price_kopeks ??
+                          session?.function_prices?.custom_batch_report?.price_kopeks ??
+                          3000;
+                        const batchIsOverride =
+                          session?.balance?.effective_prices?.custom_batch_report?.source === "client_override";
+                        return (
+                          <div className={`px-2.5 py-1.5 ${batchIsOverride ? "bg-amber-50/80 border-amber-200 text-amber-950" : "bg-white border-[#e5e9e2] text-slate-800"} border rounded-lg flex items-center justify-between gap-2 text-xs font-medium`}>
+                            <span className="min-w-0 leading-snug font-semibold text-slate-800">
+                              {hasPriceMonitoring ? "6" : "5"}. Экспресс-оценка закупок (за закупку)
+                            </span>
+                            <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                              {formatRubles(batchPriceKopeks)}
+                            </b>
+                          </div>
+                        );
+                      })() : null}
                     </div>
                   </div>
                   {session?.user?.allowed_geo_radius ? (
@@ -5453,7 +5538,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
               className="hidden"
               type="file"
               multiple
-              accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.zip,.rar,.7z"
+              accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.zip,.rar,.7z,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
               onChange={handleFileInput}
             />
 
@@ -5466,14 +5551,16 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                   </label>
                   <div className="flex flex-col sm:flex-row items-stretch gap-2">
                     <div className="relative flex-1 min-w-0">
-                      {!isCustomBatchScenario ? (
+                      {!isCustomBatchScenario && scenario !== "procurement_report" ? (
                         <Globe size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
                       ) : null}
-                      {isCustomBatchScenario ? (
+                      {isCustomBatchScenario || scenario === "procurement_report" ? (
                         <textarea
                           id="eis-source-input"
-                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-[13px] text-slate-900 resize-y min-h-[68px]"
-                          rows={2}
+                          className={`w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-[13px] text-slate-900 resize-y ${
+                            isCustomBatchScenario ? "min-h-[68px]" : "min-h-[44px]"
+                          }`}
+                          rows={isCustomBatchScenario ? 2 : 1}
                           value={sourceUrls}
                           onChange={(event) => setSourceUrls(event.target.value)}
                           placeholder={selectedCopy.sourcePlaceholder}
@@ -5489,7 +5576,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                       )}
                     </div>
                     <button
-                      className={`tl-btn-primary px-5 h-[42px] ${isCustomBatchScenario ? "sm:self-start" : ""} rounded-lg text-xs sm:text-[13px] flex items-center justify-center gap-2 cursor-pointer shrink-0 whitespace-nowrap`}
+                      className={`tl-btn-primary px-5 h-[42px] ${isCustomBatchScenario || scenario === "procurement_report" ? "sm:self-start" : ""} rounded-lg text-xs sm:text-[13px] flex items-center justify-center gap-2 cursor-pointer shrink-0 whitespace-nowrap`}
                       type="submit"
                       disabled={busy}
                     >
@@ -5507,6 +5594,21 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                     <div className="tl-cost-hint pt-0.5">
                       <Wallet size={12} className="text-[#174b3f] shrink-0" aria-hidden="true" />
                       <span>{activeScenarioPricingHint}</span>
+                    </div>
+                  ) : null}
+
+                  {isCustomBatchScenario ? (
+                    <div className="px-3 py-2 rounded-lg bg-[#f4f8ef] border border-[#d6e4c9] text-xs text-slate-700 flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        Нужен полный разбор всех позиций ТЗ, нацрежима (ПП № 1875) и готовый Запрос КП перед подачей?
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => selectScenario("procurement_report", { preserveInput: true })}
+                        className="px-2.5 py-1 rounded-md bg-white border border-[#b7c9af] font-bold text-[#174b3f] hover:bg-[#174b3f] hover:text-white transition-colors cursor-pointer text-[11px] shrink-0"
+                      >
+                        Перейти в «Анализ документации» →
+                      </button>
                     </div>
                   ) : null}
 
@@ -5580,6 +5682,12 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                     Выбрать файлы
                   </span>
                 </div>
+                {batchBusy && !batchPreview ? (
+                  <div className="px-3 py-2 rounded-lg bg-teal-50 border border-teal-200 text-xs font-semibold text-teal-900 flex items-center gap-2">
+                    <Loader2 size={14} className="animate-spin text-teal-700 shrink-0" aria-hidden="true" />
+                    <span>Распознаём файл и проверяем, есть ли в нём список закупок...</span>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
@@ -5942,7 +6050,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                 <option value="price_monitoring">Мониторинг цен</option>
               ) : null}
               {session?.user?.allowed_custom_batch_report || jobs.some((j) => j.is_custom_batch_report) ? (
-                <option value="custom_batch_report">Пакетный анализ</option>
+                <option value="custom_batch_report">Экспресс-оценка</option>
               ) : null}
             </select>
           </div>
@@ -6769,7 +6877,11 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
           error={batchModalError}
           onConfirmSheets={(chosenSheets) => {
             if (batchPreview.file) {
-              void inspectBatchRegistryFile(batchPreview.file, chosenSheets);
+              void inspectBatchRegistryFile(
+                batchPreview.file,
+                chosenSheets,
+                batchPreview.target_mode || "custom_batch_report"
+              );
             }
           }}
           onClose={() => {
@@ -6791,9 +6903,14 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
               prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
             )
           }
-          onSelectAllVisible={(visibleIds) =>
-            setBatchSelectedIds((prev) => Array.from(new Set([...prev, ...visibleIds])).slice(0, 60))
-          }
+          onSelectAllVisible={(visibleIds) => {
+            const fallbackCap =
+              batchPreview.target_mode === "procurement_report"
+                ? 10
+                : session?.user?.batch_report_max_items || 30;
+            const maxItems = Math.max(1, batchPreview.max_items || fallbackCap);
+            setBatchSelectedIds((prev) => Array.from(new Set([...prev, ...visibleIds])).slice(0, maxItems));
+          }}
           onClearAll={() => setBatchSelectedIds([])}
           onOpenSheetSelector={() => {
             setBatchModalError("");
@@ -6819,6 +6936,15 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
           onDownloadAllZip={(jobId) => {
             const found = jobs.find((j) => j.id === jobId);
             if (found) void downloadJob(found);
+          }}
+          onOpenDetailedAnalysis={(noticeNum) => {
+            setBatchReaderData(null);
+            setCabinetSection("workspace");
+            selectScenario("procurement_report");
+            setSourceUrls(noticeNum);
+            if (typeof window !== "undefined") {
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }
           }}
           onClose={() => setBatchReaderData(null)}
         />
@@ -8366,7 +8492,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                     className={tabBtnClass(helpModalTab === "custom_batch_report")}
                   >
                     <FileSpreadsheet size={14} className={helpModalTab === "custom_batch_report" ? "text-[#174b3f]" : "text-slate-400"} aria-hidden="true" />
-                    <span>Пакетный анализ</span>
+                    <span>Экспресс-оценка</span>
                   </button>
                 ) : null}
               </div>
@@ -8553,10 +8679,10 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                                   <FileSpreadsheet size={13} className="text-[#174b3f] shrink-0" aria-hidden="true" />
-                                  <span>Пакетный анализ</span>
+                                  <span>Экспресс-оценка закупок</span>
                                 </div>
                                 <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
-                                  Массовый разбор реестра закупок из Excel, CSV, Word или списка номеров ЕИС.
+                                  Быстрый отбор 1 или сразу нескольких закупок по марже, товару и поставщикам.
                                 </p>
                               </div>
                               <button
@@ -8870,10 +8996,10 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                   <div className="space-y-4">
                     <div className="p-4 bg-[#f4f8ef] border border-[#cde0be] rounded-2xl">
                       <h3 className="font-extrabold text-[#103a31] text-sm mb-1">
-                        Пакетный анализ закупок по индивидуальному шаблону
+                        Экспресс-оценка закупок — быстрый фильтр «стоит ли участвовать»
                       </h3>
                       <p className="text-slate-700 text-xs leading-relaxed">
-                        Массовая проверка выгрузки тендеров за один запуск: система считывает список закупок, даёт выбрать нужные вкладки и строки, а затем готовит отдельный отчёт по каждой процедуре.
+                        Помогает быстро отсеять невыгодные закупки и найти перспективные до глубокой проработки. Работает как с одной закупкой, так и со списком из выгрузки Excel, CSV или Word.
                       </p>
                     </div>
 
@@ -8882,13 +9008,14 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                         <div>
                           <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что загружать:</strong>
                           <p className="text-slate-600 leading-relaxed text-xs mt-1">
-                            Таблицы Excel / CSV, файлы Word с реестром тендеров или перечень номеров извещений ЕИС через запятую / в столбик.
+                            Один номер закупки ЕИС, перечень номеров в столбик/через запятую, файл ТЗ или таблицу выгрузки закупок. Для списка откроется предпросмотр, где вы отметите нужные строки и сразу увидите стоимость.
                           </p>
                         </div>
                         <div className="pt-2 border-t border-[#e5e9e2]">
-                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Выбор перед запуском:</strong>
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Чем отличается от «Анализа документации»:</strong>
                           <p className="text-slate-600 leading-relaxed text-xs mt-1">
-                            Если в файле несколько листов или десятки строк, откроется предпросмотр, где вы отметите только нужные закупки и сразу увидите стоимость.
+                            <b>Шаг 1 — Экспресс-оценка:</b> быстрый коммерческий вердикт — какой товар нужен, ориентир рыночной цены, потенциальная маржа, примеры поставщиков и риски.<br />
+                            <b>Шаг 2 — Анализ документации:</b> детальный разбор всех позиций ТЗ, требований нацрежима (ПП № 1875), штрафов и готовый Запрос КП перед подачей заявки.
                           </p>
                         </div>
                       </div>
@@ -8897,15 +9024,15 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                         <div>
                           <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что на выходе:</strong>
                           <p className="text-slate-600 leading-relaxed text-xs mt-1">
-                            1) Просмотр всех ответов ИИ прямо в кабинете.<br />
-                            2) Отдельный Word-отчёт (.docx) по каждой закупке с кликабельными ссылками.<br />
-                            3) Скачивание всех готовых отчётов одним архивом.
+                            1) Удобный просмотр всех ответов ИИ прямо в кабинете с кнопкой «Разобрать детально» для перевода перспективной закупки в полный анализ.<br />
+                            2) Отдельный структурированный отчёт по каждой закупке с кликабельными ссылками.<br />
+                            3) Выгрузка всех готовых отчётов одним архивом.
                           </p>
                         </div>
                         <div className="pt-2 border-t border-[#e5e9e2]">
                           <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Оплата по факту:</strong>
                           <p className="text-slate-600 leading-relaxed text-xs mt-1">
-                            Списание выполняется только за те закупки, по которым найдена документация и сформирован отчёт.
+                            Списание выполняется только за те закупки, по которым найдена документация и сформирован результат.
                           </p>
                         </div>
                       </div>
@@ -8913,7 +9040,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
 
                     <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100">
                       <span className="text-xs text-slate-500 font-medium">
-                        Совет: после завершения откройте «Открыть ответы ИИ» для быстрого просмотра всех закупок в одном окне.
+                        Совет: после оценки откройте «Открыть ответы ИИ» — любую перспективную закупку можно в один клик отправить в «Анализ документации».
                       </span>
                       <button
                         type="button"
@@ -8923,7 +9050,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                         }}
                         className="tl-btn-primary px-4 py-2 text-xs rounded-xl cursor-pointer inline-flex items-center gap-1.5 shrink-0"
                       >
-                        <span>Выбрать «Пакетный анализ»</span>
+                        <span>Выбрать «Экспресс-оценку»</span>
                         <ArrowRight size={14} aria-hidden="true" />
                       </button>
                     </div>

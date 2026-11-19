@@ -20,6 +20,7 @@ KIND_PROCUREMENT_REPORT = "procurement_report"
 KIND_SUPPLIER_SEARCH_EXTRA = "supplier_search_extra"
 KIND_EXACT_PRODUCT = "exact_product"
 KIND_PRICE_MONITORING = "price_monitoring"
+KIND_CUSTOM_BATCH_REPORT = "custom_batch_report"
 KIND_MONEY = "money"
 KIND_DEPOSIT = "deposit"
 VALID_BILLING_KINDS = {
@@ -28,10 +29,12 @@ VALID_BILLING_KINDS = {
     KIND_SUPPLIER_SEARCH_EXTRA,
     KIND_EXACT_PRODUCT,
     KIND_PRICE_MONITORING,
+    KIND_CUSTOM_BATCH_REPORT,
 }
 SUPPLIER_SEARCH_EXTRA_DEFAULT_PERCENT = 50
 DEFAULT_EXACT_PRODUCT_PRICE_KOPEKS = 9900
 DEFAULT_PRICE_MONITORING_PRICE_KOPEKS = 5000
+DEFAULT_CUSTOM_BATCH_REPORT_PRICE_KOPEKS = 3000
 
 OP_GRANT = "grant"
 OP_RESERVE = "reserve"
@@ -126,6 +129,8 @@ def billing_kind_label(kind: str) -> str:
         return "Подбор товара и аналогов"
     if kind == KIND_PRICE_MONITORING:
         return "Мониторинг цен"
+    if kind == KIND_CUSTOM_BATCH_REPORT:
+        return "Экспресс-оценка закупок"
     if "supplement" in kind:
         return "Дополнительный отчёт эксперта"
     return "Поставщики"
@@ -203,6 +208,7 @@ def client_balance_summary(db: Session, client: Client) -> dict:
                 KIND_SUPPLIER_SEARCH_EXTRA,
                 KIND_EXACT_PRODUCT,
                 KIND_PRICE_MONITORING,
+                KIND_CUSTOM_BATCH_REPORT,
             )
         },
         "has_custom_tariffs": client_has_custom_tariffs(db, client),
@@ -312,6 +318,16 @@ def effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int
             else db.query(SystemSettings).first()
         )
         return max(0, int(getattr(settings, "price_monitoring_default_price_kopeks", DEFAULT_PRICE_MONITORING_PRICE_KOPEKS) or DEFAULT_PRICE_MONITORING_PRICE_KOPEKS))
+    if kind == KIND_CUSTOM_BATCH_REPORT:
+        settings = (
+            db.info.get("system_settings")
+            if hasattr(db, "info") and "system_settings" in db.info
+            else db.query(SystemSettings).first()
+        )
+        raw_default = getattr(settings, "batch_report_default_price_kopeks", None)
+        if raw_default is None:
+            return DEFAULT_CUSTOM_BATCH_REPORT_PRICE_KOPEKS
+        return max(0, int(raw_default))
     return 0
 
 
@@ -604,7 +620,7 @@ def _legacy_counter(db: Session, client: Client, kind: str, *, exclude_job_id: s
     if kind == KIND_PROCUREMENT_REPORT:
         limit = int(client.monthly_procurement_report_limit or 0)
         used = report_used
-    elif kind in {KIND_SUPPLIER_SEARCH_EXTRA, KIND_EXACT_PRODUCT}:
+    elif kind in {KIND_SUPPLIER_SEARCH_EXTRA, KIND_EXACT_PRODUCT, KIND_PRICE_MONITORING, KIND_CUSTOM_BATCH_REPORT}:
         limit = 0
         used = 0
     else:
@@ -2250,32 +2266,32 @@ def reserve_batch_procurement_report_job(
     *,
     procurement_count: int,
 ) -> int:
-    """Reserve N units of procurement_report atomically for a custom batch job."""
+    """Reserve N units of custom_batch_report atomically for an express assessment job."""
     units = max(1, int(procurement_count or 1))
     with _billing_client_lock(client.id):
         db.refresh(client)
         _initialize_legacy_balance_if_needed(db, client, exclude_job_id=job.id)
-        if _job_reserved_remaining(db, job.id, KIND_PROCUREMENT_REPORT) > 0 or _job_has_operation(
-            db, job.id, KIND_PROCUREMENT_REPORT, OP_CHARGE
+        if _job_reserved_remaining(db, job.id, KIND_CUSTOM_BATCH_REPORT) > 0 or _job_has_operation(
+            db, job.id, KIND_CUSTOM_BATCH_REPORT, OP_CHARGE
         ):
-            return _job_reserved_amount_remaining(db, job.id, KIND_PROCUREMENT_REPORT)
-        error = access_error_for_units(db, client, {KIND_PROCUREMENT_REPORT: units})
+            return _job_reserved_amount_remaining(db, job.id, KIND_CUSTOM_BATCH_REPORT)
+        error = access_error_for_units(db, client, {KIND_CUSTOM_BATCH_REPORT: units})
         if error:
             raise BillingError(error)
-        amount = _reservable_amount_for_kind(db, client, KIND_PROCUREMENT_REPORT, units, job=job)
+        amount = _reservable_amount_for_kind(db, client, KIND_CUSTOM_BATCH_REPORT, units, job=job)
         if amount > 0:
             client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0)) + amount
         unit_price = (amount // units) if amount > 0 else 0
         note = (
-            f"Резерв пакетного анализа: {units} зак. по {unit_price / 100:.2f} ₽"
+            f"Резерв экспресс-оценки закупок: {units} зак. по {unit_price / 100:.2f} ₽"
             if amount > 0
-            else f"Резерв пакетного анализа: {units} зак."
+            else f"Резерв экспресс-оценки закупок: {units} зак."
         )
         db.add(
             BillingTransaction(
                 client_id=client.id,
                 job_id=job.id,
-                kind=KIND_PROCUREMENT_REPORT,
+                kind=KIND_CUSTOM_BATCH_REPORT,
                 operation=OP_RESERVE,
                 units=units,
                 amount_kopeks=amount,
@@ -2300,23 +2316,33 @@ def settle_batch_procurement_report_job(
         current = _current_billing_job(db, job)
         if current.mode != MODE_PROCUREMENT_REPORT:
             raise BillingError("Это не задача анализа документации.")
+        bill_kind = KIND_CUSTOM_BATCH_REPORT
+        if (
+            _job_reserved_remaining(db, current.id, KIND_CUSTOM_BATCH_REPORT) <= 0
+            and not _job_has_operation(db, current.id, KIND_CUSTOM_BATCH_REPORT, OP_CHARGE)
+            and (
+                _job_reserved_remaining(db, current.id, KIND_PROCUREMENT_REPORT) > 0
+                or _job_has_operation(db, current.id, KIND_PROCUREMENT_REPORT, OP_CHARGE)
+            )
+        ):
+            bill_kind = KIND_PROCUREMENT_REPORT
         if current.status in {"completed", "partial", "failed"}:
-            return _job_has_operation(db, current.id, KIND_PROCUREMENT_REPORT, OP_CHARGE)
+            return _job_has_operation(db, current.id, bill_kind, OP_CHARGE)
         if current.status != "running":
-            raise BillingError("Задача пакетного анализа больше не выполняется; списание запрещено.")
+            raise BillingError("Задача экспресс-оценки больше не выполняется; списание запрещено.")
         completed = max(0, int(completed_count or 0))
         client = db.get(Client, current.client_id) if current.client_id else None
         charged = False
         if client:
             db.refresh(client)
-            reserve_units = _job_reserved_remaining(db, current.id, KIND_PROCUREMENT_REPORT)
-            reserve_amount = _job_reserved_amount_remaining(db, current.id, KIND_PROCUREMENT_REPORT)
+            reserve_units = _job_reserved_remaining(db, current.id, bill_kind)
+            reserve_amount = _job_reserved_amount_remaining(db, current.id, bill_kind)
             if completed <= 0:
                 _release_job_kind_reservation(
                     db,
                     current,
-                    KIND_PROCUREMENT_REPORT,
-                    note="Пакетный анализ: нет завершённых закупок, резерв возвращён",
+                    bill_kind,
+                    note="Экспресс-оценка закупок: нет завершённых закупок, резерв возвращён",
                 )
             elif reserve_units > 1 and completed < reserve_units:
                 billable_units = min(reserve_units, completed)
@@ -2332,18 +2358,18 @@ def settle_batch_procurement_report_job(
                         0, int(client.money_balance_kopeks or 0) - charge_amount
                     )
                     charge_note = (
-                        f"Пакетный анализ закупок: выполнено {billable_units} из {reserve_units} зак. "
+                        f"Экспресс-оценка закупок: выполнено {billable_units} из {reserve_units} зак. "
                         f"по {unit_price / 100:.2f} ₽"
                     )
                 else:
                     charge_amount = 0
                     unused_amount = 0
-                    charge_note = f"Пакетный анализ закупок: выполнено {billable_units} из {reserve_units} зак."
+                    charge_note = f"Экспресс-оценка закупок: выполнено {billable_units} из {reserve_units} зак."
                 db.add(
                     BillingTransaction(
                         client_id=client.id,
                         job_id=current.id,
-                        kind=KIND_PROCUREMENT_REPORT,
+                        kind=bill_kind,
                         operation=OP_CHARGE,
                         units=billable_units,
                         amount_kopeks=charge_amount,
@@ -2359,7 +2385,7 @@ def settle_batch_procurement_report_job(
                         BillingTransaction(
                             client_id=client.id,
                             job_id=current.id,
-                            kind=KIND_PROCUREMENT_REPORT,
+                            kind=bill_kind,
                             operation=OP_RELEASE,
                             units=unused_units,
                             amount_kopeks=unused_amount,
@@ -2373,8 +2399,8 @@ def settle_batch_procurement_report_job(
                 charged = _charge_job_kind_reservation_locked(
                     db,
                     current,
-                    KIND_PROCUREMENT_REPORT,
-                    note=f"Пакетный анализ закупок завершён ({completed} зак.)",
+                    bill_kind,
+                    note=f"Экспресс-оценка закупок завершена ({completed} зак.)",
                 )
         db.commit()
         return charged

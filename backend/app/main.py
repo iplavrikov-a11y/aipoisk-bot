@@ -48,6 +48,7 @@ from .billing import (
     KIND_SUPPLIER_SEARCH,
     KIND_EXACT_PRODUCT,
     KIND_PRICE_MONITORING,
+    KIND_CUSTOM_BATCH_REPORT,
     KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH_EXTRA,
     OP_CHARGE,
@@ -60,6 +61,7 @@ from .billing import (
     STATUS_CONFIRMATION_EXPIRED,
     STATUS_DELIVERY_EXPIRED,
     VALID_BILLING_KINDS,
+    access_error_for_units,
     billing_kind_label,
     calculate_deposit_bonus_kopeks,
     charge_job_reservation,
@@ -169,7 +171,13 @@ from .models import (
     parse_json_dict,
     parse_json_list,
 )
-from .procurement_sources import NOTICE_NUMBER_RE, URL_RE, source_label, source_payloads_from_text
+from .procurement_sources import (
+    NOTICE_NUMBER_RE,
+    SOURCE_KIND_TENDERPLAN_NOTICE,
+    URL_RE,
+    source_label,
+    source_payloads_from_text,
+)
 from .admin_alerts import is_pytest
 from .security_shield import (
     PROTECTED_INFRASTRUCTURE_IPS,
@@ -1900,12 +1908,7 @@ def customer_jobs_api(
         query = query.filter(Job.status == clean_status)
     if filter_custom_batch:
         candidates = query.order_by(Job.created_at.desc()).all()
-        matched_batch = [
-            j
-            for j in candidates
-            if (job_dir(j.id) / "output" / "custom_batch_results.json").is_file()
-            or (job_dir(j.id) / "input" / "custom_batch_spec.json").is_file()
-        ]
+        matched_batch = [j for j in candidates if _job_is_custom_batch_report(j)]
         total = len(matched_batch)
         jobs = matched_batch[safe_offset : safe_offset + safe_limit]
     else:
@@ -2017,6 +2020,48 @@ def customer_job_detail_api(
     return customer_job_to_dict(job, include_files=True)
 
 
+def _client_can_use_batch_report(settings: SystemSettings, client: Client | None) -> bool:
+    mode = str(getattr(settings, "batch_report_access_mode", "all") or "all").strip().lower()
+    if mode == "all":
+        return True
+    if mode == "disabled":
+        return False
+    return bool(client and getattr(client, "allowed_custom_batch_report", False))
+
+
+def _client_batch_report_max_items(settings: SystemSettings, client: Client | None) -> int:
+    base = max(1, min(60, int(getattr(settings, "batch_report_max_items", 30) or 30)))
+    if client and bool(getattr(client, "allowed_custom_batch_report", False)):
+        return max(60, base)
+    return base
+
+
+def _client_batch_report_separate_tab(settings: SystemSettings, client: Client | None) -> bool:
+    if (
+        client
+        and bool(getattr(client, "allowed_custom_batch_report", False))
+        and str(getattr(client, "custom_report_prompt", "") or "").strip()
+        and not bool(getattr(client, "custom_report_separate_tab", False))
+    ):
+        return False
+    return True
+
+
+def _job_is_custom_batch_report(job: Job) -> bool:
+    if (
+        (job_dir(job.id) / "output" / "custom_batch_results.json").is_file()
+        or (job_dir(job.id) / "input" / "custom_batch_spec.json").is_file()
+    ):
+        return True
+    try:
+        return bool(read_dobor_context(job).get("use_custom_prompt"))
+    except Exception:
+        return False
+
+
+MAX_PROCUREMENT_REPORT_BATCH_ITEMS = 10
+
+
 @app.post("/api/customer/jobs/batch-report/preview")
 async def customer_batch_report_preview_route(
     request: Request,
@@ -2024,14 +2069,24 @@ async def customer_batch_report_preview_route(
     sheet_name: str = Form(default=""),
     sheet_names_json: str = Form(default=""),
     text_notices: str = Form(default=""),
+    target_mode: str = Form(default="custom_batch_report"),
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
     require_customer_csrf(request, context)
     client = context.user.client
-    if not client or not bool(getattr(client, "allowed_custom_batch_report", False)):
-        raise HTTPException(status_code=403, detail="Пакетный режим анализа не активирован для этого аккаунта.")
     settings = get_or_create_settings(db)
+    effective_target_mode = (
+        MODE_PROCUREMENT_REPORT
+        if str(target_mode or "").strip().lower() == MODE_PROCUREMENT_REPORT
+        else "custom_batch_report"
+    )
+    if effective_target_mode == MODE_PROCUREMENT_REPORT:
+        if not client or not client.is_active or not client.allowed_procurement_report:
+            raise HTTPException(status_code=403, detail="Анализ документации недоступен для этого аккаунта.")
+    else:
+        if not client or not _client_can_use_batch_report(settings, client):
+            raise HTTPException(status_code=403, detail="Экспресс-оценка закупок временно недоступна для этого аккаунта.")
     from .custom_batch_registry import (
         enrich_registry_preview_items,
         parse_procurement_registry_file,
@@ -2069,9 +2124,20 @@ async def customer_batch_report_preview_route(
     if preview.items and not preview.requires_sheet_selection:
         await enrich_registry_preview_items(preview.items)
 
-    unit_price = effective_price_kopeks(db, client, KIND_PROCUREMENT_REPORT)
+    billing_kind = (
+        KIND_PROCUREMENT_REPORT
+        if effective_target_mode == MODE_PROCUREMENT_REPORT
+        else KIND_CUSTOM_BATCH_REPORT
+    )
+    unit_price = effective_price_kopeks(db, client, billing_kind)
     money_info = money_balance_summary(db, client)
+    max_items = (
+        MAX_PROCUREMENT_REPORT_BATCH_ITEMS
+        if effective_target_mode == MODE_PROCUREMENT_REPORT
+        else _client_batch_report_max_items(settings, client)
+    )
     return {
+        "target_mode": effective_target_mode,
         "is_registry": preview.is_registry,
         "filename": preview.filename,
         "sheet_name": preview.sheet_name,
@@ -2079,6 +2145,7 @@ async def customer_batch_report_preview_route(
         "selected_sheets": preview.selected_sheets,
         "requires_sheet_selection": preview.requires_sheet_selection,
         "items": preview.items,
+        "max_items": max_items,
         "unit_price_kopeks": unit_price,
         "unit_price_rub": round(unit_price / 100, 2),
         "available_kopeks": money_info["available_kopeks"],
@@ -2094,10 +2161,11 @@ async def customer_batch_report_create_route(
 ) -> dict:
     require_customer_csrf(request, context)
     client = context.user.client
+    settings = get_or_create_settings(db)
     if not client or not client.is_active:
         raise HTTPException(status_code=403, detail="Доступ отключён.")
-    if not bool(getattr(client, "allowed_custom_batch_report", False)):
-        raise HTTPException(status_code=403, detail="Пакетный режим анализа не активирован для этого аккаунта.")
+    if not _client_can_use_batch_report(settings, client):
+        raise HTTPException(status_code=403, detail="Экспресс-оценка закупок временно недоступна для этого аккаунта.")
     if not context.user.is_email_verified and not _unverified_user_can_launch_first_job(db, context.user):
         raise HTTPException(
             status_code=403,
@@ -2109,9 +2177,10 @@ async def customer_batch_report_create_route(
         raise HTTPException(status_code=400, detail="Некорректный формат запроса.")
     raw_items = body.get("items")
     if not isinstance(raw_items, list) or not raw_items:
-        raise HTTPException(status_code=400, detail="Выберите хотя бы одну закупку для анализа.")
-    if len(raw_items) > 60:
-        raise HTTPException(status_code=400, detail="За один запуск можно выбрать до 60 закупок.")
+        raise HTTPException(status_code=400, detail="Выберите хотя бы одну закупку для оценки.")
+    max_items = _client_batch_report_max_items(settings, client)
+    if len(raw_items) > max_items:
+        raise HTTPException(status_code=400, detail=f"За один запуск можно выбрать до {max_items} закупок.")
 
     from .procurement_sources import normalize_source_url
 
@@ -2141,9 +2210,8 @@ async def customer_batch_report_create_route(
     if not clean_items:
         raise HTTPException(status_code=400, detail="Не найдено корректных номеров извещений в выбранных строках.")
 
-    settings = get_or_create_settings(db)
     src_name = Path(str(body.get("filename") or "Выгрузка")).stem[:40].strip() or "Выгрузка"
-    job_title = f"Пакетный анализ ({len(clean_items)} зак.): {src_name}"
+    job_title = f"Экспресс-оценка ({len(clean_items)} зак.): {src_name}"
     job = create_job(
         db,
         client_id=client.id,
@@ -2189,6 +2257,134 @@ async def customer_batch_report_create_route(
     db.commit()
     enqueue_job(job.id)
     return {"batch": False, "count": 1, "job": customer_job_to_dict(job)}
+
+
+@app.post("/api/customer/jobs/procurement-report/batch-create")
+async def customer_procurement_report_batch_create_route(
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    client = context.user.client
+    settings = get_or_create_settings(db)
+    if not client or not client.is_active:
+        raise HTTPException(status_code=403, detail="Доступ отключён.")
+    if not client.allowed_procurement_report:
+        raise HTTPException(status_code=403, detail="Анализ документации недоступен для этого аккаунта.")
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Некорректный формат запроса.")
+    raw_items = body.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise HTTPException(status_code=400, detail="Выберите хотя бы одну закупку для анализа.")
+    if len(raw_items) > MAX_PROCUREMENT_REPORT_BATCH_ITEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"За один запуск полного анализа документации можно выбрать до {MAX_PROCUREMENT_REPORT_BATCH_ITEMS} закупок.",
+        )
+
+    from .procurement_sources import normalize_source_url
+
+    clean_items: list[dict] = []
+    seen_nums: set[str] = set()
+    for it in raw_items:
+        if not isinstance(it, dict):
+            continue
+        num = str(it.get("notice_number") or "").strip()[:80]
+        eis_url = normalize_source_url(str(it.get("eis_url") or ""))
+        etp_url = normalize_source_url(str(it.get("etp_url") or ""))
+        if not num and not eis_url and not etp_url:
+            continue
+        dedupe_key = (num or eis_url or etp_url).lower()
+        if dedupe_key in seen_nums:
+            continue
+        seen_nums.add(dedupe_key)
+        clean_items.append(
+            {
+                "notice_number": num,
+                "title": str(it.get("title") or "").strip()[:500],
+                "eis_url": eis_url,
+                "etp_url": etp_url,
+            }
+        )
+    if not clean_items:
+        raise HTTPException(status_code=400, detail="Не найдено корректных номеров закупок или ссылок.")
+
+    if not context.user.is_email_verified:
+        if len(clean_items) > 1 or not _unverified_user_can_launch_first_job(db, context.user):
+            raise HTTPException(
+                status_code=403,
+                detail="Подтвердите email по ссылке из письма, чтобы запускать несколько закупок сразу.",
+            )
+
+    access_err = access_error_for_units(db, client, {KIND_PROCUREMENT_REPORT: len(clean_items)})
+    if access_err:
+        raise HTTPException(status_code=403, detail=access_err)
+
+    safe_target = supplier_target_for_client(settings, client)
+    created_jobs: list[Job] = []
+    try:
+        for item in clean_items:
+            num = item["notice_number"]
+            eis_url = item["eis_url"]
+            etp_url = item["etp_url"]
+            raw_parts: list[str] = []
+            if eis_url:
+                raw_parts.append(eis_url)
+            if num and (not eis_url or num not in eis_url):
+                raw_parts.append(num)
+            if etp_url and etp_url != eis_url:
+                raw_parts.append(etp_url)
+            sources = source_payloads_from_text("\n".join(raw_parts))
+            if not sources and num:
+                sources = [
+                    {
+                        "kind": SOURCE_KIND_TENDERPLAN_NOTICE,
+                        "label": source_label(num),
+                        "value": num,
+                    }
+                ]
+            raw_title = item["title"]
+            if raw_title and raw_title.lower() != f"закупка {num}".lower():
+                job_title = _customer_job_title_for_subject(MODE_PROCUREMENT_REPORT, raw_title)
+            else:
+                job_title = f"Анализ закупки: {num or source_label(eis_url or etp_url)}"
+
+            job = create_job(
+                db,
+                client_id=client.id,
+                created_by_telegram_id=f"web:{context.user.id}",
+                mode=MODE_PROCUREMENT_REPORT,
+                title=job_title,
+                target_suppliers=safe_target,
+                files=[],
+                sources=sources,
+                supplier_search_policy="normal",
+                initial_status="draft",
+            )
+            created_jobs.append(job)
+            reserve_job_units(db, client, job)
+
+        for ready in created_jobs:
+            ready.status = "pending"
+            ready.message = "Задача создана"
+        db.commit()
+        for ready in created_jobs:
+            enqueue_job(ready.id)
+    except BillingError as exc:
+        _abort_customer_job_creation(db, created_jobs, str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except Exception:
+        _abort_customer_job_creation(db, created_jobs, "Не удалось запустить задачи; резерв возвращён.")
+        raise
+
+    return {
+        "batch": True,
+        "count": len(created_jobs),
+        "jobs": [customer_job_to_dict(job) for job in created_jobs],
+    }
 
 
 @app.get("/api/customer/jobs/{job_id}/batch-report")
@@ -4761,6 +4957,42 @@ def admin_update_price_monitoring_settings(data: dict, db: Session = Depends(db_
 
     db.commit()
     return admin_get_price_monitoring_settings(db)
+
+
+@app.get("/api/batch-report/settings", dependencies=[Depends(require_admin)])
+def admin_get_batch_report_settings(db: Session = Depends(db_session)) -> dict:
+    from .custom_batch_runner import DEFAULT_EXPRESS_ASSESSMENT_PROMPT
+
+    settings = get_or_create_settings(db)
+    raw_kopeks = getattr(settings, "batch_report_default_price_kopeks", None)
+    def_kopeks = 3000 if raw_kopeks is None else max(0, int(raw_kopeks))
+    return {
+        "default_price_kopeks": def_kopeks,
+        "default_price_rub": round(def_kopeks / 100, 2),
+        "access_mode": str(getattr(settings, "batch_report_access_mode", "all") or "all"),
+        "max_items": max(1, min(60, int(getattr(settings, "batch_report_max_items", 30) or 30))),
+        "default_prompt": str(getattr(settings, "batch_report_default_prompt", "") or ""),
+        "builtin_default_prompt": DEFAULT_EXPRESS_ASSESSMENT_PROMPT,
+    }
+
+
+@app.post("/api/batch-report/settings", dependencies=[Depends(require_admin)])
+def admin_update_batch_report_settings(data: dict, db: Session = Depends(db_session)) -> dict:
+    settings = get_or_create_settings(db)
+    if "default_price_rub" in data:
+        settings.batch_report_default_price_kopeks = max(0, int(round(float(data["default_price_rub"]) * 100)))
+    elif "default_price_kopeks" in data:
+        settings.batch_report_default_price_kopeks = max(0, int(data["default_price_kopeks"]))
+    if "access_mode" in data:
+        raw_mode = str(data["access_mode"]).strip().lower()
+        if raw_mode in ("all", "granular", "disabled"):
+            settings.batch_report_access_mode = raw_mode
+    if "max_items" in data:
+        settings.batch_report_max_items = max(1, min(60, int(data["max_items"])))
+    if "default_prompt" in data:
+        settings.batch_report_default_prompt = str(data["default_prompt"] or "")[:50000]
+    db.commit()
+    return admin_get_batch_report_settings(db)
 
 
 @app.get("/api/cookies", dependencies=[Depends(require_admin)])
@@ -8852,6 +9084,8 @@ def public_site_payload(db: Session) -> dict:
     price_report = effective_price_kopeks(db, None, KIND_PROCUREMENT_REPORT) or 9900
     price_extra = effective_price_kopeks(db, None, KIND_SUPPLIER_SEARCH_EXTRA) or 4900
     price_monitoring = int(getattr(settings, "price_monitoring_default_price_kopeks", 5000) or 5000)
+    raw_batch_kopeks = getattr(settings, "batch_report_default_price_kopeks", None)
+    price_batch = 3000 if raw_batch_kopeks is None else max(0, int(raw_batch_kopeks))
     function_prices = {
         "supplier_search": {"price_kopeks": price_search, "price_rub": round(price_search / 100)},
         "exact_product": {"price_kopeks": price_exact, "price_rub": round(price_exact / 100)},
@@ -8859,6 +9093,7 @@ def public_site_payload(db: Session) -> dict:
         "supplier_search_extra": {"price_kopeks": price_extra, "price_rub": round(price_extra / 100)},
         "analysis_and_suppliers": {"price_kopeks": price_search + price_report, "price_rub": round((price_search + price_report) / 100)},
         "price_monitoring": {"price_kopeks": price_monitoring, "price_rub": round(price_monitoring / 100)},
+        "custom_batch_report": {"price_kopeks": price_batch, "price_rub": round(price_batch / 100)},
     }
     return {
         "site": {
@@ -8984,6 +9219,10 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
     price_report = int(eff.get(KIND_PROCUREMENT_REPORT, {}).get("price_kopeks") or 9900)
     price_extra = int(eff.get(KIND_SUPPLIER_SEARCH_EXTRA, {}).get("price_kopeks") or 4900)
     price_monitoring = int(eff.get(KIND_PRICE_MONITORING, {}).get("price_kopeks") or int(getattr(settings, "price_monitoring_default_price_kopeks", 5000) or 5000))
+    raw_batch_default = getattr(settings, "batch_report_default_price_kopeks", None)
+    default_batch_kopeks = 3000 if raw_batch_default is None else max(0, int(raw_batch_default))
+    eff_batch = eff.get(KIND_CUSTOM_BATCH_REPORT)
+    price_batch = int(eff_batch["price_kopeks"]) if isinstance(eff_batch, dict) and eff_batch.get("price_kopeks") is not None else default_batch_kopeks
     function_prices = {
         "supplier_search": {"price_kopeks": price_search, "price_rub": round(price_search / 100)},
         "exact_product": {"price_kopeks": price_exact, "price_rub": round(price_exact / 100)},
@@ -8991,6 +9230,7 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
         "supplier_search_extra": {"price_kopeks": price_extra, "price_rub": round(price_extra / 100)},
         "analysis_and_suppliers": {"price_kopeks": price_search + price_report, "price_rub": round((price_search + price_report) / 100)},
         "price_monitoring": {"price_kopeks": price_monitoring, "price_rub": round(price_monitoring / 100)},
+        "custom_batch_report": {"price_kopeks": price_batch, "price_rub": round(price_batch / 100)},
     }
     return {
         "authenticated": authenticated,
@@ -9092,8 +9332,9 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "client_id": user.client_id,
         "allowed_price_monitoring": is_pm_allowed,
         "allowed_geo_radius": is_geo_allowed,
-        "allowed_custom_batch_report": bool(user.client and getattr(user.client, "allowed_custom_batch_report", False)),
-        "custom_report_separate_tab": bool(user.client and getattr(user.client, "custom_report_separate_tab", False)),
+        "allowed_custom_batch_report": _client_can_use_batch_report(settings, user.client),
+        "custom_report_separate_tab": _client_batch_report_separate_tab(settings, user.client),
+        "batch_report_max_items": _client_batch_report_max_items(settings, user.client),
         "geo_radius_surcharge_pct": configured_geo_surcharge_pct(settings),
         "is_trial": client_uses_trial_access(db, user.client) if user.client else False,
         "created_at": user.created_at.isoformat() if user.created_at else None,
@@ -9283,10 +9524,7 @@ def customer_job_to_dict(
         "admin_supplement_at": job.admin_supplement_at.isoformat() if getattr(job, "admin_supplement_at", None) else None,
         "chat_messages": chat_list,
         "unread_admin_messages_count": unread_admin_cnt,
-        "is_custom_batch_report": bool(
-            (job_dir(job.id) / "output" / "custom_batch_results.json").is_file()
-            or (job_dir(job.id) / "input" / "custom_batch_spec.json").is_file()
-        ),
+        "is_custom_batch_report": _job_is_custom_batch_report(job),
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
@@ -9423,17 +9661,23 @@ async def create_customer_job_api(
         raise HTTPException(status_code=400, detail="Слишком много файлов в одной задаче.")
 
     client = context.user.client
+    is_single_custom_batch = bool(use_custom_prompt and mode == MODE_PROCUREMENT_REPORT)
+    if is_single_custom_batch and not _client_can_use_batch_report(settings, client):
+        raise HTTPException(status_code=403, detail="Экспресс-оценка закупок временно недоступна для этого аккаунта.")
     safe_target = supplier_target_for_client(settings, client)
     supplier_specs = _customer_supplier_job_specs(mode, payload)
     supplier_search_count = len(supplier_specs) if supplier_specs else 1
-    access_error = client_access_error(
-        db,
-        client,
-        mode,
-        incoming_file_count=len(payload),
-        supplier_search_count=supplier_search_count,
-        geo_radius_km=geo_radius_km,
-    )
+    if is_single_custom_batch:
+        access_error = access_error_for_units(db, client, {KIND_CUSTOM_BATCH_REPORT: 1})
+    else:
+        access_error = client_access_error(
+            db,
+            client,
+            mode,
+            incoming_file_count=len(payload),
+            supplier_search_count=supplier_search_count,
+            geo_radius_km=geo_radius_km,
+        )
     if access_error:
         raise HTTPException(status_code=403, detail=access_error)
 
@@ -9515,13 +9759,11 @@ async def create_customer_job_api(
                 job,
                 {"multi_item_confirmed": True, "auto_confirm_strategy": True, "selected_item_ids": None},
             )
-        if (
-            use_custom_prompt
-            and mode == MODE_PROCUREMENT_REPORT
-            and bool(getattr(client, "allowed_custom_batch_report", False))
-        ):
+        if is_single_custom_batch:
             update_dobor_context_dict(job, {"use_custom_prompt": True})
-        reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
+            reserve_batch_procurement_report_job(db, client, job, procurement_count=1)
+        else:
+            reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
         job.status = "pending"
         job.message = "Задача создана"
         db.commit()
@@ -9559,7 +9801,7 @@ ALLOWED_UPLOAD_EXTENSIONS = {
     ".docx", ".doc", ".pdf", ".xlsx", ".xls", ".rtf", ".odt",
     ".zip", ".rar", ".7z",
     ".txt", ".csv", ".tsv",
-    ".png", ".jpg", ".jpeg",
+    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff",
 }
 
 
@@ -9574,7 +9816,7 @@ async def _customer_upload_payload(files: list[UploadFile], settings: SystemSett
         if not ext or ext not in ALLOWED_UPLOAD_EXTENSIONS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Неподдерживаемый формат файла: {filename or 'файл'}. Поддерживаются документы (.docx, .doc, .pdf, .xlsx, .xls, .rtf, .odt), архивы (.zip, .rar, .7z) и текст (.txt).",
+                detail=f"Неподдерживаемый формат файла: {filename or 'файл'}. Поддерживаются документы (.docx, .doc, .pdf, .xlsx, .xls, .rtf, .odt), изображения (.png, .jpg, .jpeg, .webp), архивы (.zip, .rar, .7z) и текст (.txt, .csv).",
             )
         content = await file.read()
         if len(content) > max_bytes:
@@ -10562,7 +10804,7 @@ def _customer_job_title_for_subject(mode: str, subject: str) -> str:
     if mode == MODE_SUPPLIER_SEARCH:
         return f"ТЗ: {value}"
     if mode == MODE_PROCUREMENT_REPORT:
-        if value.lower().startswith("пакетный анализ"):
+        if value.lower().startswith(("пакетный анализ", "экспресс-оценка")):
             return value
         return f"Анализ закупки: {value}"
     if mode == MODE_ANALYSIS_AND_SUPPLIERS:

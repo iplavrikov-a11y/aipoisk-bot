@@ -43,6 +43,7 @@ export type BatchRegistryPreviewItem = {
 };
 
 export type BatchRegistryPreviewData = {
+  target_mode?: "custom_batch_report" | "procurement_report";
   file: File | null;
   filename: string;
   sheet_name: string;
@@ -50,6 +51,7 @@ export type BatchRegistryPreviewData = {
   selected_sheets?: string[];
   requires_sheet_selection?: boolean;
   items: BatchRegistryPreviewItem[];
+  max_items?: number;
   unit_price_kopeks: number;
   unit_price_rub: number;
   available_kopeks: number;
@@ -368,6 +370,9 @@ export function BatchSelectionModal({
   }, [preview.items, query, sortField, sortDirection]);
 
   const selectedCount = selectedIds.length;
+  const isFullAnalysis = preview.target_mode === "procurement_report";
+  const effectiveMaxItems = Math.max(1, preview.max_items || (isFullAnalysis ? 10 : 30));
+  const exceedsMaxItems = selectedCount > effectiveMaxItems;
   const totalCostKopeks = selectedCount * preview.unit_price_kopeks;
   const insufficientBalance =
     preview.unit_price_kopeks > 0 && totalCostKopeks > preview.available_kopeks;
@@ -377,7 +382,7 @@ export function BatchSelectionModal({
       className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5"
       role="dialog"
       aria-modal="true"
-      aria-label="Выбор закупок для массового анализа"
+      aria-label={isFullAnalysis ? "Выбор закупок для анализа документации" : "Выбор закупок для экспресс-оценки"}
     >
       <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-3 bg-slate-50/70">
@@ -387,10 +392,10 @@ export function BatchSelectionModal({
             </div>
             <div className="min-w-0">
               <h3 className="text-base font-extrabold text-slate-900 truncate">
-                Выберите закупки для анализа
+                {isFullAnalysis ? "Выберите закупки для анализа документации" : "Выберите закупки для экспресс-оценки"}
               </h3>
               <p className="text-xs text-slate-500 truncate">
-                Файл: <span className="font-semibold text-slate-700">{preview.filename}</span> · Найдено закупок:{" "}
+                Источник: <span className="font-semibold text-slate-700">{preview.filename}</span> · Найдено закупок:{" "}
                 <span className="font-semibold text-slate-700">{preview.items.length}</span>
               </p>
             </div>
@@ -653,9 +658,15 @@ export function BatchSelectionModal({
               <div className="text-rose-700 font-bold">
                 Недостаточно средств на балансе (доступно {formatRub(preview.available_kopeks)}). Уменьшите выбор или пополните счёт.
               </div>
+            ) : exceedsMaxItems ? (
+              <div className="text-rose-700 font-bold">
+                За один запуск можно выбрать до {effectiveMaxItems} закупок (сейчас выбрано {selectedCount}).
+              </div>
             ) : (
               <div className="text-[11px] text-slate-500">
-                Если по какой-то закупке площадка не отдаст документацию — плата за неё не спишется.
+                {isFullAnalysis
+                  ? `По каждой выбранной закупке создастся отдельная задача полного анализа (со всеми кнопками: Запрос КП, отчёты). Если площадка не отдаст документацию — плата вернётся. Лимит за запуск: до ${effectiveMaxItems} зак.`
+                  : `Если по какой-то закупке площадка не отдаст документацию — плата за неё не спишется. Лимит за запуск: до ${effectiveMaxItems} зак.`}
               </div>
             )}
           </div>
@@ -671,7 +682,7 @@ export function BatchSelectionModal({
             </button>
             <button
               type="button"
-              disabled={busy || selectedCount === 0 || selectedCount > 60 || insufficientBalance}
+              disabled={busy || selectedCount === 0 || exceedsMaxItems || insufficientBalance}
               onClick={onConfirm}
               className="px-5 py-2 bg-gradient-to-r from-emerald-600 via-teal-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white rounded-xl text-xs sm:text-sm font-extrabold shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -680,7 +691,7 @@ export function BatchSelectionModal({
               ) : (
                 <Sparkles size={15} className="text-emerald-200" />
               )}
-              <span>Запустить анализ ({selectedCount})</span>
+              <span>{isFullAnalysis ? `Запустить анализ (${selectedCount})` : `Запустить оценку (${selectedCount})`}</span>
             </button>
           </div>
         </div>
@@ -704,6 +715,7 @@ export function BatchResultsReaderModal({
   onSelectIndex,
   onDownloadItemDocx,
   onDownloadAllZip,
+  onOpenDetailedAnalysis,
   onClose,
 }: {
   data: BatchReportReaderData;
@@ -711,6 +723,7 @@ export function BatchResultsReaderModal({
   onSelectIndex: (idx: number) => void;
   onDownloadItemDocx: (jobId: string, itemIndex: number, filename: string) => void;
   onDownloadAllZip: (jobId: string) => void;
+  onOpenDetailedAnalysis?: (noticeNumber: string) => void;
   onClose: () => void;
 }) {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
@@ -1104,7 +1117,18 @@ export function BatchResultsReaderModal({
                   </div>
 
                   {activeItem.status === "completed" ? (
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      {onOpenDetailedAnalysis && activeItem.notice_number ? (
+                        <button
+                          type="button"
+                          onClick={() => onOpenDetailedAnalysis(activeItem.notice_number)}
+                          title="Перенести номер закупки в полный «Анализ документации» (полное ТЗ, нацрежим и готовый запрос КП)"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#174b3f] hover:bg-[#113930] text-white rounded-lg text-xs font-bold shadow-2xs transition-colors cursor-pointer"
+                        >
+                          <Sparkles size={13} className="text-emerald-200" />
+                          <span>Разобрать детально</span>
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => copyMarkdown(activeItem)}

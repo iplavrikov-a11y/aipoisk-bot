@@ -4,6 +4,7 @@ import csv
 import html
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -629,38 +630,165 @@ def _extract_via_libreoffice(path: Path, target_suffix: str, reader) -> str:
         return reader(candidates[0])
 
 
-def _extract_image_ocr(path: Path) -> str:
-    tesseract = shutil.which("tesseract")
-    if not tesseract:
-        return ""
-    ocr_target = path
-    tmp_dir: tempfile.TemporaryDirectory[str] | None = None
+def _looks_like_weak_ocr(text: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(cleaned) < 60:
+        return True
+    alnum = sum(1 for ch in cleaned if ch.isalnum())
+    return (alnum / max(1, len(cleaned))) < 0.45
+
+
+def _prepare_image_bytes_for_vision(path: Path, max_side: int = 2048) -> tuple[bytes, str] | None:
     try:
+        import io
         from PIL import Image, ImageOps
 
         Image.MAX_IMAGE_PIXELS = 45_000_000
         with Image.open(path) as img:
             normalized = ImageOps.exif_transpose(img)
-            gray = ImageOps.grayscale(normalized)
-            enhanced = ImageOps.autocontrast(gray, cutoff=1)
-            tmp_dir = tempfile.TemporaryDirectory(prefix="aipoisk-img-ocr-")
-            prepped = Path(tmp_dir.name) / "prepped.png"
-            enhanced.save(prepped, format="PNG")
-            ocr_target = prepped
+            if normalized.mode not in ("RGB", "L"):
+                normalized = normalized.convert("RGB")
+            w, h = normalized.size
+            if max(w, h) > max_side:
+                ratio = max_side / float(max(w, h))
+                normalized = normalized.resize(
+                    (max(1, int(w * ratio)), max(1, int(h * ratio))),
+                    Image.Resampling.LANCZOS,
+                )
+            buf = io.BytesIO()
+            normalized.save(buf, format="JPEG", quality=88, optimize=True)
+            return buf.getvalue(), "image/jpeg"
     except Exception:
-        ocr_target = path
+        return None
+
+
+def _extract_image_vision_fallback(path: Path) -> str:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return ""
+    prepared = _prepare_image_bytes_for_vision(path)
+    if not prepared:
+        return ""
+    img_bytes, mime_type = prepared
     try:
-        result = subprocess.run(
-            [tesseract, str(ocr_target), "stdout", "-l", "rus+eng"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=90,
+        import base64
+        import httpx
+        from .ai import custom_provider_map
+        from .db import SessionLocal
+        from .repository import get_or_create_settings
+
+        db = SessionLocal()
+        try:
+            settings = get_or_create_settings(db)
+            providers = custom_provider_map(settings)
+            gemini_prov = providers.get("gemini")
+            if not gemini_prov:
+                return ""
+            raw_base = str(gemini_prov.get("baseUrl") or "http://127.0.0.1:8318/v1").strip().rstrip("/")
+            if raw_base.endswith("/v1"):
+                raw_base = raw_base[:-3]
+            api_key = str(gemini_prov.get("apiKey") or "").strip()
+            if not api_key:
+                return ""
+            light_model = str(getattr(settings, "light_model", "") or "").strip()
+        finally:
+            db.close()
+
+        candidates = list(
+            dict.fromkeys(
+                m
+                for m in [light_model, "gemini-3.8-flash-high", "gemini-3-flash", "gemini-2.5-flash"]
+                if m and "gemini" in m.lower()
+            )
         )
-        return result.stdout if result.returncode == 0 else ""
-    finally:
-        if tmp_dir is not None:
-            tmp_dir.cleanup()
+        if not candidates:
+            candidates = ["gemini-3.8-flash-high", "gemini-3-flash"]
+
+        b64_data = base64.b64encode(img_bytes).decode("ascii")
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": (
+                                "Извлеки весь текст и таблицы с этого изображения (фото/скриншот ТЗ, спецификации или списка закупок) "
+                                "максимально точно и полно. Сохраняй без искажений все номера закупок/извещений, суммы, ГОСТы, "
+                                "артикулы и технические характеристики. Таблицы выводи построчно через разделитель ` | `. "
+                                "Без вводных фраз и комментариев."
+                            )
+                        },
+                        {"inlineData": {"mimeType": mime_type, "data": b64_data}},
+                    ],
+                }
+            ],
+            "generationConfig": {"temperature": 0.0},
+        }
+        with httpx.Client(timeout=45.0) as client:
+            for model_id in candidates[:3]:
+                resp = client.post(
+                    f"{raw_base}/v1beta/models/{model_id}:generateContent",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                )
+                if resp.status_code >= 400:
+                    continue
+                data = resp.json()
+                cands = data.get("candidates") if isinstance(data, dict) else None
+                if not isinstance(cands, list) or not cands:
+                    continue
+                parts = ((cands[0].get("content") or {}).get("parts") or [])
+                out = "\n".join(str(p.get("text") or "") for p in parts if isinstance(p, dict)).strip()
+                if out:
+                    return out
+    except Exception:
+        return ""
+    return ""
+
+
+def _extract_image_ocr(path: Path) -> str:
+    tesseract = shutil.which("tesseract")
+    tess_text = ""
+    if tesseract:
+        ocr_target = path
+        tmp_dir: tempfile.TemporaryDirectory[str] | None = None
+        try:
+            from PIL import Image, ImageOps
+
+            Image.MAX_IMAGE_PIXELS = 45_000_000
+            with Image.open(path) as img:
+                normalized = ImageOps.exif_transpose(img)
+                if normalized.width < 1200 and normalized.width > 0:
+                    scale = min(2.5, 1400.0 / float(normalized.width))
+                    normalized = normalized.resize(
+                        (int(normalized.width * scale), max(1, int(normalized.height * scale))),
+                        Image.Resampling.LANCZOS,
+                    )
+                gray = ImageOps.grayscale(normalized)
+                enhanced = ImageOps.autocontrast(gray, cutoff=1)
+                tmp_dir = tempfile.TemporaryDirectory(prefix="aipoisk-img-ocr-")
+                prepped = Path(tmp_dir.name) / "prepped.png"
+                enhanced.save(prepped, format="PNG")
+                ocr_target = prepped
+        except Exception:
+            ocr_target = path
+        try:
+            result = subprocess.run(
+                [tesseract, str(ocr_target), "stdout", "-l", "rus+eng"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            tess_text = result.stdout if result.returncode == 0 else ""
+        finally:
+            if tmp_dir is not None:
+                tmp_dir.cleanup()
+
+    if _looks_like_weak_ocr(tess_text):
+        vision_text = _extract_image_vision_fallback(path)
+        if len(vision_text.strip()) > len(tess_text.strip()):
+            return vision_text
+    return tess_text
 
 
 def _extract_pdf_ocr(path: Path, max_pages: int) -> str:
