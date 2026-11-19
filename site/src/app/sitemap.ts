@@ -20,25 +20,25 @@ export default function sitemap(): MetadataRoute.Sitemap {
   return [
     {
       url: siteUrl,
-      lastModified: day("2026-11-02"),
+      lastModified: day("2026-11-19"),
       changeFrequency: "weekly",
       priority: 1,
     },
     {
       url: `${siteUrl}/poisk-postavshchikov-po-tz`,
-      lastModified: day("2026-10-27"),
+      lastModified: day("2026-11-19"),
       changeFrequency: "weekly",
       priority: 0.95,
     },
     {
       url: `${siteUrl}/podbor-tovara-i-analogov-po-tz`,
-      lastModified: day("2026-10-27"),
+      lastModified: day("2026-11-19"),
       changeFrequency: "weekly",
       priority: 0.95,
     },
     {
       url: `${siteUrl}/monitoring-cen-postavshchikov-po-tz`,
-      lastModified: day("2026-11-14"),
+      lastModified: day("2026-11-19"),
       changeFrequency: "weekly",
       priority: 0.95,
     },
@@ -68,9 +68,9 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: `${siteUrl}/analiz-zakupochnoi-dokumentacii`,
-      lastModified: day("2026-10-01"),
+      lastModified: day("2026-11-19"),
       changeFrequency: "weekly",
-      priority: 0.75,
+      priority: 0.85,
     },
     {
       url: `${siteUrl}/api-integracii`,

@@ -60,24 +60,46 @@ type HomePricingSummary = {
   searchRub: number;
   exactRub: number;
   reportRub: number;
+  expressRub: number;
+  monitoringRub: number;
   minSingleRub: number;
   minPkgTaskRub: number;
   searchFromRub: number;
   exactFromRub: number;
   reportFromRub: number;
+  expressFromRub: number;
+  monitoringFromRub: number;
   trialRub: number;
+  depositPackages: Array<{
+    name: string;
+    priceRub: number;
+    bonusRub: number;
+    creditRub: number;
+    badge: string;
+  }>;
 };
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
 function computeHomePricing(siteData: PublicSitePayload): HomePricingSummary {
   const fp = siteData.function_prices;
   const searchRub = fp?.supplier_search?.price_rub ?? 99;
   const exactRub = fp?.exact_product?.price_rub ?? 99;
-  const reportRub = fp?.procurement_report?.price_rub ?? 99;
-  const minSingleRub = Math.min(searchRub, exactRub, reportRub);
+  const reportRub = fp?.procurement_report?.price_rub ?? 50;
+  const expressRub = fp?.custom_batch_report?.price_rub ?? 30;
+  const monitoringRub = fp?.price_monitoring?.price_rub ?? 90;
+  const minSingleRub = Math.min(searchRub, exactRub, reportRub, expressRub);
 
-  const depositPkgs = (siteData.deposit_packages || siteData.tariffs || []).filter(
-    (p) => p.kind === "deposit" && (p.price_rub ?? 0) > 0,
-  );
+  const depositPkgs = (siteData.deposit_packages || siteData.tariffs || [])
+    .filter((p) => p.kind === "deposit" && (p.price_rub ?? 0) > 0)
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
   let bestRatio = 1;
   for (const pkg of depositPkgs) {
     const credit = pkg.credit_rub || pkg.total_rub || pkg.price_rub;
@@ -88,19 +110,32 @@ function computeHomePricing(siteData: PublicSitePayload): HomePricingSummary {
   const searchFromRub = Math.max(1, Math.round(searchRub * bestRatio));
   const exactFromRub = Math.max(1, Math.round(exactRub * bestRatio));
   const reportFromRub = Math.max(1, Math.round(reportRub * bestRatio));
-  const minPkgTaskRub = Math.min(searchFromRub, exactFromRub, reportFromRub);
+  const expressFromRub = Math.max(1, Math.round(expressRub * bestRatio));
+  const monitoringFromRub = Math.max(1, Math.round(monitoringRub * bestRatio));
+  const minPkgTaskRub = Math.min(searchFromRub, exactFromRub, reportFromRub, expressFromRub);
   const trialRub = Math.max(0, siteData.trial?.balance_rub ?? 495);
 
   return {
     searchRub,
     exactRub,
     reportRub,
+    expressRub,
+    monitoringRub,
     minSingleRub,
     minPkgTaskRub,
     searchFromRub,
     exactFromRub,
     reportFromRub,
+    expressFromRub,
+    monitoringFromRub,
     trialRub,
+    depositPackages: depositPkgs.map((pkg) => ({
+      name: pkg.name,
+      priceRub: Math.round(pkg.price_rub),
+      bonusRub: Math.round(pkg.bonus_rub || 0),
+      creditRub: Math.round(pkg.credit_rub || pkg.total_rub || pkg.price_rub),
+      badge: (pkg.badge || "").trim(),
+    })),
   };
 }
 
@@ -109,6 +144,22 @@ function formatModulePriceLabel(fromRub: number, singleRub: number, unitLabel = 
     return `от ${fromRub} ₽ / ${unitLabel} (разово ${singleRub} ₽)`;
   }
   return `${singleRub} ₽ / ${unitLabel}`;
+}
+
+function renderDepositPackagesHtml(pricing: HomePricingSummary): string {
+  if (!pricing.depositPackages.length) return "";
+  const cards = pricing.depositPackages
+    .map((pkg) => {
+      const isHit = Boolean(pkg.badge);
+      const bonusPct = pkg.priceRub > 0 && pkg.bonusRub > 0 ? Math.round((pkg.bonusRub / pkg.priceRub) * 100) : 0;
+      const bonusLine =
+        pkg.bonusRub > 0
+          ? `<span class="deposit-pill__bonus">+${pkg.bonusRub.toLocaleString("ru-RU")} ₽ бонус (+${bonusPct}%)</span><span class="deposit-pill__meta">На баланс: ${pkg.creditRub.toLocaleString("ru-RU")} ₽</span>`
+          : `<span class="deposit-pill__meta">На баланс: ${pkg.creditRub.toLocaleString("ru-RU")} ₽ · без срока сгорания</span>`;
+      return `<a class="deposit-pill${isHit ? " deposit-pill--hit" : ""}" href="/cabinet?tab=billing"><div class="deposit-pill__top"><span class="deposit-pill__name">${escapeHtml(pkg.name)}</span>${pkg.badge ? `<span class="deposit-pill__badge">${escapeHtml(pkg.badge)}</span>` : ""}</div><strong class="deposit-pill__price">${pkg.priceRub.toLocaleString("ru-RU")} ₽</strong>${bonusLine}</a>`;
+    })
+    .join("");
+  return `<div class="access__deposits" data-reveal><div class="access__deposits-head"><strong>Пакеты пополнения единого баланса</strong><span>Средства не сгорают и подходят для всех инструментов: веб-кабинета, Telegram-бота и API</span></div><div class="access__deposits-grid">${cards}</div></div>`;
 }
 
 function buildMainFaqItems(pricing: HomePricingSummary): FaqItem[] {
@@ -125,12 +176,17 @@ function buildMainFaqItems(pricing: HomePricingSummary): FaqItem[] {
     {
       question: "Что делает сервис TenderLex?",
       answer:
-        "TenderLex — профессиональный сервис для специалистов по закупкам и поставщиков. Сервис автоматически находит прямых производителей и поставщиков по ТЗ, подбирает российские аналоги по реестрам Минпромторга и ЕАЭС, а также анализирует закупочную документацию по 44-ФЗ и 223-ФЗ, выявляя скрытые риски и требования контракта.",
+        "TenderLex — профессиональный сервис для специалистов по закупкам и поставщиков. Сервис находит производителей, поставщиков товаров и подрядчиков услуг по ТЗ, подбирает аналоги по реестрам Минпромторга и ЕАЭС, анализирует документацию 44-ФЗ и 223-ФЗ (по одной или пакетом до 10 закупок), делает быструю экспресс-оценку до 30 закупок и мониторинг цен по спецификации.",
     },
     {
       question: "Какие данные и файлы можно загрузить?",
       answer:
-        "Любые файлы спецификаций и технических заданий в форматах Word (DOCX/DOC), Excel (XLSX/XLS), PDF (включая сканы), архивы, прямые ссылки на закупки ЕИС или номера процедур по 44-ФЗ и 223-ФЗ.",
+        "Любые файлы спецификаций и ТЗ: Word (DOCX/DOC), Excel (XLSX/XLS/CSV), PDF (включая сканы), изображения и скриншоты (PNG, JPG, WEBP), архивы, прямые ссылки на закупки ЕИС или списки номеров процедур по 44-ФЗ и 223-ФЗ.",
+    },
+    {
+      question: "Чем экспресс-оценка отличается от полного анализа документации?",
+      answer:
+        "Экспресс-оценка позволяет загрузить сразу до 30 закупок из таблицы, списка или скриншота, быстро отсортировать их по сроку подачи и НМЦК и отсеять неподходящие. Полный «Анализ документации» разбирает контракт и ТЗ глубоко (можно запускать по одной или пакетом до 10 закупок), а из карточки экспресс-оценки можно в один клик перейти в детальный разбор.",
     },
     {
       question: "Можно ли использовать результат без проверки?",
@@ -140,11 +196,6 @@ function buildMainFaqItems(pricing: HomePricingSummary): FaqItem[] {
     {
       question: "Как протестировать сервис перед оплатой?",
       answer: `${trialSentence} Вы можете сразу загрузить своё ТЗ и получить полный рабочий результат.`,
-    },
-    {
-      question: "Какая география поиска поддерживается — только РФ или весь мир?",
-      answer:
-        "В личном кабинете TenderLex можно гибко выбрать охват: «Только Россия» (строго отечественные поставщики и производители с ИНН РФ для закупок с нацрежимом), «РФ и СНГ (ЕАЭС)» (поставщики России, Беларуси, Казахстана, Армении и Кыргызстана) или «Весь мир» для поиска прямых фабрик и параллельного импорта.",
     },
     {
       question: "Как оплатить и сколько это стоит?",
@@ -196,16 +247,28 @@ function renderHomeHtml(pricing: HomePricingSummary): string {
         pkgPhrase,
       )
       .replace(
-        "Кандидаты, контакты сбыта, производители из реестров и проект КП · от 76 ₽ / задача",
-        `Кандидаты, контакты сбыта, производители из реестров и проект КП · ${formatModulePriceLabel(pricing.searchFromRub, pricing.searchRub, "задача")}`,
+        "Поставщики товаров и подрядчики услуг, контакты сбыта, приоритет по радиусу доставки и проект КП · от 76 ₽ / задача",
+        `Поставщики товаров и подрядчики услуг, контакты сбыта, приоритет по радиусу доставки и проект КП · ${formatModulePriceLabel(pricing.searchFromRub, pricing.searchRub, "задача")}`,
       )
       .replace(
-        "Сверка характеристик по ТЗ, проверка реестра Минпромторга и таблица параметров · от 76 ₽ / задача",
-        `Сверка характеристик по ТЗ, проверка реестра Минпромторга и таблица параметров · ${formatModulePriceLabel(pricing.exactFromRub, pricing.exactRub, "поз.")}`,
+        "Сверка характеристик по ТЗ, проверка реестра Минпромторга и отчёт в Word · от 76 ₽ / задача",
+        `Сверка характеристик по ТЗ, проверка реестра Минпромторга и отчёт в Word · ${formatModulePriceLabel(pricing.exactFromRub, pricing.exactRub, "поз.")}`,
       )
       .replace(
-        "Скрытые риски контракта, неустойки, условия приёмки и нацрежим 44/223-ФЗ · от 76 ₽ / задача",
-        `Скрытые риски контракта, неустойки, условия приёмки и нацрежим 44/223-ФЗ · ${formatModulePriceLabel(pricing.reportFromRub, pricing.reportRub, "задача")}`,
+        "Риски контракта, штрафы, нацрежим 44/223-ФЗ · разовый и пакетный запуск до 10 закупок · от 76 ₽ / задача",
+        `Риски контракта, штрафы, нацрежим 44/223-ФЗ · разовый и пакетный запуск до 10 закупок · ${formatModulePriceLabel(pricing.reportFromRub, pricing.reportRub, "задача")}`,
+      )
+      .replace(
+        "__EXPRESS_PRICE__",
+        formatModulePriceLabel(pricing.expressFromRub, pricing.expressRub, "закупка"),
+      )
+      .replace(
+        "__MONITORING_PRICE__",
+        formatModulePriceLabel(pricing.monitoringFromRub, pricing.monitoringRub, "поз."),
+      )
+      .replace(
+        "__DEPOSIT_PACKAGES__",
+        renderDepositPackagesHtml(pricing),
       )
       .replace(
         "При создании кабинета на баланс начисляется 495 ₽ для бесплатной проверки на вашей спецификации без привязки банковской карты.",

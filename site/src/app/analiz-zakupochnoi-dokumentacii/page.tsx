@@ -1,7 +1,6 @@
-import { getSiteData } from "@/lib/site-data";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ShieldAlert, Send } from "lucide-react";
+import { ShieldAlert } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
@@ -60,7 +59,12 @@ const faqItems: FaqItem[] = [
   {
     question: "Какие закупки и риски анализирует модуль документации?",
     answer:
-      "Модуль помогает структурировать условия 44-ФЗ, 223-ФЗ и коммерческих закупок: сроки поставки и приемки, обеспечение, штрафы, порядок оплаты, национальный режим и требования к документам. Выводы требуют проверки по извещению, проекту контракта и применимому праву.",
+      "Модуль помогает структурировать условия 44-ФЗ, 223-ФЗ и коммерческих закупок: сроки поставки и приемки, обеспечение, штрафы, порядок оплаты, национальный режим и требования к документам. Можно загрузить одну закупку (файл Word, Excel, PDF, скриншот/фото или номер ЕИС) либо сразу пакет до 10 закупок из списка или таблицы. Выводы требуют проверки по извещению, проекту контракта и применимому праву.",
+  },
+  {
+    question: "Чем «Экспресс-оценка закупок» отличается от полного анализа документации?",
+    answer:
+      "Экспресс-оценка рассчитана на быстрый отбор сразу до 30 закупок из Excel, CSV, Word, PDF, текста или скриншота: она выгружает карточки с сортировкой по сроку подачи и НМЦК и помогает быстро отсеять неподходящие тендеры. Из любой перспективной карточки можно в один клик запустить полный «Анализ документации» с детальной проверкой контракта и рисков.",
   },
   {
     question: "Помогает ли сервис составить запрос на разъяснение положений извещения?",
@@ -80,7 +84,6 @@ const faqItems: FaqItem[] = [
 ];
 
 export default async function AnalizZakupochnoiDokumentaciiPage() {
-  const data = await getSiteData();
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
     { name: "Главная", item: "https://tenderlex.ru" },
     { name: "Анализ закупочной документации", item: "https://tenderlex.ru" + pagePath },
@@ -123,28 +126,25 @@ export default async function AnalizZakupochnoiDokumentaciiPage() {
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
-              Анализ закупочной документации: 44-ФЗ, 223-ФЗ и коммерческие закупки
+              Анализ закупочной документации: 44&#8209;ФЗ, 223&#8209;ФЗ и коммерческие закупки
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
-              Загрузите извещение, ТЗ или проект контракта. TenderLex выделит условия, которые удобно проверить до подачи заявки: сроки, обеспечение, штрафы, оплату и требования к документам.
+              Загрузите извещение, ТЗ, проект контракта, скриншот или таблицу со списком до 10 закупок. TenderLex выделит сроки, обеспечение, штрафы, оплату и требования нацрежима. Для быстрого отбора сразу до 30 закупок доступна «Экспресс&#8209;оценка».
             </p>
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
               <a
-                href="/cabinet?scenario=doc_analysis"
+                href="/cabinet?scenario=procurement_report"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
                 <span>Проверить документацию</span>
               </a>
               <a
-                href={data.bot.telegram_url}
-                target="_blank"
-                rel="noreferrer"
+                href="/cabinet?scenario=custom_batch_report"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
               >
-                <Send size={16} className="text-teal-600" />
-                <span>Запустить в Telegram</span>
+                <span>Экспресс-оценка до 30 закупок</span>
               </a>
             </div>
           </div>
@@ -169,9 +169,9 @@ export default async function AnalizZakupochnoiDokumentaciiPage() {
               </div>
 
               <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
-                <h3 className="text-lg font-black text-slate-900">Вопросы для уточнения</h3>
+                <h3 className="text-lg font-black text-slate-900">Вопросы и пакетный запуск</h3>
                 <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                  Результат помогает сформулировать вопросы по противоречиям и недостающим условиям перед отправкой через предусмотренный процедурой канал.
+                  Запускайте один документ или сразу до 10 закупок пакетом (из Excel, Word, PDF, текста или скриншота). А для первичного отбора до 30 закупок используйте «Экспресс-оценку» с переходом к детальному разбору в один клик.
                 </p>
               </div>
             </div>

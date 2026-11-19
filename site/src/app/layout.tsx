@@ -138,10 +138,12 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
                   source: "list",
                   urls: [
                     "/poisk-postavshchikov-po-tz",
+                    "/podbor-tovara-i-analogov-po-tz",
+                    "/analiz-zakupochnoi-dokumentacii",
+                    "/monitoring-cen-postavshchikov-po-tz",
                     "/baza-znaniy",
                     "/otrasli",
                     "/regiony",
-                    "/analiz-zakupochnoi-dokumentacii",
                   ],
                   eagerness: "moderate",
                 },

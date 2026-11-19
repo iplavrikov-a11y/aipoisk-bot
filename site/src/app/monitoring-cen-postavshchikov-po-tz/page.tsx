@@ -70,7 +70,7 @@ const faqItems: FaqItem[] = [
   {
     question: "Как работает пакетный мониторинг цен по спецификации?",
     answer:
-      "Вы загружаете файл спецификации (Excel, Word, PDF) или вставляете перечень позиций. TenderLex распознает наименования и единицы измерения, выполняет умный поиск цен по профильным B2B-поставщикам, сайтам заводов и дистрибьюторов, кластеризует найденные предложения для отсечения выбросов и выгружает готовый расчет в Excel (.xlsx).",
+      "Вы загружаете файл спецификации (Excel, Word, PDF, скриншот PNG/JPG/WEBP) или вставляете перечень позиций. TenderLex распознает наименования и единицы измерения, выполняет поиск цен по профильным B2B-поставщикам, сайтам заводов и дистрибьюторов, кластеризует найденные предложения для отсечения выбросов и выгружает готовый расчет в Excel (.xlsx). Списание с баланса происходит только за позиции, по которым найдены цены.",
   },
   {
     question: "Как рассчитывается коэффициент вариации по Приказу Минэкономразвития № 567?",
@@ -248,6 +248,7 @@ export default async function MonitoringCenPostavshchikovPage() {
                 <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-medium">Excel (.xlsx)</span>
                 <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-medium">Word (.docx)</span>
                 <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-medium">PDF со сметами</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-medium">Фото и скриншоты (PNG/JPG)</span>
                 <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-medium">Текст списком</span>
               </div>
             </div>

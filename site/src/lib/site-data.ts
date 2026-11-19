@@ -60,6 +60,11 @@ export type PublicSitePayload = {
     supplier_search_extra: FunctionPriceItem;
     analysis_and_suppliers: FunctionPriceItem;
     price_monitoring?: FunctionPriceItem;
+    custom_batch_report?: FunctionPriceItem;
+  };
+  geo_radius?: {
+    enabled: boolean;
+    surcharge_pct: number;
   };
   tariff_groups: {
     deposit?: PublicTariff[];
@@ -188,10 +193,11 @@ const fallbackData: PublicSitePayload = {
   function_prices: {
     supplier_search: { price_kopeks: 9900, price_rub: 99 },
     exact_product: { price_kopeks: 9900, price_rub: 99 },
-    procurement_report: { price_kopeks: 9900, price_rub: 99 },
-    supplier_search_extra: { price_kopeks: 4900, price_rub: 49 },
-    analysis_and_suppliers: { price_kopeks: 19800, price_rub: 198 },
-    price_monitoring: { price_kopeks: 5000, price_rub: 50 },
+    procurement_report: { price_kopeks: 5000, price_rub: 50 },
+    supplier_search_extra: { price_kopeks: 9900, price_rub: 99 },
+    analysis_and_suppliers: { price_kopeks: 14900, price_rub: 149 },
+    price_monitoring: { price_kopeks: 9000, price_rub: 90 },
+    custom_batch_report: { price_kopeks: 3000, price_rub: 30 },
   },
   tariff_groups: {
     deposit: defaultDepositPackages,
