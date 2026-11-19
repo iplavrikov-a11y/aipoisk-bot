@@ -368,7 +368,12 @@ def _active_tariff_packages(db: Session) -> dict[str, TariffPackage]:
     packages = (
         db.query(TariffPackage)
         .filter(TariffPackage.is_active.is_(True))
-        .order_by(TariffPackage.sort_order.asc(), TariffPackage.price_kopeks.asc())
+        .order_by(
+            (TariffPackage.units != 1).asc(),
+            TariffPackage.sort_order.asc(),
+            TariffPackage.units.asc(),
+            TariffPackage.price_kopeks.asc(),
+        )
         .all()
     )
     result: dict[str, TariffPackage] = {}

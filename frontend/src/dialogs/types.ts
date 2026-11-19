@@ -40,6 +40,7 @@ export interface DialogItem {
   guest_session_id?: string
   telegram_id: string
   last_channel?: string
+  last_is_ai_reply?: boolean
   topic_linked?: boolean
   dialog_status?: 'open' | 'closed' | 'blocked' | string
   is_blocked?: boolean

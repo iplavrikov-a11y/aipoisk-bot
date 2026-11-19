@@ -66,8 +66,12 @@ async def main():
                     await release_poll.wait()
                 current=offset//15+1
                 payload={'items':[task(current)],'total':45,'limit':15,'offset':offset}
-            elif url.path.startswith('/api/chat/'):
+            elif url.path.startswith('/api/chat/') or url.path.startswith('/api/customer/chat/'):
                 payload={'messages':[],'ok':True}
+            elif url.path=='/api/public/auth/challenge':
+                payload={'token':'fixture-challenge','ts':1700000000}
+            elif url.path=='/api/customer/invoices':
+                payload={'items':[],'total':0}
             await route.fulfill(status=200,content_type='application/json',body=json.dumps(payload,ensure_ascii=False))
         await context.route('**/*',intercept)
         await page.goto(base+'/cabinet',wait_until='domcontentloaded')

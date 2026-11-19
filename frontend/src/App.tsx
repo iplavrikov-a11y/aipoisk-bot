@@ -1,5 +1,5 @@
 import { SeoTrafficView } from './SeoTrafficView'
-import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
+import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ErrorInfo, type ReactNode } from 'react'
 import {
   X,
   AlertTriangle,
@@ -88,6 +88,8 @@ type Client = {
   allowed_supplier_search: boolean
   allowed_procurement_report: boolean
   allowed_exact_product?: boolean
+  allowed_price_monitoring?: boolean
+  allowed_geo_radius?: boolean
   allowed_custom_batch_report?: boolean
   custom_report_separate_tab?: boolean
   custom_report_prompt?: string
@@ -740,7 +742,7 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   },
   jobs: {
     title: 'Задачи',
-    description: 'Последние запуски бота, статусы обработки и готовые файлы для скачивания.',
+    description: 'Задачи из Telegram, сайта и API, статусы обработки, переписка и готовые отчёты.',
   },
   dialogs: {
     title: 'Диалоги с клиентами',
@@ -2015,6 +2017,7 @@ export function App() {
           <AdminErrorBoundary sectionName="Клиенты">
             <ClientsView
               clients={clients}
+              tariffs={tariffs}
               passwordResets={passwordResets}
               onChange={loadAll}
               onNavigateToClientJobs={handleNavigateToClientJobs}
@@ -2038,6 +2041,7 @@ export function App() {
               onClearSelectedClient={() => setSelectedClientForJobs('')}
               selectedJob={selectedJobForView}
               onClearSelectedJob={() => setSelectedJobForView(null)}
+              onNavigateToClient={handleSelectClient}
               onNavigateToClientDialog={handleNavigateToClientDialog}
               onChange={async jobId => {
                 if (jobId) {
@@ -2692,6 +2696,7 @@ function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
 
 function ClientsView({
   clients,
+  tariffs = [],
   passwordResets,
   onChange,
   onNavigateToClientJobs,
@@ -2705,6 +2710,7 @@ function ClientsView({
   onClearSelectedClientFromParent,
 }: {
   clients: Client[]
+  tariffs?: TariffPackage[]
   passwordResets: PasswordResetRequest[]
   onChange: () => Promise<void>
   onNavigateToClientJobs?: (clientId: string) => void
@@ -2717,7 +2723,6 @@ function ClientsView({
   selectedClientIdFromParent?: string
   onClearSelectedClientFromParent?: () => void
 }) {
-  const [form, setForm] = useState({ name: '', telegram_usernames: '', telegram_id: '', notes: '' })
   const [accountForms, setAccountForms] = useState<Record<string, AccountDraft>>({})
   const [accountEditForms, setAccountEditForms] = useState<Record<string, AccountDraft>>({})
   const [grantForms, setGrantForms] = useState<Record<string, GrantDraft>>({})
@@ -2729,6 +2734,7 @@ function ClientsView({
   const [resetNotes, setResetNotes] = useState<Record<string, string>>({})
   const [temporaryPasswords, setTemporaryPasswords] = useState<Record<string, string>>({})
   const [deletingClientId, setDeletingClientId] = useState<string | null>(null)
+  const [savedClientNotes, setSavedClientNotes] = useState<Record<string, boolean>>({})
 
   // Pagination & Filtering state
   const [searchQuery, setSearchQuery] = useState('')
@@ -2766,19 +2772,45 @@ function ClientsView({
   const recentClients = useMemo(() => clients.slice(0, 20), [clients])
   const otherClients = useMemo(() => (clients.length > 20 ? clients.slice(20) : []), [clients])
 
+  const activeDepositPackages = useMemo(
+    () =>
+      tariffs
+        .filter(t => t.kind === 'deposit' && t.is_active && t.price_kopeks > 0)
+        .sort((a, b) => a.price_kopeks - b.price_kopeks),
+    [tariffs]
+  )
+
+  function calculateDynamicBonusRub(amountRub: number): number {
+    if (!Number.isFinite(amountRub) || amountRub <= 0) return 0
+    if (activeDepositPackages.length > 0) {
+      const exact = activeDepositPackages.find(p => Math.round(kopeksToRubles(p.price_kopeks)) === Math.round(amountRub))
+      if (exact) return kopeksToRubles(exact.bonus_kopeks || 0)
+      const eligible = [...activeDepositPackages]
+        .filter(p => kopeksToRubles(p.price_kopeks) <= amountRub && (p.bonus_kopeks || 0) > 0)
+        .sort((a, b) => b.price_kopeks - a.price_kopeks)
+      if (eligible.length > 0) {
+        const tier = eligible[0]
+        const rate = (tier.bonus_kopeks || 0) / tier.price_kopeks
+        return Math.round(amountRub * rate)
+      }
+      return 0
+    }
+    return calculateBonusRub(amountRub)
+  }
+
   function formatClientOptionLabel(c: Client): string {
     const num = c.client_number ? `#${c.client_number} ` : ''
     const name = c.name || 'Без имени'
-    const email = c.web_users?.[0]?.email
-    const tg = c.username ? `@${c.username}` : (c.telegram_accounts?.[0]?.username ? `@${c.telegram_accounts[0].username}` : '')
+    const email = (c.web_users || []).find(u => !isSyntheticTelegramEmail(u.email))?.email
+    const realAcc = (c.telegram_accounts || []).find(a => !isSyntheticWebTelegramAccount(a))
+    const tg = c.username ? `@${c.username}` : (realAcc?.username ? `@${realAcc.username}` : '')
     const contact = email ? ` (${email})` : (tg ? ` (${tg})` : '')
     const tasks = c.jobs_count ?? 0
-    const tasksStr = ` · ${tasks} ${tasks === 1 ? 'зад.' : 'зад.'}`
-    return `${num}${name}${contact}${tasksStr}`
+    return `${num}${name}${contact} · ${tasks} зад.`
   }
 
   const webClientsCount = useMemo(
-    () => clients.filter(c => c.web_users && c.web_users.length > 0).length,
+    () => clients.filter(c => (c.web_users || []).some(u => !isSyntheticTelegramEmail(u.email))).length,
     [clients]
   )
   const tgClientsCount = useMemo(
@@ -2801,7 +2833,7 @@ function ClientsView({
         return false
       }
       if (clientFilter === 'web') {
-        if (!client.web_users || client.web_users.length === 0) return false
+        if (!(client.web_users || []).some(u => !isSyntheticTelegramEmail(u.email))) return false
       } else if (clientFilter === 'tg') {
         const realAccounts = (client.telegram_accounts || []).filter(a => !isSyntheticWebTelegramAccount(a))
         if (!realAccounts.length && !client.telegram_id) return false
@@ -2838,7 +2870,7 @@ function ClientsView({
         webUsers
       )
     })
-  }, [clients, searchQuery, clientFilter])
+  }, [clients, searchQuery, clientFilter, selectedClientId])
 
   const pageCount = Math.max(1, Math.ceil(filteredClients.length / pageSize))
   const currentPage = Math.min(page, pageCount)
@@ -2846,15 +2878,6 @@ function ClientsView({
   const shownTo = Math.min(currentPage * pageSize, filteredClients.length)
   const pagedClients = filteredClients.slice((currentPage - 1) * pageSize, currentPage * pageSize)
 
-  async function createClient() {
-    const usernames = parseTelegramUsernames(form.telegram_usernames)
-    await api('/api/clients', {
-      method: 'POST',
-      body: JSON.stringify({ ...form, telegram_usernames: usernames, username: usernames[0] || '' }),
-    })
-    setForm({ name: '', telegram_usernames: '', telegram_id: '', notes: '' })
-    await onChange()
-  }
   async function patchClient(client: Client, patch: Partial<Client>) {
     await api(`/api/clients/${client.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
     await onChange()
@@ -2984,7 +3007,7 @@ function ClientsView({
       (client.usage?.effective_prices &&
         Object.values(client.usage.effective_prices).some(p => p?.source === 'client_override'))
     )
-    const bonusRub = hasCustomPrices ? 0 : calculateBonusRub(amountRub)
+    const bonusRub = hasCustomPrices ? 0 : calculateDynamicBonusRub(amountRub)
     const bonusKopeks = rublesToKopeks(bonusRub)
     const requestSlot = `${client.id}:grant`
     if (balanceRequestsInFlight.current[requestSlot]) return
@@ -3082,8 +3105,13 @@ function ClientsView({
     setTemporaryPasswords(nextPasswords)
     await onChange()
   }
-  function patchClientNote(client: Client, value: string) {
-    if (value !== client.notes) void patchClient(client, { notes: value })
+  async function patchClientNote(client: Client, value: string) {
+    if (value === (client.notes || '')) return
+    await patchClient(client, { notes: value })
+    setSavedClientNotes(prev => ({ ...prev, [client.id]: true }))
+    setTimeout(() => {
+      setSavedClientNotes(prev => ({ ...prev, [client.id]: false }))
+    }, 2200)
   }
   return (
     <section className="stack">
@@ -3113,34 +3141,6 @@ function ClientsView({
           </div>
         </div>
       )}
-      <div className="client-create-panel">
-        <div className="client-create-head">
-          <div>
-            <h2>Добавить клиента</h2>
-          </div>
-        </div>
-        <div className="client-create-grid">
-          <label className="field">
-            Название клиента
-            <input placeholder="ООО Ромашка" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
-          </label>
-          <label className="field">
-            Telegram-ники
-            <input
-              placeholder="@manager, @buyer"
-              value={form.telegram_usernames}
-              onChange={e => setForm({ ...form, telegram_usernames: e.target.value })}
-            />
-          </label>
-          <label className="field">
-            Telegram ID вручную
-            <input placeholder="Если ID известен" value={form.telegram_id} onChange={e => setForm({ ...form, telegram_id: e.target.value })} />
-          </label>
-          <button className="client-create-submit" onClick={() => void createClient()} disabled={!form.name.trim() || (!form.telegram_id.trim() && !parseTelegramUsernames(form.telegram_usernames).length)}>
-            <Plus size={16} />Добавить
-          </button>
-        </div>
-      </div>
       <div className="list-toolbar">
         <div className="list-toolbar-row">
           <div className="list-toolbar-meta">
@@ -3370,6 +3370,7 @@ function ClientsView({
           const draft = accountDraft(client)
           const accounts = (client.telegram_accounts || []).filter(account => !isSyntheticWebTelegramAccount(account))
           const webUsers = client.web_users?.length ? client.web_users : []
+          const realWebUsers = webUsers.filter(user => !isSyntheticTelegramEmail(user.email))
           const expanded = Boolean(expandedClients[client.id])
           const grant = grantDraft(client)
           const grantAmountRub = Number(String(grant.amount_rub || 0).replace(',', '.'))
@@ -3458,41 +3459,45 @@ function ClientsView({
                   >
                     Задач: {client.jobs_count ?? 0}
                   </span>
-                  {webUsers.length > 0 && <span className="pill web">Web: {webUsers.length}</span>}
+                  {realWebUsers.length > 0 && <span className="pill web">Web: {realWebUsers.length}</span>}
                   <span className="pill tg">TG: {connectedCount}</span>
                   {pendingCount > 0 && <span className="pill pending">Ожидают: {pendingCount}</span>}
                   {client.usage?.money && <span className="pill balance">{formatMoney(client.usage.money.available_kopeks)}</span>}
                 </div>
                 <div className="client-state">
+                  {onNavigateToClientDialog && (
+                    <button
+                      type="button"
+                      className="ghost small-text client-quick-btn"
+                      title="Открыть диалог с клиентом"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onNavigateToClientDialog(client.id)
+                      }}
+                    >
+                      <MessageSquare size={13} />
+                      <span>Диалог</span>
+                    </button>
+                  )}
+                  {onNavigateToClientJobs && (
+                    <button
+                      type="button"
+                      className="ghost small-text client-quick-btn"
+                      title={`Перейти к задачам клиента (${client.jobs_count ?? 0})`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onNavigateToClientJobs(client.id)
+                      }}
+                    >
+                      <FileText size={13} />
+                      <span>Задачи</span>
+                    </button>
+                  )}
                   <details className="client-actions-menu compact">
-                    <summary title="Действия клиента" aria-label="Действия клиента">
+                    <summary title="Дополнительные действия" aria-label="Дополнительные действия">
                       <MoreHorizontal size={15} />
                     </summary>
                     <div className="client-actions-popover">
-                      {onNavigateToClientDialog && (
-                        <button
-                          className="small-text"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onNavigateToClientDialog(client.id)
-                          }}
-                        >
-                          <MessageSquare size={13} />
-                          Диалог с клиентом
-                        </button>
-                      )}
-                      {onNavigateToClientJobs && (
-                        <button
-                          className="small-text"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onNavigateToClientJobs(client.id)
-                          }}
-                        >
-                          <FileText size={13} />
-                          Задачи клиента ({client.jobs_count ?? 0})
-                        </button>
-                      )}
                       <button
                         className="danger small-text"
                         onClick={(e) => void deleteClient(client, e)}
@@ -3512,7 +3517,7 @@ function ClientsView({
                     <h3>Доступы</h3>
                     <span>
                       {[
-                        webUsers.length ? `Web: ${webUsers.length}` : '',
+                        realWebUsers.length ? `Web: ${realWebUsers.length}` : '',
                         accounts.length ? `Telegram: ${accounts.length}` : '',
                         client.api_keys && client.api_keys.length ? `API: ${client.api_keys.length}` : '',
                       ].filter(Boolean).join(' · ') || 'нет'}
@@ -3522,22 +3527,24 @@ function ClientsView({
                     <div className="subsection-label">Web-доступ</div>
                     {webUsers.length > 0 ? (
                       <div className="web-user-list">
-                        {webUsers.map(user => (
+                        {webUsers.map(user => {
+                          const isSyntheticTg = isSyntheticTelegramEmail(user.email)
+                          return (
                           <div className="web-user-row" key={user.id}>
                             <div>
-                              <strong>{user.email}</strong>
+                              <strong>{isSyntheticTg ? 'Web-вход через Telegram' : user.email}</strong>
                               <small>
                                 {[
                                   user.name || 'web-кабинет',
                                   user.created_at ? `рег. ${formatDate(user.created_at)}` : '',
-                                  user.is_email_verified ? 'email подтверждён' : 'email не подтверждён',
+                                  !isSyntheticTg ? (user.is_email_verified ? 'email подтверждён' : 'email не подтверждён') : '',
                                   user.last_login_at ? `вход ${formatDate(user.last_login_at)}` : 'входа ещё не было',
                                 ].filter(Boolean).join(' · ')}
                               </small>
                             </div>
                             <div className="web-user-actions">
                               {!user.is_active && <StatusBadge status="disabled" />}
-                              {!user.is_email_verified && (
+                              {!isSyntheticTg && !user.is_email_verified && (
                                 <button className="small-text" onClick={() => void verifyWebUserEmail(client, user)}>
                                   <CheckCircle2 size={14} />Подтвердить
                                 </button>
@@ -3551,7 +3558,8 @@ function ClientsView({
                               </button>
                             </div>
                           </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     ) : (
                       <div className="inline-note">Web-кабинет не привязан.</div>
@@ -3687,21 +3695,31 @@ function ClientsView({
                         (client.usage?.effective_prices &&
                           Object.values(client.usage.effective_prices).some(p => p?.source === 'client_override'))
                       )
-                      const quickChips = hasCustomPrices
-                        ? [
-                            { label: '1 000 ₽', val: '1000' },
-                            { label: '3 000 ₽', val: '3000' },
-                            { label: '5 000 ₽', val: '5000' },
-                            { label: '10 000 ₽', val: '10000' },
-                            { label: '25 000 ₽', val: '25000' },
-                          ]
-                        : [
-                            { label: '1 000 ₽', val: '1000' },
-                            { label: '3 000 ₽ (+500)', val: '3000' },
-                            { label: '5 000 ₽ (+1.5k)', val: '5000' },
-                            { label: '10 000 ₽ (+4k)', val: '10000' },
-                            { label: '25 000 ₽ (+12.5k)', val: '25000' },
-                          ]
+                      const quickChips = activeDepositPackages.length > 0
+                        ? activeDepositPackages.map(pkg => {
+                            const priceRub = Math.round(kopeksToRubles(pkg.price_kopeks))
+                            const bonusRub = Math.round(kopeksToRubles(pkg.bonus_kopeks || 0))
+                            const formattedPrice = `${priceRub.toLocaleString('ru-RU')} ₽`
+                            const bonusHint = !hasCustomPrices && bonusRub > 0
+                              ? ` (+${bonusRub >= 1000 && bonusRub % 100 === 0 ? `${(bonusRub / 1000).toFixed(bonusRub % 1000 === 0 ? 0 : 1)}k` : bonusRub})`
+                              : ''
+                            return { label: `${formattedPrice}${bonusHint}`, val: String(priceRub) }
+                          })
+                        : (hasCustomPrices
+                            ? [
+                                { label: '1 000 ₽', val: '1000' },
+                                { label: '3 000 ₽', val: '3000' },
+                                { label: '5 000 ₽', val: '5000' },
+                                { label: '10 000 ₽', val: '10000' },
+                                { label: '25 000 ₽', val: '25000' },
+                              ]
+                            : [
+                                { label: '1 000 ₽', val: '1000' },
+                                { label: '3 000 ₽ (+500)', val: '3000' },
+                                { label: '5 000 ₽ (+1.5k)', val: '5000' },
+                                { label: '10 000 ₽ (+4k)', val: '10000' },
+                                { label: '25 000 ₽ (+12.5k)', val: '25000' },
+                              ])
 
                       return (
                         <>
@@ -3751,7 +3769,7 @@ function ClientsView({
                                   }
                                   return null
                                 }
-                                const bonus = calculateBonusRub(amt)
+                                const bonus = calculateDynamicBonusRub(amt)
                                 if (bonus > 0) {
                                   return (
                                     <small style={{ color: '#0f766e', fontWeight: 600, display: 'block', marginTop: 2 }}>
@@ -3822,6 +3840,39 @@ function ClientsView({
                       placeholder="по умолчанию"
                       defaultValue={client.supplier_target_min || ''}
                       onBlur={e => patchClientSupplierTarget(client, e.currentTarget)}
+                    />
+                  </label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '8px 0 10px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(client.allowed_price_monitoring)}
+                        onChange={e => void patchClient(client, { allowed_price_monitoring: e.currentTarget.checked })}
+                      />
+                      <span>Доступ к «Мониторингу цен»</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(client.allowed_geo_radius)}
+                        onChange={e => void patchClient(client, { allowed_geo_radius: e.currentTarget.checked })}
+                      />
+                      <span>Поиск в радиусе города</span>
+                    </label>
+                  </div>
+                  <label className="mini-field" style={{ marginBottom: 8 }}>
+                    <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>Заметка администратора</span>
+                      {savedClientNotes[client.id] && (
+                        <small style={{ color: '#059669', fontWeight: 600 }}>Сохранено</small>
+                      )}
+                    </span>
+                    <textarea
+                      rows={2}
+                      defaultValue={client.notes || ''}
+                      placeholder="Внутренний комментарий о клиенте..."
+                      style={{ width: '100%', fontSize: 12, resize: 'vertical' }}
+                      onBlur={e => void patchClientNote(client, e.currentTarget.value)}
                     />
                   </label>
                   {client.usage?.effective_prices && (
@@ -3957,16 +4008,8 @@ function ClientsView({
   )
 }
 
-function parseTelegramUsernames(value: string) {
-  const seen = new Set<string>()
-  return value
-    .split(/[\s,;]+/)
-    .map(item => normalizeTelegramUsername(item))
-    .filter(item => {
-      if (!item || seen.has(item)) return false
-      seen.add(item)
-      return true
-    })
+function isSyntheticTelegramEmail(email?: string | null) {
+  return /^tg_\d+(?:_\d+)?@telegram\.tenderlex\.ru$/i.test(String(email || '').trim())
 }
 
 function isSyntheticWebTelegramAccount(account: TelegramAccount) {
@@ -3974,10 +4017,11 @@ function isSyntheticWebTelegramAccount(account: TelegramAccount) {
 }
 
 function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
-  if (client.web_users?.[0]?.email) {
-    const email = client.web_users[0].email
-    const phone = client.phone || client.web_users[0].phone
-    const tg = client.web_users[0].telegram_username || (client.username ? `@${client.username}` : '')
+  const realWebUser = (client.web_users || []).find(u => !isSyntheticTelegramEmail(u.email))
+  if (realWebUser?.email) {
+    const email = realWebUser.email
+    const phone = client.phone || realWebUser.phone
+    const tg = realWebUser.telegram_username || (client.username ? `@${client.username}` : '')
     const extra: string[] = []
     if (phone) extra.push(`📞 ${phone}`)
     if (tg) extra.push(`💬 ${tg.startsWith('@') ? tg : `@${tg}`}`)
@@ -3999,7 +4043,8 @@ function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
 
   if (accountLabels.length) {
     const more = realAccounts.length > accountLabels.length ? ` +${realAccounts.length - accountLabels.length}` : ''
-    return `${accountLabels.join(', ')}${more} · подключено ${connected.length}, ожидает ${pending.length}`
+    const suffix = pending.length > 0 ? ` · подключено ${connected.length}, ожидает ${pending.length}` : ''
+    return `${accountLabels.join(', ')}${more}${suffix}`
   }
   if (client.telegram_id) {
     return client.name ? `${client.name} (ID: ${client.telegram_id})` : `Telegram ID: ${client.telegram_id}`
@@ -4163,6 +4208,7 @@ function JobsView({
   onClearSelectedClient,
   selectedJob = null,
   onClearSelectedJob,
+  onNavigateToClient,
   onNavigateToClientDialog,
   onChange,
   loading = false,
@@ -4173,6 +4219,7 @@ function JobsView({
   onClearSelectedClient?: () => void
   selectedJob?: { jobId: string; clientId?: string; jobNumber?: number | null } | null
   onClearSelectedJob?: () => void
+  onNavigateToClient?: (clientId: string) => void
   onNavigateToClientDialog?: (clientId: string) => void
   onChange: (jobId?: string) => Promise<void>
   loading?: boolean
@@ -4280,11 +4327,11 @@ function JobsView({
       }
     }
     return clients.slice(0, 20).map(c => {
-      const email = c.web_users?.[0]?.email || ''
+      const email = (c.web_users || []).find(u => !isSyntheticTelegramEmail(u.email))?.email || ''
       const count = jobCounts[c.id] || c.jobs_count || 0
       const numPrefix = c.client_number ? `#${c.client_number} ` : ''
       const contactPart = email ? ` (${email})` : (c.username ? ` (@${c.username})` : '')
-      const countPart = count > 0 ? ` · ${count} ${count === 1 ? 'зад.' : 'зад.'}` : ' · 0 зад.'
+      const countPart = count > 0 ? ` · ${count} зад.` : ' · 0 зад.'
       return {
         id: c.id,
         label: `${numPrefix}${c.name || 'Без имени'}${contactPart}${countPart}`,
@@ -4301,11 +4348,11 @@ function JobsView({
       }
     }
     return clients.slice(20).map(c => {
-      const email = c.web_users?.[0]?.email || ''
+      const email = (c.web_users || []).find(u => !isSyntheticTelegramEmail(u.email))?.email || ''
       const count = jobCounts[c.id] || c.jobs_count || 0
       const numPrefix = c.client_number ? `#${c.client_number} ` : ''
       const contactPart = email ? ` (${email})` : (c.username ? ` (@${c.username})` : '')
-      const countPart = count > 0 ? ` · ${count} ${count === 1 ? 'зад.' : 'зад.'}` : ' · 0 зад.'
+      const countPart = count > 0 ? ` · ${count} зад.` : ' · 0 зад.'
       return {
         id: c.id,
         label: `${numPrefix}${c.name || 'Без имени'}${contactPart}${countPart}`,
@@ -4361,6 +4408,7 @@ function JobsView({
     { id: 'awaiting_position_selection', label: 'Ожидает выбора позиций' },
     { id: 'confirmation_expired', label: 'Срок выбора истёк' },
     { id: 'failed', label: 'Ошибка' },
+    { id: 'resolved', label: 'Решено' },
     { id: 'cancelled', label: 'Отменено' },
   ], [])
   const modeOptions = useMemo(() => [
@@ -4484,7 +4532,7 @@ function JobsView({
             </strong>
             {loading && (
               <span className="inline-note" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                <Loader2 size={12} className="animate-spin" />
+                <Loader2 size={12} className="spin" />
                 <span>обновление...</span>
               </span>
             )}
@@ -4504,7 +4552,6 @@ function JobsView({
             value={clientFilter}
             onChange={e => {
               setClientFilter(e.target.value)
-              if (e.target.value) setQuery('')
               setPage(1)
               if (!e.target.value && onClearSelectedClient) {
                 onClearSelectedClient()
@@ -4559,10 +4606,6 @@ function JobsView({
             value={query}
             onChange={e => {
               setQuery(e.target.value)
-              if (e.target.value) {
-                setClientFilter('')
-                if (onClearSelectedClient) onClearSelectedClient()
-              }
               setPage(1)
             }}
           />
@@ -4705,17 +4748,33 @@ function JobsView({
                   >
                     {job.client_number ? `#${job.client_number} ` : ''}
                     {job.client_name || 'клиент не указан'}
-                    {job.client_email ? ` (${job.client_email})` : ''}
+                    {job.client_email && !isSyntheticTelegramEmail(job.client_email) ? ` (${job.client_email})` : ''}
                   </span>
+                  {job.client_id && onNavigateToClient && (
+                    <button
+                      type="button"
+                      className="job-client-open-btn"
+                      title="Открыть карточку клиента и настройки"
+                      aria-label="Открыть карточку клиента и настройки"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onNavigateToClient(job.client_id)
+                      }}
+                    >
+                      <ExternalLink size={11} />
+                    </button>
+                  )}
                   {' · '}
                   {job.created_by_label?.startsWith('API:') ? (
                     <span style={{ background: '#ede9fe', color: '#6d28d9', border: '1px solid #c4b5fd', borderRadius: 4, padding: '1px 6px', fontSize: '0.72rem', fontWeight: 600 }}>
                       🔑 {job.created_by_label}
                     </span>
                   ) : (
-                    job.created_by_label || (
+                    (job.created_by_label && !isSyntheticTelegramEmail(job.created_by_label) ? job.created_by_label : '') || (
                       String(job.created_by_telegram_id || '').startsWith('web:')
-                        ? (job.client_email ? `Веб: ${job.client_email}` : 'Веб-кабинет')
+                        ? (job.client_email && !isSyntheticTelegramEmail(job.client_email)
+                            ? `Веб: ${job.client_email}`
+                            : (job.client_username ? `@${job.client_username} (веб)` : 'Веб-кабинет'))
                         : (job.created_by_telegram_id || job.telegram_id || 'автор не указан')
                     )
                   )}
@@ -5164,6 +5223,17 @@ function JobsView({
                     <Play size={13} />
                   )}
                 </button>
+
+                {/* Expand details toggle */}
+                <button
+                  type="button"
+                  className={`icon-button small ${expandedJobs[job.id] ? 'accent-active' : ''}`}
+                  onClick={() => void toggleJobDetails(job)}
+                  title={expandedJobs[job.id] ? 'Скрыть подробности задачи' : 'Показать подробности задачи'}
+                  aria-expanded={Boolean(expandedJobs[job.id])}
+                >
+                  {expandedJobs[job.id] ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                </button>
               </div>
             </div>
 
@@ -5252,12 +5322,65 @@ function JobsView({
                 ℹ️ {job.message || 'В реестре Минпромторга подходящие производители не найдены'} · <em>резерв средств возвращён клиенту</em>
               </div>
             )}
+
+            {expandedJobs[job.id] && (() => {
+              const detail = jobDetails[job.id]
+              const isErr = detail && 'detail_error' in detail
+              const detailData = detail && !isErr ? (detail as JobDetail) : null
+              const detailFiles = detailData?.files || detailData?.input_files || job.input_files || []
+              const detailSources = detailData?.sources || job.sources || []
+              const detailSuppliers = detailData?.suppliers || []
+              return (
+                <div className="job-expanded-details">
+                  {!detail ? (
+                    <div className="inline-note" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Loader2 size={12} className="spin" />
+                      <span>Загрузка подробностей задачи...</span>
+                    </div>
+                  ) : isErr ? (
+                    <div className="inline-note" style={{ color: '#b91c1c' }}>
+                      Не удалось загрузить детали: {(detail as JobDetailError).detail_error}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="job-expanded-meta">
+                        {detailData?.ai_label && (
+                          <span><strong>Модель ИИ:</strong> {detailData.ai_label}</span>
+                        )}
+                        {detailData?.message && (
+                          <span><strong>Статус-сообщение:</strong> {detailData.message}</span>
+                        )}
+                      </div>
+                      {detailFiles.length > 0 && (
+                        <div className="job-expanded-row">
+                          <strong>Файлы ТЗ ({detailFiles.length}):</strong>{' '}
+                          {detailFiles.map(f => `${f.original_filename}${f.extracted_chars ? ` (${f.extracted_chars.toLocaleString('ru-RU')} симв.)` : ''}${f.error ? ` [ошибка: ${f.error}]` : ''}`).join(', ')}
+                        </div>
+                      )}
+                      {detailSources.length > 0 && (
+                        <div className="job-expanded-row">
+                          <strong>Источники ({detailSources.length}):</strong>{' '}
+                          {detailSources.map(s => `${s.label || s.kind}: ${s.value}`).join(' · ')}
+                        </div>
+                      )}
+                      {detailSuppliers.length > 0 && (
+                        <div className="job-expanded-row">
+                          <strong>Компании в результате ({detailSuppliers.length}):</strong>{' '}
+                          {detailSuppliers.slice(0, 6).map(s => s.company_name).filter(Boolean).join(', ')}
+                          {detailSuppliers.length > 6 ? ` и ещё ${detailSuppliers.length - 6}` : ''}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )
+            })()}
           </article>
           )
         })}
         {loading && !visibleJobs.length ? (
           <div className="empty inline-empty" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '40px 0' }}>
-            <Loader2 size={18} className="animate-spin" style={{ color: '#0f766e' }} />
+            <Loader2 size={18} className="spin" style={{ color: '#0f766e' }} />
             <span>Загрузка задач...</span>
           </div>
         ) : !visibleJobs.length ? (
@@ -6170,40 +6293,45 @@ function JobTimeline({
   adminSent?: boolean
 }) {
   const minpromNotFound = isMinpromNotFound(job)
+  const isCancelled = job.status === 'cancelled'
   const isResolvedStatus = job.status === 'resolved' || adminResolved
-  const failed = !minpromNotFound && !isResolvedStatus && (job.status === 'failed' || Boolean(job.error))
+  const failed = !minpromNotFound && !isResolvedStatus && !isCancelled && (job.status === 'failed' || Boolean(job.error))
   const completed =
-    job.status === 'completed' ||
-    isResolvedStatus ||
-    job.has_result ||
-    (job.result_files?.length || 0) > 0
+    !isCancelled && (
+      job.status === 'completed' ||
+      isResolvedStatus ||
+      job.has_result ||
+      (job.result_files?.length || 0) > 0
+    )
   const steps = [
     { label: 'Создана', state: 'done' },
-    { label: 'Входные', state: hasInput ? 'done' : job.status === 'pending' ? 'current' : 'waiting' },
+    { label: 'Входные', state: hasInput ? 'done' : job.status === 'pending' ? 'current' : isCancelled ? 'empty' : 'waiting' },
     {
       label: 'ИИ',
-      state: isResolvedStatus
-        ? 'done'
-        : failed
-          ? 'error'
-          : completed || job.progress >= 70 || minpromNotFound
-            ? 'done'
-            : job.status === 'running'
-              ? 'current'
-              : 'waiting',
+      state: isCancelled
+        ? 'empty'
+        : isResolvedStatus
+          ? 'done'
+          : failed
+            ? 'error'
+            : completed || job.progress >= 70 || minpromNotFound
+              ? 'done'
+              : job.status === 'running'
+                ? 'current'
+                : 'waiting',
     },
     {
       label: 'Результат',
-      state: isResolvedStatus
-        ? (adminSent || job.status === 'resolved' ? 'done' : 'resolved')
-        : failed
-          ? 'error'
-          : minpromNotFound
-            ? 'empty'
-            : completed
-              ? 'done'
-              : job.status === 'running' || job.status === 'pending'
-                ? 'current'
+      state: isCancelled
+        ? 'empty'
+        : isResolvedStatus
+          ? (adminSent || job.status === 'resolved' ? 'done' : 'resolved')
+          : failed
+            ? 'error'
+            : minpromNotFound
+              ? 'empty'
+              : completed
+                ? 'done'
                 : 'waiting',
     },
   ]
@@ -6214,11 +6342,13 @@ function JobTimeline({
           className={`job-timeline-step ${step.state}`}
           key={step.label}
           title={`Этап: ${step.label} (${
-            step.state === 'empty'
-              ? 'в реестре не найдено'
-              : step.state === 'resolved'
-                ? 'готово у админа (ожидает отправки клиенту)'
-                : step.state
+            isCancelled && step.state === 'empty'
+              ? 'отменено'
+              : step.state === 'empty'
+                ? 'в реестре не найдено'
+                : step.state === 'resolved'
+                  ? 'готово у админа (ожидает отправки клиенту)'
+                  : step.state
           })`}
         >
           <span className="timeline-dot" />
@@ -6226,6 +6356,114 @@ function JobTimeline({
         </div>
       ))}
     </div>
+  )
+}
+
+function TariffEditableInput({
+  value,
+  type = 'text',
+  min,
+  step = 1,
+  className = '',
+  style,
+  placeholder,
+  title,
+  trim = true,
+  allowEmpty = false,
+  onCommit,
+}: {
+  value: string | number
+  type?: 'text' | 'number'
+  min?: number
+  step?: number
+  className?: string
+  style?: CSSProperties
+  placeholder?: string
+  title?: string
+  trim?: boolean
+  allowEmpty?: boolean
+  onCommit: (nextValue: string) => Promise<boolean>
+}) {
+  const stringValue = String(value ?? '')
+  const [draft, setDraft] = useState(stringValue)
+  const [saving, setSaving] = useState(false)
+  const [savedFlash, setSavedFlash] = useState(false)
+  const cancelledRef = useRef(false)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    setDraft(stringValue)
+  }, [stringValue])
+
+  async function commitDraft(rawValue: string) {
+    const normalized = trim ? rawValue.trim() : rawValue
+    if (!allowEmpty && normalized === '') {
+      setDraft(stringValue)
+      return
+    }
+    if (normalized === stringValue) {
+      setDraft(stringValue)
+      return
+    }
+    if (type === 'number') {
+      const parsed = Number(normalized)
+      if (!Number.isFinite(parsed) || (min !== undefined && parsed < min)) {
+        setDraft(stringValue)
+        return
+      }
+    }
+    setSaving(true)
+    const ok = await onCommit(normalized)
+    if (!mountedRef.current) return
+    setSaving(false)
+    if (ok) {
+      setSavedFlash(true)
+      setTimeout(() => {
+        if (mountedRef.current) setSavedFlash(false)
+      }, 1600)
+    } else {
+      setDraft(stringValue)
+    }
+  }
+
+  return (
+    <input
+      className={`${className}${savedFlash ? ' is-saved' : ''}`}
+      style={style}
+      type={type}
+      min={min}
+      step={type === 'number' ? step : undefined}
+      placeholder={placeholder}
+      title={title}
+      value={draft}
+      disabled={saving}
+      onChange={e => setDraft(e.target.value)}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          e.currentTarget.blur()
+        } else if (e.key === 'Escape') {
+          cancelledRef.current = true
+          setDraft(stringValue)
+          e.currentTarget.blur()
+        }
+      }}
+      onBlur={e => {
+        if (cancelledRef.current) {
+          cancelledRef.current = false
+          setDraft(stringValue)
+          return
+        }
+        void commitDraft(e.currentTarget.value)
+      }}
+    />
   )
 }
 
@@ -6244,6 +6482,7 @@ function BillingView({
   const [geoSurcharge, setGeoSurcharge] = useState(settings?.geo_radius_surcharge_pct ?? 30)
   const [geoSaving, setGeoSaving] = useState(false)
   const [geoSaved, setGeoSaved] = useState(false)
+  const [pmPriceRub, setPmPriceRub] = useState<number>(50)
 
   useEffect(() => {
     if (settings) {
@@ -6252,8 +6491,23 @@ function BillingView({
     }
   }, [settings])
 
+  useEffect(() => {
+    let active = true
+    api<{ default_price_rub?: number }>('/api/price-monitoring/settings')
+      .then(data => {
+        if (active && typeof data?.default_price_rub === 'number') {
+          setPmPriceRub(Math.round(data.default_price_rub))
+        }
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
+
   async function saveGeoSettings() {
     setGeoSaving(true)
+    setBillingError('')
     try {
       await api('/api/settings', {
         method: 'PATCH',
@@ -6265,8 +6519,30 @@ function BillingView({
       await onChange()
       setGeoSaved(true)
       setTimeout(() => setGeoSaved(false), 2500)
+    } catch (err) {
+      setBillingError(formatError(err))
     } finally {
       setGeoSaving(false)
+    }
+  }
+
+  async function savePriceMonitoringRate(nextRub: number): Promise<boolean> {
+    setBillingError('')
+    try {
+      const updated = await api<{ default_price_rub?: number }>('/api/price-monitoring/settings', {
+        method: 'POST',
+        body: JSON.stringify({ default_price_rub: Math.max(0, Math.round(nextRub)) }),
+      })
+      if (typeof updated?.default_price_rub === 'number') {
+        setPmPriceRub(Math.round(updated.default_price_rub))
+      } else {
+        setPmPriceRub(Math.max(0, Math.round(nextRub)))
+      }
+      await onChange()
+      return true
+    } catch (err) {
+      setBillingError(formatError(err))
+      return false
     }
   }
 
@@ -6294,13 +6570,15 @@ function BillingView({
     }
   }
 
-  async function patchTariff(item: TariffPackage, patch: Partial<TariffPackage>) {
+  async function patchTariff(item: TariffPackage, patch: Partial<TariffPackage>): Promise<boolean> {
     setBillingError('')
     try {
       await api(`/api/tariffs/${item.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
       await onChange()
+      return true
     } catch (err) {
       setBillingError(formatError(err))
+      return false
     }
   }
 
@@ -6327,11 +6605,24 @@ function BillingView({
     })
 
   // Filter to core 1-unit services unless expanded
-  const displayedServiceTariffs = showAllServices
-    ? allServiceTariffs
-    : allServiceTariffs.filter(t => t.units === 1)
+  const singleUnitServices = allServiceTariffs.filter(t => t.units === 1)
+  const displayedServiceTariffs = showAllServices ? allServiceTariffs : singleUnitServices
 
-  const basePriceExample = 99
+  // Live single-unit reference rates for derived combo & discount badges
+  const baseRateByKind: Record<string, number> = {}
+  for (const svc of allServiceTariffs) {
+    if (svc.units === 1 && svc.is_active && !(svc.kind in baseRateByKind)) {
+      baseRateByKind[svc.kind] = kopeksToRubles(svc.price_kopeks)
+    }
+  }
+  const searchBaseRub = baseRateByKind.supplier_search ?? 99
+  const reportBaseRub = baseRateByKind.procurement_report ?? 99
+  const comboBaseRub = searchBaseRub + reportBaseRub
+
+  const startDepositPkg = depositTariffs.find(d => d.is_active && d.units > 0 && (d.bonus_kopeks || 0) === 0)
+  const depositBaseTaskCost = startDepositPkg ? kopeksToRubles(startDepositPkg.price_kopeks) / startDepositPkg.units : 100
+
+  const basePriceExample = searchBaseRub
   const surchargeExample = Math.round(basePriceExample * (1 + (geoSurcharge || 0) / 100))
 
   return (
@@ -6380,13 +6671,13 @@ function BillingView({
               type="number"
               min={0}
               max={500}
-              step={5}
+              step={1}
               value={geoSurcharge}
               onChange={e => setGeoSurcharge(Number(e.target.value))}
             />
             <span>%</span>
             <span className="tariff-rate-example">
-              (пример: 99 ₽ → <strong>{surchargeExample} ₽</strong>)
+              (пример: {basePriceExample} ₽ → <strong>{surchargeExample} ₽</strong>)
             </span>
           </div>
         </div>
@@ -6473,49 +6764,39 @@ function BillingView({
                 const bonusRub = kopeksToRubles(item.bonus_kopeks || 0)
                 const totalRub = payRub + bonusRub
                 const costPerTask = item.units > 0 ? payRub / item.units : 0
-                // Discount relative to 100 ₽ base rate
-                const discountPct = costPerTask > 0 && costPerTask < 100
-                  ? Math.round(((100 - costPerTask) / 100) * 100)
+                const discountPct = depositBaseTaskCost > 0 && costPerTask > 0 && costPerTask < depositBaseTaskCost
+                  ? Math.round(((depositBaseTaskCost - costPerTask) / depositBaseTaskCost) * 100)
                   : 0
 
                 return (
                   <tr key={item.id} className={item.is_active ? '' : 'muted-row'}>
                     <td>
-                      <input
+                      <TariffEditableInput
                         className="t-input text"
                         style={{ fontWeight: 600 }}
-                        defaultValue={item.name}
+                        value={item.name}
                         placeholder="Название"
-                        onBlur={e => {
-                          const val = e.currentTarget.value.trim()
-                          if (val && val !== item.name) void patchTariff(item, { name: val })
-                        }}
+                        onCommit={val => patchTariff(item, { name: val })}
                       />
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input number"
                         type="number"
                         min={0}
-                        step={100}
-                        defaultValue={payRub}
-                        onBlur={e => {
-                          const val = Number(e.currentTarget.value)
-                          if (!isNaN(val) && val !== payRub) void patchTariff(item, { price_kopeks: rublesToKopeks(val) })
-                        }}
+                        step={1}
+                        value={payRub}
+                        onCommit={val => patchTariff(item, { price_kopeks: rublesToKopeks(Number(val)) })}
                       />
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input number"
                         type="number"
                         min={0}
-                        step={100}
-                        defaultValue={bonusRub}
-                        onBlur={e => {
-                          const val = Number(e.currentTarget.value)
-                          if (!isNaN(val) && val !== bonusRub) void patchTariff(item, { bonus_kopeks: rublesToKopeks(val) })
-                        }}
+                        step={1}
+                        value={bonusRub}
+                        onCommit={val => patchTariff(item, { bonus_kopeks: rublesToKopeks(Number(val)) })}
                       />
                     </td>
                     <td>
@@ -6533,32 +6814,28 @@ function BillingView({
                         </span>
                         {discountPct > 0 ? (
                           <span className="task-cost-badge">-{discountPct}%</span>
-                        ) : costPerTask === 100 ? (
+                        ) : Math.abs(costPerTask - depositBaseTaskCost) < 0.01 ? (
                           <span className="task-cost-badge base">база</span>
                         ) : null}
                       </div>
                     </td>
                     <td style={{ textAlign: 'center' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input number-center"
                         type="number"
                         min={1}
-                        defaultValue={item.units}
-                        onBlur={e => {
-                          const val = Number(e.currentTarget.value)
-                          if (!isNaN(val) && val > 0 && val !== item.units) void patchTariff(item, { units: val })
-                        }}
+                        step={1}
+                        value={item.units}
+                        onCommit={val => patchTariff(item, { units: Number(val) })}
                       />
                     </td>
                     <td style={{ textAlign: 'center' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input badge-text"
-                        defaultValue={item.badge || ''}
+                        value={item.badge || ''}
                         placeholder="—"
-                        onBlur={e => {
-                          const val = e.currentTarget.value.trim()
-                          if (val !== (item.badge || '')) void patchTariff(item, { badge: val })
-                        }}
+                        allowEmpty
+                        onCommit={val => patchTariff(item, { badge: val })}
                       />
                     </td>
                     <td style={{ textAlign: 'center' }}>
@@ -6601,7 +6878,7 @@ function BillingView({
               className={`tariff-seg-btn ${!showAllServices ? 'active' : ''}`}
               onClick={() => setShowAllServices(false)}
             >
-              4 основные услуги (1 задача)
+              Основные услуги ({singleUnitServices.length + 1})
             </button>
             <button
               className={`tariff-seg-btn ${showAllServices ? 'active' : ''}`}
@@ -6644,8 +6921,8 @@ function BillingView({
                 const mod = getModuleInfo(item.kind)
                 const payRub = kopeksToRubles(item.price_kopeks)
                 const costPerTask = item.units > 0 ? payRub / item.units : 0
-                const baseUnitRate = item.kind === 'supplier_search_extra' ? 49 : 99
-                const bulkDiscountPct = item.units > 1 && costPerTask < baseUnitRate
+                const baseUnitRate = baseRateByKind[item.kind] ?? (item.kind === 'supplier_search_extra' ? 49 : 99)
+                const bulkDiscountPct = item.units > 1 && baseUnitRate > 0 && costPerTask < baseUnitRate
                   ? Math.round(((baseUnitRate - costPerTask) / baseUnitRate) * 100)
                   : 0
 
@@ -6655,39 +6932,32 @@ function BillingView({
                       <span className={`module-pill-tag ${mod.cls}`}>{mod.label}</span>
                     </td>
                     <td>
-                      <input
+                      <TariffEditableInput
                         className="t-input text"
-                        defaultValue={item.name}
-                        onBlur={e => {
-                          const val = e.currentTarget.value.trim()
-                          if (val && val !== item.name) void patchTariff(item, { name: val })
-                        }}
+                        value={item.name}
+                        placeholder="Описание тарифа"
+                        onCommit={val => patchTariff(item, { name: val })}
                       />
                     </td>
                     <td style={{ textAlign: 'center' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input number-center"
                         type="number"
                         min={1}
-                        defaultValue={item.units}
-                        onBlur={e => {
-                          const val = Number(e.currentTarget.value)
-                          if (!isNaN(val) && val > 0 && val !== item.units) void patchTariff(item, { units: val })
-                        }}
+                        step={1}
+                        value={item.units}
+                        onCommit={val => patchTariff(item, { units: Number(val) })}
                       />
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input number"
                         type="number"
                         min={0}
-                        step={10}
+                        step={1}
                         style={{ fontWeight: 600 }}
-                        defaultValue={payRub}
-                        onBlur={e => {
-                          const val = Number(e.currentTarget.value)
-                          if (!isNaN(val) && val !== payRub) void patchTariff(item, { price_kopeks: rublesToKopeks(val) })
-                        }}
+                        value={payRub}
+                        onCommit={val => patchTariff(item, { price_kopeks: rublesToKopeks(Number(val)) })}
                       />
                     </td>
                     <td>
@@ -6723,8 +6993,43 @@ function BillingView({
                   </tr>
                 )
               })}
+              <tr>
+                <td>
+                  <span className="module-pill-tag price_monitoring">5. Мониторинг цен</span>
+                </td>
+                <td>
+                  <span className="tariff-static-desc">1 найденная позиция по спецификации</span>
+                </td>
+                <td style={{ textAlign: 'center' }}>
+                  <span style={{ fontWeight: 600, color: '#475569' }}>1</span>
+                </td>
+                <td style={{ textAlign: 'right' }}>
+                  <TariffEditableInput
+                    className="t-input number"
+                    type="number"
+                    min={0}
+                    step={1}
+                    style={{ fontWeight: 600 }}
+                    value={pmPriceRub}
+                    onCommit={val => savePriceMonitoringRate(Number(val))}
+                  />
+                </td>
+                <td>
+                  <div className="task-cost-wrap">
+                    <span className="task-cost-price">{pmPriceRub} ₽ / поз.</span>
+                    <span className="task-cost-badge base">по факту</span>
+                  </div>
+                </td>
+                <td style={{ textAlign: 'center' }}>
+                  <span className="sync-note" title="Доступ настраивается в разделе Мониторинг цен или в карточке клиента">—</span>
+                </td>
+                <td></td>
+              </tr>
             </tbody>
           </table>
+        </div>
+        <div className="tariff-summary-footer">
+          Комбо «Анализ + поиск» рассчитывается автоматически: {searchBaseRub} ₽ + {reportBaseRub} ₽ = <strong>{comboBaseRub} ₽</strong>
         </div>
       </div>
     </section>

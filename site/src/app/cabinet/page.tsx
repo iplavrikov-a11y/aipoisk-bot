@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { getSiteData } from "@/lib/site-data";
 import { CabinetClient } from "./cabinet-client";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +32,8 @@ export const metadata: Metadata = {
   },
 };
 
-export default function CabinetPage() {
-  return <CabinetClient />;
+export default async function CabinetPage() {
+  const siteData = await getSiteData();
+  const initialTrialBalanceRub = Math.max(0, siteData.trial?.balance_rub ?? 495);
+  return <CabinetClient initialTrialBalanceRub={initialTrialBalanceRub} />;
 }

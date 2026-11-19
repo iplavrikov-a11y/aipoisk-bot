@@ -198,16 +198,20 @@ from .support_chat import (
     block_support_dialog,
     build_guest_chat_frontend_message,
     check_guest_chat_rate_limits,
+    clear_guest_chat_cookie,
     close_support_dialog_by_client_id,
     deliver_admin_reply,
     ensure_legacy_guest_sessions_imported,
     extract_guest_session_id,
+    extract_verified_guest_session_id_from_cookie,
     get_blocked_dialog_keys,
     get_or_create_guest_session,
+    is_ai_auto_reply_message,
     is_guest_chat_blocked,
     is_guest_client_id,
     is_ip_blocked,
     is_telegram_user_blocked,
+    link_guest_chat_session_to_client,
     notify_admins_of_incoming_message,
     parse_telegram_id_list,
     reopen_support_dialog,
@@ -458,6 +462,31 @@ def _link_seo_registration(db: Session, request: Request, user: WebUser) -> bool
     except Exception as exc:
         logger.warning("Search entry attribution was skipped: %s", type(exc).__name__)
         return False
+
+
+def _link_guest_chat_from_request(
+    db: Session,
+    request: Request,
+    response: Response | None,
+    client_id: str | None,
+) -> bool:
+    cookie_val = request.cookies.get(GUEST_CHAT_COOKIE, "")
+    clean_cid = str(client_id or "").strip()
+    if not cookie_val or not clean_cid:
+        return False
+    verified_sid = extract_verified_guest_session_id_from_cookie(cookie_val)
+    if not verified_sid:
+        return False
+    try:
+        with db.begin_nested():
+            res = link_guest_chat_session_to_client(db, session_id=verified_sid, client_id=clean_cid)
+        if res.get("linked"):
+            db.commit()
+            clear_guest_chat_cookie(response)
+            return True
+    except Exception as exc:
+        logger.warning("Guest chat link on auth was skipped: %s", type(exc).__name__)
+    return False
 
 
 def _run_startup_recovery_sync() -> tuple[list[str], list[str]]:
@@ -934,6 +963,7 @@ def customer_register_api(
         _record_customer_auth_failure(key)
         raise exc
     _record_customer_registration_attempt(db, request, user.email, "created")
+    _link_guest_chat_from_request(db, request, response, user.client_id)
     email_sent = _send_customer_verification_email(db, user, request)
     token, csrf_token, session = create_web_session(db, user, request=request)
     set_customer_session_cookie(response, token)
@@ -974,6 +1004,7 @@ def customer_login_api(
         )
         if client_blocked:
             raise HTTPException(status_code=403, detail="Доступ к аккаунту ограничен администратором.")
+    _link_guest_chat_from_request(db, request, response, user.client_id)
     token, csrf_token, session = create_web_session(db, user, request=request)
     set_customer_session_cookie(response, token)
     CUSTOMER_AUTH_ATTEMPTS.pop(key, None)
@@ -1092,6 +1123,7 @@ def customer_yandex_callback_api(
     success_fragment = "registration_success" if is_new else "login_success"
     resp = RedirectResponse(url=f"/cabinet#{success_fragment}", status_code=303)
     set_customer_session_cookie(resp, token)
+    _link_guest_chat_from_request(db, request, resp, user.client_id)
     clear_yandex_oauth_state_cookie(resp)
     return resp
 
@@ -1171,6 +1203,7 @@ def customer_telegram_callback_api(
     success_fragment = "registration_success" if is_new else "login_success"
     resp = RedirectResponse(url=f"/cabinet#{success_fragment}", status_code=303)
     set_customer_session_cookie(resp, token)
+    _link_guest_chat_from_request(db, request, resp, user.client_id)
     return resp
 
 
@@ -1237,6 +1270,7 @@ def customer_telegram_verify_api(
         _record_oauth_legal_acceptance(db, request, user, source="telegram_oauth")
         _link_seo_registration(db, request, user)
         db.commit()
+    _link_guest_chat_from_request(db, request, response, user.client_id)
     token, csrf_token, session = create_web_session(db, user, request=request)
     set_customer_session_cookie(response, token)
     return {
@@ -1832,7 +1866,10 @@ def customer_jobs_api(
             filters.append(Job.job_number == int(clean_num))
         query = query.filter(or_(*filters))
     clean_mode = str(mode or "").strip()
-    if clean_mode in {
+    filter_custom_batch = clean_mode == "custom_batch_report"
+    if filter_custom_batch:
+        query = query.filter(Job.mode == MODE_PROCUREMENT_REPORT)
+    elif clean_mode in {
         MODE_SUPPLIER_SEARCH,
         MODE_EXACT_PRODUCT,
         MODE_PROCUREMENT_REPORT,
@@ -1844,10 +1881,36 @@ def customer_jobs_api(
     if clean_policy in {"normal", "minprom_registry_only", "minprom_registry_priority"}:
         query = query.filter(Job.supplier_search_policy == clean_policy)
     clean_status = str(status or "").strip()
-    if clean_status:
+    if clean_status == "active":
+        query = query.filter(Job.status.in_(["pending", "running"]))
+    elif clean_status == "attention":
+        query = query.filter(
+            Job.status.in_(
+                [
+                    "awaiting_customer_confirmation",
+                    "awaiting_exact_selection",
+                    "awaiting_position_selection",
+                    "needs_review",
+                ]
+            )
+        )
+    elif clean_status == "completed":
+        query = query.filter(Job.status.in_(["completed", "partial", "done"]))
+    elif clean_status:
         query = query.filter(Job.status == clean_status)
-    total = query.count()
-    jobs = query.order_by(Job.created_at.desc()).offset(safe_offset).limit(safe_limit).all()
+    if filter_custom_batch:
+        candidates = query.order_by(Job.created_at.desc()).all()
+        matched_batch = [
+            j
+            for j in candidates
+            if (job_dir(j.id) / "output" / "custom_batch_results.json").is_file()
+            or (job_dir(j.id) / "input" / "custom_batch_spec.json").is_file()
+        ]
+        total = len(matched_batch)
+        jobs = matched_batch[safe_offset : safe_offset + safe_limit]
+    else:
+        total = query.count()
+        jobs = query.order_by(Job.created_at.desc()).offset(safe_offset).limit(safe_limit).all()
     job_ids = [j.id for j in jobs]
     chat_map: dict[str, list[dict]] = {}
     if job_ids:
@@ -3332,15 +3395,16 @@ async def public_guest_chat_send(
             threshold=3,
         )
     else:
-        if triage.get("reply"):
+        ai_reply_text = str(triage.get("reply") or "").strip()
+        if ai_reply_text:
             ai_reply_msg = JobChatMessage(
                 id=new_id(),
                 client_id=client_key,
                 guest_session_id=clean_sid,
                 job_id="",
                 sender_role="admin",
-                channel="system",
-                message=f"🤖 {triage['reply']}",
+                channel="ai_auto",
+                message=f"🤖 {ai_reply_text}",
                 attachments_json="[]",
                 is_read_by_client=True,
                 is_read_by_admin=True,
@@ -3350,7 +3414,8 @@ async def public_guest_chat_send(
             guest.updated_at = now_utc()
             db.commit()
 
-        if triage.get("need_human", True):
+        should_notify_admin = bool(triage.get("need_human", True) or triage.get("category") == "real_question")
+        if should_notify_admin:
             try:
                 await notify_admins_of_incoming_message(
                     db,
@@ -3358,6 +3423,7 @@ async def public_guest_chat_send(
                     text=clean_text,
                     chat_message_id=new_msg.id,
                     channel="guest_web",
+                    ai_auto_reply=ai_reply_text,
                 )
             except Exception as exc:
                 logger.warning("Error notifying admin about guest chat message: %s", exc)
@@ -4610,20 +4676,25 @@ def patch_tariff_api(package_id: str, data: TariffPackagePatch, db: Session = De
     if "kind" in payload and payload["kind"] not in VALID_BILLING_KINDS:
         raise HTTPException(status_code=400, detail="Unknown tariff kind")
     candidate_kind = payload.get("kind", package.kind)
-    candidate_units = payload.get("units", package.units)
-    candidate_price = payload.get("price_kopeks", package.price_kopeks)
-    candidate_active = payload.get("is_active", package.is_active)
-    _validate_tariff_unit_price(
-        db,
-        kind=candidate_kind,
-        units=candidate_units,
-        price_kopeks=candidate_price,
-        is_active=candidate_active,
-        exclude_id=package.id,
-    )
+    candidate_units = int(payload.get("units", package.units) or 1)
+    candidate_price = int(payload.get("price_kopeks", package.price_kopeks) or 0)
+    candidate_active = bool(payload.get("is_active", package.is_active))
     for key, value in payload.items():
         if value is not None:
             setattr(package, key, value)
+    if candidate_kind != KIND_DEPOSIT and candidate_units == 1 and candidate_active:
+        legacy_packs = (
+            db.query(TariffPackage)
+            .filter(
+                TariffPackage.kind == candidate_kind,
+                TariffPackage.id != package.id,
+                TariffPackage.units > 1,
+            )
+            .all()
+        )
+        for other in legacy_packs:
+            other_units = max(1, int(other.units or 1))
+            other.price_kopeks = max(0, candidate_price * other_units)
     db.commit()
     db.refresh(package)
     invalidate_tariff_packages_cache(db)
@@ -4637,7 +4708,7 @@ def delete_tariff_api(package_id: str, db: Session = Depends(db_session)) -> dic
         raise HTTPException(status_code=404, detail="Tariff package not found")
     db.delete(package)
     db.commit()
-    invalidate_tariff_packages_cache()
+    invalidate_tariff_packages_cache(db)
     return {"success": True}
 
 
@@ -7289,7 +7360,8 @@ def admin_dialogs_list(
             contact = (guest.visitor_contact if guest else "") or ""
             is_tg_guest = sid.startswith("tg_")
             d_status = "blocked" if is_blocked else (d_state.status if d_state else (guest.status if guest else "open"))
-            needs_reply = bool((unread_cnt > 0 or last_m.sender_role == "client") and not is_blocked and d_status != "closed")
+            last_is_ai = is_ai_auto_reply_message(last_m)
+            needs_reply = bool((unread_cnt > 0 or last_m.sender_role == "client" or last_is_ai) and not is_blocked and d_status != "closed")
             dialogs.append({
                 "client_id": cid,
                 "client_number": None,
@@ -7302,7 +7374,8 @@ def admin_dialogs_list(
                 "is_guest": True,
                 "guest_session_id": sid,
                 "telegram_id": sid[3:] if is_tg_guest else "",
-                "last_channel": (last_m.channel or (d_state.last_channel if d_state else "guest_web")),
+                "last_channel": ("ai_auto" if last_is_ai else (last_m.channel or (d_state.last_channel if d_state else "guest_web"))),
+                "last_is_ai_reply": last_is_ai,
                 "topic_linked": bool(d_state and int(d_state.telegram_thread_id or 0) > 0),
                 "dialog_status": d_status,
                 "is_blocked": is_blocked,
@@ -7348,7 +7421,8 @@ def admin_dialogs_list(
             or (d_state and d_state.status == "blocked")
         )
         d_status = "blocked" if is_blocked else (d_state.status if d_state else "open")
-        needs_reply = bool((unread_cnt > 0 or last_m.sender_role == "client") and not is_blocked and d_status != "closed")
+        last_is_ai = is_ai_auto_reply_message(last_m)
+        needs_reply = bool((unread_cnt > 0 or last_m.sender_role == "client" or last_is_ai) and not is_blocked and d_status != "closed")
 
         dialogs.append({
             "client_id": client.id,
@@ -7360,7 +7434,8 @@ def admin_dialogs_list(
             "is_guest": False,
             "guest_session_id": "",
             "telegram_id": client.telegram_id or "",
-            "last_channel": (last_m.channel or (d_state.last_channel if d_state else "web")),
+            "last_channel": ("ai_auto" if last_is_ai else (last_m.channel or (d_state.last_channel if d_state else "web"))),
+            "last_is_ai_reply": last_is_ai,
             "topic_linked": bool(d_state and int(d_state.telegram_thread_id or 0) > 0),
             "dialog_status": d_status,
             "is_blocked": is_blocked,
@@ -8776,12 +8851,14 @@ def public_site_payload(db: Session) -> dict:
     price_exact = effective_price_kopeks(db, None, KIND_EXACT_PRODUCT) or 9900
     price_report = effective_price_kopeks(db, None, KIND_PROCUREMENT_REPORT) or 9900
     price_extra = effective_price_kopeks(db, None, KIND_SUPPLIER_SEARCH_EXTRA) or 4900
+    price_monitoring = int(getattr(settings, "price_monitoring_default_price_kopeks", 5000) or 5000)
     function_prices = {
         "supplier_search": {"price_kopeks": price_search, "price_rub": round(price_search / 100)},
         "exact_product": {"price_kopeks": price_exact, "price_rub": round(price_exact / 100)},
         "procurement_report": {"price_kopeks": price_report, "price_rub": round(price_report / 100)},
         "supplier_search_extra": {"price_kopeks": price_extra, "price_rub": round(price_extra / 100)},
         "analysis_and_suppliers": {"price_kopeks": price_search + price_report, "price_rub": round((price_search + price_report) / 100)},
+        "price_monitoring": {"price_kopeks": price_monitoring, "price_rub": round(price_monitoring / 100)},
     }
     return {
         "site": {
@@ -10928,7 +11005,8 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "allowed_supplier_search": client.allowed_supplier_search,
         "allowed_procurement_report": client.allowed_procurement_report,
         "allowed_exact_product": getattr(client, "allowed_exact_product", True),
-        "allowed_price_monitoring": getattr(client, "allowed_price_monitoring", False),
+        "allowed_price_monitoring": bool(getattr(client, "allowed_price_monitoring", False)),
+        "allowed_geo_radius": bool(getattr(client, "allowed_geo_radius", False)),
         "allowed_custom_batch_report": bool(getattr(client, "allowed_custom_batch_report", False)),
         "custom_report_separate_tab": bool(getattr(client, "custom_report_separate_tab", False)),
         "custom_report_prompt": str(getattr(client, "custom_report_prompt", "") or ""),

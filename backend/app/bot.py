@@ -2274,13 +2274,18 @@ def _tariffs_text(db, settings) -> str:
                 )
         lines.append("<i>При пополнении от 25 000 ₽ — максимальный бонус +50% и персональные условия.</i>")
 
+    price_search_kopeks = effective_price_kopeks(db, None, KIND_SUPPLIER_SEARCH) or 9900
+    price_exact_kopeks = effective_price_kopeks(db, None, KIND_EXACT_PRODUCT) or 9900
+    price_report_kopeks = effective_price_kopeks(db, None, KIND_PROCUREMENT_REPORT) or 9900
+    price_combo_kopeks = price_search_kopeks + price_report_kopeks
+
     lines.extend([
         "",
         "<b>Стоимость операций (списание с баланса):</b>",
-        "• 🔎 Поиск поставщиков: 99 ₽",
-        "• 🎯 Подбор товара и аналогов: 99 ₽ / поз.",
-        "• 📄 Анализ документации: 99 ₽",
-        "• ⚡ Анализ + поиск: 198 ₽",
+        f"• 🔎 Поиск поставщиков: {_price_text(price_search_kopeks)}",
+        f"• 🎯 Подбор товара и аналогов: {_price_text(price_exact_kopeks)} / поз.",
+        f"• 📄 Анализ документации: {_price_text(price_report_kopeks)}",
+        f"• ⚡ Анализ + поиск: {_price_text(price_combo_kopeks)}",
     ])
 
     if supplier:

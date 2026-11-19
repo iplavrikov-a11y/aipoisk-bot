@@ -14,11 +14,23 @@ export function channelBadgeLabel(channel?: string): string {
       return '🗂 Группа TG'
     case 'admin_web':
       return '🖥 Админка'
+    case 'ai_auto':
+      return '🤖 ИИ-ответ'
     case 'system':
       return '⚙️ Система'
     default:
       return ''
   }
+}
+
+export function isAiAutoReplyMessage(channel?: string, message?: string): boolean {
+  if (channel === 'ai_auto') return true
+  if (channel === 'system' && (message || '').trimStart().startsWith('🤖')) return true
+  return false
+}
+
+export function stripAiRobotPrefix(message?: string): string {
+  return (message || '').replace(/^\s*🤖\s*/, '')
 }
 
 export function jobStatusMeta(status?: string): { label: string; bg: string; color: string; border: string } {

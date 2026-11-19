@@ -800,3 +800,48 @@ def test_write_procurement_docx_renders_structured_cards_callouts_and_status_tab
     assert "F0FDFA" in shd_fills  # section header teal tint
     assert "ECFDF5" in shd_fills  # verdict emerald tint
     assert root.find(".//w:pPr/w:keepNext", ns) is not None
+
+
+def test_customer_jobs_filter_by_custom_batch_report(db_session: Session):
+    from app.jobs import create_job
+    from app.billing import MODE_PROCUREMENT_REPORT
+
+    db = db_session
+    vip_client, user, vip_token, vip_csrf = _create_client_with_web_user(
+        db,
+        allowed_batch=True,
+        balance_kopeks=10_000,
+        override_price_kopeks=1500,
+    )
+    plain_job = create_job(
+        db,
+        client_id=vip_client.id,
+        created_by_telegram_id=f"web:{user.id}",
+        mode=MODE_PROCUREMENT_REPORT,
+        title="Обычный анализ закупки",
+        target_suppliers=10,
+        files=[],
+        sources=[],
+    )
+    db.commit()
+
+    with TestClient(app) as tc:
+        tc.cookies.set(CUSTOMER_COOKIE, vip_token)
+        with patch("app.main.enqueue_job"):
+            r_batch = tc.post(
+                "/api/customer/jobs/batch-report/create",
+                headers={CSRF_HEADER: vip_csrf},
+                json={
+                    "filename": "batch.xlsx",
+                    "items": [{"id": "b1", "notice_number": "32616532998", "title": "Термосы"}],
+                },
+            )
+        assert r_batch.status_code == 200
+        batch_job_id = r_batch.json()["job"]["id"]
+
+        r_filtered = tc.get("/api/customer/jobs?mode=custom_batch_report&include_pagination=true")
+        assert r_filtered.status_code == 200
+        payload = r_filtered.json()
+        assert payload["total"] == 1
+        assert [it["id"] for it in payload["items"]] == [batch_job_id]
+        assert plain_job.id not in [it["id"] for it in payload["items"]]

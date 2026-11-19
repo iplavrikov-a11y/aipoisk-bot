@@ -60,6 +60,53 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("одинаковую цену за единицу", str(raised.exception.detail))
 
+    def test_patch_base_service_tariff_syncs_legacy_multi_unit_packages(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.billing import KIND_PROCUREMENT_REPORT, effective_price_kopeks, invalidate_tariff_packages_cache
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            base_pkg = TariffPackage(
+                kind=KIND_PROCUREMENT_REPORT,
+                name="1 отчёт анализа документации",
+                units=1,
+                price_kopeks=9_900,
+                is_active=True,
+                sort_order=10,
+            )
+            legacy_pack = TariffPackage(
+                kind=KIND_PROCUREMENT_REPORT,
+                name="5 отчётов анализа документации",
+                units=5,
+                price_kopeks=49_000,
+                is_active=True,
+                sort_order=20,
+            )
+            db.add_all([base_pkg, legacy_pack])
+            db.commit()
+
+            updated = main.patch_tariff_api(
+                base_pkg.id,
+                main.TariffPackagePatch(price_kopeks=4_900),
+                db=db,
+            )
+            invalidate_tariff_packages_cache(db)
+            db.refresh(legacy_pack)
+
+            self.assertEqual(updated["price_kopeks"], 4_900)
+            self.assertEqual(legacy_pack.price_kopeks, 24_500)
+            self.assertEqual(effective_price_kopeks(db, None, KIND_PROCUREMENT_REPORT), 4_900)
+            site_payload = public_site_payload(db)
+            self.assertEqual(site_payload["function_prices"]["procurement_report"]["price_rub"], 49)
+        finally:
+            db.close()
+
     def test_manual_job_rejects_empty_no_input_job_before_db_access(self) -> None:
         with self.assertRaises(HTTPException) as raised:
             create_manual_job(ManualJobCreate(telegram_id="123"), db=object())

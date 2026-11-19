@@ -166,6 +166,7 @@ class ClientPatch(BaseModel):
     allowed_supplier_search: bool | None = None
     allowed_procurement_report: bool | None = None
     allowed_exact_product: bool | None = None
+    allowed_price_monitoring: bool | None = None
     allowed_geo_radius: bool | None = None
     allowed_custom_batch_report: bool | None = None
     custom_report_separate_tab: bool | None = None

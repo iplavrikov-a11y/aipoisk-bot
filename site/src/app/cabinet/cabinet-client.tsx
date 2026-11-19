@@ -37,6 +37,7 @@ import {
   FileSpreadsheet,
   FileText,
   Gift,
+  Globe,
   HelpCircle,
   History,
   Key,
@@ -44,6 +45,7 @@ import {
   Loader2,
   LogOut,
   Mail,
+  MapPin,
   MessageCircle,
   MessageSquare,
   Paperclip,
@@ -303,6 +305,9 @@ type CustomerInvoice = {
   created_at?: string;
   paid_at?: string | null;
   proof_submitted_at?: string | null;
+  buyer_email?: string;
+  buyer_name?: string;
+  buyer_inn?: string;
 };
 
 type CustomerJob = {
@@ -449,35 +454,46 @@ const CUSTOMER_JOB_FETCH_OPTIONS: RequestInit = {
 };
 const NOTIFICATION_FEATURE_START_TS = new Date("2026-08-21T13:30:00Z").getTime();
 
-const scenarioOptions: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
+const scenarioOptions: Array<{
+  id: Scenario;
+  label: string;
+  description: string;
+  inputBadge: string;
+  icon: LucideIcon;
+}> = [
   {
     id: "procurement_report",
     label: "Анализ документации",
-    description: "номер, ссылка или документы закупки",
+    description: "Условия контракта, риски и вопросы заказчику",
+    inputBadge: "Номер ЕИС или файлы закупки",
     icon: FileText,
   },
   {
     id: "supplier_search",
     label: "Поиск поставщиков",
-    description: "техническое задание файлом, текстом или архивом",
+    description: "Производители, дилеры, контакты и запрос КП",
+    inputBadge: "ТЗ файлом или текстом",
     icon: Search,
   },
   {
     id: "analysis_and_suppliers",
     label: "Анализ + поиск",
-    description: "анализ закупки и поставщики",
+    description: "Разбор закупки и сразу подбор поставщиков",
+    inputBadge: "Номер ЕИС или документы",
     icon: Receipt,
   },
   {
     id: "exact_product",
     label: "Подбор товара и аналогов",
-    description: "выявление конкретной модели по ТЗ, таблица характеристик и аналоги",
+    description: "Модель по ТЗ, таблица параметров и аналоги (.docx)",
+    inputBadge: "ТЗ файлом или текстом",
     icon: CheckCircle2,
   },
 ];
 
 const modeCopy: Record<Scenario, {
   mode: JobMode;
+  title: string;
   formSubtitle: string;
   uploadTitle: string;
   uploadText: string;
@@ -491,68 +507,74 @@ const modeCopy: Record<Scenario, {
 }> = {
   exact_product: {
     mode: "exact_product",
-    formSubtitle: "Загрузите техническое задание (файл/архив) или вставьте текст спецификации для выявления точного товара и подбора аналогов.",
-    uploadTitle: "Загрузить техническое задание",
-    uploadText: "Перетащите файлы ТЗ сюда или нажмите для выбора (PDF, DOCX, XLSX, TXT, ZIP)",
+    title: "Подбор товара и аналогов",
+    formSubtitle: "Определение точной модели по характеристикам ТЗ, проверка реестра Минпромторга и таблица сравнения аналогов (.docx).",
+    uploadTitle: "Прикрепить файл ТЗ или спецификацию",
+    uploadText: "Перетащите файлы сюда или выберите с компьютера (PDF, DOCX, XLSX, TXT, ZIP)",
     multipleFiles: true,
-    textLabel: "Или вставьте характеристики объекта закупки текстом",
-    textPlaceholder: "Например: характеристики оборудования, требования к материалу, мощности, размерам, ГОСТ и др. Сервис сопоставит параметры и предложит варианты для проверки по документации производителя.",
-    hint: "ИИ выявит производителя, сверит соответствие параметров ТЗ, проверит реестр Минпромторга (ГИСП) и сформирует готовую таблицу характеристик и аналогов.",
+    textLabel: "Характеристики объекта закупки текстом",
+    textPlaceholder: "Вставьте наименование и параметры из ТЗ: мощность, размеры, материал, ГОСТ и другие требования...",
+    hint: "Результат формируется в формате Word (.docx) со сводной таблицей параметров, источников и аналогов.",
     submit: "Запустить подбор",
   },
   supplier_search: {
     mode: "supplier_search",
-    formSubtitle: "Выберите тип работы и загрузите техническое задание (файл/архив) или вставьте текст.",
-    uploadTitle: "Загрузить техническое задание",
-    uploadText: "Перетащите файлы ТЗ сюда или нажмите для выбора (PDF, DOCX, XLSX, ZIP, RAR)",
+    title: "Поиск поставщиков",
+    formSubtitle: "Подбор производителей и поставщиков под вашу спецификацию с проверенными контактами отделов продаж и проектом запроса КП.",
+    uploadTitle: "Прикрепить техническое задание или смету",
+    uploadText: "Перетащите файлы ТЗ сюда или выберите с компьютера (PDF, DOCX, XLSX, ZIP, RAR)",
     multipleFiles: true,
-    textLabel: "Или вставьте техническое задание текстом",
-    textPlaceholder: "Например: сотовый поликарбонат 10 мм, прозрачный, лист 2,1 x 6 м, количество 120 листов. Нужны поставщики с контактами для запроса коммерческого предложения.",
-    hint: "Можно загружать сразу несколько файлов закупки (смету, ведомость материалов, проект контракта) или архив (ZIP, RAR). Сервис автоматически объединит их в единую задачу с попозиционным анализом.",
+    textLabel: "Список позиций или текст технического задания",
+    textPlaceholder: "Например: кабель силовой ВВГнг(А)-LS 3×2,5 ГОСТ 31996-2012 — 1 500 м, доставка в Казань...",
+    hint: "Можно прикрепить сразу несколько файлов закупки или архив — система объединит их в единый расчёт.",
     submit: "Запустить поиск поставщиков",
   },
   procurement_report: {
     mode: "procurement_report",
-    formSubtitle: "Выберите тип работы и загрузите документацию закупки или укажите номер извещения / ссылку на закупку ЕИС.",
-    uploadTitle: "Загрузить документацию закупки",
-    uploadText: "Перетащите файлы документации закупки, проект контракта или архив (PDF, DOCX, XLSX, ZIP)",
+    title: "Анализ документации",
+    formSubtitle: "Разбор извещения, проекта контракта и требований закупки: сроки, оплата, обеспечение, нацрежим, риски и вопросы заказчику.",
+    uploadTitle: "Или прикрепите файлы закупочной документации",
+    uploadText: "Проект контракта, извещение, требования или архив (PDF, DOCX, XLSX, ZIP)",
     multipleFiles: true,
-    sourceLabel: "Номер извещения ЕИС или ссылка на zakupki.gov.ru",
-    sourcePlaceholder: "Например: 0173200001424000001 или ссылка на zakupki.gov.ru",
-    hint: "Укажите номер извещения ЕИС или прямую ссылку на закупку на ЕИС (zakupki.gov.ru). Ссылки на внешние интернет-магазины и частные площадки не поддерживаются.",
+    sourceLabel: "Номер извещения ЕИС (11 или 19 цифр) или прямая ссылка на zakupki.gov.ru",
+    sourcePlaceholder: "Например: 0173200001424000001 или https://zakupki.gov.ru/...",
+    hint: "Поддерживаются номера процедур и прямые ссылки ЕИС (44-ФЗ / 223-ФЗ), а также загруженные файлы закупки.",
     submit: "Запустить анализ документации",
   },
   analysis_and_suppliers: {
     mode: "analysis_and_suppliers",
-    formSubtitle: "Выберите тип работы и загрузите документацию закупки или укажите номер извещения / ссылку на закупку ЕИС.",
-    uploadTitle: "Загрузить документацию закупки",
-    uploadText: "Перетащите файлы документации закупки, проект контракта или архив (PDF, DOCX, XLSX, ZIP)",
+    title: "Анализ + поиск поставщиков",
+    formSubtitle: "Комплексный разбор рисков закупочной документации и одновременный подбор поставщиков под предмет контракта.",
+    uploadTitle: "Или прикрепите комплект документов закупки",
+    uploadText: "Документация закупки, техническое задание или архив (PDF, DOCX, XLSX, ZIP)",
     multipleFiles: true,
-    sourceLabel: "Номер извещения ЕИС или ссылка на zakupki.gov.ru",
-    sourcePlaceholder: "Например: 0173200001424000001 или ссылка на zakupki.gov.ru",
-    hint: "Укажите номер извещения ЕИС или ссылку на закупку на ЕИС (zakupki.gov.ru). Ссылки на сторонние сайты не поддерживаются. В результате вы получите анализ закупки и контакты поставщиков.",
+    sourceLabel: "Номер извещения ЕИС (11 или 19 цифр) или прямая ссылка на zakupki.gov.ru",
+    sourcePlaceholder: "Например: 0173200001424000001 или https://zakupki.gov.ru/...",
+    hint: "На выходе вы получите и аналитический разбор условий закупки, и реестр подходящих поставщиков.",
     submit: "Запустить анализ + поиск",
   },
   price_monitoring: {
     mode: "price_monitoring",
-    formSubtitle: "Загрузите файл спецификации или ТЗ (XLSX, DOCX, PDF) либо вставьте список позиций текстом для поиска актуальных цен поставщиков.",
-    uploadTitle: "Загрузить спецификацию или ТЗ",
-    uploadText: "Перетащите файлы сюда или нажмите для выбора (XLSX, DOCX, PDF, TXT, ZIP). Оптимально до 1 000 строк в файле.",
+    title: "Мониторинг цен по спецификации",
+    formSubtitle: "Поиск актуальных рыночных цен, ИНН и ссылок на поставщиков по каждой позиции вашей спецификации.",
+    uploadTitle: "Прикрепить спецификацию или ведомость",
+    uploadText: "Таблицы и документы со списком позиций (XLSX, DOCX, PDF, TXT, ZIP — до 1 000 строк)",
     multipleFiles: true,
-    textLabel: "Или вставьте список позиций текстом",
-    textPlaceholder: "Например:\n1. Кислород газообразный технический, м3\n2. Подшипник 13630, шт\n3. Печь для бани Атмосфера М",
-    hint: "ИИ найдёт до 5 реальных поставщиков с актуальными ценами, контактами, ИНН и ссылками на товар. Списание баланса происходит ТОЛЬКО за реально найденные позиции.",
+    textLabel: "Или вставьте перечень позиций построчно",
+    textPlaceholder: "1. Кислород газообразный технический, м3\n2. Подшипник 13630, шт.\n3. Клапан обратный 19с53нж Ду100, шт.",
+    hint: "Можно загрузить Excel или Word до 1 000 строк — перед запуском вы выберете нужные позиции.",
     submit: "Запустить мониторинг цен",
   },
   custom_batch_report: {
     mode: "procurement_report",
-    formSubtitle: "Загрузите таблицу закупок (Excel, CSV, Word), выберите нужные вкладки или вставьте номера извещений через запятую / столбиком.",
-    uploadTitle: "Загрузить таблицу или документацию",
-    uploadText: "Перетащите Excel/CSV/Word-выгрузку закупок или документацию (XLSX, XLS, CSV, DOCX, PDF, ZIP)",
+    title: "Пакетный анализ закупок",
+    formSubtitle: "Массовая проверка выгрузки извещений из таблицы Excel / CSV / Word или списка номеров процедур.",
+    uploadTitle: "Или загрузите таблицу с перечнем закупок",
+    uploadText: "Выгрузка реестра закупок или архив документации (XLSX, XLS, CSV, DOCX, PDF, ZIP)",
     multipleFiles: true,
-    sourceLabel: "Номера извещений (через запятую, столбиком) или ссылки на закупки",
-    sourcePlaceholder: "Вставьте один или несколько номеров извещений (через запятую или в столбик из Excel) либо ссылки на закупки",
-    hint: "Если в файле Excel несколько вкладок — система предложит выбрать одну или несколько вкладок. Можно также вставить перечень извещений текстом.",
+    sourceLabel: "Номера извещений (через запятую или в столбик) либо ссылки на закупки",
+    sourcePlaceholder: "Вставьте список номеров извещений (в столбик из Excel или через запятую)...",
+    hint: "Если в книге Excel несколько листов — перед стартом откроется выбор нужных вкладок и строк.",
     submit: "Запустить пакетный анализ",
   },
 };
@@ -771,6 +793,7 @@ function tariffDisplayName(tariff: Tariff) {
 }
 
 function modeDisplayName(job: CustomerJob) {
+  if (job.is_custom_batch_report) return "Пакетный анализ";
   const policy = (job as unknown as { supplier_search_policy?: string }).supplier_search_policy;
   const policyLabel =
     policy === "registry_only" || policy === "minprom_registry_only"
@@ -792,6 +815,60 @@ function pluralizeRu(value: number, [one, few, many]: [string, string, string]) 
   if (mod10 === 1 && mod100 !== 11) return one;
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
   return many;
+}
+
+function formatCleanJobTitle(job: CustomerJob): string {
+  let title = String(job.human_title || "").trim();
+  if (!title) return modeDisplayName(job);
+
+  // Clean truncated batch titles: "Пакетный анализ 3 зак" / "Пакетный анализ (10 зак.): Выгрузка"
+  const batchWithTail = title.match(/^Пакетный анализ\s*\(?(\d+)\s*зак\.?\)?\s*[:—-]\s*(.+)$/i);
+  if (batchWithTail) {
+    const n = Number(batchWithTail[1]);
+    const word = pluralizeRu(n, ["закупка", "закупки", "закупок"]);
+    return `Пакетный анализ · ${n} ${word}: ${batchWithTail[2].trim()}`;
+  }
+  const batchOnly = title.match(/^Пакетный анализ\s*\(?(\d+)\s*зак\.?\)?$/i);
+  if (batchOnly) {
+    const n = Number(batchOnly[1]);
+    const word = pluralizeRu(n, ["закупка", "закупки", "закупок"]);
+    return `Пакетный анализ · ${n} ${word}`;
+  }
+
+  // Deduplicate stacked prefixes like "Анализ закупки: Анализ - Анализ закупки Поставка..."
+  const leadPrefix = /^(Анализ закупки|Поиск поставщиков|Подбор товара и аналогов|Мониторинг цен|Анализ \+ поиск)\s*[:—-]\s*/i;
+  const firstMatch = title.match(leadPrefix);
+  if (firstMatch) {
+    const canonical = firstMatch[1];
+    let rest = title.slice(firstMatch[0].length).trim();
+    const redundant = /^(?:Анализ закупки|Анализ|Закупка|Поиск поставщиков|Подбор товара и аналогов|Подбор товара)\s*(?:[:—-]\s*|\s+(?=[А-ЯЁA-Z0-9«"]))+/i;
+    let guard = 0;
+    while (guard < 4 && redundant.test(rest)) {
+      const next = rest.replace(redundant, "").trim();
+      if (!next || next === rest) break;
+      rest = next;
+      guard++;
+    }
+    if (rest) {
+      title = `${canonical}: ${rest}`;
+    }
+  }
+  return title;
+}
+
+function formatCleanJobMessage(message?: string | null): string {
+  const raw = String(message || "").trim();
+  if (!raw) return "";
+  return raw.replace(/(\d+)\s*зак\.?(?=$|[\s.,;)])/gi, (_m, nStr: string) => {
+    const n = Number(nStr);
+    return `${n} ${pluralizeRu(n, ["закупка", "закупки", "закупок"])}`;
+  });
+}
+
+function formatStatusLabel(label?: string | null): string {
+  const raw = String(label || "").trim();
+  if (!raw) return "";
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
 function parseError(raw: string, options?: { isUpload?: boolean }) {
@@ -1359,43 +1436,22 @@ function CustomerJobChat({
 
   if (!isOpen) {
     if (!hasMessages) {
-      return (
-        <div className="col-span-12 mt-1">
-          <button
-            type="button"
-            onClick={() => {
-              window.dispatchEvent(
-                new CustomEvent("open_tenderlex_chat", {
-                  detail: {
-                    jobId: job.id,
-                    jobNumber: job.job_number,
-                    jobTitle: job.human_title || "",
-                  },
-                })
-              );
-            }}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-700 hover:text-teal-800 transition-colors cursor-pointer"
-          >
-            <MessageCircle size={13} />
-            <span>Написать специалисту TenderLex по задаче</span>
-          </button>
-        </div>
-      );
+      return null;
     }
 
     const lastMsg = messages[messages.length - 1];
     return (
-      <div className="col-span-12 mt-1.5 px-3 py-2 rounded-xl bg-gradient-to-r from-teal-50/80 via-slate-50 to-white border border-teal-200/80 flex items-center justify-between gap-3 text-xs shadow-2xs">
+      <div className="col-span-12 mt-1.5 px-3 py-2 rounded-xl bg-[#f4f8ef] border border-[#cde0be] flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3 text-xs">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="w-5 h-5 rounded-full bg-teal-600 text-white flex items-center justify-center shrink-0">
+          <div className="w-5 h-5 rounded-full bg-[#174b3f] text-white flex items-center justify-center shrink-0">
             <Sparkles size={11} aria-hidden="true" />
           </div>
-          <span className="font-bold text-teal-950 text-xs shrink-0">Переписка:</span>
-          <span className="text-slate-600 truncate max-w-sm sm:max-w-md">
+          <span className="font-bold text-[#103a31] text-xs shrink-0">Переписка:</span>
+          <span className="text-slate-600 truncate min-w-0">
             {lastMsg?.message || "Экспертные материалы подготовлены"}
           </span>
           {Boolean(job.unread_admin_messages_count) && (
-            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white shrink-0 animate-pulse">
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white shrink-0">
               Новый ответ
             </span>
           )}
@@ -1410,12 +1466,12 @@ function CustomerJobChat({
                   detail: {
                     jobId: job.id,
                     jobNumber: job.job_number,
-                    jobTitle: job.human_title || "",
+                    jobTitle: formatCleanJobTitle(job),
                   },
                 })
               );
             }}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-semibold transition-colors cursor-pointer shadow-2xs"
+            className="tl-btn-primary inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] cursor-pointer"
           >
             <MessageSquare size={12} />
             <span>Открыть в чате</span>
@@ -1423,7 +1479,7 @@ function CustomerJobChat({
           <button
             type="button"
             onClick={() => setIsOpen(true)}
-            className="text-slate-500 hover:text-slate-800 text-[11px] font-medium flex items-center gap-0.5 cursor-pointer"
+            className="text-slate-600 hover:text-slate-900 text-[11px] font-semibold flex items-center gap-0.5 cursor-pointer"
             title="Показать историю на карточке"
           >
             <span>История ({messages.length})</span>
@@ -1435,17 +1491,17 @@ function CustomerJobChat({
   }
 
   return (
-    <div className="col-span-12 mt-2 p-3.5 rounded-xl bg-gradient-to-b from-teal-50/90 to-slate-50 border border-teal-200/90 text-slate-800 text-xs shadow-2xs">
+    <div className="col-span-12 mt-2 p-3.5 rounded-xl bg-[#f4f8ef] border border-[#cde0be] text-slate-800 text-xs">
       <div className="flex items-center justify-between gap-2 mb-2">
         <div className="flex items-center gap-2">
-          <div className="w-5 h-5 rounded-full bg-teal-600 text-white flex items-center justify-center shrink-0">
+          <div className="w-5 h-5 rounded-full bg-[#174b3f] text-white flex items-center justify-center shrink-0">
             <Sparkles size={11} aria-hidden="true" />
           </div>
-          <span className="font-bold text-teal-950 text-xs">
+          <span className="font-bold text-[#103a31] text-xs">
             Переписка со специалистом TenderLex
           </span>
           {Boolean(job.unread_admin_messages_count) && (
-            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white animate-pulse">
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white">
               Новый ответ
             </span>
           )}
@@ -1460,12 +1516,12 @@ function CustomerJobChat({
                   detail: {
                     jobId: job.id,
                     jobNumber: job.job_number,
-                    jobTitle: job.human_title || "",
+                    jobTitle: formatCleanJobTitle(job),
                   },
                 })
               );
             }}
-            className="text-teal-700 hover:text-teal-900 text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+            className="text-[#174b3f] hover:text-[#103a31] text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
           >
             <MessageSquare size={12} />
             <span>Открыть в едином чате</span>
@@ -1621,7 +1677,7 @@ function CustomerJobChat({
   );
 }
 
-export function CabinetClient() {
+export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBalanceRub?: number }) {
   const [nowTs, setNowTs] = useState(() => Date.now());
   const [session, setSession] = useState<SessionPayload | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
@@ -1649,10 +1705,16 @@ export function CabinetClient() {
     } catch {}
   }
 
+  const [cabinetSection, setCabinetSection] = useState<"workspace" | "jobs">("workspace");
+  const [showAllWorkspaceJobs, setShowAllWorkspaceJobs] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
   const [jobSearchQuery, setJobSearchQuery] = useState("");
   const [debouncedJobSearch, setDebouncedJobSearch] = useState("");
   const [jobModeFilter, setJobModeFilter] = useState("");
   const [jobPolicyFilter, setJobPolicyFilter] = useState("");
+  const [jobStatusFilter, setJobStatusFilter] = useState<"" | "active" | "attention" | "completed">("");
   const [authMode, setAuthMode] = useState<"login" | "register" | "reset" | "new_password">("register");
   const [resetToken, setResetToken] = useState("");
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
@@ -2026,6 +2088,7 @@ export function CabinetClient() {
   } | null>(null);
   const [invoiceEmailSending, setInvoiceEmailSending] = useState(false);
   const [invoiceEmailSent, setInvoiceEmailSent] = useState(false);
+  const [invoiceEmailError, setInvoiceEmailError] = useState("");
   const [invoiceDetailsCopied, setInvoiceDetailsCopied] = useState(false);
   const [customerInvoices, setCustomerInvoices] = useState<CustomerInvoice[]>([]);
   const invoiceRequestVersion = useRef(0);
@@ -2036,6 +2099,14 @@ export function CabinetClient() {
   const [invoiceProofMessage, setInvoiceProofMessage] = useState<string | null>(null);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [historyModalTab, setHistoryModalTab] = useState<"transactions" | "invoices">("transactions");
+  const [historyOpFilter, setHistoryOpFilter] = useState<"all" | "debit" | "grant" | "release">("all");
+  const [invoiceCopiedId, setInvoiceCopiedId] = useState<string | null>(null);
+  const [invoiceEmailSendingId, setInvoiceEmailSendingId] = useState<string | null>(null);
+  const [invoiceEmailSentId, setInvoiceEmailSentId] = useState<string | null>(null);
+  const [invoiceCardEmailError, setInvoiceCardEmailError] = useState("");
+  const [showCurrentPwd, setShowCurrentPwd] = useState(false);
+  const [showNewPwd, setShowNewPwd] = useState(false);
   const [showReferralModal, setShowReferralModal] = useState(false);
   const [referralCopiedKey, setReferralCopiedKey] = useState<string | null>(null);
   const [historyTransactions, setHistoryTransactions] = useState<CustomerBillingTransaction[]>([]);
@@ -2060,6 +2131,7 @@ export function CabinetClient() {
   const [loadingApiKeys, setLoadingApiKeys] = useState(false);
   const [generatingApiKey, setGeneratingApiKey] = useState(false);
   const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
+  const [confirmRevokeKeyId, setConfirmRevokeKeyId] = useState<string | null>(null);
   const [newlyGeneratedKey, setNewlyGeneratedKey] = useState<string | null>(null);
   const [apiCopiedField, setApiCopiedField] = useState<string | null>(null);
 
@@ -2110,6 +2182,7 @@ export function CabinetClient() {
       });
       if (res.ok) {
         setNewlyGeneratedKey(null);
+        setConfirmRevokeKeyId(null);
         await loadCustomerApiKeys();
       }
     } catch (err) {
@@ -2146,15 +2219,16 @@ export function CabinetClient() {
 
   useEffect(() => {
     setJobsPage(1);
-  }, [debouncedJobSearch, jobModeFilter, jobPolicyFilter]);
+  }, [debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobStatusFilter]);
 
-  const hasActiveJobFilters = Boolean(jobSearchQuery.trim() || jobModeFilter || jobPolicyFilter);
+  const hasActiveJobFilters = Boolean(jobSearchQuery.trim() || jobModeFilter || jobPolicyFilter || jobStatusFilter);
 
   function resetJobFilters() {
     setJobSearchQuery("");
     setDebouncedJobSearch("");
     setJobModeFilter("");
     setJobPolicyFilter("");
+    setJobStatusFilter("");
     setJobsPage(1);
   }
 
@@ -2184,6 +2258,75 @@ export function CabinetClient() {
     () => jobs.filter((job) => ["pending", "running", "awaiting_customer_confirmation", "awaiting_exact_selection", "awaiting_position_selection"].includes(job.status)).length,
     [jobs],
   );
+  const attentionJobsCount = useMemo(
+    () => jobs.filter((job) => job.awaiting_customer_confirmation || isAwaitingPositionSelection(job)).length,
+    [jobs],
+  );
+  const pendingInvoicesCount = useMemo(
+    () => customerInvoices.filter((inv) => inv.status === "issued" || inv.status === "rejected").length,
+    [customerInvoices],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const initial = Number((window as unknown as { __tenderlexChatUnread?: number }).__tenderlexChatUnread || 0);
+    if (initial > 0) setChatUnreadCount(initial);
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ count?: number }>).detail;
+      setChatUnreadCount(Math.max(0, Number(detail?.count || 0)));
+    };
+    window.addEventListener("tenderlex_chat_unread", handler);
+    return () => window.removeEventListener("tenderlex_chat_unread", handler);
+  }, []);
+
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+    const onMouseDown = (event: globalThis.MouseEvent) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target as Node)) {
+        setProfileMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setProfileMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [profileMenuOpen]);
+
+  const activeScenarioPricingHint = useMemo(() => {
+    const eff = session?.balance?.effective_prices;
+    const fn = session?.function_prices;
+    const reportPrice = Math.round(eff?.procurement_report?.price_rub ?? fn?.procurement_report?.price_rub ?? 99);
+    const supplierPrice = Math.round(eff?.supplier_search?.price_rub ?? fn?.supplier_search?.price_rub ?? 99);
+    const exactPrice = Math.round(eff?.exact_product?.price_rub ?? fn?.exact_product?.price_rub ?? 99);
+    const pmPrice = Math.round(eff?.price_monitoring?.price_rub ?? 50);
+    const geoPct = session?.user?.geo_radius_surcharge_pct ?? 30;
+    const geoNote = geoRadiusEnabled && session?.user?.allowed_geo_radius ? ` (+${geoPct}% приоритет доставки)` : "";
+
+    if (isCustomBatchScenario) {
+      return `${reportPrice} ₽ за каждую выбранную закупку — список и итог подтверждаются перед запуском`;
+    }
+    if (scenario === "procurement_report") {
+      return `${reportPrice} ₽ с баланса — списание только по готовому отчёту`;
+    }
+    if (scenario === "supplier_search") {
+      return `${supplierPrice} ₽ с баланса${geoNote} — списание только за найденных поставщиков`;
+    }
+    if (scenario === "analysis_and_suppliers") {
+      return `${reportPrice + supplierPrice} ₽ с баланса (анализ ${reportPrice} ₽ + поставщики ${supplierPrice} ₽${geoNote}) — оплата по результату`;
+    }
+    if (scenario === "exact_product") {
+      return `${exactPrice} ₽ за позицию — выбор позиций и суммы перед запуском`;
+    }
+    if (scenario === "price_monitoring") {
+      return `${pmPrice} ₽ за найденную позицию${geoNote} — если цена не найдена, 0 ₽`;
+    }
+    return "";
+  }, [session, scenario, isCustomBatchScenario, geoRadiusEnabled]);
   const hasTickingJobs = useMemo(
     () => jobs.some((job) => job.status === "pending" || job.status === "running"),
     [jobs],
@@ -2201,6 +2344,14 @@ export function CabinetClient() {
   const jobsPageCount = Math.max(1, Math.ceil(jobsTotal / jobsPageSize));
   const jobsStart = jobsTotal ? (jobsPage - 1) * jobsPageSize + 1 : 0;
   const jobsEnd = Math.min(jobsTotal, jobsPage * jobsPageSize);
+  const WORKSPACE_RECENT_LIMIT = 5;
+  const isWorkspaceCollapsed =
+    cabinetSection === "workspace" &&
+    jobsPage === 1 &&
+    !hasActiveJobFilters &&
+    !showAllWorkspaceJobs &&
+    jobs.length > WORKSPACE_RECENT_LIMIT;
+  const visibleJobs = isWorkspaceCollapsed ? jobs.slice(0, WORKSPACE_RECENT_LIMIT) : jobs;
   const hasFindMoreSuppliers = jobs.some((job) => job.can_find_more_suppliers);
 
   async function loadSession(options?: { background?: boolean }) {
@@ -2367,6 +2518,7 @@ export function CabinetClient() {
     policy = jobPolicyFilter,
     pageSize = jobsPageSize,
     background = false,
+    statusFilter = jobStatusFilter,
   ) {
     if (!authenticated) return;
     if (background && (jobsForegroundRequestRef.current !== null || jobsBackgroundRequestRef.current !== null)) return;
@@ -2387,6 +2539,7 @@ export function CabinetClient() {
       if (query.trim()) params.set("q", query.trim());
       if (mode) params.set("mode", mode);
       if (policy) params.set("policy", policy);
+      if (statusFilter) params.set("status", statusFilter);
 
       const response = await fetch(
         `/api/customer/jobs?${params.toString()}`,
@@ -2649,7 +2802,13 @@ export function CabinetClient() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  function selectScenario(next: Scenario) {
+  function selectScenario(next: Scenario, options?: { preserveInput?: boolean }) {
+    const prevScenario = scenario;
+    const preserve = Boolean(options?.preserveInput);
+    const sourceTargetModes: Scenario[] = ["procurement_report", "analysis_and_suppliers", "custom_batch_report"];
+    const textTargetModes: Scenario[] = ["supplier_search", "exact_product", "price_monitoring"];
+
+    setCabinetSection("workspace");
     setScenario(next);
     if (typeof window !== "undefined") {
       try {
@@ -2657,13 +2816,25 @@ export function CabinetClient() {
         localStorage.setItem("tenderlex_cabinet_launcher_scenario", next);
       } catch {}
     }
-    setGeoRadiusEnabled(false);
-    setDeliveryCity("");
-    setGeoRadiusKm(300);
+    if (!preserve) {
+      setGeoRadiusEnabled(false);
+      setDeliveryCity("");
+      setGeoRadiusKm(300);
+      setText("");
+      setSourceUrls("");
+      clearSelectedFiles();
+    } else if (sourceTargetModes.includes(prevScenario) && textTargetModes.includes(next)) {
+      if (!text.trim() && sourceUrls.trim()) {
+        setText(sourceUrls.trim());
+        setSourceUrls("");
+      }
+    } else if (textTargetModes.includes(prevScenario) && sourceTargetModes.includes(next)) {
+      if (!sourceUrls.trim() && text.trim()) {
+        setSourceUrls(text.trim());
+        setText("");
+      }
+    }
     if (next === "procurement_report") setSupplierSearchPolicy("normal");
-    setText("");
-    setSourceUrls("");
-    clearSelectedFiles();
   }
 
   function handleFileInput(event: ChangeEvent<HTMLInputElement>) {
@@ -2835,7 +3006,7 @@ export function CabinetClient() {
   }, [emailEditOpen, session?.user?.email]);
 
   useEffect(() => {
-    if (authenticated) loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize);
+    if (authenticated) loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, false, jobStatusFilter);
     else setJobsLoading(false);
     return () => {
       // Responses from the previous page, filters or session must never replace current tasks.
@@ -2843,17 +3014,17 @@ export function CabinetClient() {
       jobsForegroundRequestRef.current = null;
       jobsBackgroundRequestRef.current = null;
     };
-  }, [authenticated, jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize]);
+  }, [authenticated, jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, jobStatusFilter]);
 
   useEffect(() => {
     if (!authenticated) return;
     const timer = window.setInterval(() => {
       if (typeof document !== "undefined" && document.hidden) return;
-      loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, true);
+      loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, true, jobStatusFilter);
       if (activeJobs) loadSession({ background: true }).catch(() => {});
     }, activeJobs ? 3000 : 7000);
     return () => window.clearInterval(timer);
-  }, [authenticated, jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, activeJobs]);
+  }, [authenticated, jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, activeJobs, jobStatusFilter]);
 
   useEffect(() => {
     if (!findMoreConfirmJob) return;
@@ -3892,7 +4063,9 @@ export function CabinetClient() {
               </h1>
               <p className="text-sm text-slate-600 leading-relaxed">
                 {authMode === "register"
-                  ? "Создайте кабинет за 15 секунд — дарим 495 ₽ на баланс для бесплатного тестирования на ваших спецификациях. Без привязки карты."
+                  ? initialTrialBalanceRub > 0
+                    ? `Создайте кабинет за 15 секунд — дарим ${initialTrialBalanceRub.toLocaleString("ru-RU")} ₽ на баланс для бесплатного тестирования на ваших спецификациях. Без привязки карты.`
+                    : "Создайте кабинет за 15 секунд, чтобы запускать анализ закупок и поиск поставщиков на ваших спецификациях."
                   : "Войдите в кабинет, чтобы запускать анализ закупок, искать поставщиков и скачивать готовые результаты."}
               </p>
             </div>
@@ -4007,10 +4180,10 @@ export function CabinetClient() {
                   .
                 </p>
 
-                {authMode === "register" ? (
+                {authMode === "register" && initialTrialBalanceRub > 0 ? (
                   <div className="flex items-center justify-center gap-2 text-xs text-teal-900 font-semibold bg-teal-50 border border-teal-200/80 rounded-xl py-2 px-3 text-center">
-                    <span className="text-sm">🎁</span>
-                    <span>Стартовый баланс 495 ₽ зачисляется сразу при создании кабинета</span>
+                    <Gift size={14} className="text-teal-700 shrink-0" aria-hidden="true" />
+                    <span>Стартовый баланс {initialTrialBalanceRub.toLocaleString("ru-RU")} ₽ зачисляется сразу при создании кабинета</span>
                   </div>
                 ) : null}
 
@@ -4265,7 +4438,9 @@ export function CabinetClient() {
                   ? "Сохранить новый пароль и войти"
                   : authMode === "login"
                   ? "Войти"
-                  : "Создать кабинет и получить 495 ₽"}
+                  : initialTrialBalanceRub > 0
+                  ? `Создать кабинет и получить ${initialTrialBalanceRub.toLocaleString("ru-RU")} ₽`
+                  : "Создать кабинет"}
               </span>
             </button>
 
@@ -4312,23 +4487,154 @@ export function CabinetClient() {
   }
 
   return (
-    <main className="tl-cabinet cabinet-page min-h-screen bg-slate-50/60 p-3 sm:p-5 max-w-7xl mx-auto space-y-3 font-sans text-slate-900">
-      <aside className={`tl-cabinet-sidebar ${mobileToolsOpen ? "tl-cabinet-sidebar--open" : ""}`} aria-label="Инструменты кабинета">
-        <nav className="tl-cabinet-navlinks" aria-label="Рабочая область">
-          <a href="#new-job"><PlusCircle size={17} aria-hidden="true" />Новая задача</a>
-          <a href="#jobs"><History size={17} aria-hidden="true" />История задач</a>
-        </nav>
-        <button type="button" className="tl-cabinet-tools-toggle" aria-expanded={mobileToolsOpen} aria-controls="cabinet-account-tools" onClick={() => setMobileToolsOpen((open) => !open)}>
-          <span>Баланс {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}</span>
-          <span>{mobileToolsOpen ? "Скрыть инструменты" : "Меню кабинета"}<ChevronDown size={15} aria-hidden="true" /></span>
+    <main className="tl-cabinet cabinet-page min-h-screen font-sans text-slate-900">
+      <aside className={`tl-cabinet-sidebar ${mobileToolsOpen ? "tl-cabinet-sidebar--open" : ""}`} aria-label="Навигация личного кабинета">
+        {/* Compact Mobile Top Bar (< 1024px) */}
+        <div className="tl-mobile-brand-row">
+          <a className="inline-flex items-center gap-2 font-extrabold text-base text-slate-900" href="/">
+            <Image src="/tenderlex-logo.png" alt="TenderLex" width={26} height={26} priority />
+            <span>TenderLex</span>
+          </a>
+          <a
+            href="/"
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-slate-600 hover:text-slate-900"
+          >
+            <span>На сайт</span>
+          </a>
+        </div>
+
+        {/* Primary Workspace Tools & Results Navigation */}
+        <div className="tl-sidebar-panel">
+          <a className="tl-sidebar-brand" href="/">
+            <Image src="/tenderlex-logo.png" alt="TenderLex" width={28} height={28} priority />
+            <span>TenderLex</span>
+          </a>
+
+          <div className="tl-sidebar-group">
+            <div className="tl-sidebar-group-label">Инструменты</div>
+            {(() => {
+              const coreTools: Array<{ id: Scenario; label: string; icon: LucideIcon }> = scenarioOptions.map(({ id, label, icon }) => ({
+                id,
+                label,
+                icon,
+              }));
+              const extraTools: Array<{ id: Scenario; label: string; icon: LucideIcon }> = [
+                ...(session?.user?.allowed_price_monitoring
+                  ? [{ id: "price_monitoring" as const, label: "Мониторинг цен", icon: Coins }]
+                  : []),
+                ...(hasSeparateCustomBatchTab
+                  ? [{ id: "custom_batch_report" as const, label: "Пакетный анализ", icon: FileSpreadsheet }]
+                  : []),
+              ];
+              const renderSidebarTool = (item: { id: Scenario; label: string; icon: LucideIcon }) => {
+                const ItemIcon = item.icon;
+                const isSelected = cabinetSection === "workspace" && scenario === item.id;
+                return (
+                  <div
+                    key={item.id}
+                    role="tab"
+                    tabIndex={0}
+                    aria-selected={isSelected}
+                    className="tl-sidebar-item"
+                    onClick={() => selectScenario(item.id)}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        selectScenario(item.id);
+                      }
+                    }}
+                  >
+                    <span className="tl-sidebar-item__main">
+                      <ItemIcon size={15} className="tl-sidebar-item__icon" aria-hidden="true" />
+                      <span className="tl-sidebar-item__label">{item.label}</span>
+                    </span>
+                    <button
+                      type="button"
+                      className="tl-sidebar-item__help"
+                      title={`Справка: как работает «${item.label}»`}
+                      aria-label={`Справка: как работает «${item.label}»`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setHelpModalTab(item.id);
+                        setShowHelpModal(true);
+                      }}
+                    >
+                      <HelpCircle size={13} aria-hidden="true" />
+                    </button>
+                  </div>
+                );
+              };
+              return (
+                <div className="tl-sidebar-tools-list" role="tablist" aria-label="Рабочие инструменты">
+                  {coreTools.map(renderSidebarTool)}
+                  {extraTools.length > 0 ? (
+                    <>
+                      <div className="tl-sidebar-divider" role="presentation">
+                        <span>Специнструменты</span>
+                      </div>
+                      {extraTools.map(renderSidebarTool)}
+                    </>
+                  ) : null}
+                </div>
+              );
+            })()}
+          </div>
+
+          <div className="tl-sidebar-group pt-1 border-t border-slate-100">
+            <div className="tl-sidebar-group-label">Результаты</div>
+            <button
+              type="button"
+              className={`tl-sidebar-item ${cabinetSection === "jobs" ? "is-active" : ""}`}
+              onClick={() => {
+                setCabinetSection("jobs");
+                if (typeof window !== "undefined") {
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }
+              }}
+            >
+              <span className="tl-sidebar-item__main">
+                <History size={15} className="tl-sidebar-item__icon" aria-hidden="true" />
+                <span className="tl-sidebar-item__label">Мои задачи</span>
+              </span>
+              <span className="inline-flex items-center gap-1 shrink-0">
+                {attentionJobsCount > 0 ? (
+                  <span
+                    className="tl-sidebar-badge-attention"
+                    title={`Ждут вашего решения: ${attentionJobsCount}`}
+                  >
+                    {attentionJobsCount}
+                  </span>
+                ) : null}
+                <span className="tl-sidebar-count">
+                  {activeJobs > 0 ? (
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 inline-block" aria-hidden="true" />
+                  ) : null}
+                  <span>{jobsTotal}</span>
+                </span>
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {/* Mobile Account Drawer Toggle (< 1024px) */}
+        <button
+          type="button"
+          className="tl-cabinet-tools-toggle"
+          aria-expanded={mobileToolsOpen}
+          aria-controls="cabinet-account-tools"
+          onClick={() => setMobileToolsOpen((open) => !open)}
+        >
+          <span className="tl-num">Баланс {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}</span>
+          <span className="inline-flex items-center gap-1.5">
+            <span>{mobileToolsOpen ? "Скрыть меню" : "Меню кабинета"}</span>
+            <ChevronDown size={15} className={`transition-transform ${mobileToolsOpen ? "rotate-180" : ""}`} aria-hidden="true" />
+          </span>
         </button>
+
+        {/* Balance, Tariffs, Billing & Support Block */}
         <div id="cabinet-account-tools" className="tl-cabinet-account-tools">
-      {/* Top Dashboard: Compact Header with Balance and All Buttons in 1 Continuous Row */}
-      <section className="tl-cabinet-toolbar bg-white border border-slate-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs font-sans space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          {/* Left-aligned items: Balance, Tariffs, Contacts, History */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            {/* Balance Button (Click to Top-Up) */}
+          <section className="tl-sidebar-panel tl-cabinet-toolbar" aria-label="Счёт и настройки">
             <button
               type="button"
               onClick={() => {
@@ -4338,241 +4644,382 @@ export function CabinetClient() {
                 setCustomTopUpRub(defPkg?.price_rub || 5000);
                 setShowTopUpModal(true);
               }}
-              className="inline-flex items-center justify-center gap-2 h-[34px] bg-gradient-to-r from-teal-700 to-teal-800 hover:from-teal-600 hover:to-teal-700 text-white px-3 rounded-lg shadow-2xs shrink-0 text-xs transition-all cursor-pointer border border-teal-600/50 group"
+              className="tl-balance-box"
               title="Баланс аккаунта. Нажмите, чтобы пополнить"
             >
-              <Receipt size={14} className="text-teal-200 group-hover:scale-105 transition-transform shrink-0" aria-hidden="true" />
-              <div className="flex items-center gap-1.5 leading-none">
-                <span className="text-[10px] font-semibold text-teal-100 uppercase tracking-wider">Баланс</span>
-                <strong className="text-xs sm:text-sm font-extrabold whitespace-nowrap leading-none text-white">
+              <div>
+                <span className="tl-balance-box__label">Баланс кабинета</span>
+                <strong className="tl-balance-box__amount">
                   {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
                 </strong>
               </div>
-              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-teal-600 group-hover:bg-emerald-500 text-white text-[11px] font-black shrink-0 transition-colors ml-0.5" title="Пополнить">
-                +
+              <span className="tl-balance-box__cta">
+                <PlusCircle size={12} aria-hidden="true" />
+                <span>Пополнить</span>
               </span>
             </button>
 
-            <button
-              type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
-              onClick={() => setShowTariffs((v) => !v)}
-              aria-expanded={showTariffs}
-              aria-controls="cabinet-tariffs"
-            >
-              <Sliders size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>{showTariffs ? "Тарифы ▲" : "Тарифы ▼"}</span>
-            </button>
-
-            <button
-              type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
-              onClick={() => {
-                setShowHistoryModal(true);
-                loadHistoryTransactions(1);
-              }}
-              title="История операций и списаний"
-            >
-              <History size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>История</span>
-            </button>
-
-            <button
-              type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
-              onClick={() => {
-                setShowReferralModal(true);
-              }}
-              title="Пригласить коллегу: +1 000 ₽ на баланс за рекомендацию"
-            >
-              <Gift size={13} className="text-amber-500 shrink-0" aria-hidden="true" />
-              <span>Пригласить</span>
-              <span className="px-1.5 py-0.5 rounded bg-emerald-600 text-white font-black text-[10px] tracking-tight leading-none shadow-2xs">
-                +1 000 ₽
-              </span>
-            </button>
-
-            <button
-              type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
-              onClick={() => {
-                setShowApiModal(true);
-                loadCustomerApiKeys();
-              }}
-              title="API и интеграции (CRM, 1С, ИИ-ассистенты, MCP)"
-            >
-              <Key size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>API</span>
-            </button>
-
-            <button
-              type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
-              onClick={() => {
-                if (typeof window !== "undefined") {
-                  window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
-                  (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat?.();
-                }
-              }}
-              title="Онлайн-чат поддержки"
-            >
-              <MessageCircle size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>Чат</span>
-            </button>
-
-            {session?.contacts?.telegram_url ? (
-              <a
-                className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
-                href={session.contacts.telegram_url}
-                target="_blank"
-                rel="noreferrer"
-                title="Написать в Telegram"
+            <div className="tl-sidebar-group">
+              <button
+                type="button"
+                className={`tl-sidebar-item ${showTariffs ? "is-active" : ""}`}
+                onClick={() => setShowTariffs((v) => !v)}
+                aria-expanded={showTariffs}
+                aria-controls="cabinet-tariffs"
               >
-                <Send size={13} className="text-sky-500 shrink-0" aria-hidden="true" />
-                <span>Telegram</span>
-              </a>
-            ) : null}
+                <span className="tl-sidebar-item__main">
+                  <Sliders size={15} className="tl-sidebar-item__icon" aria-hidden="true" />
+                  <span className="tl-sidebar-item__label">Тарифы и пакеты</span>
+                </span>
+                <ChevronDown size={14} className={`text-slate-400 transition-transform ${showTariffs ? "rotate-180 text-teal-800" : ""}`} aria-hidden="true" />
+              </button>
 
-            <a
-              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
-              href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}`}
-              title="Написать на электронную почту"
-            >
-              <Mail size={13} className="text-slate-600 shrink-0" aria-hidden="true" />
-              <span>{session?.contacts?.email || "info@tenderlex.ru"}</span>
-            </a>
+              <button
+                type="button"
+                className="tl-sidebar-item"
+                onClick={() => {
+                  setHistoryModalTab("transactions");
+                  setShowHistoryModal(true);
+                  loadHistoryTransactions(1);
+                  loadCustomerInvoices();
+                }}
+                title="История операций и списаний"
+              >
+                <span className="tl-sidebar-item__main">
+                  <Receipt size={15} className="tl-sidebar-item__icon" aria-hidden="true" />
+                  <span className="tl-sidebar-item__label">Счета и операции</span>
+                </span>
+                {pendingInvoicesCount > 0 ? (
+                  <span
+                    className="tl-sidebar-badge-attention"
+                    title={`Счетов к оплате: ${pendingInvoicesCount}`}
+                  >
+                    {pendingInvoicesCount}
+                  </span>
+                ) : null}
+              </button>
+
+              <button
+                type="button"
+                className="tl-sidebar-item"
+                onClick={() => {
+                  setShowApiModal(true);
+                  loadCustomerApiKeys();
+                }}
+                title="API и интеграции (CRM, 1С, ИИ-ассистенты, MCP)"
+              >
+                <span className="tl-sidebar-item__main">
+                  <Key size={15} className="tl-sidebar-item__icon" aria-hidden="true" />
+                  <span className="tl-sidebar-item__label">API и интеграции</span>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className="tl-sidebar-item"
+                onClick={() => setShowReferralModal(true)}
+                title="Пригласить коллегу: +1 000 ₽ на баланс за рекомендацию"
+              >
+                <span className="tl-sidebar-item__main">
+                  <Gift size={15} className="tl-sidebar-item__icon" aria-hidden="true" />
+                  <span className="tl-sidebar-item__label">Пригласить коллегу</span>
+                </span>
+                <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-900 font-bold text-[10px] leading-none whitespace-nowrap shrink-0 tl-num">
+                  +1 000 ₽
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className="tl-sidebar-item"
+                onClick={() => {
+                  setHelpModalTab("workflow");
+                  setShowHelpModal(true);
+                }}
+                title="Справка: подробное описание 4 функций и пошаговый алгоритм работы"
+              >
+                <span className="tl-sidebar-item__main">
+                  <BookOpen size={15} className="tl-sidebar-item__icon" aria-hidden="true" />
+                  <span className="tl-sidebar-item__label">Справка по функциям</span>
+                </span>
+              </button>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-0.5 text-[11px] text-slate-600">
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof window !== "undefined") {
+                    window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
+                    (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat?.();
+                  }
+                }}
+                className="inline-flex items-center gap-1 py-1 px-1.5 rounded-md hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer transition-colors"
+                title="Онлайн-чат поддержки"
+              >
+                <MessageCircle size={13} className="text-[#174b3f] shrink-0" aria-hidden="true" />
+                <span>Чат</span>
+                {chatUnreadCount > 0 ? (
+                  <span className="tl-sidebar-badge-unread" aria-label={`Новых сообщений: ${chatUnreadCount}`}>
+                    {chatUnreadCount}
+                  </span>
+                ) : null}
+              </button>
+
+              {session?.contacts?.telegram_url ? (
+                <a
+                  href={session.contacts.telegram_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 py-1 px-1.5 rounded-md hover:bg-slate-100 text-slate-700 font-semibold transition-colors"
+                  title="Написать в Telegram"
+                >
+                  <Send size={12} className="text-[#174b3f] shrink-0" aria-hidden="true" />
+                  <span>Telegram</span>
+                </a>
+              ) : null}
+
+              <a
+                href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}`}
+                className="inline-flex items-center gap-1 py-1 px-1.5 rounded-md hover:bg-slate-100 text-slate-500 hover:text-slate-800 transition-colors"
+                title={`Написать на почту: ${session?.contacts?.email || "info@tenderlex.ru"}`}
+              >
+                <Mail size={12} className="shrink-0" aria-hidden="true" />
+                <span>Почта</span>
+              </a>
+            </div>
+          </section>
+        </div>
+      </aside>
+
+      <div className="tl-cabinet-content">
+        <header className="tl-cabinet-header">
+          <div className="flex items-center gap-2 min-w-0 text-xs">
+            <span className="text-slate-400 font-medium hidden sm:inline">
+              {cabinetSection === "jobs" ? "Результаты" : "Инструмент"}
+            </span>
+            <span className="text-slate-300 hidden sm:inline" aria-hidden="true">/</span>
+            <strong className="font-bold text-slate-800 truncate">
+              {cabinetSection === "jobs" ? "Мои задачи" : selectedCopy.title}
+            </strong>
+            {activeJobs > 0 ? (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-900 text-[11px] font-semibold shrink-0 tl-num">
+                <Loader2 size={11} className="animate-spin text-amber-700" aria-hidden="true" />
+                <span>В работе: {activeJobs}</span>
+              </span>
+            ) : null}
           </div>
 
-          {/* Right-aligned items: Function Guide and Notification Bell */}
-          <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-3 h-[34px] rounded-lg text-xs font-bold leading-none transition-all border cursor-pointer shrink-0 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-200 shadow-2xs"
-              onClick={() => {
-                setHelpModalTab("workflow");
-                setShowHelpModal(true);
-              }}
-              title="Справка: подробное описание 4 функций и пошаговый алгоритм работы"
-            >
-              <BookOpen size={13} className="text-emerald-700 shrink-0" aria-hidden="true" />
-              <span>Справка по функциям</span>
-            </button>
-
-            <button
-              type="button"
-              className={`inline-flex items-center justify-center w-[34px] h-[34px] rounded-lg transition-all border cursor-pointer shrink-0 ${
+              className={`inline-flex items-center justify-center w-8 h-8 rounded-lg border transition-colors cursor-pointer ${
                 notificationsEnabled
-                  ? "bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-200/80 shadow-2xs"
-                  : "bg-slate-100 hover:bg-slate-200 text-slate-400 border-slate-200"
+                  ? "bg-slate-50 hover:bg-slate-100 text-teal-800 border-slate-200"
+                  : "bg-slate-50 hover:bg-slate-100 text-slate-400 border-slate-200"
               }`}
               onClick={toggleNotifications}
               title={notificationsEnabled ? "Звуковые уведомления включены (нажмите, чтобы выключить)" : "Уведомления выключены (нажмите, чтобы включить)"}
               aria-label={notificationsEnabled ? "Выключить звуковые уведомления" : "Включить звуковые уведомления"}
             >
               {notificationsEnabled ? (
-                <Bell size={14} className="text-teal-600" aria-hidden="true" />
+                <Bell size={14} aria-hidden="true" />
               ) : (
-                <BellOff size={14} className="text-slate-400" aria-hidden="true" />
+                <BellOff size={14} aria-hidden="true" />
               )}
             </button>
-          </div>
-        </div>
 
-        </section>
-        </div>
-      </aside>
-      <div className="tl-cabinet-content space-y-3">
-        <header className="tl-cabinet-header w-full flex items-center justify-between pb-2.5 border-b border-slate-200/80">
-          <a className="flex items-center gap-2 font-extrabold text-slate-900 text-lg hover:text-teal-700 transition-colors" href="/">
-            <Image src="/tenderlex-logo.png" alt="TenderLex" width={28} height={28} priority />
-            <span>TenderLex</span>
-          </a>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="flex items-center gap-1.5 bg-white hover:bg-slate-50 text-slate-700 hover:text-teal-800 px-3 py-1.5 rounded-xl border border-slate-200/80 text-xs font-bold shadow-2xs transition-colors cursor-pointer"
-              onClick={() => {
-                setChangePasswordOpen(true);
-                setChangePasswordError("");
-                setChangePasswordSuccess("");
-                setCurrentPassword("");
-                setChangeNewPassword("");
-                setChangeNewPasswordConfirm("");
-              }}
-              title="Сменить пароль"
-            >
-              <Key size={13} className="text-teal-600" aria-hidden="true" />
-              <span className="hidden sm:inline">Пароль</span>
-            </button>
-            <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-slate-200/80 text-xs font-bold text-slate-800 shadow-2xs">
-              <User size={14} className="text-teal-600" aria-hidden="true" />
-              <span>{session?.user?.email}</span>
+            <div className="relative" ref={profileMenuRef}>
               <button
                 type="button"
-                className="p-0.5 hover:bg-slate-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors inline-flex items-center justify-center cursor-pointer ml-1"
-                onClick={logout}
-                disabled={busy}
-                aria-label="Выйти"
+                className={`inline-flex items-center gap-1.5 px-2 sm:px-2.5 h-8 rounded-lg border text-xs font-semibold transition-colors cursor-pointer max-w-[190px] sm:max-w-[260px] ${
+                  profileMenuOpen
+                    ? "bg-[#e7efe0] border-[#cde0be] text-[#103a31]"
+                    : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700"
+                }`}
+                onClick={() => setProfileMenuOpen((open) => !open)}
+                aria-expanded={profileMenuOpen}
+                aria-haspopup="menu"
+                aria-label="Меню аккаунта"
+                title={session?.user?.email || "Аккаунт"}
               >
-                <LogOut size={14} aria-hidden="true" />
+                <User size={13} className="text-slate-500 shrink-0" aria-hidden="true" />
+                <span className="truncate hidden sm:inline">{session?.user?.email}</span>
+                <ChevronDown
+                  size={13}
+                  className={`text-slate-400 shrink-0 transition-transform ${profileMenuOpen ? "rotate-180 text-[#174b3f]" : ""}`}
+                  aria-hidden="true"
+                />
               </button>
+
+              {profileMenuOpen ? (
+                <div className="tl-profile-menu" role="menu" aria-label="Настройки аккаунта">
+                  <div className="px-2.5 py-2 border-b border-slate-100 mb-1">
+                    {session?.user?.name ? (
+                      <div className="text-xs font-bold text-slate-900 truncate">{session.user.name}</div>
+                    ) : null}
+                    <div className="text-[11px] text-slate-500 truncate">{session?.user?.email}</div>
+                  </div>
+
+                  {session?.user?.has_telegram ? (
+                    <div className="px-2.5 py-1.5 mb-1 rounded-lg bg-[#f4f8ef] border border-[#dfe5dc] text-[11px] text-[#103a31] flex items-center gap-1.5">
+                      <CheckCircle2 size={13} className="text-[#174b3f] shrink-0" aria-hidden="true" />
+                      <span className="truncate font-medium">
+                        Telegram подключён{session.user.telegram_username ? ` (@${session.user.telegram_username})` : ""}
+                      </span>
+                    </div>
+                  ) : (
+                    <a
+                      href="/api/customer/auth/telegram/login"
+                      role="menuitem"
+                      className="tl-profile-menu__item"
+                      onClick={() => setProfileMenuOpen(false)}
+                    >
+                      <Send size={13} className="text-[#24A1DE] shrink-0" aria-hidden="true" />
+                      <span>Привязать Telegram-бот</span>
+                    </a>
+                  )}
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tl-profile-menu__item"
+                    onClick={() => {
+                      setProfileMenuOpen(false);
+                      setChangePasswordOpen(true);
+                      setChangePasswordError("");
+                      setChangePasswordSuccess("");
+                      setCurrentPassword("");
+                      setChangeNewPassword("");
+                      setChangeNewPasswordConfirm("");
+                    }}
+                  >
+                    <Key size={13} className="text-slate-500 shrink-0" aria-hidden="true" />
+                    <span>Сменить пароль</span>
+                  </button>
+
+                  <div className="my-1 border-t border-slate-100" role="separator" />
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="tl-profile-menu__item tl-profile-menu__item--danger"
+                    onClick={() => {
+                      setProfileMenuOpen(false);
+                      logout();
+                    }}
+                    disabled={busy}
+                    aria-label="Выйти"
+                  >
+                    <LogOut size={13} className="shrink-0" aria-hidden="true" />
+                    <span>Выйти из кабинета</span>
+                  </button>
+                </div>
+              ) : null}
             </div>
           </div>
         </header>
 
         {changePasswordOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4" onClick={() => !changePasswordBusy && setChangePasswordOpen(false)}>
-            <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                <div className="flex items-center gap-2 text-slate-900 font-extrabold text-base">
-                  <Key size={18} className="text-teal-600" />
-                  <span>Смена пароля</span>
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="change-password-title"
+              className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-5 sm:p-6 space-y-4 font-sans"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-[#f4f8ef] border border-[#cde0be] text-[#174b3f] shrink-0">
+                    <Key size={18} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <h2 id="change-password-title" className="text-base font-extrabold text-slate-900 leading-tight">
+                      Смена пароля
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Обновите пароль для входа в личный кабинет
+                    </p>
+                  </div>
                 </div>
                 <button
                   type="button"
-                  className="p-1 text-slate-400 hover:text-slate-600 rounded-lg cursor-pointer"
+                  aria-label="Закрыть окно"
+                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer shrink-0"
                   onClick={() => !changePasswordBusy && setChangePasswordOpen(false)}
                 >
-                  <XCircle size={18} />
+                  <X size={18} aria-hidden="true" />
                 </button>
               </div>
 
               <form onSubmit={handleChangePassword} className="space-y-3.5">
                 <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
                   <span>Текущий пароль</span>
-                  <input
-                    type="password"
-                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                    placeholder="••••••••"
-                    required
-                  />
+                  <div className="relative">
+                    <input
+                      type={showCurrentPwd ? "text" : "password"}
+                      className="w-full px-3.5 py-2.5 pr-10 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] shadow-2xs"
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      placeholder="••••••••"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowCurrentPwd((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+                      aria-label={showCurrentPwd ? "Скрыть текущий пароль" : "Показать текущий пароль"}
+                    >
+                      {showCurrentPwd ? <EyeOff size={15} aria-hidden="true" /> : <Eye size={15} aria-hidden="true" />}
+                    </button>
+                  </div>
                 </label>
                 <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
-                  <span>Новый пароль (не менее 10 символов)</span>
-                  <input
-                    type="password"
-                    minLength={10}
-                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
-                    value={changeNewPassword}
-                    onChange={(e) => setChangeNewPassword(e.target.value)}
-                    placeholder="Не менее 10 символов"
-                    required
-                  />
+                  <span>Новый пароль</span>
+                  <div className="relative">
+                    <input
+                      type={showNewPwd ? "text" : "password"}
+                      minLength={10}
+                      className="w-full px-3.5 py-2.5 pr-10 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] shadow-2xs"
+                      value={changeNewPassword}
+                      onChange={(e) => setChangeNewPassword(e.target.value)}
+                      placeholder="Не менее 10 символов"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPwd((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+                      aria-label={showNewPwd ? "Скрыть новый пароль" : "Показать новый пароль"}
+                    >
+                      {showNewPwd ? <EyeOff size={15} aria-hidden="true" /> : <Eye size={15} aria-hidden="true" />}
+                    </button>
+                  </div>
                 </label>
                 <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
                   <span>Повторите новый пароль</span>
                   <input
-                    type="password"
+                    type={showNewPwd ? "text" : "password"}
                     minLength={10}
-                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] shadow-2xs"
                     value={changeNewPasswordConfirm}
                     onChange={(e) => setChangeNewPasswordConfirm(e.target.value)}
                     placeholder="Повторите новый пароль"
                     required
                   />
                 </label>
+
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-semibold pt-0.5">
+                  <span className={`inline-flex items-center gap-1 ${changeNewPassword.length >= 10 ? "text-emerald-700" : "text-slate-400"}`}>
+                    <CheckCircle2 size={12} aria-hidden="true" />
+                    <span>Минимум 10 символов</span>
+                  </span>
+                  <span className={`inline-flex items-center gap-1 ${changeNewPassword.length > 0 && changeNewPassword === changeNewPasswordConfirm ? "text-emerald-700" : "text-slate-400"}`}>
+                    <CheckCircle2 size={12} aria-hidden="true" />
+                    <span>Пароли совпадают</span>
+                  </span>
+                </div>
 
                 {changePasswordError && (
                   <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs font-bold text-rose-700">
@@ -4596,7 +5043,7 @@ export function CabinetClient() {
                   </button>
                   <button
                     type="submit"
-                    className="w-1/2 py-2.5 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs shadow-2xs cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
+                    className="tl-btn-primary w-1/2 py-2.5 px-4 rounded-xl text-xs shadow-2xs cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
                     disabled={changePasswordBusy || deleteAccountBusy}
                   >
                     {changePasswordBusy && <Loader2 size={14} className="animate-spin" />}
@@ -4605,7 +5052,10 @@ export function CabinetClient() {
                 </div>
               </form>
 
-              <div className="pt-3 border-t border-slate-200/80 space-y-2.5">
+              <div className="pt-3.5 border-t border-slate-200/80 space-y-2">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Управление аккаунтом
+                </div>
                 {!deleteAccountConfirm ? (
                   <button
                     type="button"
@@ -4642,7 +5092,7 @@ export function CabinetClient() {
                   </div>
                 )}
               </div>
-            </div>
+            </section>
           </div>
         )}
 
@@ -4671,134 +5121,222 @@ export function CabinetClient() {
           const comboPriceKopeks = supplierPriceKopeks + reportPriceKopeks;
           const depositPkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
           const maxBonusPercent = Math.max(0, ...depositPkgs.map((pkg) => pkg.price_rub > 0 ? Math.round(pkg.bonus_rub / pkg.price_rub * 100) : 0));
+          const popularPkgId =
+            depositPkgs.find((p) => p.price_rub === 5000)?.id ||
+            depositPkgs.find((p) => p.badge && /хит|популяр/i.test(p.badge))?.id ||
+            null;
+          const baseTaskRateRub = Math.max(1, Math.round(supplierPriceKopeks / 100));
+          const geoSurchargePct = session?.user?.geo_radius_surcharge_pct ?? 30;
+          const hasPriceMonitoring = Boolean(session?.user?.allowed_price_monitoring);
+          const hasBatchAnalysis = Boolean(session?.user?.allowed_custom_batch_report);
 
           return (
-            <section id="cabinet-tariffs" className="tl-cabinet-tariffs pt-2.5 border-t border-slate-100 transition-all space-y-2.5" aria-label="Тарифы и пополнение баланса">
-              <div className="grid md:grid-cols-2 gap-2.5">
-                {/* Column 1: Списание за операции по прайсу */}
-                <div className="space-y-1 bg-slate-50/70 p-2.5 rounded-xl border border-slate-200/80">
-                  <div className="flex items-center justify-between pb-1 border-b border-slate-200/60">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                      Списание за задачи с баланса
-                    </span>
-                    <span className="text-[10px] text-slate-400">без подписок и скрытых условий</span>
-                  </div>
-                  <div className="space-y-1 mt-1">
-                    <div className={`px-2 py-1 ${supplierIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
-                      <span className="truncate mr-2 font-semibold text-slate-700">1. Поиск поставщиков</span>
-                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
-                        {formatRubles(supplierPriceKopeks)}
-                      </b>
-                    </div>
-                    <div className={`px-2 py-1 ${extraIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-teal-50/50 border-teal-200/70 text-teal-950'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
-                      <span className={`truncate mr-2 font-semibold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} text-xs`}>
-                        ↳ Добор поставщиков (по тому же ТЗ)
+            <section id="cabinet-tariffs" className="tl-cabinet-tariffs space-y-3" aria-label="Тарифы и пополнение баланса">
+              <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-[#e5e9e2]">
+                <div>
+                  <h2 className="text-sm sm:text-base font-extrabold text-slate-900">Тарифы и пакеты пополнения</h2>
+                  <p className="text-[11px] text-slate-500">Единый бессрочный баланс на все инструменты кабинета и Telegram-бота</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowTariffs(false)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold cursor-pointer shrink-0"
+                >
+                  <X size={13} aria-hidden="true" />
+                  <span>Скрыть</span>
+                </button>
+              </div>
+              <div className="grid md:grid-cols-2 gap-3">
+                {/* Column 1: Списание за операции по прайсу (Strict 3-module order) */}
+                <div className="space-y-1.5 bg-[#f8faf6] p-3 rounded-xl border border-[#dfe5dc] flex flex-col justify-between">
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-[#e5e9e2]">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                        Списание за задачи с баланса
                       </span>
-                      <b className={`font-extrabold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} shrink-0 whitespace-nowrap`}>
-                        {formatRubles(extraPriceKopeks)}
-                      </b>
+                      <span className="text-[10px] text-slate-400">без подписок и скрытых условий</span>
                     </div>
-                    <div className={`px-2 py-1 ${exactIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
-                      <span className="truncate mr-2 font-semibold text-slate-700">2. Подбор товара и аналогов</span>
-                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
-                        {formatRubles(exactPriceKopeks)} / поз.
-                      </b>
-                    </div>
-                    <div className={`px-2 py-1 ${reportIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
-                      <span className="truncate mr-2 font-semibold text-slate-700">3. Анализ документации</span>
-                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
-                        {formatRubles(reportPriceKopeks)}
-                      </b>
-                    </div>
-                    <div className="px-2 py-1 bg-slate-100/90 border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-slate-600">4. Анализ + поиск (комбо)</span>
-                      <b className="font-extrabold text-slate-800 shrink-0 whitespace-nowrap">
-                        {formatRubles(comboPriceKopeks)}
-                      </b>
-                    </div>
-                    {session?.user?.allowed_price_monitoring ? (() => {
-                      const pmPriceKopeks =
-                        session?.balance?.effective_prices?.price_monitoring?.price_kopeks ?? 5000;
-                      const pmIsOverride = session?.balance?.effective_prices?.price_monitoring?.source === "client_override";
-                      return (
-                        <div className={`px-2 py-1 ${pmIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-emerald-50/70 border-emerald-200 text-emerald-950'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
-                          <span className="truncate mr-2 font-semibold">5. Мониторинг цен (за найденную)</span>
-                          <b className="font-extrabold shrink-0 whitespace-nowrap">
-                            {formatRubles(pmPriceKopeks)}
+                    <div className="space-y-1.5 pt-0.5 tl-num">
+                      <div className={`px-2.5 py-1.5 ${supplierIsOverride ? "bg-amber-50/80 border-amber-200 text-amber-950" : "bg-white border-[#e5e9e2] text-slate-800"} border rounded-lg flex items-center justify-between gap-2 text-xs font-medium`}>
+                        <span className="min-w-0 leading-snug font-semibold text-slate-800">1. Поиск поставщиков</span>
+                        <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                          {formatRubles(supplierPriceKopeks)}
+                        </b>
+                      </div>
+                      <div className={`px-2.5 py-1.5 ${extraIsOverride ? "bg-amber-50/80 border-amber-200 text-amber-950" : "bg-[#f4f8ef] border-[#d7e5cd] text-[#103a31]"} border rounded-lg flex items-center justify-between gap-2 text-xs font-medium`}>
+                        <span className={`min-w-0 leading-snug font-semibold ${extraIsOverride ? "text-amber-900" : "text-[#174b3f]"}`}>
+                          ↳ Добор поставщиков (по тому же ТЗ)
+                        </span>
+                        <b className={`font-extrabold ${extraIsOverride ? "text-amber-900" : "text-[#174b3f]"} shrink-0 whitespace-nowrap`}>
+                          {formatRubles(extraPriceKopeks)}
+                        </b>
+                      </div>
+                      <div className={`px-2.5 py-1.5 ${exactIsOverride ? "bg-amber-50/80 border-amber-200 text-amber-950" : "bg-white border-[#e5e9e2] text-slate-800"} border rounded-lg flex items-center justify-between gap-2 text-xs font-medium`}>
+                        <span className="min-w-0 leading-snug font-semibold text-slate-800">2. Подбор товара и аналогов</span>
+                        <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                          {formatRubles(exactPriceKopeks)} / поз.
+                        </b>
+                      </div>
+                      <div className={`px-2.5 py-1.5 ${reportIsOverride ? "bg-amber-50/80 border-amber-200 text-amber-950" : "bg-white border-[#e5e9e2] text-slate-800"} border rounded-lg flex items-center justify-between gap-2 text-xs font-medium`}>
+                        <span className="min-w-0 leading-snug font-semibold text-slate-800">3. Анализ документации</span>
+                        <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                          {formatRubles(reportPriceKopeks)}
+                        </b>
+                      </div>
+                      <div className="px-2.5 py-1.5 bg-slate-100/80 border border-[#dfe5dc] rounded-lg flex items-center justify-between gap-2 text-xs font-medium text-slate-800">
+                        <span className="min-w-0 leading-snug font-semibold text-slate-700">4. Анализ + поиск (комбо)</span>
+                        <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                          {formatRubles(comboPriceKopeks)}
+                        </b>
+                      </div>
+                      {hasPriceMonitoring ? (() => {
+                        const pmPriceKopeks =
+                          session?.balance?.effective_prices?.price_monitoring?.price_kopeks ?? 5000;
+                        const pmIsOverride = session?.balance?.effective_prices?.price_monitoring?.source === "client_override";
+                        return (
+                          <div className={`px-2.5 py-1.5 ${pmIsOverride ? "bg-amber-50/80 border-amber-200 text-amber-950" : "bg-white border-[#e5e9e2] text-slate-800"} border rounded-lg flex items-center justify-between gap-2 text-xs font-medium`}>
+                            <span className="min-w-0 leading-snug font-semibold text-slate-800">5. Мониторинг цен (за найденную)</span>
+                            <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                              {formatRubles(pmPriceKopeks)}
+                            </b>
+                          </div>
+                        );
+                      })() : null}
+                      {hasBatchAnalysis ? (
+                        <div className={`px-2.5 py-1.5 ${reportIsOverride ? "bg-amber-50/80 border-amber-200 text-amber-950" : "bg-white border-[#e5e9e2] text-slate-800"} border rounded-lg flex items-center justify-between gap-2 text-xs font-medium`}>
+                          <span className="min-w-0 leading-snug font-semibold text-slate-800">
+                            {hasPriceMonitoring ? "6" : "5"}. Пакетный анализ (за закупку)
+                          </span>
+                          <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                            {formatRubles(reportPriceKopeks)}
                           </b>
                         </div>
-                      );
-                    })() : null}
+                      ) : null}
+                    </div>
                   </div>
+                  {session?.user?.allowed_geo_radius ? (
+                    <p className="text-[11px] text-slate-500 pt-2 mt-1.5 border-t border-[#e5e9e2] leading-snug">
+                      Опция «Приоритет в радиусе доставки»: +{geoSurchargePct}% к стоимости поиска или мониторинга.
+                    </p>
+                  ) : null}
                 </div>
 
-                {/* Column 2: Бонусы при пополнении баланса */}
-                <div className="space-y-1 bg-gradient-to-br from-emerald-50/60 to-teal-50/40 p-2.5 rounded-xl border border-emerald-200/80">
-                  <div className="flex items-center justify-between pb-1 border-b border-emerald-200/60">
-                    <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
-                      {maxBonusPercent > 0 ? "Бонусы при пополнении баланса" : "Пакеты пополнения баланса"}
+                {/* Column 2: Пакеты пополнения баланса */}
+                <div className="space-y-1.5 bg-[#f8faf6] p-3 rounded-xl border border-[#dfe5dc]">
+                  <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-[#e5e9e2]">
+                    <span className="text-[10px] font-bold text-[#174b3f] uppercase tracking-wider">
+                      {maxBonusPercent > 0 ? "Пакеты пополнения с бонусом" : "Пакеты пополнения баланса"}
                     </span>
-                    {maxBonusPercent > 0 ? <span className="text-[10px] font-bold text-emerald-700">до +{maxBonusPercent}% к платежу</span> : null}
+                    {maxBonusPercent > 0 ? (
+                      <span className="text-[10px] font-bold text-[#174b3f] bg-[#e7efe0] px-1.5 py-0.5 rounded">
+                        до +{maxBonusPercent}% на счёт
+                      </span>
+                    ) : null}
                   </div>
-                  <div className="space-y-1.5 mt-1">
-                    {depositPkgs.map((pkg) => (
-                      <div
-                        key={pkg.id}
-                        className="tl-topup-package px-2 py-1.5 bg-white/95 border border-emerald-200/70 hover:border-emerald-400 rounded-lg flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs transition-colors"
-                      >
-                        <div className="tl-topup-package__amounts flex items-center gap-1.5 truncate mr-2">
-                          <span className="font-bold text-slate-900 whitespace-nowrap">{pkg.price_rub.toLocaleString("ru-RU")} ₽</span>
-                          <span className="text-slate-400">→</span>
-                          <span className="font-extrabold text-emerald-700 whitespace-nowrap">{pkg.total_rub.toLocaleString("ru-RU")} ₽ на баланс</span>
+                  <div className="space-y-1.5 pt-0.5 tl-num">
+                    {depositPkgs.map((pkg) => {
+                      const isPopular = pkg.id === popularPkgId;
+                      const effectiveTaskRub =
+                        pkg.total_rub > 0 ? Math.round(baseTaskRateRub * (pkg.price_rub / pkg.total_rub)) : baseTaskRateRub;
+                      return (
+                        <div
+                          key={pkg.id}
+                          className={`tl-topup-package px-2.5 py-2 rounded-lg flex items-center justify-between gap-2 text-xs font-medium text-slate-800 transition-colors border ${
+                            isPopular
+                              ? "bg-[#f4f8ef] border-[#9ec089]"
+                              : "bg-white border-[#e5e9e2] hover:border-[#b7c9af]"
+                          }`}
+                        >
+                          <div className="tl-topup-package__amounts min-w-0 space-y-0.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-bold text-slate-900">{pkg.name}</span>
+                              {isPopular ? (
+                                <span className="px-1.5 py-0.5 rounded bg-[#174b3f] text-white text-[10px] font-bold leading-none">
+                                  Хит
+                                </span>
+                              ) : null}
+                              {pkg.bonus_rub > 0 ? (
+                                <span className="text-[10px] text-slate-500 whitespace-nowrap">
+                                  ~{effectiveTaskRub} ₽/задача
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                              <span className="font-bold text-slate-700 whitespace-nowrap">{pkg.price_rub.toLocaleString("ru-RU")} ₽</span>
+                              <span className="text-slate-400">→</span>
+                              <span className="font-extrabold text-[#174b3f] whitespace-nowrap">{pkg.total_rub.toLocaleString("ru-RU")} ₽ на баланс</span>
+                            </div>
+                          </div>
+                          <div className="tl-topup-package__action flex items-center gap-1.5 shrink-0">
+                            {pkg.bonus_rub > 0 ? (
+                              <span className="px-1.5 py-0.5 rounded bg-[#e7efe0] text-[#103a31] text-[10px] font-bold whitespace-nowrap">
+                                +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">без бонуса</span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedTopUpPackage(pkg);
+                                setCustomTopUpRub(pkg.price_rub);
+                                setTopUpTab("card");
+                                setShowTopUpModal(true);
+                                setShowTariffs(false);
+                              }}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                                isPopular
+                                  ? "tl-btn-primary"
+                                  : "bg-white hover:bg-[#f4f8ef] text-[#174b3f] border border-[#b7c9af] hover:border-[#174b3f]"
+                              }`}
+                            >
+                              Купить
+                            </button>
+                          </div>
                         </div>
-                        <div className="tl-topup-package__action flex items-center gap-1.5 shrink-0">
-                          {pkg.bonus_rub > 0 ? (
-                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-extrabold whitespace-nowrap">
-                              +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽
-                            </span>
-                          ) : (
-                            <span className="text-[10px] text-slate-400 font-medium">Старт</span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedTopUpPackage(pkg);
-                              setCustomTopUpRub(pkg.price_rub);
-                              setTopUpTab("card");
-                              setShowTopUpModal(true);
-                              setShowTariffs(false);
-                            }}
-                            className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded text-[11px] font-bold shadow-2xs transition-all cursor-pointer whitespace-nowrap"
-                          >
-                            Купить
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               </div>
 
               {/* Action Banner inside Tariffs */}
-              <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-slate-50 rounded-lg border border-slate-200/70 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-[#f8faf6] rounded-xl border border-[#dfe5dc] text-xs">
                 <span className="text-slate-600 text-[11px]">
                   Средства на балансе не сгорают, расходуются только по факту выполненных задач.
                 </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
-                    setSelectedTopUpPackage(defPkg);
-                    setCustomTopUpRub(defPkg?.price_rub || 5000);
-                    setTopUpTab("card");
-                    setShowTopUpModal(true);
-                    setShowTariffs(false);
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer ml-auto"
-                >
-                  <PlusCircle size={13} />
-                  <span>Пополнить баланс с бонусом</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2 ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
+                      setSelectedTopUpPackage(defPkg);
+                      setCustomTopUpRub(defPkg?.price_rub || 5000);
+                      setTopUpTab("b2b");
+                      setShowTopUpModal(true);
+                      setShowTariffs(false);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-[#f4f8ef] text-[#174b3f] border border-[#b7c9af] rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    <Building2 size={13} aria-hidden="true" />
+                    <span>Выставить счёт юрлицу</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
+                      setSelectedTopUpPackage(defPkg);
+                      setCustomTopUpRub(defPkg?.price_rub || 5000);
+                      setTopUpTab("card");
+                      setShowTopUpModal(true);
+                      setShowTariffs(false);
+                    }}
+                    className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer"
+                  >
+                    <PlusCircle size={13} aria-hidden="true" />
+                    <span>Пополнить баланс с бонусом</span>
+                  </button>
+                </div>
               </div>
             </section>
           );
@@ -4822,10 +5360,10 @@ export function CabinetClient() {
         </div>
       ) : null}
 
-      {(message || error) ? (
-        <div className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 shadow-2xs ${error ? "bg-rose-50 border-rose-200 text-rose-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
-          {error ? <XCircle size={15} aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
-          <span>{error || message}</span>
+      {(message || (error && cabinetSection !== "workspace")) ? (
+        <div className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 ${error && !message ? "bg-rose-50 border-rose-200 text-rose-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
+          {error && !message ? <XCircle size={15} aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
+          <span>{message || error}</span>
         </div>
       ) : null}
 
@@ -4867,344 +5405,278 @@ export function CabinetClient() {
         </div>
       ) : null}
 
-      {/* Main Task Launch Form */}
-      <section className="tl-cabinet-launcher bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs">
-        <form id="new-job" className="space-y-2.5" onSubmit={submitJob}>
-          <div className="space-y-0.5 pb-2 border-b border-slate-100">
-            <h1 className="text-sm sm:text-base font-extrabold text-slate-900">Запуск задачи</h1>
-            <p className="text-[11px] text-slate-500">{selectedCopy.formSubtitle}</p>
-          </div>
-
-          {(() => {
-            const visibleTabs: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
-              ...scenarioOptions,
-              ...(session?.user?.allowed_price_monitoring
-                ? [
-                    {
-                      id: "price_monitoring" as const,
-                      label: "Мониторинг цен",
-                      description: "поиск цен и поставщиков по спецификации Excel",
-                      icon: Coins,
-                    },
-                  ]
-                : []),
-              ...(hasSeparateCustomBatchTab
-                ? [
-                    {
-                      id: "custom_batch_report" as const,
-                      label: "Пакетный анализ",
-                      description: "выгрузки Excel/CSV/Word и список извещений",
-                      icon: FileSpreadsheet,
-                    },
-                  ]
-                : []),
-            ];
-            const colsClass =
-              visibleTabs.length >= 6
-                ? "sm:grid-cols-3 lg:grid-cols-6"
-                : visibleTabs.length === 5
-                ? "sm:grid-cols-5"
-                : "sm:grid-cols-4";
-            return (
-          <div className={`grid grid-cols-1 ${colsClass} gap-1.5 p-1 bg-slate-100 border border-slate-200/90 rounded-xl`} role="tablist" aria-label="Тип задачи">
-            {visibleTabs.map((item) => {
-              const ItemIcon = item.icon;
-              const isSelected = scenario === item.id;
-              return (
-                <div
-                  key={item.id}
-                  onClick={() => selectScenario(item.id)}
-                  className={`py-2 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-between gap-1.5 cursor-pointer border select-none ${
-                    isSelected
-                      ? "bg-teal-600 border-teal-700 text-white shadow-sm ring-1 ring-teal-500/30"
-                      : "bg-white border-slate-200/90 text-slate-700 hover:text-teal-800 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
-                  }`}
-                  role="tab"
-                  tabIndex={0}
-                  onKeyDown={(event) => {
-                    if (event.target !== event.currentTarget) return;
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      selectScenario(item.id);
-                    }
-                  }}
-                  aria-selected={isSelected}
-                >
-                  <div className="flex items-center gap-1.5 truncate">
-                    <ItemIcon size={14} className={isSelected ? "text-teal-100" : "text-teal-600"} aria-hidden="true" />
-                    <span className="truncate">{item.label}</span>
-                  </div>
-                  <button
-                    type="button"
-                    title={`Справка: как работает «${item.label}»`}
-                    aria-label={`Справка: как работает «${item.label}»`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setHelpModalTab(item.id);
-                      setShowHelpModal(true);
-                    }}
-                    className={`p-0.5 rounded-md transition-colors cursor-pointer shrink-0 ${
-                      isSelected
-                        ? "text-teal-100 hover:text-white hover:bg-white/20"
-                        : "text-slate-400 hover:text-teal-700 hover:bg-teal-50"
-                    }`}
-                  >
-                    <HelpCircle size={13} aria-hidden="true" />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-            );
-          })()}
-
-          {scenario === "supplier_search" || scenario === "analysis_and_suppliers" ? (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-1.5 bg-slate-50 border border-slate-200/90 rounded-xl">
-              {supplierPolicyOptions.map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  className={`p-2.5 rounded-lg text-left border text-xs transition-all cursor-pointer flex items-start gap-2 ${
-                    supplierSearchPolicy === opt.id
-                      ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs font-bold text-slate-900"
-                      : "bg-white border-slate-200/90 text-slate-700 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
-                  }`}
-                  onClick={() => handleSetSupplierSearchPolicy(opt.id)}
-                >
-                  <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                    supplierSearchPolicy === opt.id ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
-                  }`}>
-                    {supplierSearchPolicy === opt.id ? <div className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
-                  </div>
-                  <div className="min-w-0">
-                    <strong className="block font-bold text-xs leading-tight text-slate-900 truncate">{opt.label}</strong>
-                    <span className="text-[10px] text-slate-500 font-normal leading-tight block mt-0.5">{opt.description}</span>
-                  </div>
-                </button>
-              ))}
+      {/* Main Task Launch Form — Single Focused Tool Composer (Hidden when viewing Full Tasks Archive) */}
+      {cabinetSection === "workspace" ? (
+        <section className="tl-cabinet-launcher">
+          <form id="new-job" className="space-y-3.5" onSubmit={submitJob}>
+            {/* 1. Focused Tool Header */}
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100">
+              <div className="min-w-0 space-y-0.5">
+                <h1 className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-snug">
+                  {selectedCopy.title}
+                </h1>
+                <p className="text-xs sm:text-[13px] text-slate-600 leading-relaxed max-w-3xl">
+                  {selectedCopy.formSubtitle}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setHelpModalTab(scenario);
+                  setShowHelpModal(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold shrink-0 cursor-pointer transition-colors"
+                title={`Справка: как работает «${selectedCopy.title}»`}
+              >
+                <HelpCircle size={13} className="text-teal-700" aria-hidden="true" />
+                <span className="hidden sm:inline">Как работает</span>
+              </button>
             </div>
-          ) : null}
-
-          {scenario === "supplier_search" || scenario === "analysis_and_suppliers" || scenario === "price_monitoring" ? (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between px-0.5">
-                <span className="text-[11px] font-semibold text-slate-700 tracking-tight flex items-center gap-1.5">
-                  <span>{scenario === "price_monitoring" ? "География мониторинга цен:" : "География поиска поставщиков:"}</span>
-                  {(supplierSearchPolicy === "minprom_registry_only" || supplierSearchPolicy === "minprom_registry_priority") && (
-                    <span className="text-[10px] text-teal-800 bg-teal-50 border border-teal-200/80 px-1.5 py-0.5 rounded font-normal">
-                      Реестр Минпромторга действует только в РФ
-                    </span>
-                  )}
-                </span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-1.5 bg-slate-50 border border-slate-200/90 rounded-xl">
-                {geoScopeOptions.map((opt) => {
-                  const isLockedByMinprom = (supplierSearchPolicy === "minprom_registry_only" || supplierSearchPolicy === "minprom_registry_priority") && opt.id !== "ru";
-                  const isSelected = isLockedByMinprom ? false : geoScope === opt.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      disabled={isLockedByMinprom}
-                      title={isLockedByMinprom ? "При поиске по реестру Минпромторга доступна только территория РФ" : opt.description}
-                      className={`p-2.5 rounded-lg text-left border text-xs transition-all flex items-start gap-2 ${
-                        isLockedByMinprom
-                          ? "bg-slate-100 border-slate-200 text-slate-400 opacity-60 cursor-not-allowed"
-                          : isSelected
-                          ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs font-bold text-slate-900 cursor-pointer"
-                          : "bg-white border-slate-200/90 text-slate-700 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs cursor-pointer"
-                      }`}
-                      onClick={() => !isLockedByMinprom && handleSetGeoScope(opt.id)}
-                    >
-                      <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                        isSelected ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
-                      }`}>
-                        {isSelected ? <div className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
-                      </div>
-                      <div className="min-w-0">
-                        <strong className="block font-bold text-xs leading-tight text-slate-900 truncate">
-                          {opt.label}
-                        </strong>
-                        <span className="text-[10px] text-slate-500 font-normal leading-tight block mt-0.5">
-                          {opt.description}
-                        </span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
-
-          {(scenario === "supplier_search" || scenario === "analysis_and_suppliers" || scenario === "price_monitoring") && session?.user?.allowed_geo_radius ? (
-            <DeliveryPriorityControl geoRadiusEnabled={geoRadiusEnabled} deliveryCity={deliveryCity} geoRadiusKm={geoRadiusKm}
-              setGeoRadiusEnabled={setGeoRadiusEnabled} setDeliveryCity={setDeliveryCity} setGeoRadiusKm={setGeoRadiusKm}
-              surchargePct={session?.user?.geo_radius_surcharge_pct ?? 30} />
-          ) : null}
-
-          <div className="space-y-2">
-            <div
-              className={`border-2 border-dashed rounded-xl px-4 py-2.5 cursor-pointer transition-all flex flex-wrap items-center justify-between gap-3 min-h-[46px] ${
-                dragActive ? "border-teal-500 bg-teal-50/70 shadow-xs" : "border-teal-400/80 hover:border-teal-500 bg-teal-50/25 hover:bg-teal-50/50"
-              }`}
-              role="button"
-              tabIndex={0}
-              aria-label="Выбрать файлы для задачи"
-              onDragOver={(event) => {
-                event.preventDefault();
-                setDragActive(true);
-              }}
-              onDragLeave={() => setDragActive(false)}
-              onDrop={(event) => {
-                event.preventDefault();
-                setDragActive(false);
-                filesFromList(event.dataTransfer.files);
-              }}
-              onClick={() => fileInputRef.current?.click()}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  fileInputRef.current?.click();
-                }
-              }}
-            >
-              <input
-                ref={fileInputRef}
-                className="hidden"
-                type="file"
-                multiple
-                accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.zip,.rar,.7z"
-                onChange={handleFileInput}
-              />
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-8 h-8 rounded-lg bg-teal-100/90 text-teal-700 flex items-center justify-center border border-teal-200/80 shadow-2xs shrink-0">
-                  <Upload size={16} aria-hidden="true" />
-                </div>
-                <strong className="text-sm font-extrabold text-slate-900 whitespace-nowrap">{selectedCopy.uploadTitle}</strong>
-              </div>
-
-              <div className="flex items-center gap-2.5 text-xs text-slate-600 font-medium ml-auto">
-                <span className="hidden md:inline">{selectedCopy.uploadText}</span>
-                <span className="md:hidden text-[11px]">Нажмите для выбора (PDF, DOCX, XLSX, ZIP, RAR)</span>
-                <span className="px-2.5 py-1 bg-white border border-teal-300 text-teal-800 rounded-lg text-xs font-bold shadow-2xs shrink-0">
-                  Выбрать файл
-                </span>
-              </div>
-            </div>
-
-            {batchBusy && !batchPreview ? (
-              <div className="p-2.5 bg-teal-50 border border-teal-200 rounded-xl text-xs font-bold text-teal-900 flex items-center gap-2">
-                <Loader2 size={15} className="animate-spin text-teal-700 shrink-0" />
-                <span>Читаем перечень закупок из файла и подготавливаем окно выбора...</span>
-              </div>
-            ) : null}
-
-            {selectedFiles.length ? (
-              <div className="p-2.5 bg-slate-50 border border-slate-200/80 rounded-xl space-y-2">
-                <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-                  <span>Выбранные файлы ({selectedFiles.length}):</span>
-                  <button
-                    type="button"
-                    className="px-2 py-0.5 text-[10px] font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-md transition-colors cursor-pointer"
-                    onClick={clearSelectedFiles}
-                  >
-                    Очистить все
-                  </button>
-                </div>
-                <ul className="space-y-1">
-                  {selectedFiles.map((file, idx) => (
-                    <li key={`${file.name}-${idx}`} className="flex items-center justify-between text-xs bg-white p-1.5 rounded-lg border border-slate-200/70 text-slate-800">
-                      <span className="truncate max-w-xs font-medium text-xs">{file.name}</span>
-                      <span className="text-[10px] text-slate-400 font-mono shrink-0 ml-2">{(file.size / 1024).toFixed(1)} KB</span>
-                    </li>
-                  ))}
-                </ul>
-                {!acceptsSources && !acceptsText ? (
-                  <div className="pt-1 flex flex-wrap items-center justify-between gap-2.5">
-                    <button
-                      className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs sm:text-sm font-extrabold rounded-xl shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed border border-teal-500/40"
-                      type="submit"
-                      disabled={busy}
-                    >
-                      {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Sparkles size={15} className="text-emerald-200" aria-hidden="true" />}
-                      <span>{selectedCopy.submit} ({selectedFiles.length} {declensionFiles(selectedFiles.length)})</span>
-                      <ArrowRight size={15} className="ml-0.5" aria-hidden="true" />
-                    </button>
-                    <span className="text-[11px] text-slate-500 font-medium">Готово к анализу и проверке</span>
-                  </div>
-                ) : (
-                  <div className="text-[11px] text-slate-500 font-medium">
-                    Готово к запуску — нажмите «{selectedCopy.submit}» ниже.
-                  </div>
-                )}
-              </div>
-            ) : null}
-
-            {selectedFiles.length ? (
-              <p className="text-[11px] text-slate-500 leading-normal flex items-center gap-1.5 px-1">
-                <span>💡</span>
-                <span>Совет: если спецификация крупная и объединяет разные рынки (электрика, отделка, сантехника), эффективнее загружать разделы отдельными файлами для максимальной глубины подбора.</span>
-              </p>
-            ) : null}
-
-            {!emailVerified ? (
-              <div className="p-2.5 bg-amber-50 border border-amber-200/90 rounded-xl text-xs font-medium text-amber-900 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
-                <div className="flex items-center gap-2">
-                  <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
-                  <span>
-                    Вы можете сразу запустить первую пробную задачу или демо-пример. Для следующих задач подтвердите email по ссылке из письма (проверьте «Входящие» и «Спам») или войдите через Telegram.
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <a
-                    href="/api/customer/auth/telegram/login"
-                    className="px-2.5 py-1 bg-[#24A1DE] hover:bg-[#1f93cc] text-white rounded-lg text-xs font-bold transition-all shadow-2xs"
-                  >
-                    Вход через Telegram
-                  </a>
-                  <button
-                    type="button"
-                    className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
-                    onClick={resendVerification}
-                    disabled={busy}
-                  >
-                    Отправить повторно
-                  </button>
-                </div>
-              </div>
-            ) : null}
 
             {error ? (
-              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs font-bold text-rose-800 flex items-center gap-2 shadow-2xs">
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs font-semibold text-rose-800 flex items-center gap-2">
                 <XCircle size={15} className="text-rose-600 shrink-0" aria-hidden="true" />
                 <span>{error}</span>
               </div>
             ) : null}
 
+            {batchBusy && !batchPreview ? (
+              <div className="p-2.5 bg-teal-50 border border-teal-200 rounded-xl text-xs font-semibold text-teal-900 flex items-center gap-2">
+                <Loader2 size={15} className="animate-spin text-teal-700 shrink-0" />
+                <span>Читаем перечень закупок из файла и подготавливаем окно выбора...</span>
+              </div>
+            ) : null}
+
+            {/* Hidden File Input Shared Across Dropzones */}
+            <input
+              ref={fileInputRef}
+              className="hidden"
+              type="file"
+              multiple
+              accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.zip,.rar,.7z"
+              onChange={handleFileInput}
+            />
+
+            {/* 2A. EIS / Procurement Documentation Composer (Distinct Document-First Layout) */}
             {acceptsSources ? (
-              <div className="space-y-1.5">
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 w-full">
-                  <label className="flex flex-col gap-1 text-xs font-bold text-slate-700 flex-1 min-w-0">
-                    <span className="text-[11px]">{selectedCopy.sourceLabel}</span>
-                    {isCustomBatchScenario ? (
-                      <textarea
-                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs resize-y min-h-[54px]"
-                        rows={2}
-                        value={sourceUrls}
-                        onChange={(event) => setSourceUrls(event.target.value)}
-                        placeholder={selectedCopy.sourcePlaceholder}
-                      />
-                    ) : (
-                      <input
-                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs h-[38px]"
-                        value={sourceUrls}
-                        onChange={(event) => setSourceUrls(event.target.value)}
-                        placeholder={selectedCopy.sourcePlaceholder}
-                      />
-                    )}
+              <div className="space-y-2.5">
+                <div className="p-3 sm:p-3.5 rounded-xl bg-slate-50/70 border border-slate-200/90 space-y-2">
+                  <label className="block text-xs font-bold text-slate-800" htmlFor="eis-source-input">
+                    {selectedCopy.sourceLabel}
                   </label>
+                  <div className="flex flex-col sm:flex-row items-stretch gap-2">
+                    <div className="relative flex-1 min-w-0">
+                      {!isCustomBatchScenario ? (
+                        <Globe size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
+                      ) : null}
+                      {isCustomBatchScenario ? (
+                        <textarea
+                          id="eis-source-input"
+                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-[13px] text-slate-900 resize-y min-h-[68px]"
+                          rows={2}
+                          value={sourceUrls}
+                          onChange={(event) => setSourceUrls(event.target.value)}
+                          placeholder={selectedCopy.sourcePlaceholder}
+                        />
+                      ) : (
+                        <input
+                          id="eis-source-input"
+                          className="w-full pl-9 pr-3 h-[42px] bg-white border border-slate-300 rounded-lg text-[13px] text-slate-900 tl-num"
+                          value={sourceUrls}
+                          onChange={(event) => setSourceUrls(event.target.value)}
+                          placeholder={selectedCopy.sourcePlaceholder}
+                        />
+                      )}
+                    </div>
+                    <button
+                      className={`tl-btn-primary px-5 h-[42px] ${isCustomBatchScenario ? "sm:self-start" : ""} rounded-lg text-xs sm:text-[13px] flex items-center justify-center gap-2 cursor-pointer shrink-0 whitespace-nowrap`}
+                      type="submit"
+                      disabled={busy}
+                    >
+                      {busy ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : null}
+                      <span>
+                        {selectedFiles.length > 0
+                          ? `${selectedCopy.submit} (${selectedFiles.length} ${declensionFiles(selectedFiles.length)})`
+                          : selectedCopy.submit}
+                      </span>
+                      {!busy ? <ArrowRight size={14} aria-hidden="true" /> : null}
+                    </button>
+                  </div>
+
+                  {activeScenarioPricingHint ? (
+                    <div className="tl-cost-hint pt-0.5">
+                      <Wallet size={12} className="text-[#174b3f] shrink-0" aria-hidden="true" />
+                      <span>{activeScenarioPricingHint}</span>
+                    </div>
+                  ) : null}
+
+                  {(() => {
+                    const trimmedSource = sourceUrls.trim();
+                    const looksLikeProductText =
+                      trimmedSource.length >= 4 &&
+                      !isCustomBatchScenario &&
+                      !/\d{11,19}/.test(trimmedSource) &&
+                      !/zakupki\.gov\.ru|https?:\/\//i.test(trimmedSource) &&
+                      /[а-яА-ЯёЁa-zA-Z]{3,}/.test(trimmedSource);
+                    if (!looksLikeProductText) return null;
+                    return (
+                      <div className="px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-2">
+                        <span>Похоже на название товара, а не номер закупки ЕИС. Перенести запрос в нужный инструмент?</span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => selectScenario("supplier_search", { preserveInput: true })}
+                            className="px-2.5 py-1 rounded-md bg-white border border-amber-300 font-bold text-teal-900 hover:border-teal-600 cursor-pointer text-[11px]"
+                          >
+                            В «Поиск поставщиков» →
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => selectScenario("exact_product", { preserveInput: true })}
+                            className="px-2.5 py-1 rounded-md bg-white border border-amber-300 font-bold text-slate-800 hover:border-teal-600 cursor-pointer text-[11px]"
+                          >
+                            В «Подбор аналогов» →
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Secondary Compact Document Drop Bar */}
+                <div
+                  className={`border border-dashed rounded-xl px-3.5 py-2.5 cursor-pointer transition-colors flex flex-wrap items-center justify-between gap-2.5 ${
+                    dragActive ? "border-teal-600 bg-teal-50/70" : "border-slate-300 hover:border-teal-600 bg-white hover:bg-slate-50/70"
+                  }`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Выбрать файлы для задачи"
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setDragActive(true);
+                  }}
+                  onDragLeave={() => setDragActive(false)}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setDragActive(false);
+                    filesFromList(event.dataTransfer.files);
+                  }}
+                  onClick={() => fileInputRef.current?.click()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      fileInputRef.current?.click();
+                    }
+                  }}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Paperclip size={15} className="text-teal-700 shrink-0" aria-hidden="true" />
+                    <div className="min-w-0">
+                      <span className="text-xs font-bold text-slate-800">{selectedCopy.uploadTitle}</span>
+                      <span className="hidden md:inline text-xs text-slate-500 ml-2">— {selectedCopy.uploadText}</span>
+                    </div>
+                  </div>
+                  <span className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-800 rounded-md text-xs font-semibold shrink-0">
+                    Выбрать файлы
+                  </span>
+                </div>
+              </div>
+            ) : null}
+
+            {/* 2B. Product / Specification Composer (Unified File + Text Workspace) */}
+            {acceptsText ? (
+              <div className="rounded-xl border border-slate-300 bg-white overflow-hidden">
+                <div
+                  className={`px-3.5 py-2.5 border-b border-slate-200/90 cursor-pointer transition-colors flex flex-wrap items-center justify-between gap-2.5 ${
+                    dragActive ? "bg-teal-50/80" : "bg-slate-50/80 hover:bg-slate-100/70"
+                  }`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Выбрать файлы для задачи"
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setDragActive(true);
+                  }}
+                  onDragLeave={() => setDragActive(false)}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setDragActive(false);
+                    filesFromList(event.dataTransfer.files);
+                  }}
+                  onClick={() => fileInputRef.current?.click()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      fileInputRef.current?.click();
+                    }
+                  }}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Upload size={15} className="text-teal-700 shrink-0" aria-hidden="true" />
+                    <strong className="text-xs font-bold text-slate-900">{selectedCopy.uploadTitle}</strong>
+                    <span className="hidden md:inline text-xs text-slate-500 truncate">{selectedCopy.uploadText}</span>
+                  </div>
+                  <span className="px-2.5 py-1 bg-white border border-slate-300 text-slate-800 rounded-md text-xs font-semibold shrink-0">
+                    Выбрать файл
+                  </span>
+                </div>
+
+                <div className="p-3 space-y-2">
+                  <label className="block text-[11px] font-semibold text-slate-500" htmlFor="spec-text-input">
+                    {selectedCopy.textLabel}
+                  </label>
+                  <textarea
+                    id="spec-text-input"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-[13px] text-slate-900 resize-y min-h-[76px] leading-relaxed"
+                    value={text}
+                    onChange={(event) => setText(event.target.value)}
+                    rows={3}
+                    placeholder={selectedCopy.textPlaceholder}
+                  />
+
+                  {(() => {
+                    const trimmedText = text.trim();
+                    const looksLikeEisNotice =
+                      /zakupki\.gov\.ru/i.test(trimmedText) || /^\d{11}$|^\d{19}$/.test(trimmedText);
+                    if (!looksLikeEisNotice) return null;
+                    return (
+                      <div className="px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-2">
+                        <span>Вы вставили номер или ссылку ЕИС. Перенести в разбор закупки с сохранением данных?</span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => selectScenario("analysis_and_suppliers", { preserveInput: true })}
+                            className="px-2.5 py-1 rounded-md bg-white border border-amber-300 font-bold text-teal-900 hover:border-teal-600 cursor-pointer text-[11px]"
+                          >
+                            Анализ + поиск →
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => selectScenario("procurement_report", { preserveInput: true })}
+                            className="px-2.5 py-1 rounded-md bg-white border border-amber-300 font-bold text-slate-800 hover:border-teal-600 cursor-pointer text-[11px]"
+                          >
+                            Анализ документации →
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div className="px-3.5 py-2.5 bg-slate-50/70 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-2.5">
+                  <div className="space-y-0.5 min-w-0">
+                    {activeScenarioPricingHint ? (
+                      <div className="tl-cost-hint text-slate-700 font-medium">
+                        <Wallet size={12} className="text-[#174b3f] shrink-0" aria-hidden="true" />
+                        <span>{activeScenarioPricingHint}</span>
+                      </div>
+                    ) : null}
+                    <span className="text-[11px] text-slate-500 block">
+                      {selectedCopy.hint}
+                    </span>
+                  </div>
                   <button
-                    className={`px-5 ${isCustomBatchScenario ? "h-[54px]" : "h-[38px]"} bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs font-extrabold rounded-lg shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 whitespace-nowrap border border-teal-500/40`}
+                    className="tl-btn-primary px-5 h-[38px] rounded-lg text-xs sm:text-[13px] flex items-center justify-center gap-2 cursor-pointer ml-auto shrink-0"
                     type="submit"
                     disabled={busy}
                   >
@@ -5214,70 +5686,119 @@ export function CabinetClient() {
                         ? `${selectedCopy.submit} (${selectedFiles.length} ${declensionFiles(selectedFiles.length)})`
                         : selectedCopy.submit}
                     </span>
+                    {!busy ? <ArrowRight size={14} aria-hidden="true" /> : null}
                   </button>
                 </div>
-                {scenario === "procurement_report" && selectedFiles.length === 0 ? (
-                  <div className="px-0.5">
-                    <button
-                      type="button"
-                      onClick={() => selectScenario("supplier_search")}
-                      className="text-[11px] font-semibold text-teal-700 hover:text-teal-900 hover:underline transition-colors text-left cursor-pointer"
-                    >
-                      Нужно найти заводы и дилеров по списку товаров или названию? Переключитесь во вкладку «Поиск поставщиков» →
-                    </button>
+              </div>
+            ) : null}
+
+            {/* Selected Files List */}
+            {selectedFiles.length ? (
+              <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                  <span>Прикреплённые файлы ({selectedFiles.length}):</span>
+                  <button
+                    type="button"
+                    className="px-2 py-0.5 text-[11px] font-semibold text-rose-700 hover:bg-rose-50 rounded cursor-pointer"
+                    onClick={clearSelectedFiles}
+                  >
+                    Очистить
+                  </button>
+                </div>
+                <ul className="flex flex-wrap gap-1.5">
+                  {selectedFiles.map((file, idx) => (
+                    <li key={`${file.name}-${idx}`} className="inline-flex items-center gap-2 text-xs bg-white px-2.5 py-1 rounded-md border border-slate-200 text-slate-800 max-w-full">
+                      <FileText size={12} className="text-teal-700 shrink-0" aria-hidden="true" />
+                      <span className="truncate max-w-[260px] font-medium">{file.name}</span>
+                      <span className="text-[10px] text-slate-400 tl-num shrink-0">{(file.size / 1024).toFixed(1)} KB</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {/* 3. Compact Single-Row Search Parameters (Registry & Geography) */}
+            {scenario === "supplier_search" || scenario === "analysis_and_suppliers" || scenario === "price_monitoring" ? (
+              <div className="pt-1 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+                {scenario === "supplier_search" || scenario === "analysis_and_suppliers" ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-600">Реестр:</span>
+                    <div className="tl-seg-group" role="group" aria-label="Фильтр по реестру Минпромторга">
+                      {supplierPolicyOptions.map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          title={opt.description}
+                          className={`tl-seg-btn ${supplierSearchPolicy === opt.id ? "is-active" : ""}`}
+                          onClick={() => handleSetSupplierSearchPolicy(opt.id)}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 ) : null}
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-600">География:</span>
+                  <div className="tl-seg-group" role="group" aria-label="География поиска">
+                    {geoScopeOptions.map((opt) => {
+                      const isLockedByMinprom =
+                        (supplierSearchPolicy === "minprom_registry_only" || supplierSearchPolicy === "minprom_registry_priority") &&
+                        opt.id !== "ru";
+                      const isSelected = isLockedByMinprom ? false : geoScope === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          disabled={isLockedByMinprom}
+                          title={isLockedByMinprom ? "При поиске по реестру Минпромторга доступна только территория РФ" : opt.description}
+                          className={`tl-seg-btn ${isSelected ? "is-active" : ""}`}
+                          onClick={() => !isLockedByMinprom && handleSetGeoScope(opt.id)}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             ) : null}
 
-            {acceptsText ? (
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 w-full">
-                <label className="flex flex-col gap-1 text-xs font-bold text-slate-700 flex-1 min-w-0">
-                  <span className="text-[11px]">{selectedCopy.textLabel}</span>
-                  <textarea
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs resize-y min-h-[50px]"
-                    value={text}
-                    onChange={(event) => setText(event.target.value)}
-                    rows={2}
-                    placeholder={selectedCopy.textPlaceholder}
-                  />
-                </label>
-                <button
-                  className="px-5 h-[50px] bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs font-extrabold rounded-lg shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 sm:max-w-[220px] whitespace-normal text-center leading-snug border border-teal-500/40"
-                  type="submit"
-                  disabled={busy}
-                >
-                  {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
-                  <span>
-                    {selectedFiles.length > 0
-                      ? `${selectedCopy.submit} (${selectedFiles.length} ${declensionFiles(selectedFiles.length)})`
-                      : selectedCopy.submit}
-                  </span>
-                </button>
-              </div>
+            {/* 4. Optional Logistics Radius Strip */}
+            {(scenario === "supplier_search" || scenario === "analysis_and_suppliers" || scenario === "price_monitoring") && session?.user?.allowed_geo_radius ? (
+              <DeliveryPriorityControl
+                geoRadiusEnabled={geoRadiusEnabled}
+                deliveryCity={deliveryCity}
+                geoRadiusKm={geoRadiusKm}
+                setGeoRadiusEnabled={setGeoRadiusEnabled}
+                setDeliveryCity={setDeliveryCity}
+                setGeoRadiusKm={setGeoRadiusKm}
+                surchargePct={session?.user?.geo_radius_surcharge_pct ?? 30}
+              />
             ) : null}
-          </div>
-        </form>
-      </section>
+          </form>
+        </section>
+      ) : null}
 
       {activeJobs > 0 && !session?.user?.has_telegram ? (
-        <aside className="p-3 bg-gradient-to-r from-teal-50 via-emerald-50 to-sky-50 border border-teal-200/90 rounded-xl flex flex-wrap items-center justify-between gap-3 shadow-2xs">
+        <aside className="p-3 bg-white border border-slate-200 rounded-xl flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 text-xs text-slate-800">
-            <div className="w-8 h-8 rounded-lg bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
-              <BellRing size={16} className="animate-pulse" />
+            <div className="w-8 h-8 rounded-lg bg-teal-50 border border-teal-200 text-teal-800 flex items-center justify-center shrink-0">
+              <BellRing size={15} aria-hidden="true" />
             </div>
             <div>
-              <strong className="block text-slate-900 font-extrabold text-xs">
+              <strong className="block text-slate-900 font-bold text-xs tl-num">
                 {activeJobs} {declensionTasks(activeJobs)} в обработке (~2–3 мин)
               </strong>
               <span className="text-slate-600 text-[11px] leading-tight block">
-                Привяжите Telegram-бота в 1 клик — пришлём готовый отчёт прямо в мессенджер, можно не ждать на сайте
+                Привяжите Telegram-бота — пришлём готовый отчёт прямо в мессенджер, можно не ждать на сайте
               </span>
             </div>
           </div>
           <a
             href="/api/customer/auth/telegram/login"
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-[#24A1DE] hover:bg-[#1f93cc] active:bg-[#1a83b7] text-white text-xs font-bold rounded-lg shadow-2xs transition-all shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-[#24A1DE] hover:bg-[#1f93cc] text-white text-xs font-bold rounded-lg transition-colors shrink-0 cursor-pointer"
           >
             <Send size={13} aria-hidden="true" />
             <span>Привязать Telegram</span>
@@ -5286,32 +5807,76 @@ export function CabinetClient() {
       ) : null}
 
       {/* Jobs History Table */}
-      <section id="jobs" className="tl-cabinet-jobs bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2.5 pb-2 border-b border-slate-100">
-          <div className="flex items-center gap-2">
-            <h2 className="text-lg font-extrabold text-slate-900">Задачи</h2>
-            <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-lg">
-              {jobsTotal ? `${jobsStart}-${jobsEnd} из ${jobsTotal}` : "0 задач"}
+      <section id="jobs" className="tl-cabinet-jobs space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2.5 pb-2.5 border-b border-slate-100">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <h2 className="text-base sm:text-lg font-extrabold text-slate-900 tracking-tight">
+              {cabinetSection === "workspace" ? "Последние задачи" : "Мои задачи"}
+            </h2>
+            <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-md tl-num">
+              {jobsTotal
+                ? isWorkspaceCollapsed
+                  ? `1–${visibleJobs.length} из ${jobsTotal}`
+                  : `${jobsStart}–${jobsEnd} из ${jobsTotal}`
+                : "0 задач"}
             </span>
+
+            {/* Quick Status Filter Segmented Bar */}
+            <div className="tl-seg-group" role="group" aria-label="Фильтр по статусу задач">
+              {[
+                { id: "" as const, label: "Все" },
+                { id: "active" as const, label: "В работе" },
+                { id: "attention" as const, label: "Ждут решения" },
+                { id: "completed" as const, label: "Готовые" },
+              ].map((tab) => (
+                <button
+                  key={tab.id || "all"}
+                  type="button"
+                  className={`tl-seg-btn ${jobStatusFilter === tab.id ? "is-active" : ""}`}
+                  onClick={() => {
+                    setJobStatusFilter(tab.id);
+                    setJobsPage(1);
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            {cabinetSection === "jobs" ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setCabinetSection("workspace");
+                  if (typeof window !== "undefined") {
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                  }
+                }}
+                className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer"
+              >
+                <PlusCircle size={13} aria-hidden="true" />
+                <span>Новая задача</span>
+              </button>
+            ) : null}
+
             {jobsTotal > jobsPageSize ? (
-              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700" aria-label="Навигация по задачам">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 tl-num" aria-label="Навигация по задачам">
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
                   onClick={() => setJobsPage((page) => Math.max(1, page - 1))}
                   disabled={jobsPage <= 1 || jobsLoading}
                 >
                   Назад
                 </button>
-                <span className="px-2 text-xs font-medium text-slate-600">
+                <span className="px-1.5 text-xs font-medium text-slate-600">
                   Страница {jobsPage} из {jobsPageCount}
                 </span>
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
                   onClick={() => setJobsPage((page) => Math.min(jobsPageCount, page + 1))}
                   disabled={jobsPage >= jobsPageCount || jobsLoading}
                 >
@@ -5322,7 +5887,7 @@ export function CabinetClient() {
             <select
               value={jobsPageSize}
               onChange={(e) => handleJobsPageSizeChange(Number(e.target.value))}
-              className="py-1.5 px-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all cursor-pointer shadow-2xs"
+              className="py-1.5 px-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 cursor-pointer tl-num"
               title="Количество задач на странице"
             >
               <option value={15}>По 15</option>
@@ -5334,16 +5899,16 @@ export function CabinetClient() {
         </div>
 
         {/* Search and Filters Bar */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-center pt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-12 gap-2 items-center">
           {/* Search Input */}
-          <div className="relative col-span-12 md:col-span-6">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
+          <div className="relative sm:col-span-2 md:col-span-6">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={14} />
             <input
               type="text"
               value={jobSearchQuery}
               onChange={(e) => setJobSearchQuery(e.target.value)}
               placeholder="Поиск по названию или номеру #..."
-              className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all font-medium shadow-2xs"
+              className="w-full pl-9 pr-8 py-1.5 min-h-[36px] bg-white border border-slate-200 rounded-lg text-xs text-slate-900 placeholder:text-slate-400 font-medium"
             />
             {jobSearchQuery ? (
               <button
@@ -5358,7 +5923,7 @@ export function CabinetClient() {
           </div>
 
           {/* Mode Filter (Тип поиска) */}
-          <div className="col-span-6 md:col-span-3">
+          <div className="sm:col-span-1 md:col-span-3">
             <select
               aria-label="Тип задачи в истории"
               value={jobModeFilter}
@@ -5366,7 +5931,7 @@ export function CabinetClient() {
                 setJobModeFilter(e.target.value);
                 setJobsPage(1);
               }}
-              className="w-full py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all cursor-pointer shadow-2xs"
+              className="w-full py-1.5 min-h-[36px] px-3 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 cursor-pointer"
             >
               <option value="">Все типы</option>
               <option value="procurement_report">Анализ документации</option>
@@ -5376,11 +5941,14 @@ export function CabinetClient() {
               {session?.user?.allowed_price_monitoring ? (
                 <option value="price_monitoring">Мониторинг цен</option>
               ) : null}
+              {session?.user?.allowed_custom_batch_report || jobs.some((j) => j.is_custom_batch_report) ? (
+                <option value="custom_batch_report">Пакетный анализ</option>
+              ) : null}
             </select>
           </div>
 
           {/* Policy Filter (Режим поиска по реестру) */}
-          <div className="col-span-6 md:col-span-3 flex items-center gap-1.5">
+          <div className="sm:col-span-1 md:col-span-3 flex items-center gap-1.5">
             <select
               aria-label="Режим поиска в истории"
               value={jobPolicyFilter}
@@ -5388,7 +5956,7 @@ export function CabinetClient() {
                 setJobPolicyFilter(e.target.value);
                 setJobsPage(1);
               }}
-              className="w-full py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all cursor-pointer shadow-2xs"
+              className="w-full py-1.5 min-h-[36px] px-3 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 cursor-pointer"
             >
               <option value="">Все режимы</option>
               <option value="normal">Обычный поиск</option>
@@ -5400,7 +5968,7 @@ export function CabinetClient() {
               <button
                 type="button"
                 onClick={resetJobFilters}
-                className="px-2.5 py-2 text-xs font-bold text-slate-600 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 rounded-xl transition-colors cursor-pointer shrink-0 shadow-2xs"
+                className="px-2.5 min-h-[36px] text-xs font-bold text-slate-600 hover:text-rose-700 bg-slate-100 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 rounded-lg transition-colors cursor-pointer shrink-0"
                 title="Сбросить все фильтры"
               >
                 Сброс
@@ -5409,19 +5977,17 @@ export function CabinetClient() {
           </div>
         </div>
 
+        <div className="w-full space-y-2 font-sans">
+          {visibleJobs.length > 0 ? (
+            <div className="hidden md:grid grid-cols-12 gap-4 pb-2 border-b border-slate-200 text-xs font-semibold text-slate-500 px-3.5">
+              <span className="col-span-5">Задача и параметры</span>
+              <span className="col-span-3">Статус</span>
+              <span className="col-span-4 text-right">Результаты и действия</span>
+            </div>
+          ) : null}
 
-
-        <div className="w-full space-y-3 font-sans">
-          <div className="hidden md:grid grid-cols-12 gap-4 pb-3 border-b border-slate-200 text-[11px] font-bold text-slate-400 uppercase tracking-wider px-4">
-            <span className="col-span-3">Задача</span>
-            <span className="col-span-2">Режим</span>
-            <span className="col-span-2">Статус</span>
-            <span className="col-span-2">Прогресс</span>
-            <span className="col-span-3 text-right">Результат</span>
-          </div>
-
-          {jobs.length ? (
-            jobs.map((job) => {
+          {visibleJobs.length ? (
+            visibleJobs.map((job) => {
               const offer = (job as unknown as { result_offer?: { kind?: string; charge_amount_rub?: number; new_count?: number; prior_count?: number; delta_units?: number; can_accept?: boolean; can_decline?: boolean; comment?: string } }).result_offer;
               const isFailed = job.status === "failed" || job.status === "error";
               const isCancelledOrDeclined = job.status === "cancelled" || job.status === "customer_declined";
@@ -5434,6 +6000,11 @@ export function CabinetClient() {
               const jobCreatedTs = job.created_at ? new Date(apiDateValue(job.created_at)).getTime() : 0;
               const isCreatedAfterFeature = !Number.isNaN(jobCreatedTs) && jobCreatedTs >= NOTIFICATION_FEATURE_START_TS;
               const isUnviewed = isCreatedAfterFeature && isCompletedWithResult && !viewedJobIds.includes(job.id);
+              const durationText = formatJobDuration(job, nowTs);
+              const cleanTitle = formatCleanJobTitle(job);
+              const cleanStatusLabel = formatStatusLabel(job.status_label);
+              const cleanMessage = formatCleanJobMessage(job.message);
+              const hasJobMessages = Boolean(job.chat_messages && job.chat_messages.length > 0) || Boolean(job.admin_comment);
 
               return (
                 <article
@@ -5442,99 +6013,112 @@ export function CabinetClient() {
                   onClick={() => {
                     if (isUnviewed) markJobAsViewed(job.id);
                   }}
-                  className={`p-4 rounded-2xl transition-all space-y-3 md:space-y-0 md:grid md:grid-cols-12 md:gap-4 md:items-center text-xs font-medium text-slate-800 shadow-2xs border ${
-                    isUnviewed
-                      ? "bg-teal-50/40 hover:bg-teal-50/70 border-teal-300 ring-1 ring-teal-400/40"
-                      : "bg-slate-50/60 hover:bg-slate-100/70 border-slate-200/80"
+                  className={`tl-job-row p-3.5 space-y-2.5 md:space-y-0 md:grid md:grid-cols-12 md:gap-4 md:items-center text-xs font-medium text-slate-800 ${
+                    isUnviewed ? "is-unviewed" : ""
                   }`}
                 >
-                  <div className="col-span-12 md:col-span-3 flex flex-col gap-0.5 min-w-0">
+                  {/* Column 1: Task Title & Consolidated Metadata (5/12 = 42%) */}
+                  <div className="col-span-12 md:col-span-5 flex flex-col gap-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {job.job_number ? (
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-bold bg-slate-200/90 text-slate-700 select-all shrink-0" title={`Номер задачи: #${job.job_number}`}>
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-bold bg-slate-100 border border-slate-200 text-slate-700 select-all shrink-0 tl-num" title={`Номер задачи: #${job.job_number}`}>
                           #{job.job_number}
                         </span>
                       ) : null}
-                      <strong className="font-bold text-xs text-slate-900 leading-snug break-words">{job.human_title}</strong>
+                      <strong className="font-bold text-[13px] text-slate-900 leading-snug break-words">{cleanTitle}</strong>
                       {isUnviewed ? (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-teal-600 text-white animate-pulse shadow-2xs shrink-0">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-700 text-white shrink-0">
                           <Sparkles size={10} aria-hidden="true" />
-                          Новая
+                          <span>Новая</span>
                         </span>
                       ) : null}
                       {job.has_admin_supplement ? (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-emerald-600 text-white shadow-2xs shrink-0">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 border border-emerald-300 text-emerald-900 shrink-0">
                           <Sparkles size={10} aria-hidden="true" />
-                          Дополнено экспертом
+                          <span>Дополнено экспертом</span>
                         </span>
                       ) : null}
                     </div>
-                    <span className="text-[11px] font-medium text-slate-400 block mt-0.5">
-                      {formatDate(job.created_at)}{formatJobDuration(job, nowTs) ? ` · ${formatJobDuration(job, nowTs)}` : ""} · файлов: {job.file_count}
-                    </span>
+                    <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-slate-500 tl-num">
+                      <span className="font-semibold text-slate-700">{modeDisplayName(job)}</span>
+                      <span className="text-slate-300" aria-hidden="true">·</span>
+                      <span>{formatDate(job.created_at)}{durationText ? ` · ${durationText}` : ""}</span>
+                      {job.file_count > 0 ? (
+                        <>
+                          <span className="text-slate-300" aria-hidden="true">·</span>
+                          <span>файлов: {job.file_count}</span>
+                        </>
+                      ) : null}
+                      {job.delivery_city ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-teal-900 bg-teal-50 border border-teal-200 px-1.5 py-0.5 rounded">
+                          <MapPin size={10} aria-hidden="true" />
+                          <span>{job.delivery_city}{job.geo_radius_km ? ` (до ${job.geo_radius_km} км)` : ""}</span>
+                        </span>
+                      ) : null}
+                      {job.geo_scope && job.geo_scope !== "ru" ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-700 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
+                          <Globe size={10} aria-hidden="true" />
+                          <span>{job.geo_scope === "cis" ? "РФ и СНГ (ЕАЭС)" : "Весь мир"}</span>
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
 
-                  <div className="col-span-6 md:col-span-2 text-xs font-semibold text-slate-700 flex flex-col items-start gap-1">
-                    <span>{modeDisplayName(job)}</span>
-                    {job.delivery_city ? (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-teal-800 bg-teal-50 border border-teal-200/90 px-1.5 py-0.5 rounded-md">
-                        📍 {job.delivery_city}{job.geo_radius_km ? ` (до ${job.geo_radius_km} км)` : ""}
-                      </span>
-                    ) : null}
-                    {job.geo_scope && job.geo_scope !== "ru" ? (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200/90 px-1.5 py-0.5 rounded-md">
-                        {job.geo_scope === "cis" ? "РФ и СНГ (ЕАЭС)" : "Весь мир"}
-                      </span>
-                    ) : null}
-                  </div>
-
-                  <div className="col-span-6 md:col-span-2 flex flex-col items-start gap-1 min-w-0">
+                  {/* Column 2: Honest Status & Live Progress ONLY When Active (3/12 = 25%) */}
+                  <div className="col-span-12 md:col-span-3 flex flex-col items-start gap-1 min-w-0">
                     <span
-                      className={`inline-flex items-center justify-center text-center px-2.5 py-0.5 rounded-full text-[11px] font-bold border whitespace-nowrap leading-tight w-max max-w-full ${
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold border whitespace-nowrap leading-tight w-max max-w-full ${
                         job.status_label === "нет в реестре" || job.status_label === "не найдено в Минпромторге"
                           ? "bg-slate-100 text-slate-700 border-slate-300"
                           : isFailed
-                          ? "bg-rose-50 text-rose-700 border-rose-200"
+                          ? "bg-rose-50 text-rose-800 border-rose-200"
                           : isCancelledOrDeclined
                           ? "bg-slate-100 text-slate-600 border-slate-200"
                           : isExpired
-                          ? "bg-amber-50 text-amber-700 border-amber-200"
+                          ? "bg-amber-50 text-amber-800 border-amber-200"
                           : isPending
-                          ? "bg-amber-50 text-amber-800 border-amber-200 animate-pulse"
+                          ? "bg-amber-50 text-amber-900 border-amber-300"
                           : isAwaiting || isAwaitingExactSelection
-                          ? "bg-sky-50 text-sky-800 border-sky-200"
-                          : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          ? "bg-sky-50 text-sky-900 border-sky-200"
+                          : "bg-emerald-50 text-emerald-900 border-emerald-200"
                       }`}
                     >
-                      {job.status_label}
+                      {isPending ? <Loader2 size={11} className="animate-spin text-amber-700 shrink-0" aria-hidden="true" /> : null}
+                      <span>{cleanStatusLabel}</span>
                     </span>
-                    {job.error && job.status_label !== "нет в реестре" && job.status_label !== "не найдено в Минпромторге" && job.error !== job.message ? (
-                      <small className="text-rose-600 text-[10px] block mt-0.5 break-words">
+
+                    {isPending ? (
+                      <div className="w-full space-y-1">
+                        <JobStageSteps progress={job.progress} />
+                        <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden" aria-label={`Прогресс ${job.progress}%`}>
+                          <i
+                            className="block h-full transition-all rounded-full bg-teal-700"
+                            style={{ width: `${Math.max(4, Math.min(100, job.progress))}%` }}
+                          />
+                        </div>
+                        <span className="text-[11px] text-slate-600 leading-snug block truncate tl-num">
+                          {cleanMessage || `${job.progress}%`}
+                        </span>
+                      </div>
+                    ) : job.error && job.status_label !== "нет в реестре" && job.status_label !== "не найдено в Минпромторге" ? (
+                      <small className="text-rose-700 text-[11px] leading-snug block break-words">
                         {job.error}
                       </small>
+                    ) : cleanMessage && cleanMessage.toLowerCase() !== cleanStatusLabel.toLowerCase() && cleanMessage !== "Готово" ? (
+                      <span className="text-[11px] text-slate-500 leading-snug block truncate tl-num" title={cleanMessage}>
+                        {cleanMessage}
+                      </span>
                     ) : null}
                   </div>
 
-                  <div className="col-span-12 md:col-span-2 flex flex-col gap-1 text-xs text-slate-600 min-w-0 overflow-hidden">
-                    {activeJobStatuses.has(job.status) ? <JobStageSteps progress={job.progress} /> : null}
-                    <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden mt-1.5" aria-label={`Прогресс ${job.progress}%`}>
-                      <i
-                        className={`block h-full transition-all rounded-full ${
-                          job.status_label === "нет в реестре" || job.status_label === "не найдено в Минпромторге" ? "bg-slate-400" : isFailed ? "bg-rose-500" : "bg-teal-600"
-                        }`}
-                        style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }}
-                      />
-                    </div>
-                    <span className="text-[11px] text-slate-600 leading-snug truncate">{job.message || `${job.progress}%`}</span>
-                  </div>
-
-                  <div className="col-span-12 md:col-span-3 flex flex-wrap items-center gap-1.5 md:justify-end min-w-0">
+                  {/* Column 3: Result Files & Actions (4/12 = 33%) */}
+                  <div className="col-span-12 md:col-span-4 flex flex-wrap items-center gap-1.5 md:justify-end min-w-0">
                     {isFailed || isExpired || isCancelledOrDeclined ? (
                       <>
                         {job.mode === "supplier_search" && (job.supplier_search_policy === "minprom_registry_only" || job.error?.toLowerCase().includes("реестр") || job.message?.toLowerCase().includes("реестр")) ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
+                            className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               setRetryConfirmJob(job);
@@ -5549,7 +6133,7 @@ export function CabinetClient() {
                         ) : (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-amber-50 text-amber-800 border border-amber-300 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-amber-50 text-amber-800 border border-amber-300 rounded-lg text-xs font-semibold transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               setRetryConfirmJob(job);
@@ -5569,7 +6153,7 @@ export function CabinetClient() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <button
                           type="button"
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                          className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer"
                           onClick={(event) => {
                             event.stopPropagation();
                             dismissedExactSelectionJobIdsRef.current.delete(exactSelectionKey(job));
@@ -5581,7 +6165,7 @@ export function CabinetClient() {
                         </button>
                         <button
                           type="button"
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
                           onClick={(event) => {
                             event.stopPropagation();
                             void cancelJob(job);
@@ -5600,7 +6184,7 @@ export function CabinetClient() {
                             <div className="flex items-center gap-2 flex-wrap">
                               <button
                                 type="button"
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                                className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   unmarkStrategyDismissed(job.id);
@@ -5612,7 +6196,7 @@ export function CabinetClient() {
                               </button>
                               <button
                                 type="button"
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   void cancelJob(job);
@@ -5630,7 +6214,7 @@ export function CabinetClient() {
                           {!offer || offer.can_accept ? (
                             <button
                               type="button"
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                              className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 markJobAsViewed(job.id);
@@ -5645,7 +6229,7 @@ export function CabinetClient() {
                           {!offer || offer.can_decline ? (
                             <button
                               type="button"
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 markJobAsViewed(job.id);
@@ -5664,7 +6248,7 @@ export function CabinetClient() {
                         {job.can_cancel ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               void cancelJob(job);
@@ -5678,10 +6262,10 @@ export function CabinetClient() {
                         {job.is_custom_batch_report && job.status !== "cancelled" && job.status !== "failed" ? (
                           <button
                             type="button"
-                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-colors shadow-xs cursor-pointer shrink-0 border ${
-                              isUnviewed
-                                ? "bg-teal-600 hover:bg-teal-700 text-white border-teal-600 ring-2 ring-teal-400/80 font-bold"
-                                : "bg-teal-600 hover:bg-teal-700 text-white border-teal-600 font-bold"
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors cursor-pointer shrink-0 border ${
+                              isUnviewed || isPending
+                                ? "tl-btn-primary"
+                                : "bg-white hover:bg-slate-50 text-slate-800 border-slate-300 hover:border-slate-400 font-semibold"
                             }`}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -5690,25 +6274,26 @@ export function CabinetClient() {
                             }}
                             disabled={busy}
                           >
-                            <Eye size={14} aria-hidden="true" />
+                            <Eye size={14} className={isUnviewed || isPending ? "" : "text-[#174b3f]"} aria-hidden="true" />
                             <span>{job.status === "running" || job.status === "pending" ? "Смотреть ход разбора" : "Открыть ответы ИИ"}</span>
                           </button>
                         ) : null}
                         {job.result_files?.length ? (
-                          job.result_files.map((file) => {
+                          job.result_files.map((file, fileIdx) => {
                             const isQuoteRequest = file.kind === "quote_request";
                             const isSuppliers = file.kind === "suppliers_excel" || file.kind === "suppliers" || file.filename?.endsWith(".xlsx") || (file.label && file.label.toLowerCase().includes("поставщик"));
                             const isAdminSupplement = file.kind === "admin_supplement" || file.is_admin_supplement;
+                            const isPrimaryDownload = !job.is_custom_batch_report && !isQuoteRequest && fileIdx === 0 && isUnviewed;
                             return (
-                              <button
+                                <button
                                 key={`${job.id}-${file.kind}`}
                                 type="button"
-                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-colors shadow-xs cursor-pointer shrink-0 border ${
+                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors cursor-pointer shrink-0 border ${
                                   isAdminSupplement
-                                    ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 font-bold shadow-emerald-600/20"
-                                    : isUnviewed
-                                    ? "bg-teal-600 hover:bg-teal-700 text-white border-teal-600 ring-2 ring-teal-400/80 animate-pulse font-bold"
-                                    : "bg-white hover:bg-slate-50 text-slate-800 border-slate-200/90 hover:border-slate-300 font-semibold"
+                                    ? "bg-emerald-700 hover:bg-emerald-800 text-white border-emerald-700 font-bold"
+                                    : isPrimaryDownload
+                                    ? "tl-btn-primary font-bold"
+                                    : "bg-white hover:bg-slate-50 text-slate-800 border-slate-300 hover:border-slate-400 font-semibold"
                                 }`}
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -5718,16 +6303,14 @@ export function CabinetClient() {
                                 }}
                                 disabled={busy}
                               >
-                                {isAdminSupplement ? (
+                                {isAdminSupplement || isPrimaryDownload ? (
                                   <Download size={14} aria-hidden="true" />
-                                ) : isUnviewed ? (
-                                  isQuoteRequest ? <Eye size={14} aria-hidden="true" /> : <Download size={14} aria-hidden="true" />
                                 ) : isQuoteRequest ? (
-                                  <FileText size={14} className="text-blue-600" aria-hidden="true" />
+                                  <FileText size={14} className="text-slate-600" aria-hidden="true" />
                                 ) : isSuppliers ? (
-                                  <FileSpreadsheet size={14} className="text-emerald-600" aria-hidden="true" />
+                                  <FileSpreadsheet size={14} className="text-teal-800" aria-hidden="true" />
                                 ) : (
-                                  <FileText size={14} className="text-indigo-600" aria-hidden="true" />
+                                  <FileText size={14} className="text-teal-800" aria-hidden="true" />
                                 )}
                                 <span>{formatArtifactLabel(file.label)}</span>
                               </button>
@@ -5737,7 +6320,7 @@ export function CabinetClient() {
                         {job.can_find_more_suppliers ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-teal-50/50 text-teal-800 border border-slate-200/90 hover:border-teal-300 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-teal-50/50 text-teal-900 border border-slate-200 hover:border-teal-300 rounded-lg text-xs font-semibold transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               markJobAsViewed(job.id);
@@ -5745,14 +6328,18 @@ export function CabinetClient() {
                             }}
                             disabled={busy}
                           >
-                            <Search size={14} className="text-teal-600" aria-hidden="true" />
+                            <Search size={14} className="text-teal-700" aria-hidden="true" />
                             <span>Найти ещё</span>
                           </button>
                         ) : null}
                         {job.can_start_supplier_search || (job.mode === "exact_product" && isCompletedWithResult) ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer shrink-0 border ${
+                              isUnviewed
+                                ? "bg-teal-50 hover:bg-teal-100/80 text-teal-950 border-teal-300"
+                                : "tl-btn-primary"
+                            }`}
                             onClick={(e) => {
                               e.stopPropagation();
                               markJobAsViewed(job.id);
@@ -5803,7 +6390,7 @@ export function CabinetClient() {
                         {isCompletedWithResult && (job.mode === "supplier_search" || job.mode === "analysis_and_suppliers") ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/90 hover:border-slate-300 rounded-md text-xs font-medium shadow-xs transition-colors cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/90 hover:border-slate-300 rounded-lg text-xs font-medium transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               setRetryConfirmJob(job);
@@ -5819,6 +6406,29 @@ export function CabinetClient() {
                         ) : null}
                       </>
                     )}
+                    {!hasJobMessages ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          window.dispatchEvent(
+                            new CustomEvent("open_tenderlex_chat", {
+                              detail: {
+                                jobId: job.id,
+                                jobNumber: job.job_number,
+                                jobTitle: cleanTitle,
+                              },
+                            })
+                          );
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:text-[#174b3f] hover:bg-slate-100 border border-transparent hover:border-slate-200 transition-colors cursor-pointer shrink-0"
+                        title="Написать специалисту TenderLex по задаче"
+                        aria-label="Написать специалисту TenderLex по задаче"
+                      >
+                        <MessageCircle size={13} aria-hidden="true" />
+                        <span>Вопрос</span>
+                      </button>
+                    ) : null}
                   </div>
                   {job.mode === "exact_product" && job.exact_product_positions?.length ? (
                     <div className="col-span-12 mt-2 p-2.5 rounded-xl bg-slate-50/90 border border-slate-200/90 text-xs">
@@ -5880,8 +6490,9 @@ export function CabinetClient() {
                       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                         <div className="space-y-1">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-teal-600 text-white shadow-xs">
-                              ✨ Предложение эксперта
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-teal-700 text-white">
+                              <Sparkles size={12} aria-hidden="true" />
+                              <span>Предложение эксперта</span>
                             </span>
                             <span className="font-bold text-sm text-slate-800">
                               Готов пересчитанный отчёт
@@ -5953,7 +6564,9 @@ export function CabinetClient() {
                   {job.awaiting_customer_confirmation && job.confirmation_kind === "multi_item_strategy" ? (
                     <div className="col-span-12 mt-2 p-3 sm:p-3.5 rounded-2xl bg-gradient-to-r from-amber-50 to-teal-50/40 border border-amber-300 text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-2xs">
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <span className="text-xl shrink-0" aria-hidden="true">📋</span>
+                        <span className="w-8 h-8 rounded-lg bg-amber-100 text-amber-800 flex items-center justify-center shrink-0" aria-hidden="true">
+                          <Sliders size={15} />
+                        </span>
                         <div className="space-y-0.5 text-xs min-w-0">
                           <strong className="font-extrabold text-slate-900 block truncate">
                             В спецификации найдено {job.multi_item_details?.items?.length || 0} {pluralizeRu(job.multi_item_details?.items?.length || 0, ["позиция", "позиции", "позиций"])}: выберите стратегию поиска
@@ -6001,7 +6614,8 @@ export function CabinetClient() {
                         <summary className="flex items-center justify-between cursor-pointer list-none select-none">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-bold text-[11px] bg-teal-50 text-teal-800 border border-teal-200">
-                              {job.multi_item_mode === "per_item" ? "🔍 Попозиционный поиск" : "⚖️ Сбалансированный поиск"}
+                              <Sliders size={11} aria-hidden="true" />
+                              <span>{job.multi_item_mode === "per_item" ? "Попозиционный поиск" : "Сбалансированный поиск"}</span>
                             </span>
                             <span className="text-slate-600 font-medium text-[11px]">
                               Категорий: <strong>{job.multi_item_details.items.length}</strong> · Товарных строк: <strong>{supplierStrategyRowCount(job)}</strong>
@@ -6064,7 +6678,7 @@ export function CabinetClient() {
                   <button
                     type="button"
                     onClick={fillDemoExample}
-                    className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
+                    className="tl-btn-primary px-4 py-2 rounded-lg text-xs flex items-center gap-1.5 cursor-pointer"
                   >
                     <Sparkles size={14} />
                     <span>Попробовать на демо-ТЗ в 1 клик</span>
@@ -6075,7 +6689,7 @@ export function CabinetClient() {
                       const launcher = document.getElementById("new-job");
                       if (launcher) launcher.scrollIntoView({ behavior: "smooth" });
                     }}
-                    className="px-4 py-2 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 font-bold text-xs transition-all cursor-pointer"
+                    className="px-4 py-2 rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 font-bold text-xs transition-all cursor-pointer"
                   >
                     Перейти к загрузке ТЗ
                   </button>
@@ -6083,6 +6697,36 @@ export function CabinetClient() {
               </div>
             )
           )}
+
+          {isWorkspaceCollapsed ? (
+            <div className="tl-workspace-more-bar">
+              <span className="tl-num">
+                Показаны {visibleJobs.length} последних задач из {jobsTotal}
+              </span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setShowAllWorkspaceJobs(true)}
+                  className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-semibold transition-colors cursor-pointer tl-num"
+                >
+                  Показать ещё {jobs.length - visibleJobs.length} на странице
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCabinetSection("jobs");
+                    if (typeof window !== "undefined") {
+                      window.scrollTo({ top: 0, behavior: "smooth" });
+                    }
+                  }}
+                  className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer tl-num"
+                >
+                  <span>Открыть все {jobsTotal} {declensionTasks(jobsTotal)}</span>
+                  <ArrowRight size={13} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {jobsTotal > jobsPageSize ? (
@@ -6190,7 +6834,7 @@ export function CabinetClient() {
             }
           }}
         >
-          <section className="bg-white rounded-3xl p-6 sm:p-8 max-w-3xl w-full shadow-2xl border border-slate-200 space-y-5 max-h-[92vh] flex flex-col font-sans" role="dialog" aria-modal="true" aria-labelledby="quote-request-title">
+          <section className="bg-white rounded-2xl p-6 sm:p-8 max-w-3xl w-full shadow-2xl border border-slate-200 space-y-5 max-h-[92vh] flex flex-col font-sans" role="dialog" aria-modal="true" aria-labelledby="quote-request-title">
             <header className="flex items-center justify-between pb-3.5 border-b border-slate-200 shrink-0">
               <div>
                 <h2 id="quote-request-title" className="text-lg font-extrabold text-slate-900">Запрос коммерческого предложения</h2>
@@ -6370,7 +7014,7 @@ export function CabinetClient() {
                 <Copy size={16} aria-hidden="true" />
                 <span>{quoteRequestModal.copied ? "Скопировано" : "Копировать"}</span>
               </button>
-              <button className="px-6 py-2.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50" type="button" onClick={() => void downloadEditedQuoteRequest()} disabled={busy}>
+              <button className="tl-btn-primary px-6 py-2.5 text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50" type="button" onClick={() => void downloadEditedQuoteRequest()} disabled={busy}>
                 {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
                 <span>Скачать Word</span>
               </button>
@@ -6389,7 +7033,7 @@ export function CabinetClient() {
             }
           }}
         >
-          <section className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 font-sans text-center" role="dialog" aria-modal="true" aria-labelledby="find-more-confirm-title">
+          <section className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 font-sans text-center" role="dialog" aria-modal="true" aria-labelledby="find-more-confirm-title">
             <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 mx-auto flex items-center justify-center border border-amber-200 shadow-2xs mb-2">
               <Search size={20} aria-hidden="true" />
             </div>
@@ -6403,7 +7047,7 @@ export function CabinetClient() {
                 <div className="flex items-center gap-1.5 font-bold text-teal-900">
                   <span>Режим добора:</span>
                   <span className="font-extrabold text-teal-800">
-                    {findMoreConfirmJob.multi_item_mode === "per_item" ? "🔍 Попозиционный поиск" : "⚖️ Сбалансированный поиск"}
+                    {findMoreConfirmJob.multi_item_mode === "per_item" ? "Попозиционный поиск" : "Сбалансированный поиск"}
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-snug">
@@ -6437,7 +7081,7 @@ export function CabinetClient() {
                 Отмена
               </button>
               <button
-                className="px-6 py-2.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                className="tl-btn-primary px-6 py-2.5 text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                 type="button"
                 onClick={() => void findMoreSuppliers(findMoreConfirmJob)}
                 disabled={busy}
@@ -6460,7 +7104,7 @@ export function CabinetClient() {
           }}
         >
           <section
-            className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+            className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
             role="dialog"
             aria-modal="true"
             aria-labelledby="start-suppliers-confirm-title"
@@ -6550,7 +7194,7 @@ export function CabinetClient() {
                       }`}
                     >
                       <div className="flex items-center justify-between w-full mb-0.5">
-                        <span className="text-xs font-extrabold">⚖️ Сбалансированный поиск</span>
+                        <span className="text-xs font-extrabold">Сбалансированный поиск</span>
                         <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${startSupplierSearchMultiItemMode === "balanced" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
                           {startSupplierSearchMultiItemMode === "balanced" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
                         </span>
@@ -6568,7 +7212,7 @@ export function CabinetClient() {
                       }`}
                     >
                       <div className="flex items-center justify-between w-full mb-0.5">
-                        <span className="text-xs font-extrabold">🔍 Попозиционный глубокий поиск</span>
+                        <span className="text-xs font-extrabold">Попозиционный глубокий поиск</span>
                         <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${startSupplierSearchMultiItemMode === "per_item" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
                           {startSupplierSearchMultiItemMode === "per_item" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
                         </span>
@@ -6675,7 +7319,9 @@ export function CabinetClient() {
             {/* Modal Actions Footer with integrated Billing notice */}
             <footer className="px-6 py-3.5 bg-slate-50 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0">
               <div className="flex items-center gap-2 text-xs text-slate-600 leading-tight">
-                <span className="w-5 h-5 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center shrink-0 text-xs">💡</span>
+                <span className="w-5 h-5 rounded-full bg-teal-50 border border-teal-200 text-teal-800 flex items-center justify-center shrink-0">
+                  <Sparkles size={11} aria-hidden="true" />
+                </span>
                 <span>
                   <strong className="text-slate-800 font-bold">{startSupplierSearchMultiItemMode === "per_item" ? "По тарифу попозиционного поиска" : "1 поиск с баланса"}</strong> · Реестр контактов и запрос КП
                 </span>
@@ -6691,7 +7337,7 @@ export function CabinetClient() {
                 </button>
                 <button
                   type="button"
-                  className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  className="tl-btn-primary px-5 py-2 rounded-xl text-xs shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
                   onClick={() => void startSupplierSearchFromExact(startSupplierSearchConfirmJob)}
                   disabled={busy}
                 >
@@ -6723,7 +7369,7 @@ export function CabinetClient() {
             }}
           >
             <section
-              className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+              className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
               role="dialog"
               aria-modal="true"
               aria-labelledby="strategy-confirm-title"
@@ -6764,13 +7410,13 @@ export function CabinetClient() {
             <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[75vh]">
               {strategyRowCount >= 10 ? (
                 <div className="p-3 rounded-xl bg-amber-50/90 border border-amber-200/90 text-amber-950 text-xs flex items-start gap-2.5 leading-relaxed">
-                  <span className="text-base leading-none shrink-0 mt-0.5">💡</span>
+                  <Sparkles size={15} className="text-amber-700 shrink-0 mt-0.5" aria-hidden="true" />
                   <div className="space-y-1">
                     <div className="font-bold text-amber-950">
                       Крупная спецификация ({strategyRowCount} товарных строк)
                     </div>
                     <p className="text-amber-900/90 text-[11px] sm:text-xs">
-                      Поставщики специализируются по рынкам сбыта (электрика, вентиляция, металл, отделка). Для максимального отклика рекомендуется <strong>разбивать ТЗ на отдельные файлы по направлениям</strong>. Либо выберите «⚖️ Сбалансированный поиск» (1 задача) для сводного реестра по ключевым системам.
+                      Поставщики специализируются по рынкам сбыта (электрика, вентиляция, металл, отделка). Для максимального отклика рекомендуется <strong>разбивать ТЗ на отдельные файлы по направлениям</strong>. Либо выберите «Сбалансированный поиск» (1 задача) для сводного реестра по ключевым системам.
                     </p>
                   </div>
                 </div>
@@ -6913,7 +7559,7 @@ export function CabinetClient() {
                     <div className="min-w-0 space-y-1">
                       <div className="flex items-center justify-between gap-2">
                         <strong className="text-xs sm:text-sm font-extrabold text-slate-900">
-                          ⚖️ Сбалансированный поиск
+                          Сбалансированный поиск
                         </strong>
                         <span className="text-[11px] font-bold text-teal-700 bg-teal-100/70 px-2 py-0.5 rounded-full shrink-0">
                           1 списание (без доплат)
@@ -6942,7 +7588,7 @@ export function CabinetClient() {
                     <div className="min-w-0 space-y-1">
                       <div className="flex items-center justify-between gap-2">
                         <strong className="text-xs sm:text-sm font-extrabold text-slate-900">
-                          🔍 Попозиционный глубокий поиск
+                          Попозиционный глубокий поиск
                         </strong>
                         <span className="text-[11px] font-bold text-amber-800 bg-amber-100/70 px-2 py-0.5 rounded-full shrink-0">
                           {selectedStrategyItemIds.length === 0
@@ -6994,7 +7640,7 @@ export function CabinetClient() {
                 </button>
                 <button
                   type="button"
-                  className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  className="tl-btn-primary px-5 py-2 rounded-xl text-xs shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
                   onClick={() => void chooseStrategy(strategyConfirmJob, selectedStrategyMode, selectedStrategyItemIds)}
                   disabled={
                     strategySubmittingJobId === strategyConfirmJob.id ||
@@ -7075,7 +7721,7 @@ export function CabinetClient() {
             }}
           >
             <section
-              className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+              className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
               role="dialog"
               aria-modal="true"
               aria-labelledby="exact-selection-title"
@@ -7336,7 +7982,7 @@ export function CabinetClient() {
           }}
         >
           <section
-            className="bg-white rounded-3xl max-w-xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+            className="bg-white rounded-2xl max-w-xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
             role="dialog"
             aria-modal="true"
             aria-labelledby="retry-job-confirm-title"
@@ -7397,7 +8043,7 @@ export function CabinetClient() {
                         }`}
                       >
                         <div className="flex items-center justify-between w-full mb-1">
-                          <span className="text-xs font-extrabold text-slate-900">⚖️ Сбалансированный поиск</span>
+                          <span className="text-xs font-extrabold text-slate-900">Сбалансированный поиск</span>
                           <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${retryMultiItemMode === "balanced" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
                             {retryMultiItemMode === "balanced" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
                           </span>
@@ -7417,7 +8063,7 @@ export function CabinetClient() {
                         }`}
                       >
                         <div className="flex items-center justify-between w-full mb-1">
-                          <span className="text-xs font-extrabold text-slate-900">🔍 Попозиционный глубокий поиск</span>
+                          <span className="text-xs font-extrabold text-slate-900">Попозиционный глубокий поиск</span>
                           <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${retryMultiItemMode === "per_item" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
                             {retryMultiItemMode === "per_item" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
                           </span>
@@ -7612,611 +8258,734 @@ export function CabinetClient() {
           </button>
         </div>
       ) : null}
-      {/* Function Guide & Workflow Compilation Modal (Spacious, Clean, Emerald/Teal Branded, Zero Blue) */}
-      {showHelpModal ? (
-        <div
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setShowHelpModal(false);
-          }}
-        >
-          <section
-            className="bg-white rounded-2xl max-w-5xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="help-modal-title"
-          >
-            {/* Modal Header */}
-            <header className="bg-gradient-to-r from-emerald-950 via-teal-900 to-slate-900 text-white px-6 py-4 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-teal-800/80 border border-teal-600/50 flex items-center justify-center text-teal-200 shrink-0 shadow-inner">
-                  <BookOpen size={18} aria-hidden="true" />
-                </div>
-                <div>
-                  <h2 id="help-modal-title" className="text-base sm:text-lg font-extrabold text-white leading-tight">
-                    Справочник функций и алгоритм работы TenderLex
-                  </h2>
-                  <p className="text-xs text-teal-200/90 font-medium mt-0.5">
-                    Пошаговый порядок подготовки к закупкам и назначение инструментов
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="p-1.5 text-slate-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors shrink-0 cursor-pointer"
-                onClick={() => setShowHelpModal(false)}
-                aria-label="Закрыть"
-              >
-                <X size={20} aria-hidden="true" />
-              </button>
-            </header>
-
-            {/* Modal Tab Navigation */}
-            <div
-              className={`bg-slate-100 p-2 border-b border-slate-200 grid grid-cols-2 ${
-                session?.user?.allowed_price_monitoring ? "sm:grid-cols-3 lg:grid-cols-6" : "sm:grid-cols-5"
-              } gap-1.5 text-xs sm:text-[13px] shrink-0`}
-            >
-              <button
-                type="button"
-                onClick={() => setHelpModalTab("workflow")}
-                className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
-                  helpModalTab === "workflow"
-                    ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
-                    : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
-                }`}
-              >
-                <Compass size={14} className={helpModalTab === "workflow" ? "text-teal-700" : "text-slate-400"} />
-                <span className="truncate">Маршрут работы</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setHelpModalTab("procurement_report")}
-                className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
-                  helpModalTab === "procurement_report"
-                    ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
-                    : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
-                }`}
-              >
-                <FileText size={14} className={helpModalTab === "procurement_report" ? "text-teal-600" : "text-slate-400"} />
-                <span className="truncate">Анализ закупки</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setHelpModalTab("supplier_search")}
-                className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
-                  helpModalTab === "supplier_search"
-                    ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
-                    : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
-                }`}
-              >
-                <Search size={14} className={helpModalTab === "supplier_search" ? "text-teal-600" : "text-slate-400"} />
-                <span className="truncate">Поиск поставщиков</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setHelpModalTab("analysis_and_suppliers")}
-                className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
-                  helpModalTab === "analysis_and_suppliers"
-                    ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
-                    : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
-                }`}
-              >
-                <Receipt size={14} className={helpModalTab === "analysis_and_suppliers" ? "text-teal-700" : "text-slate-400"} />
-                <span className="truncate">Анализ + поиск</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setHelpModalTab("exact_product")}
-                className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer col-span-2 sm:col-span-1 ${
-                  helpModalTab === "exact_product"
-                    ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
-                    : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
-                }`}
-              >
-                <CheckCircle2 size={14} className={helpModalTab === "exact_product" ? "text-emerald-600" : "text-slate-400"} />
-                <span className="truncate">Подбор товара</span>
-              </button>
-              {session?.user?.allowed_price_monitoring ? (
-                <button
-                  type="button"
-                  onClick={() => setHelpModalTab("price_monitoring")}
-                  className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
-                    helpModalTab === "price_monitoring"
-                      ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
-                  }`}
-                >
-                  <Coins size={14} className={helpModalTab === "price_monitoring" ? "text-amber-600" : "text-slate-400"} />
-                  <span className="truncate">Мониторинг цен</span>
-                </button>
-              ) : null}
-            </div>
-
-            {/* Modal Body Content (Spacious, High-Value, Emerald-Themed) */}
-            <div className="p-5 sm:p-6 text-slate-800 text-xs sm:text-[13px] space-y-4">
-              {helpModalTab === "workflow" ? (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between pb-1.5 border-b border-slate-100">
-                    <div>
-                      <h3 className="font-extrabold text-slate-900 text-sm sm:text-base">
-                        Рекомендуемый порядок работы с задачами
-                      </h3>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        4 сценария кабинета: от проверки условий закупки до подбора товара и аналогов
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* 4 Step Cards in Canonical Cabinet Order */}
-                  <div className="grid sm:grid-cols-2 gap-3.5">
-                    {/* Step 1: Анализ документации */}
-                    <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-teal-400 transition-all shadow-2xs">
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="w-6 h-6 rounded-full bg-teal-100 text-teal-900 font-extrabold text-xs flex items-center justify-center shrink-0">
-                            1
-                          </span>
-                          <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200">
-                            Оценка рисков
-                          </span>
-                        </div>
-                        <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
-                          Анализ документации
-                        </strong>
-                        <p className="text-xs text-slate-600 leading-relaxed">
-                          Проверка проекта контракта: сроки, штрафы, обеспечение заявки и условия национального режима по действующей редакции ПП РФ № 1875.
-                        </p>
-                      </div>
-                      <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500 font-medium">Условия для проверки</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            selectScenario("procurement_report");
-                            setShowHelpModal(false);
-                          }}
-                          className="px-2.5 py-1 bg-teal-50 hover:bg-teal-600 hover:text-white text-teal-800 border border-teal-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                        >
-                          Выбрать →
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Step 2: Поиск поставщиков */}
-                    <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-teal-400 transition-all shadow-2xs">
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="w-6 h-6 rounded-full bg-teal-100 text-teal-900 font-extrabold text-xs flex items-center justify-center shrink-0">
-                            2
-                          </span>
-                          <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200">
-                            Запрос КП
-                          </span>
-                        </div>
-                        <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
-                          Поиск поставщиков
-                        </strong>
-                        <p className="text-xs text-slate-600 leading-relaxed">
-                          Поиск кандидатов и опубликованных контактов для запроса КП. Наличие товара, цену и полномочия поставщика нужно подтвердить.
-                        </p>
-                      </div>
-                      <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500 font-medium">Запрос цен</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            selectScenario("supplier_search");
-                            setShowHelpModal(false);
-                          }}
-                          className="px-2.5 py-1 bg-teal-50 hover:bg-teal-600 hover:text-white text-teal-800 border border-teal-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                        >
-                          Выбрать →
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Step 3: Анализ + поиск */}
-                    <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-teal-400 transition-all shadow-2xs">
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="w-6 h-6 rounded-full bg-teal-100 text-teal-900 font-extrabold text-xs flex items-center justify-center shrink-0">
-                            3
-                          </span>
-                          <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200">
-                            Комплексный запуск
-                          </span>
-                        </div>
-                        <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
-                          Анализ + поиск
-                        </strong>
-                        <p className="text-xs text-slate-600 leading-relaxed">
-                          Совмещает разбор закупочной документации и подбор профильных поставщиков под спецификацию в рамках одного запуска.
-                        </p>
-                      </div>
-                      <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500 font-medium">Аудит + контакты сбыта</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            selectScenario("analysis_and_suppliers");
-                            setShowHelpModal(false);
-                          }}
-                          className="px-2.5 py-1 bg-teal-50 hover:bg-teal-600 hover:text-white text-teal-800 border border-teal-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                        >
-                          Выбрать →
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Step 4: Подбор товара и аналогов */}
-                    <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-emerald-400 transition-all shadow-2xs">
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-900 font-extrabold text-xs flex items-center justify-center shrink-0">
-                            4
-                          </span>
-                          <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                            Подбор аналогов
-                          </span>
-                        </div>
-                        <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
-                          Подбор товара и аналогов
-                        </strong>
-                        <p className="text-xs text-slate-600 leading-relaxed">
-                          Определение заложенной модели по ТЗ, характеристики для проверки заявки и варианты российских аналогов для сравнения стоимости.
-                        </p>
-                      </div>
-                      <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500 font-medium">Проверка характеристик</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            selectScenario("exact_product");
-                            setShowHelpModal(false);
-                          }}
-                          className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-800 border border-emerald-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                        >
-                          Выбрать →
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {helpModalTab === "procurement_report" ? (
-                <div className="space-y-4">
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
-                      <div>
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🎯 Назначение функции:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Автоматизированный разбор условий закупки по 44-ФЗ и 223-ФЗ: сроки, штрафы, лицензии и обеспечение. Выводы нужно сверять с документами и применимыми нормами; отчет не заменяет юридическое заключение.
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">💡 Когда применять:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Перед подачей заявки для проверки условий и оценки рисков. Отчет не гарантирует допуск, исполнение контракта или отсутствие оснований для РНП.
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
-                      <div>
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📥 Что загружать:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          19-значный номер извещения ЕИС, прямую ссылку на zakupki.gov.ru или архив с файлами проекта контракта и ТЗ.
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📤 Что на выходе:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          1) Аналитический отчет Word (DOCX) в фирменном стиле.<br />
-                          2) Чек-лист ключевых требований и факторов риска.<br />
-                          3) Вопросы и условия для самостоятельной проверки участия и исполнения.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="pt-1 flex items-center justify-between gap-3 border-t border-slate-100">
-                    <span className="text-xs text-slate-500 font-medium">
-                      💡 Совет: сопоставьте отчет с исходными документами. Решение об участии принимает участник закупки.
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        selectScenario("procurement_report");
-                        setShowHelpModal(false);
-                      }}
-                      className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
-                    >
-                      <span>Выбрать «Анализ документации»</span>
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {helpModalTab === "supplier_search" ? (
-                <div className="space-y-4">
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
-                      <div>
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🎯 Назначение функции:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Поиск производителей, дилеров и дистрибьюторов по заданным условиям. Опубликованные контакты и сведения о компании нужно подтвердить; статус официального дилера не гарантируется.
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">⚙️ Фильтрация по Минпромторгу:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          • <strong>Обычный</strong> — поиск по всем поставщикам РФ.<br />
-                          • <strong>Только реестр (ГИСП)</strong> — отбор компаний из реестра; применимость записи проверяется для конкретного товара и закупки.<br />
-                          • <strong>Реестр в приоритете</strong> — производители из ГИСП первыми. Соответствие требованиям ПП РФ № 1875 нужно подтвердить отдельно.
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">География поиска:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          • <strong>Только Россия</strong> — строгий фильтр отечественных компаний с ИНН РФ (для 44-ФЗ, 223-ФЗ и нацрежима).<br />
-                          • <strong>РФ и СНГ (ЕАЭС)</strong> — поставщики и заводы России, Беларуси, Казахстана, Армении, Кыргызстана.<br />
-                          • <strong>Весь мир</strong> — прямые зарубежные фабрики и производители мира без посредников (для параллельного импорта и прямых контрактов).
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
-                      <div>
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📥 Что загружать:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Файл технического задания, спецификацию (.pdf, .docx, .xlsx, .zip) или список требуемых позиций текстом.
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📤 Что на выходе:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          1) Ведомость поставщиков в Excel (XLSX) с прямыми контактами.<br />
-                          2) Официальный файл запроса КП в Word (DOCX).<br />
-                          3) Копирование текста запроса КП в 1 клик.
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="sm:col-span-2 p-4 bg-teal-50/50 border border-teal-200/80 rounded-2xl space-y-2">
-                      <strong className="text-teal-950 font-bold block text-xs sm:text-[13px]">
-                        📑 Многопозиционные спецификации и ТЗ:
-                      </strong>
-                      <p className="text-slate-700 leading-relaxed text-xs sm:text-[13px]">
-                        Если ваше ТЗ содержит несколько товаров разных категорий (например, ламинат, краска, керамогранит):<br />
-                        • <strong>⚖️ Сбалансированный поиск</strong> — единая квота поставщиков распределяется между всеми позициями ТЗ в рамках 1 задачи. В итоговом Excel-отчете формируется единый лист «Сводный реестр» со сворачиваемой иерархической структурой строк (+ / -) по каждой позиции спецификации, а также единый официальный Запрос КП (.docx).<br />
-                        • <strong>🔍 Попозиционный глубокий поиск</strong> — независимый глубокий поиск по каждой позиции с отдельным детальным анализом сайтов производителей и списанием по числу позиций.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="pt-1 flex items-center justify-between gap-3 border-t border-slate-100">
-                    <span className="text-xs text-slate-500 font-medium">
-                      💡 Совет: используйте готовую базу контактов для быстрого сбора ценовых предложений.
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        selectScenario("supplier_search");
-                        setShowHelpModal(false);
-                      }}
-                      className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
-                    >
-                      <span>Выбрать «Поиск поставщиков»</span>
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {helpModalTab === "analysis_and_suppliers" ? (
-                <div className="space-y-4">
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
-                      <div>
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🎯 Назначение функции:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Совмещенный экспресс-запуск в 1 клик: глубокий аудит рисков контракта плюс автоматический сбор базы заводов и поставщиков по спецификации ТЗ.
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">💡 Когда применять:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Когда нужно быстро получить общую картину по новой закупке: оценить риски и сразу получить контакты поставщиков для расчета цены.
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
-                      <div>
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📥 Что загружать:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          19-значный номер извещения ЕИС, ссылку на zakupki.gov.ru или файлы документации закупки.
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📤 Что на выходе:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          1) Аналитический отчет DOCX с факторами риска.<br />
-                          2) Таблица поставщиков XLSX с прямыми телефонами и email.<br />
-                          3) Готовый файл запроса КП.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="pt-1 flex items-center justify-between gap-3 border-t border-slate-100">
-                    <span className="text-xs text-slate-500 font-medium">
-                      💡 Совет: по сложным позициям ТЗ запустите «Подбор товара» для характеристик заявки.
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        selectScenario("analysis_and_suppliers");
-                        setShowHelpModal(false);
-                      }}
-                      className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
-                    >
-                      <span>Выбрать «Анализ + поиск»</span>
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {helpModalTab === "exact_product" ? (
-                <div className="space-y-4">
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
-                      <div>
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🎯 Назначение функции:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          ИИ детально анализирует технические характеристики ТЗ, предлагает возможную модель и производителя, составляет таблицу параметров и российских аналогов. Соответствие требованиям ТЗ нужно подтвердить по документации производителя.
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">💡 Когда применять:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Когда заказчик не указал бренд в ТЗ или требуется снизить себестоимость заявки с помощью российского аналога из реестра Минпромторга (ГИСП).
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
-                      <div>
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📥 Что загружать:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Файл ТЗ, спецификацию или таблицу характеристик (.pdf, .docx, .xlsx, .zip), либо вставьте фрагмент описания объекта закупки текстом.
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📤 Что на выходе:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          1) Рабочий отчет Word (DOCX) с кандидатами и сопоставлением характеристик ТЗ.<br />
-                          2) Готовая таблица конкретных показателей для 1-й части заявки.<br />
-                          3) Варианты аналогов РФ с попараметрическим сравнением и доступными сведениями реестра ГИСП.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="pt-1 flex items-center justify-between gap-3 border-t border-slate-100">
-                    <span className="text-xs text-slate-500 font-medium">
-                      💡 Совет: после расшифровки модели перейдите к «Поиску поставщиков» для запроса КП.
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        selectScenario("exact_product");
-                        setShowHelpModal(false);
-                      }}
-                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
-                    >
-                      <span>Выбрать «Подбор товара»</span>
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {helpModalTab === "price_monitoring" ? (
-                <div className="space-y-4">
-                  <div className="p-4 bg-amber-50/70 border border-amber-200/80 rounded-2xl">
-                    <h3 className="font-extrabold text-amber-950 text-sm mb-1">
-                      Мониторинг цен поставщиков по спецификации (XLSX)
-                    </h3>
-                    <p className="text-amber-900 text-xs leading-relaxed">
-                      Автоматический сбор актуальных рыночных цен из открытых источников и каталогов поставщиков. До 5 реальных предложений на позицию с контактами, ИНН и ссылками на товар.
-                    </p>
-                  </div>
-
-                  <div className="grid sm:grid-cols-2 gap-3">
-                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <div className="font-bold text-slate-900 text-xs">⚡ Оплата только за результат</div>
-                      <p className="text-slate-600 text-[11px] leading-relaxed">
-                        Списание с баланса происходит исключительно за те позиции спецификации, по которым фактически найдена и подтверждена цена. Позиции без найденной цены не тарифицируются (0 ₽).
-                      </p>
-                    </div>
-                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <div className="font-bold text-slate-900 text-xs">📊 Формат выгрузки</div>
-                      <p className="text-slate-600 text-[11px] leading-relaxed">
-                        Готовый Excel-отчет (.xlsx) в утвержденном формате: сравнительная сводка по 5 поставщикам, детальный реестр с ценой за единицу, датой, телефоном, почтой и ссылкой.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="pt-1 flex items-center justify-between gap-3 border-t border-slate-100">
-                    <span className="text-xs text-slate-500 font-medium">
-                      💡 Совет: загружайте спецификацию в формате .xlsx с колонками «Наименование» и «Ед. изм.».
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        selectScenario("price_monitoring");
-                        setShowHelpModal(false);
-                      }}
-                      className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
-                    >
-                      <span>Выбрать «Мониторинг цен»</span>
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {helpModalTab === "custom_batch_report" ? (
-                <div className="space-y-4">
-                  <div className="p-4 bg-teal-50/70 border border-teal-200/80 rounded-2xl">
-                    <h3 className="font-extrabold text-teal-950 text-sm mb-1">
-                      Пакетный анализ закупок по индивидуальному шаблону
-                    </h3>
-                    <p className="text-teal-900 text-xs leading-relaxed">
-                      Позволяет загружать выгрузки тендеров в Excel, CSV и Word (с выбором одной или нескольких вкладок) или вставлять номера извещений через запятую / столбиком. Для каждой закупки система готовит отдельный отчёт в Word с кликабельными ссылками и списывает оплату только за фактически найденную документацию.
-                    </p>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            {/* Modal Footer */}
-            <footer className="px-6 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between shrink-0">
-              <span className="text-xs text-slate-500 font-medium hidden sm:inline">
-                TenderLex — профессиональная ИИ-платформа анализа закупок и подбора поставщиков
-              </span>
-              <button
-                type="button"
-                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs rounded-xl transition-colors cursor-pointer ml-auto"
-                onClick={() => setShowHelpModal(false)}
-              >
-                Закрыть
-              </button>
-            </footer>
-          </section>
-        </div>
-      ) : null}
-
-      {/* Expenses & Operations History Modal (Spacious, Clean, Slate/Teal/Emerald Branded, No Big Aggregated Spend) */}
-      {showHistoryModal ? (() => {
-        const historyPageCount = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
-        const historyStart = historyTotal ? (historyPage - 1) * HISTORY_PAGE_SIZE + 1 : 0;
-        const historyEnd = Math.min(historyTotal, historyPage * HISTORY_PAGE_SIZE);
+      {/* Function Guide & Workflow Compilation Modal */}
+      {showHelpModal ? (() => {
+        const showBatchHelpTab = Boolean(hasSeparateCustomBatchTab || session?.user?.allowed_custom_batch_report);
+        const showPriceHelpTab = Boolean(session?.user?.allowed_price_monitoring);
+        const tabBtnClass = (isActive: boolean) =>
+          `py-1.5 px-2.5 rounded-lg font-bold transition-all text-center inline-flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap ${
+            isActive
+              ? "bg-white text-[#103a31] border border-[#cde0be] shadow-2xs ring-1 ring-[#174b3f]/15"
+              : "text-slate-600 hover:text-slate-900 hover:bg-white/70 border border-transparent"
+          }`;
 
         return (
           <div
             className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
             onMouseDown={(event) => {
-              if (event.target === event.currentTarget) setShowHistoryModal(false);
+              if (event.target === event.currentTarget) setShowHelpModal(false);
             }}
           >
             <section
-              className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-7 max-w-2xl w-full shadow-2xl border border-slate-200 space-y-4 max-h-[88vh] flex flex-col font-sans"
+              className="bg-white rounded-2xl max-w-5xl w-full max-h-[90vh] shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="help-modal-title"
+            >
+              {/* Light Calm Modal Header */}
+              <header className="bg-white px-5 sm:px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3 shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-xl bg-[#f4f8ef] border border-[#cde0be] text-[#174b3f] shrink-0">
+                    <BookOpen size={18} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <h2 id="help-modal-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-tight">
+                      Справочник функций и алгоритм работы TenderLex
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Пошаговый порядок подготовки к закупкам и назначение инструментов
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors shrink-0 cursor-pointer"
+                  onClick={() => setShowHelpModal(false)}
+                  aria-label="Закрыть"
+                >
+                  <X size={18} aria-hidden="true" />
+                </button>
+              </header>
+
+              {/* Non-Clipping Flex-Wrap Tab Navigation */}
+              <div className="bg-[#f8faf6] px-4 sm:px-5 py-2 border-b border-[#e5e9e2] flex flex-wrap items-center gap-1 text-xs shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setHelpModalTab("workflow")}
+                  className={tabBtnClass(helpModalTab === "workflow")}
+                >
+                  <Compass size={14} className={helpModalTab === "workflow" ? "text-[#174b3f]" : "text-slate-400"} aria-hidden="true" />
+                  <span>Маршрут работы</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHelpModalTab("procurement_report")}
+                  className={tabBtnClass(helpModalTab === "procurement_report")}
+                >
+                  <FileText size={14} className={helpModalTab === "procurement_report" ? "text-[#174b3f]" : "text-slate-400"} aria-hidden="true" />
+                  <span>Анализ документации</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHelpModalTab("supplier_search")}
+                  className={tabBtnClass(helpModalTab === "supplier_search")}
+                >
+                  <Search size={14} className={helpModalTab === "supplier_search" ? "text-[#174b3f]" : "text-slate-400"} aria-hidden="true" />
+                  <span>Поиск поставщиков</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHelpModalTab("analysis_and_suppliers")}
+                  className={tabBtnClass(helpModalTab === "analysis_and_suppliers")}
+                >
+                  <Receipt size={14} className={helpModalTab === "analysis_and_suppliers" ? "text-[#174b3f]" : "text-slate-400"} aria-hidden="true" />
+                  <span>Анализ + поиск</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHelpModalTab("exact_product")}
+                  className={tabBtnClass(helpModalTab === "exact_product")}
+                >
+                  <CheckCircle2 size={14} className={helpModalTab === "exact_product" ? "text-[#174b3f]" : "text-slate-400"} aria-hidden="true" />
+                  <span>Подбор товара</span>
+                </button>
+                {showPriceHelpTab ? (
+                  <button
+                    type="button"
+                    onClick={() => setHelpModalTab("price_monitoring")}
+                    className={tabBtnClass(helpModalTab === "price_monitoring")}
+                  >
+                    <Coins size={14} className={helpModalTab === "price_monitoring" ? "text-[#174b3f]" : "text-slate-400"} aria-hidden="true" />
+                    <span>Мониторинг цен</span>
+                  </button>
+                ) : null}
+                {showBatchHelpTab ? (
+                  <button
+                    type="button"
+                    onClick={() => setHelpModalTab("custom_batch_report")}
+                    className={tabBtnClass(helpModalTab === "custom_batch_report")}
+                  >
+                    <FileSpreadsheet size={14} className={helpModalTab === "custom_batch_report" ? "text-[#174b3f]" : "text-slate-400"} aria-hidden="true" />
+                    <span>Пакетный анализ</span>
+                  </button>
+                ) : null}
+              </div>
+
+              {/* Modal Body Content */}
+              <div className="p-4 sm:p-5 text-slate-800 text-xs sm:text-[13px] space-y-4 overflow-y-auto flex-1">
+                {helpModalTab === "workflow" ? (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between pb-1.5 border-b border-slate-100">
+                      <div>
+                        <h3 className="font-extrabold text-slate-900 text-sm sm:text-base">
+                          Рекомендуемый порядок работы с задачами
+                        </h3>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          4 основных сценария кабинета: от проверки условий закупки до подбора товара и аналогов
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* 4 Step Cards in Canonical Cabinet Order */}
+                    <div className="grid sm:grid-cols-2 gap-3.5">
+                      {/* Step 1: Анализ документации */}
+                      <div className="bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-[#9ec089] transition-all">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="w-6 h-6 rounded-full bg-[#e7efe0] text-[#103a31] font-extrabold text-xs flex items-center justify-center shrink-0">
+                              1
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-white text-[#174b3f] border border-[#cde0be]">
+                              Оценка рисков
+                            </span>
+                          </div>
+                          <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
+                            Анализ документации
+                          </strong>
+                          <p className="text-xs text-slate-600 leading-relaxed">
+                            Проверка проекта контракта: сроки, штрафы, обеспечение заявки и условия национального режима по действующей редакции ПП РФ № 1875.
+                          </p>
+                        </div>
+                        <div className="pt-2.5 border-t border-[#e5e9e2] flex items-center justify-between">
+                          <span className="text-[11px] text-slate-500 font-medium">Условия для проверки</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              selectScenario("procurement_report");
+                              setShowHelpModal(false);
+                            }}
+                            className="px-2.5 py-1 bg-white hover:bg-[#174b3f] hover:text-white text-[#174b3f] border border-[#b7c9af] rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                          >
+                            Выбрать →
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Step 2: Поиск поставщиков */}
+                      <div className="bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-[#9ec089] transition-all">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="w-6 h-6 rounded-full bg-[#e7efe0] text-[#103a31] font-extrabold text-xs flex items-center justify-center shrink-0">
+                              2
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-white text-[#174b3f] border border-[#cde0be]">
+                              Запрос КП
+                            </span>
+                          </div>
+                          <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
+                            Поиск поставщиков
+                          </strong>
+                          <p className="text-xs text-slate-600 leading-relaxed">
+                            Поиск кандидатов и опубликованных контактов для запроса КП. Наличие товара, цену и полномочия поставщика нужно подтвердить.
+                          </p>
+                        </div>
+                        <div className="pt-2.5 border-t border-[#e5e9e2] flex items-center justify-between">
+                          <span className="text-[11px] text-slate-500 font-medium">Запрос цен</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              selectScenario("supplier_search");
+                              setShowHelpModal(false);
+                            }}
+                            className="px-2.5 py-1 bg-white hover:bg-[#174b3f] hover:text-white text-[#174b3f] border border-[#b7c9af] rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                          >
+                            Выбрать →
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Step 3: Анализ + поиск */}
+                      <div className="bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-[#9ec089] transition-all">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="w-6 h-6 rounded-full bg-[#e7efe0] text-[#103a31] font-extrabold text-xs flex items-center justify-center shrink-0">
+                              3
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-white text-[#174b3f] border border-[#cde0be]">
+                              Комплексный запуск
+                            </span>
+                          </div>
+                          <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
+                            Анализ + поиск
+                          </strong>
+                          <p className="text-xs text-slate-600 leading-relaxed">
+                            Совмещает разбор закупочной документации и подбор профильных поставщиков под спецификацию в рамках одного запуска.
+                          </p>
+                        </div>
+                        <div className="pt-2.5 border-t border-[#e5e9e2] flex items-center justify-between">
+                          <span className="text-[11px] text-slate-500 font-medium">Аудит + контакты сбыта</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              selectScenario("analysis_and_suppliers");
+                              setShowHelpModal(false);
+                            }}
+                            className="px-2.5 py-1 bg-white hover:bg-[#174b3f] hover:text-white text-[#174b3f] border border-[#b7c9af] rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                          >
+                            Выбрать →
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Step 4: Подбор товара и аналогов */}
+                      <div className="bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-[#9ec089] transition-all">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="w-6 h-6 rounded-full bg-[#e7efe0] text-[#103a31] font-extrabold text-xs flex items-center justify-center shrink-0">
+                              4
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-white text-[#174b3f] border border-[#cde0be]">
+                              Подбор аналогов
+                            </span>
+                          </div>
+                          <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
+                            Подбор товара и аналогов
+                          </strong>
+                          <p className="text-xs text-slate-600 leading-relaxed">
+                            Определение заложенной модели по ТЗ, характеристики для проверки заявки и варианты российских аналогов для сравнения стоимости.
+                          </p>
+                        </div>
+                        <div className="pt-2.5 border-t border-[#e5e9e2] flex items-center justify-between">
+                          <span className="text-[11px] text-slate-500 font-medium">Проверка характеристик</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              selectScenario("exact_product");
+                              setShowHelpModal(false);
+                            }}
+                            className="px-2.5 py-1 bg-white hover:bg-[#174b3f] hover:text-white text-[#174b3f] border border-[#b7c9af] rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                          >
+                            Выбрать →
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Compact Special Tools Strip when enabled */}
+                    {(showPriceHelpTab || showBatchHelpTab) ? (
+                      <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/90 space-y-2">
+                        <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                          Специнструменты для массовой работы
+                        </div>
+                        <div className="grid sm:grid-cols-2 gap-2.5">
+                          {showPriceHelpTab ? (
+                            <div className="p-3 rounded-xl bg-white border border-slate-200 flex items-center justify-between gap-2.5">
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                                  <Coins size={13} className="text-[#174b3f] shrink-0" aria-hidden="true" />
+                                  <span>Мониторинг цен</span>
+                                </div>
+                                <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                                  Сбор рыночных цен по спецификации до 1 000 строк, списание только за найденные.
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setHelpModalTab("price_monitoring")}
+                                className="px-2.5 py-1 rounded-lg bg-[#f4f8ef] hover:bg-[#e7efe0] text-[#174b3f] border border-[#cde0be] text-[11px] font-bold shrink-0 cursor-pointer"
+                              >
+                                Подробнее
+                              </button>
+                            </div>
+                          ) : null}
+                          {showBatchHelpTab ? (
+                            <div className="p-3 rounded-xl bg-white border border-slate-200 flex items-center justify-between gap-2.5">
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                                  <FileSpreadsheet size={13} className="text-[#174b3f] shrink-0" aria-hidden="true" />
+                                  <span>Пакетный анализ</span>
+                                </div>
+                                <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                                  Массовый разбор реестра закупок из Excel, CSV, Word или списка номеров ЕИС.
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setHelpModalTab("custom_batch_report")}
+                                className="px-2.5 py-1 rounded-lg bg-[#f4f8ef] hover:bg-[#e7efe0] text-[#174b3f] border border-[#cde0be] text-[11px] font-bold shrink-0 cursor-pointer"
+                              >
+                                Подробнее
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {helpModalTab === "procurement_report" ? (
+                  <div className="space-y-4">
+                    <div className="grid sm:grid-cols-2 gap-4">
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-3">
+                        <div>
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Назначение функции:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            Автоматизированный разбор условий закупки по 44-ФЗ и 223-ФЗ: сроки, штрафы, лицензии и обеспечение. Выводы нужно сверять с документами и применимыми нормами; отчет не заменяет юридическое заключение.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Когда применять:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            Перед подачей заявки для проверки условий и оценки рисков. Отчет не гарантирует допуск, исполнение контракта или отсутствие оснований для РНП.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-3">
+                        <div>
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что загружать:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            19-значный номер извещения ЕИС, прямую ссылку на zakupki.gov.ru или архив с файлами проекта контракта и ТЗ.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что на выходе:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            1) Аналитический отчет Word (DOCX) в фирменном стиле.<br />
+                            2) Чек-лист ключевых требований и факторов риска.<br />
+                            3) Вопросы и условия для самостоятельной проверки участия и исполнения.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100">
+                      <span className="text-xs text-slate-500 font-medium">
+                        Совет: сопоставьте отчет с исходными документами. Решение об участии принимает участник закупки.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          selectScenario("procurement_report");
+                          setShowHelpModal(false);
+                        }}
+                        className="tl-btn-primary px-4 py-2 text-xs rounded-xl cursor-pointer inline-flex items-center gap-1.5 shrink-0"
+                      >
+                        <span>Выбрать «Анализ документации»</span>
+                        <ArrowRight size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {helpModalTab === "supplier_search" ? (
+                  <div className="space-y-4">
+                    <div className="grid sm:grid-cols-2 gap-4">
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-3">
+                        <div>
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Назначение функции:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            Поиск производителей, дилеров и дистрибьюторов по заданным условиям. Опубликованные контакты и сведения о компании нужно подтвердить; статус официального дилера не гарантируется.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Фильтрация по Минпромторгу:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            • <strong>Обычный</strong> — поиск по всем поставщикам РФ.<br />
+                            • <strong>Только реестр (ГИСП)</strong> — отбор компаний из реестра; применимость записи проверяется для конкретного товара и закупки.<br />
+                            • <strong>Реестр в приоритете</strong> — производители из ГИСП первыми. Соответствие требованиям ПП РФ № 1875 нужно подтвердить отдельно.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что загружать:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            Файл технического задания, спецификацию (.pdf, .docx, .xlsx, .zip) или список требуемых позиций текстом.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-3">
+                        <div>
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что на выходе:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            1) Ведомость поставщиков в Excel (XLSX) с прямыми контактами.<br />
+                            2) Официальный файл запроса КП в Word (DOCX).<br />
+                            3) Копирование текста запроса КП в 1 клик.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">География поиска:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            • <strong>Только Россия</strong> — отечественные компании с ИНН РФ (для 44-ФЗ, 223-ФЗ и нацрежима).<br />
+                            • <strong>РФ и СНГ (ЕАЭС)</strong> — поставщики и заводы России, Беларуси, Казахстана, Армении, Кыргызстана.<br />
+                            • <strong>Весь мир</strong> — прямые зарубежные фабрики и производители мира.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Приоритет в радиусе доставки:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            Укажите город поставки и радиус (10–5 000 км) — ближайшие поставщики попадут в начало таблицы, а компании из других регионов будут отмечены отдельно.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="sm:col-span-2 p-4 bg-[#f4f8ef] border border-[#cde0be] rounded-2xl space-y-1.5">
+                        <strong className="text-[#103a31] font-bold block text-xs sm:text-[13px]">
+                          Многопозиционные спецификации и ТЗ:
+                        </strong>
+                        <p className="text-slate-700 leading-relaxed text-xs sm:text-[13px]">
+                          Если ваше ТЗ содержит несколько товаров разных категорий (например, ламинат, краска, керамогранит):<br />
+                          • <strong>Сбалансированный поиск</strong> — единая квота поставщиков распределяется между всеми позициями ТЗ в рамках 1 задачи. В итоговом Excel-отчете формируется единый лист «Сводный реестр» со сворачиваемой иерархической структурой строк (+ / -) по каждой позиции спецификации, а также единый официальный Запрос КП (.docx).<br />
+                          • <strong>Попозиционный глубокий поиск</strong> — независимый глубокий поиск по каждой позиции с отдельным детальным анализом сайтов производителей и списанием по числу позиций.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100">
+                      <span className="text-xs text-slate-500 font-medium">
+                        Совет: используйте готовую базу контактов для быстрого сбора ценовых предложений.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          selectScenario("supplier_search");
+                          setShowHelpModal(false);
+                        }}
+                        className="tl-btn-primary px-4 py-2 text-xs rounded-xl cursor-pointer inline-flex items-center gap-1.5 shrink-0"
+                      >
+                        <span>Выбрать «Поиск поставщиков»</span>
+                        <ArrowRight size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {helpModalTab === "analysis_and_suppliers" ? (
+                  <div className="space-y-4">
+                    <div className="grid sm:grid-cols-2 gap-4">
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-3">
+                        <div>
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Назначение функции:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            Совмещенный экспресс-запуск в 1 клик: глубокий аудит рисков контракта плюс автоматический сбор базы заводов и поставщиков по спецификации ТЗ.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Когда применять:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            Когда нужно быстро получить общую картину по новой закупке: оценить риски и сразу получить контакты поставщиков для расчета цены.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-3">
+                        <div>
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что загружать:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            19-значный номер извещения ЕИС, ссылку на zakupki.gov.ru или файлы документации закупки.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что на выходе:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            1) Аналитический отчет DOCX с факторами риска.<br />
+                            2) Таблица поставщиков XLSX с прямыми телефонами и email.<br />
+                            3) Готовый файл запроса КП.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100">
+                      <span className="text-xs text-slate-500 font-medium">
+                        Совет: по сложным позициям ТЗ запустите «Подбор товара» для характеристик заявки.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          selectScenario("analysis_and_suppliers");
+                          setShowHelpModal(false);
+                        }}
+                        className="tl-btn-primary px-4 py-2 text-xs rounded-xl cursor-pointer inline-flex items-center gap-1.5 shrink-0"
+                      >
+                        <span>Выбрать «Анализ + поиск»</span>
+                        <ArrowRight size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {helpModalTab === "exact_product" ? (
+                  <div className="space-y-4">
+                    <div className="grid sm:grid-cols-2 gap-4">
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-3">
+                        <div>
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Назначение функции:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            ИИ детально анализирует технические характеристики ТЗ, предлагает возможную модель и производителя, составляет таблицу параметров и российских аналогов. Соответствие требованиям ТЗ нужно подтвердить по документации производителя.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Когда применять:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            Когда заказчик не указал бренд в ТЗ или требуется снизить себестоимость заявки с помощью российского аналога из реестра Минпромторга (ГИСП).
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-3">
+                        <div>
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что загружать:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            Файл ТЗ, спецификацию или таблицу характеристик (.pdf, .docx, .xlsx, .zip), либо вставьте фрагмент описания объекта закупки текстом.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что на выходе:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                            1) Рабочий отчет Word (DOCX) с кандидатами и сопоставлением характеристик ТЗ.<br />
+                            2) Готовая таблица конкретных показателей для 1-й части заявки.<br />
+                            3) Варианты аналогов РФ с попараметрическим сравнением и доступными сведениями реестра ГИСП.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100">
+                      <span className="text-xs text-slate-500 font-medium">
+                        Совет: после расшифровки модели перейдите к «Поиску поставщиков» для запроса КП.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          selectScenario("exact_product");
+                          setShowHelpModal(false);
+                        }}
+                        className="tl-btn-primary px-4 py-2 text-xs rounded-xl cursor-pointer inline-flex items-center gap-1.5 shrink-0"
+                      >
+                        <span>Выбрать «Подбор товара»</span>
+                        <ArrowRight size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {helpModalTab === "price_monitoring" ? (
+                  <div className="space-y-4">
+                    <div className="p-4 bg-[#f4f8ef] border border-[#cde0be] rounded-2xl">
+                      <h3 className="font-extrabold text-[#103a31] text-sm mb-1">
+                        Мониторинг цен поставщиков по спецификации (XLSX)
+                      </h3>
+                      <p className="text-slate-700 text-xs leading-relaxed">
+                        Автоматический сбор актуальных рыночных цен из открытых источников и каталогов поставщиков. До 5 реальных предложений на позицию с контактами, ИНН и ссылками на товар.
+                      </p>
+                    </div>
+
+                    <div className="grid sm:grid-cols-2 gap-3.5">
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-1.5">
+                        <div className="font-bold text-slate-900 text-xs sm:text-[13px]">Оплата только за результат</div>
+                        <p className="text-slate-600 text-xs leading-relaxed">
+                          Списание с баланса происходит исключительно за те позиции спецификации, по которым фактически найдена и подтверждена цена. Позиции без найденной цены не тарифицируются (0 ₽).
+                        </p>
+                      </div>
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-1.5">
+                        <div className="font-bold text-slate-900 text-xs sm:text-[13px]">Формат выгрузки</div>
+                        <p className="text-slate-600 text-xs leading-relaxed">
+                          Готовый Excel-отчет (.xlsx) в утвержденном формате: сравнительная сводка по 5 поставщикам, детальный реестр с ценой за единицу, датой, телефоном, почтой и ссылкой.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100">
+                      <span className="text-xs text-slate-500 font-medium">
+                        Совет: загружайте спецификацию в формате .xlsx с колонками «Наименование» и «Ед. изм.».
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          selectScenario("price_monitoring");
+                          setShowHelpModal(false);
+                        }}
+                        className="tl-btn-primary px-4 py-2 text-xs rounded-xl cursor-pointer inline-flex items-center gap-1.5 shrink-0"
+                      >
+                        <span>Выбрать «Мониторинг цен»</span>
+                        <ArrowRight size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {helpModalTab === "custom_batch_report" ? (
+                  <div className="space-y-4">
+                    <div className="p-4 bg-[#f4f8ef] border border-[#cde0be] rounded-2xl">
+                      <h3 className="font-extrabold text-[#103a31] text-sm mb-1">
+                        Пакетный анализ закупок по индивидуальному шаблону
+                      </h3>
+                      <p className="text-slate-700 text-xs leading-relaxed">
+                        Массовая проверка выгрузки тендеров за один запуск: система считывает список закупок, даёт выбрать нужные вкладки и строки, а затем готовит отдельный отчёт по каждой процедуре.
+                      </p>
+                    </div>
+
+                    <div className="grid sm:grid-cols-2 gap-3.5">
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-3">
+                        <div>
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что загружать:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs mt-1">
+                            Таблицы Excel / CSV, файлы Word с реестром тендеров или перечень номеров извещений ЕИС через запятую / в столбик.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Выбор перед запуском:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs mt-1">
+                            Если в файле несколько листов или десятки строк, откроется предпросмотр, где вы отметите только нужные закупки и сразу увидите стоимость.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="p-4 bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl space-y-3">
+                        <div>
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Что на выходе:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs mt-1">
+                            1) Просмотр всех ответов ИИ прямо в кабинете.<br />
+                            2) Отдельный Word-отчёт (.docx) по каждой закупке с кликабельными ссылками.<br />
+                            3) Скачивание всех готовых отчётов одним архивом.
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-[#e5e9e2]">
+                          <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">Оплата по факту:</strong>
+                          <p className="text-slate-600 leading-relaxed text-xs mt-1">
+                            Списание выполняется только за те закупки, по которым найдена документация и сформирован отчёт.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100">
+                      <span className="text-xs text-slate-500 font-medium">
+                        Совет: после завершения откройте «Открыть ответы ИИ» для быстрого просмотра всех закупок в одном окне.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          selectScenario(hasSeparateCustomBatchTab ? "custom_batch_report" : "procurement_report");
+                          setShowHelpModal(false);
+                        }}
+                        className="tl-btn-primary px-4 py-2 text-xs rounded-xl cursor-pointer inline-flex items-center gap-1.5 shrink-0"
+                      >
+                        <span>Выбрать «Пакетный анализ»</span>
+                        <ArrowRight size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              {/* Modal Footer */}
+              <footer className="px-5 sm:px-6 py-3 bg-[#f8faf6] border-t border-[#e5e9e2] flex items-center justify-between shrink-0">
+                <span className="text-xs text-slate-500 font-medium hidden sm:inline">
+                  TenderLex — ИИ-платформа анализа закупок и подбора поставщиков
+                </span>
+                <button
+                  type="button"
+                  className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs rounded-xl transition-colors cursor-pointer ml-auto"
+                  onClick={() => setShowHelpModal(false)}
+                >
+                  Закрыть
+                </button>
+              </footer>
+            </section>
+          </div>
+        );
+      })() : null}
+
+      {/* Expenses, Operations History & Legal Entity Invoices Modal */}
+      {showHistoryModal ? (() => {
+        const historyPageCount = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
+        const historyStart = historyTotal ? (historyPage - 1) * HISTORY_PAGE_SIZE + 1 : 0;
+        const historyEnd = Math.min(historyTotal, historyPage * HISTORY_PAGE_SIZE);
+        const filteredHistoryTransactions = historyTransactions.filter((tx) => {
+          if (historyOpFilter === "grant") return tx.operation === "grant";
+          if (historyOpFilter === "release") return tx.operation === "release";
+          if (historyOpFilter === "debit") return tx.operation !== "grant" && tx.operation !== "release";
+          return true;
+        });
+        const historyFilterCounts = {
+          all: historyTransactions.length,
+          debit: historyTransactions.filter((tx) => tx.operation !== "grant" && tx.operation !== "release").length,
+          grant: historyTransactions.filter((tx) => tx.operation === "grant").length,
+          release: historyTransactions.filter((tx) => tx.operation === "release").length,
+        };
+        const invoicesTotalPages = Math.max(1, Math.ceil(customerInvoices.length / CUSTOMER_INVOICES_PER_PAGE));
+        const safeInvoicesPage = Math.min(customerInvoicesPage, invoicesTotalPages);
+        const invoicesStartIndex = (safeInvoicesPage - 1) * CUSTOMER_INVOICES_PER_PAGE;
+        const currentModalInvoices = customerInvoices.slice(invoicesStartIndex, invoicesStartIndex + CUSTOMER_INVOICES_PER_PAGE);
+
+        const closeHistoryModal = () => {
+          setShowHistoryModal(false);
+          setHistoryOpFilter("all");
+          setInvoiceCardEmailError("");
+        };
+
+        return (
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) closeHistoryModal();
+            }}
+          >
+            <section
+              className="bg-white rounded-2xl p-5 sm:p-6 max-w-2xl w-full shadow-2xl border border-slate-200 space-y-4 max-h-[88vh] flex flex-col font-sans"
               role="dialog"
               aria-modal="true"
               aria-labelledby="history-modal-title"
@@ -8224,152 +8993,519 @@ export function CabinetClient() {
               {/* Modal Header */}
               <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3.5 shrink-0">
                 <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-xl bg-teal-50 border border-teal-200/80 text-teal-700 shrink-0">
-                    <History size={18} aria-hidden="true" />
+                  <div className="p-2 rounded-xl bg-[#f4f8ef] border border-[#cde0be] text-[#174b3f] shrink-0">
+                    <Receipt size={18} aria-hidden="true" />
                   </div>
                   <div>
                     <h2 id="history-modal-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-tight">
-                      История операций
+                      Счета и история операций
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Детализация списаний за задачи и пополнений счета
+                      Списания за задачи, пополнения баланса и счета для юридических лиц
                     </p>
                   </div>
                 </div>
                 <button
                   type="button"
                   className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors shrink-0 cursor-pointer"
-                  onClick={() => setShowHistoryModal(false)}
+                  onClick={closeHistoryModal}
                   aria-label="Закрыть историю"
                 >
                   <X size={18} />
                 </button>
               </div>
 
-              {/* Modal Body / Transactions List */}
-              <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-[260px]">
-                {historyLoading ? (
-                  <div className="py-16 flex flex-col items-center justify-center text-slate-400 space-y-2">
-                    <Loader2 size={24} className="animate-spin text-teal-600" />
-                    <span className="text-xs font-medium">Загрузка истории операций...</span>
-                  </div>
-                ) : historyError ? (
-                  <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between">
-                    <span>{historyError}</span>
-                    <button
-                      type="button"
-                      onClick={() => loadHistoryTransactions(historyPage)}
-                      className="px-2.5 py-1 bg-rose-100 hover:bg-rose-200 text-rose-900 rounded-lg font-bold transition-colors cursor-pointer"
-                    >
-                      Повторить
-                    </button>
-                  </div>
-                ) : historyTransactions.length === 0 ? (
-                  <div className="py-16 text-center text-slate-400 space-y-2">
-                    <Receipt size={32} className="mx-auto text-slate-300" />
-                    <p className="text-sm font-semibold text-slate-600">История операций пока пуста</p>
-                    <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                      Здесь будут отображаться списания за выполненные задачи и история начислений
-                    </p>
-                  </div>
+              {/* Segmented Modal Tabs */}
+              <div className="flex items-center justify-between gap-2 flex-wrap shrink-0">
+                <div className="tl-seg-group" role="tablist" aria-label="Разделы счетов и операций">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={historyModalTab === "transactions"}
+                    onClick={() => setHistoryModalTab("transactions")}
+                    className={`tl-seg-btn ${historyModalTab === "transactions" ? "is-active" : ""}`}
+                  >
+                    История списаний
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={historyModalTab === "invoices"}
+                    onClick={() => {
+                      setHistoryModalTab("invoices");
+                      setInvoiceCardEmailError("");
+                      loadCustomerInvoices();
+                    }}
+                    className={`tl-seg-btn tl-num ${historyModalTab === "invoices" ? "is-active" : ""}`}
+                  >
+                    Счета для юрлиц{customerInvoices.length > 0 ? ` (${customerInvoices.length})` : ""}
+                  </button>
+                </div>
+
+                {historyModalTab === "invoices" ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
+                      const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
+                      setSelectedTopUpPackage(defPkg);
+                      setCustomTopUpRub(defPkg?.price_rub || 5000);
+                      closeHistoryModal();
+                      setTopUpTab("b2b");
+                      setShowTopUpModal(true);
+                    }}
+                    className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer"
+                  >
+                    <PlusCircle size={13} aria-hidden="true" />
+                    <span>Выставить счёт</span>
+                  </button>
                 ) : (
-                  <div className="space-y-1.5">
-                    {historyTransactions.map((tx) => {
-                      const isGrant = tx.operation === "grant";
-                      const isRelease = tx.operation === "release";
-                      const hasDistinctTitle = Boolean(
-                        tx.title &&
-                        tx.title.trim().toLowerCase() !== tx.kind_label.trim().toLowerCase() &&
-                        tx.title.trim().toLowerCase() !== tx.operation_label.trim().toLowerCase()
-                      );
-
-                      return (
-                        <div
-                          key={tx.id}
-                          className="p-3 bg-slate-50/70 hover:bg-slate-50 border border-slate-200/80 rounded-xl flex items-center justify-between gap-3 transition-colors"
-                        >
-                          <div className="min-w-0 flex-1 space-y-0.5">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-bold text-slate-900 truncate">
-                                {tx.kind_label || tx.operation_label}
-                              </span>
-                              <span className="text-[10px] font-medium text-slate-400 shrink-0">
-                                {formatDate(tx.created_at)}
-                              </span>
-                            </div>
-                            {hasDistinctTitle ? (
-                              <p className="text-xs text-slate-600 truncate font-normal" title={tx.title}>
-                                {tx.title}
-                              </p>
-                            ) : null}
-                          </div>
-
-                          <div className="text-right shrink-0">
-                            <span
-                              className={`text-xs sm:text-sm font-extrabold whitespace-nowrap ${
-                                isGrant
-                                  ? "text-emerald-700"
-                                  : isRelease
-                                  ? "text-teal-700"
-                                  : "text-slate-800"
-                              }`}
-                            >
-                              {isGrant
-                                ? `+${formatRubles(tx.amount_kopeks)}`
-                                : isRelease
-                                ? `+${formatRubles(tx.amount_kopeks)} (возврат)`
-                                : tx.amount_kopeks > 0
-                                ? `-${formatRubles(tx.amount_kopeks)}`
-                                : "0 ₽"}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
+                      const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
+                      setSelectedTopUpPackage(defPkg);
+                      setCustomTopUpRub(defPkg?.price_rub || 5000);
+                      closeHistoryModal();
+                      setTopUpTab("card");
+                      setShowTopUpModal(true);
+                    }}
+                    className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer"
+                  >
+                    <PlusCircle size={13} aria-hidden="true" />
+                    <span>Пополнить</span>
+                  </button>
                 )}
               </div>
 
+              {/* Operation-type filter chips for transactions */}
+              {historyModalTab === "transactions" && !historyLoading && !historyError && historyTransactions.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1.5 shrink-0 tl-num">
+                  {(
+                    [
+                      { id: "all", label: "Все", count: historyFilterCounts.all },
+                      { id: "debit", label: "Списания", count: historyFilterCounts.debit },
+                      { id: "grant", label: "Пополнения", count: historyFilterCounts.grant },
+                      { id: "release", label: "Возвраты", count: historyFilterCounts.release },
+                    ] as const
+                  ).map((chip) => {
+                    const active = historyOpFilter === chip.id;
+                    return (
+                      <button
+                        key={chip.id}
+                        type="button"
+                        onClick={() => setHistoryOpFilter(chip.id)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                          active
+                            ? "bg-[#f4f8ef] border-[#9ec089] text-[#103a31]"
+                            : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                        }`}
+                      >
+                        {chip.label}
+                        <span className={`ml-1 text-[10px] ${active ? "text-[#174b3f]" : "text-slate-400"}`}>
+                          {chip.count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              {/* Modal Body */}
+              {historyModalTab === "transactions" ? (
+                <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-[260px]">
+                  {historyLoading ? (
+                    <div className="py-16 flex flex-col items-center justify-center text-slate-400 space-y-2">
+                      <Loader2 size={24} className="animate-spin text-[#174b3f]" />
+                      <span className="text-xs font-medium">Загрузка истории операций...</span>
+                    </div>
+                  ) : historyError ? (
+                    <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between">
+                      <span>{historyError}</span>
+                      <button
+                        type="button"
+                        onClick={() => loadHistoryTransactions(historyPage)}
+                        className="px-2.5 py-1 bg-rose-100 hover:bg-rose-200 text-rose-900 rounded-lg font-bold transition-colors cursor-pointer"
+                      >
+                        Повторить
+                      </button>
+                    </div>
+                  ) : historyTransactions.length === 0 ? (
+                    <div className="py-16 text-center text-slate-400 space-y-2">
+                      <Receipt size={32} className="mx-auto text-slate-300" />
+                      <p className="text-sm font-semibold text-slate-600">История операций пока пуста</p>
+                      <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                        Здесь будут отображаться списания за выполненные задачи и история начислений
+                      </p>
+                    </div>
+                  ) : filteredHistoryTransactions.length === 0 ? (
+                    <div className="py-12 text-center text-slate-400 space-y-2.5">
+                      <p className="text-xs font-semibold text-slate-600">На этой странице нет операций выбранного типа</p>
+                      <button
+                        type="button"
+                        onClick={() => setHistoryOpFilter("all")}
+                        className="px-3 py-1.5 rounded-lg bg-[#f4f8ef] hover:bg-[#e7efe0] border border-[#cde0be] text-[#174b3f] text-xs font-bold cursor-pointer"
+                      >
+                        Показать все операции
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {filteredHistoryTransactions.map((tx) => {
+                        const isGrant = tx.operation === "grant";
+                        const isRelease = tx.operation === "release";
+                        const hasDistinctTitle = Boolean(
+                          tx.title &&
+                          tx.title.trim().toLowerCase() !== tx.kind_label.trim().toLowerCase() &&
+                          tx.title.trim().toLowerCase() !== tx.operation_label.trim().toLowerCase()
+                        );
+
+                        return (
+                          <div
+                            key={tx.id}
+                            className="p-3 bg-slate-50/70 hover:bg-slate-50 border border-slate-200/80 rounded-xl flex items-center justify-between gap-3 transition-colors"
+                          >
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-slate-900 truncate">
+                                  {tx.kind_label || tx.operation_label}
+                                </span>
+                                <span className="text-[10px] font-medium text-slate-400 shrink-0 tl-num">
+                                  {formatDate(tx.created_at)}
+                                </span>
+                              </div>
+                              {hasDistinctTitle ? (
+                                <p className="text-xs text-slate-600 truncate font-normal" title={tx.title}>
+                                  {tx.title}
+                                </p>
+                              ) : null}
+                            </div>
+
+                            <div className="text-right shrink-0">
+                              <span
+                                className={`text-xs sm:text-sm font-extrabold whitespace-nowrap tl-num ${
+                                  isGrant
+                                    ? "text-emerald-700"
+                                    : isRelease
+                                    ? "text-[#174b3f]"
+                                    : "text-slate-800"
+                                }`}
+                              >
+                                {isGrant
+                                  ? `+${formatRubles(tx.amount_kopeks)}`
+                                  : isRelease
+                                  ? `+${formatRubles(tx.amount_kopeks)} (возврат)`
+                                  : tx.amount_kopeks > 0
+                                  ? `-${formatRubles(tx.amount_kopeks)}`
+                                  : "0 ₽"}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-[260px]">
+                  {invoiceProofMessage ? (
+                    <div
+                      className={`p-2.5 rounded-xl text-xs font-semibold border ${
+                        invoiceProofMessage.includes("отправлена")
+                          ? "bg-emerald-50 border-emerald-200 text-emerald-900"
+                          : "bg-rose-50 border-rose-200 text-rose-800"
+                      }`}
+                    >
+                      {invoiceProofMessage}
+                    </div>
+                  ) : null}
+                  {invoiceCardEmailError ? (
+                    <div className="p-2.5 rounded-xl text-xs font-semibold border bg-rose-50 border-rose-200 text-rose-800">
+                      {invoiceCardEmailError}
+                    </div>
+                  ) : null}
+
+                  {customerInvoices.length === 0 ? (
+                    <div className="py-14 text-center text-slate-400 space-y-3">
+                      <Building2 size={32} className="mx-auto text-slate-300" />
+                      <div className="space-y-1">
+                        <p className="text-sm font-semibold text-slate-700">Выставленных счетов пока нет</p>
+                        <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                          Вы можете сформировать счёт по ИНН компании, скачать PDF/Excel и прикрепить платёжное поручение для быстрого зачисления
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
+                          const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
+                          setSelectedTopUpPackage(defPkg);
+                          setCustomTopUpRub(defPkg?.price_rub || 5000);
+                          closeHistoryModal();
+                          setTopUpTab("b2b");
+                          setShowTopUpModal(true);
+                        }}
+                        className="tl-btn-primary inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs cursor-pointer"
+                      >
+                        <Building2 size={14} aria-hidden="true" />
+                        <span>Выставить счёт для юрлица</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {currentModalInvoices.map((invoice) => {
+                        const statusLabel =
+                          invoice.status === "paid"
+                            ? "Оплачен"
+                            : invoice.status === "proof_submitted"
+                            ? "Платёжка на проверке"
+                            : invoice.status === "rejected"
+                            ? "Нужна новая платёжка"
+                            : invoice.status === "cancelled"
+                            ? "Отменён"
+                            : "Ожидает оплаты";
+                        const statusClass =
+                          invoice.status === "paid"
+                            ? "bg-emerald-50 text-emerald-900 border-emerald-200"
+                            : invoice.status === "proof_submitted"
+                            ? "bg-[#f4f8ef] text-[#174b3f] border-[#cde0be]"
+                            : invoice.status === "rejected"
+                            ? "bg-rose-50 text-rose-800 border-rose-200"
+                            : invoice.status === "cancelled"
+                            ? "bg-slate-100 text-slate-600 border-slate-200"
+                            : "bg-amber-50 text-amber-900 border-amber-200";
+                        const canUpload =
+                          invoice.status === "issued" ||
+                          invoice.status === "rejected" ||
+                          invoice.status === "proof_submitted";
+                        const isCopied = invoiceCopiedId === invoice.id;
+                        const isSendingEmail = invoiceEmailSendingId === invoice.id;
+                        const isSentEmail = invoiceEmailSentId === invoice.id;
+                        return (
+                          <div
+                            key={invoice.id}
+                            className="rounded-xl border border-slate-200 bg-slate-50/60 hover:bg-white p-3.5 flex flex-col gap-2 transition-colors"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-xs font-extrabold text-slate-900 tl-num">
+                                  Счёт № {invoice.invoice_number}
+                                </div>
+                                <div className="text-[11px] text-slate-500 tl-num">
+                                  {invoice.created_at ? new Date(invoice.created_at).toLocaleDateString("ru-RU") : ""}
+                                  {invoice.buyer_name ? ` · ${invoice.buyer_name}` : ""}
+                                </div>
+                              </div>
+                              <span className={`text-[11px] font-bold border rounded-full px-2.5 py-0.5 shrink-0 ${statusClass}`}>
+                                {statusLabel}
+                              </span>
+                            </div>
+
+                            <div className="text-xs text-slate-700 font-medium tl-num">
+                              <strong className="text-slate-900">{invoice.amount_rub.toLocaleString("ru-RU")} ₽</strong>
+                              {invoice.bonus_rub > 0 ? (
+                                <span className="text-[#174b3f] font-semibold">
+                                  {" "}· +{invoice.bonus_rub.toLocaleString("ru-RU")} ₽ бонус (итого {invoice.total_credit_rub.toLocaleString("ru-RU")} ₽)
+                                </span>
+                              ) : null}
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                              <a
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-200 text-[11px] font-semibold text-slate-800 transition-colors"
+                                href={`/api/customer/invoices/${invoice.id}/download?format=pdf`}
+                                download
+                              >
+                                <Download size={12} className="text-[#174b3f]" aria-hidden="true" />
+                                <span>PDF</span>
+                              </a>
+                              <a
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-200 text-[11px] font-semibold text-slate-800 transition-colors"
+                                href={`/api/customer/invoices/${invoice.id}/download?format=xlsx`}
+                                download
+                              >
+                                <FileSpreadsheet size={12} className="text-[#174b3f]" aria-hidden="true" />
+                                <span>Excel</span>
+                              </a>
+                              <a
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-200 text-[11px] font-semibold text-slate-700 transition-colors"
+                                href={`/api/customer/invoices/${invoice.id}/html`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                <Printer size={12} className="text-slate-500" aria-hidden="true" />
+                                <span>Печать</span>
+                              </a>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const detailsText = `Получатель: ИП Груздев Игорь Вячеславович\nИНН: 352516048881\nР/с: 40802810217430000342\nБанк: АО "АЛЬФА-БАНК"\nБИК: 044525593\nК/с: 30101810200000000593\nСумма: ${invoice.amount_rub} руб.\nНазначение: Оплата по счету № ${invoice.invoice_number} за услуги сервиса TenderLex. Без НДС.`;
+                                  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+                                    void navigator.clipboard.writeText(detailsText);
+                                  }
+                                  setInvoiceCopiedId(invoice.id);
+                                  setTimeout(() => setInvoiceCopiedId((cur) => (cur === invoice.id ? null : cur)), 2500);
+                                }}
+                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-colors cursor-pointer ${
+                                  isCopied
+                                    ? "bg-[#f4f8ef] border-[#9ec089] text-[#103a31]"
+                                    : "bg-white hover:bg-slate-50 border-slate-200 text-slate-700"
+                                }`}
+                              >
+                                {isCopied ? <Check size={12} className="text-[#174b3f]" aria-hidden="true" /> : <Copy size={12} className="text-slate-500" aria-hidden="true" />}
+                                <span>{isCopied ? "Скопировано" : "Реквизиты для 1С"}</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isSendingEmail}
+                                onClick={async () => {
+                                  setInvoiceEmailSendingId(invoice.id);
+                                  setInvoiceCardEmailError("");
+                                  try {
+                                    const res = await fetch(`/api/customer/invoices/${invoice.id}/send-email`, {
+                                      method: "POST",
+                                      credentials: "same-origin",
+                                      headers: {
+                                        "Content-Type": "application/json",
+                                        ...(csrf ? { "x-csrf-token": csrf } : {}),
+                                      },
+                                      body: JSON.stringify({ email: invoice.buyer_email || session?.user?.email }),
+                                    });
+                                    const data = await res.json();
+                                    if (!res.ok) throw new Error(data.detail || "Ошибка отправки");
+                                    setInvoiceEmailSentId(invoice.id);
+                                    setTimeout(() => setInvoiceEmailSentId((cur) => (cur === invoice.id ? null : cur)), 3500);
+                                  } catch (err: any) {
+                                    setInvoiceCardEmailError(err?.message || "Не удалось отправить счёт на почту");
+                                  } finally {
+                                    setInvoiceEmailSendingId(null);
+                                  }
+                                }}
+                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-50 ${
+                                  isSentEmail
+                                    ? "bg-[#f4f8ef] border-[#9ec089] text-[#103a31]"
+                                    : "bg-white hover:bg-slate-50 border-slate-200 text-slate-700"
+                                }`}
+                              >
+                                {isSendingEmail ? (
+                                  <Loader2 size={12} className="animate-spin text-[#174b3f]" aria-hidden="true" />
+                                ) : isSentEmail ? (
+                                  <Check size={12} className="text-[#174b3f]" aria-hidden="true" />
+                                ) : (
+                                  <Mail size={12} className="text-slate-500" aria-hidden="true" />
+                                )}
+                                <span>{isSentEmail ? "Отправлено" : "На email"}</span>
+                              </button>
+                              {canUpload ? (
+                                <label className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#f4f8ef] hover:bg-[#e7efe0] border border-[#cde0be] text-[11px] font-bold text-[#103a31] cursor-pointer transition-colors">
+                                  <Upload size={12} aria-hidden="true" />
+                                  <span>
+                                    {invoiceProofUploading === invoice.id
+                                      ? "Отправка…"
+                                      : invoice.status === "proof_submitted"
+                                      ? "Загрузить исправленную платёжку"
+                                      : "Прикрепить платёжку"}
+                                  </span>
+                                  <input
+                                    type="file"
+                                    className="hidden"
+                                    accept="application/pdf,image/jpeg,image/png"
+                                    disabled={invoiceProofUploading === invoice.id}
+                                    onChange={(event) => {
+                                      const file = event.currentTarget.files?.[0];
+                                      if (file && file.size <= 10 * 1024 * 1024) {
+                                        uploadInvoiceProof(invoice.id, file);
+                                      } else if (file) {
+                                        setInvoiceProofMessage("Файл должен быть не больше 10 МБ");
+                                      }
+                                      event.currentTarget.value = "";
+                                    }}
+                                  />
+                                </label>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Modal Footer with Pagination */}
               <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 shrink-0">
-                <span className="text-xs text-slate-500 font-medium">
-                  {historyTotal > 0 ? (
-                    <>
-                      Показано <strong className="text-slate-700">{historyStart}–{historyEnd}</strong> из <strong className="text-slate-700">{historyTotal}</strong>
-                    </>
-                  ) : (
-                    ""
-                  )}
-                </span>
-
-                {historyPageCount > 1 ? (
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={historyPage <= 1 || historyLoading}
-                      onClick={() => loadHistoryTransactions(historyPage - 1)}
-                      className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:pointer-events-none text-slate-700 font-bold text-xs rounded-lg transition-colors cursor-pointer"
-                    >
-                      Назад
-                    </button>
-                    <span className="text-xs font-semibold text-slate-600 px-1.5">
-                      {historyPage} из {historyPageCount}
+                {historyModalTab === "transactions" ? (
+                  <>
+                    <span className="text-xs text-slate-500 font-medium tl-num">
+                      {historyTotal > 0 ? (
+                        <>
+                          Показано <strong className="text-slate-700">{historyStart}–{historyEnd}</strong> из <strong className="text-slate-700">{historyTotal}</strong>
+                        </>
+                      ) : (
+                        ""
+                      )}
                     </span>
-                    <button
-                      type="button"
-                      disabled={historyPage >= historyPageCount || historyLoading}
-                      onClick={() => loadHistoryTransactions(historyPage + 1)}
-                      className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:pointer-events-none text-slate-700 font-bold text-xs rounded-lg transition-colors cursor-pointer"
-                    >
-                      Вперёд
-                    </button>
-                  </div>
-                ) : null}
+
+                    {historyPageCount > 1 ? (
+                      <div className="flex items-center gap-1.5 tl-num">
+                        <button
+                          type="button"
+                          disabled={historyPage <= 1 || historyLoading}
+                          onClick={() => loadHistoryTransactions(historyPage - 1)}
+                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:pointer-events-none text-slate-700 font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                        >
+                          Назад
+                        </button>
+                        <span className="text-xs font-semibold text-slate-600 px-1.5">
+                          {historyPage} из {historyPageCount}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={historyPage >= historyPageCount || historyLoading}
+                          onClick={() => loadHistoryTransactions(historyPage + 1)}
+                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:pointer-events-none text-slate-700 font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                        >
+                          Вперёд
+                        </button>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <span className="text-xs text-slate-500 font-medium tl-num">
+                      {customerInvoices.length > 0 ? `Всего счетов: ${customerInvoices.length}` : ""}
+                    </span>
+                    {invoicesTotalPages > 1 ? (
+                      <div className="flex items-center gap-1.5 tl-num">
+                        <button
+                          type="button"
+                          disabled={safeInvoicesPage <= 1}
+                          onClick={() => setCustomerInvoicesPage((p) => Math.max(1, p - 1))}
+                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:pointer-events-none text-slate-700 font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                        >
+                          Назад
+                        </button>
+                        <span className="text-xs font-semibold text-slate-600 px-1.5">
+                          {safeInvoicesPage} из {invoicesTotalPages}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={safeInvoicesPage >= invoicesTotalPages}
+                          onClick={() => setCustomerInvoicesPage((p) => Math.min(invoicesTotalPages, p + 1))}
+                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:pointer-events-none text-slate-700 font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                        >
+                          Вперёд
+                        </button>
+                      </div>
+                    ) : null}
+                  </>
+                )}
 
                 <button
                   type="button"
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-all cursor-pointer ml-auto"
-                  onClick={() => setShowHistoryModal(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg transition-all cursor-pointer ml-auto"
+                  onClick={closeHistoryModal}
                 >
                   Закрыть
                 </button>
@@ -8388,14 +9524,15 @@ export function CabinetClient() {
         const activated = session?.referral?.activated_count ?? 0;
         const earned = session?.referral?.bonus_earned_rub ?? 0;
 
-        const shareMessage = `Коллега, держи сервис для подготовки к закупкам и тендерам — TenderLex.
+        const shareMessageBody = `Коллега, держи сервис для подготовки к закупкам и тендерам — TenderLex.
 Он помогает:
 1. Найти реальных производителей и дилеров по ТЗ с прямыми контактами
 2. Подобрать точную модель товара и аналоги под первую часть заявки
 3. Сформировать структурированный отчет и анализ требований закупки
 
-По ссылке доступен пробный доступ для проверки первых задач + бонус 1 000 ₽ к первому пополнению баланса:
-${webLink}`;
+По ссылке доступен пробный доступ для проверки первых задач + бонус 1 000 ₽ к первому пополнению баланса:`;
+        const shareMessage = `${shareMessageBody}\n${webLink}`;
+        const tgShareUrl = `https://t.me/share/url?url=${encodeURIComponent(webLink)}&text=${encodeURIComponent(shareMessageBody)}`;
 
         function copyLink(textToCopy: string, key: string) {
           if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
@@ -8408,13 +9545,13 @@ ${webLink}`;
 
         return (
           <div
-            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50"
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
             onMouseDown={(event) => {
               if (event.target === event.currentTarget) setShowReferralModal(false);
             }}
           >
             <section
-              className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-6 max-w-xl w-full shadow-2xl border border-slate-200 space-y-4 flex flex-col font-sans"
+              className="bg-white rounded-2xl p-5 sm:p-6 max-w-xl w-full shadow-2xl border border-slate-200 space-y-3.5 flex flex-col font-sans my-auto max-h-[92vh] overflow-y-auto"
               role="dialog"
               aria-modal="true"
               aria-labelledby="referral-modal-title"
@@ -8422,7 +9559,7 @@ ${webLink}`;
               {/* Modal Header */}
               <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3 shrink-0">
                 <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-xl bg-teal-50 border border-teal-200/80 text-teal-700 shrink-0">
+                  <div className="p-2 rounded-xl bg-[#f4f8ef] border border-[#cde0be] text-[#174b3f] shrink-0">
                     <Gift size={18} aria-hidden="true" />
                   </div>
                   <div>
@@ -8445,22 +9582,38 @@ ${webLink}`;
               </div>
 
               {/* Statistics Row */}
-              <div className="grid grid-cols-3 gap-2.5 shrink-0">
-                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
+              <div className="grid grid-cols-3 gap-2.5 shrink-0 tl-num">
+                <div className="p-2.5 rounded-xl bg-[#f8faf6] border border-[#dfe5dc] text-center">
                   <div className="text-lg sm:text-xl font-black text-slate-900">{invited}</div>
                   <div className="text-[11px] text-slate-500 mt-0.5">Приглашено</div>
                 </div>
-                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
-                  <div className="text-lg sm:text-xl font-black text-teal-700">{activated}</div>
+                <div className="p-2.5 rounded-xl bg-[#f8faf6] border border-[#dfe5dc] text-center">
+                  <div className="text-lg sm:text-xl font-black text-[#174b3f]">{activated}</div>
                   <div className="text-[11px] text-slate-500 mt-0.5">Пополнили баланс</div>
                 </div>
-                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
-                  <div className="text-lg sm:text-xl font-black text-emerald-700">{earned.toLocaleString("ru-RU")} ₽</div>
-                  <div className="text-[11px] text-slate-500 mt-0.5">Начислено бонусов</div>
+                <div className="p-2.5 rounded-xl bg-[#f4f8ef] border border-[#cde0be] text-center">
+                  <div className="text-lg sm:text-xl font-black text-[#103a31]">{earned.toLocaleString("ru-RU")} ₽</div>
+                  <div className="text-[11px] text-[#174b3f] mt-0.5">Начислено бонусов</div>
                 </div>
               </div>
 
-              {/* Links Section */}
+              {/* Compact 3-Step Conditions Strip */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 text-[11px] text-slate-600">
+                <div className="flex items-start gap-1.5">
+                  <span className="w-4 h-4 rounded-full bg-[#e7efe0] text-[#103a31] font-extrabold text-[10px] flex items-center justify-center shrink-0 mt-0.5">1</span>
+                  <span>Коллега переходит по вашей ссылке и регистрируется</span>
+                </div>
+                <div className="flex items-start gap-1.5">
+                  <span className="w-4 h-4 rounded-full bg-[#e7efe0] text-[#103a31] font-extrabold text-[10px] flex items-center justify-center shrink-0 mt-0.5">2</span>
+                  <span>Совершает первое пополнение баланса</span>
+                </div>
+                <div className="flex items-start gap-1.5">
+                  <span className="w-4 h-4 rounded-full bg-[#e7efe0] text-[#103a31] font-extrabold text-[10px] flex items-center justify-center shrink-0 mt-0.5">3</span>
+                  <span>Оба баланса автоматически получают по +1 000 ₽</span>
+                </div>
+              </div>
+
+              {/* Links Section (Calm Secondary Copy Buttons) */}
               <div className="space-y-2 shrink-0">
                 <div>
                   <div className="text-[11px] font-semibold text-slate-600 mb-1">
@@ -8471,21 +9624,25 @@ ${webLink}`;
                       type="text"
                       readOnly
                       value={webLink}
-                      className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 font-mono select-all focus:outline-hidden"
+                      className="flex-1 min-w-0 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 font-mono select-all focus:outline-hidden"
                     />
                     <button
                       type="button"
                       onClick={() => copyLink(webLink, "web")}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-2xs"
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors cursor-pointer shrink-0 ${
+                        referralCopiedKey === "web"
+                          ? "bg-[#f4f8ef] border-[#9ec089] text-[#103a31]"
+                          : "bg-white hover:bg-[#f4f8ef] text-[#174b3f] border-[#b7c9af]"
+                      }`}
                     >
                       {referralCopiedKey === "web" ? (
                         <>
-                          <Check size={13} />
+                          <Check size={13} aria-hidden="true" />
                           <span>Скопировано</span>
                         </>
                       ) : (
                         <>
-                          <Copy size={13} />
+                          <Copy size={13} aria-hidden="true" />
                           <span>Скопировать</span>
                         </>
                       )}
@@ -8502,21 +9659,25 @@ ${webLink}`;
                       type="text"
                       readOnly
                       value={botLink}
-                      className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 font-mono select-all focus:outline-hidden"
+                      className="flex-1 min-w-0 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 font-mono select-all focus:outline-hidden"
                     />
                     <button
                       type="button"
                       onClick={() => copyLink(botLink, "bot")}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-2xs"
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors cursor-pointer shrink-0 ${
+                        referralCopiedKey === "bot"
+                          ? "bg-[#f4f8ef] border-[#9ec089] text-[#103a31]"
+                          : "bg-white hover:bg-[#f4f8ef] text-[#174b3f] border-[#b7c9af]"
+                      }`}
                     >
                       {referralCopiedKey === "bot" ? (
                         <>
-                          <Check size={13} />
+                          <Check size={13} aria-hidden="true" />
                           <span>Скопировано</span>
                         </>
                       ) : (
                         <>
-                          <Copy size={13} />
+                          <Copy size={13} aria-hidden="true" />
                           <span>Скопировать</span>
                         </>
                       )}
@@ -8525,32 +9686,41 @@ ${webLink}`;
                 </div>
               </div>
 
-              {/* Ready-to-send Message Box */}
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5 shrink-0">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-semibold text-slate-700">
-                    Текст для пересылки коллегам:
-                  </span>
+              {/* Ready-to-send Message Box with Elevated Primary Actions */}
+              <div className="p-3 bg-[#f8faf6] rounded-xl border border-[#dfe5dc] space-y-2.5 shrink-0">
+                <div className="text-[11px] font-bold text-slate-700">
+                  Готовое сообщение для пересылки коллегам:
+                </div>
+                <div className="text-[11px] text-slate-600 bg-white p-2.5 rounded-lg border border-slate-200/80 leading-relaxed font-sans whitespace-pre-wrap select-all">
+                  {shareMessage}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => copyLink(shareMessage, "msg")}
-                    className="inline-flex items-center gap-1 text-xs font-bold text-teal-700 hover:text-teal-800 transition-colors cursor-pointer"
+                    className="tl-btn-primary inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-xs cursor-pointer flex-1 sm:flex-initial"
                   >
                     {referralCopiedKey === "msg" ? (
                       <>
-                        <Check size={13} />
+                        <Check size={14} aria-hidden="true" />
                         <span>Скопировано!</span>
                       </>
                     ) : (
                       <>
-                        <Copy size={13} />
+                        <Copy size={14} aria-hidden="true" />
                         <span>Скопировать сообщение</span>
                       </>
                     )}
                   </button>
-                </div>
-                <div className="text-[11px] text-slate-600 bg-white p-2.5 rounded-lg border border-slate-200/80 leading-relaxed font-sans whitespace-pre-wrap select-all">
-                  {shareMessage}
+                  <a
+                    href={tgShareUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-white hover:bg-[#f4f8ef] text-[#174b3f] border border-[#b7c9af] rounded-lg text-xs font-bold transition-colors cursor-pointer flex-1 sm:flex-initial"
+                  >
+                    <Send size={13} aria-hidden="true" />
+                    <span>Поделиться в Telegram</span>
+                  </a>
                 </div>
               </div>
 
@@ -8676,15 +9846,22 @@ ${webLink}`;
     "target_count": 5
   }'`;
 
+        const baseHeaderSnippet = `BASE_URL: https://tenderlex.ru/api/v1/mcp\nAuthorization: Bearer ${effectiveKeyPlaceholder}`;
+
+        const closeApiModal = () => {
+          setShowApiModal(false);
+          setConfirmRevokeKeyId(null);
+        };
+
         return (
           <div
             className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50"
             onMouseDown={(event) => {
-              if (event.target === event.currentTarget) setShowApiModal(false);
+              if (event.target === event.currentTarget) closeApiModal();
             }}
           >
             <section
-              className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-6 max-w-2xl w-full shadow-2xl border border-slate-200 space-y-4 flex flex-col font-sans max-h-[90vh] overflow-y-auto"
+              className="bg-white rounded-2xl p-5 sm:p-6 max-w-2xl w-full shadow-2xl border border-slate-200 space-y-4 flex flex-col font-sans max-h-[90vh] overflow-y-auto"
               role="dialog"
               aria-modal="true"
               aria-labelledby="api-modal-title"
@@ -8692,7 +9869,7 @@ ${webLink}`;
               {/* Modal Header */}
               <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3 shrink-0">
                 <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-xl bg-teal-50 border border-teal-200/80 text-teal-700 shrink-0">
+                  <div className="p-2 rounded-xl bg-[#f4f8ef] border border-[#cde0be] text-[#174b3f] shrink-0">
                     <Key size={18} aria-hidden="true" />
                   </div>
                   <div>
@@ -8706,7 +9883,7 @@ ${webLink}`;
                 </div>
                 <button
                   type="button"
-                  onClick={() => setShowApiModal(false)}
+                  onClick={closeApiModal}
                   className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
                   aria-label="Закрыть"
                 >
@@ -8715,57 +9892,57 @@ ${webLink}`;
               </div>
 
               {/* Tabs Navigation */}
-              <div className="bg-slate-100 p-1.5 rounded-xl grid grid-cols-2 sm:grid-cols-4 gap-1 text-xs shrink-0 font-bold">
+              <div className="bg-[#f8faf6] p-1.5 rounded-xl border border-[#e5e9e2] flex flex-wrap sm:grid sm:grid-cols-4 gap-1 text-xs shrink-0 font-bold">
                 <button
                   type="button"
                   onClick={() => setApiModalTab("key")}
-                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer flex-1 ${
                     apiModalTab === "key"
-                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                      ? "bg-white text-[#103a31] shadow-2xs border border-[#cde0be]"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60 border border-transparent"
                   }`}
                 >
-                  <Key size={13} className={apiModalTab === "key" ? "text-teal-700" : "text-slate-400"} />
+                  <Key size={13} className={apiModalTab === "key" ? "text-[#174b3f]" : "text-slate-400"} />
                   <span>Ключ и баланс</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setApiModalTab("methods")}
-                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer flex-1 ${
                     apiModalTab === "methods"
-                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                      ? "bg-white text-[#103a31] shadow-2xs border border-[#cde0be]"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60 border border-transparent"
                   }`}
                 >
-                  <Layers size={13} className={apiModalTab === "methods" ? "text-teal-700" : "text-slate-400"} />
+                  <Layers size={13} className={apiModalTab === "methods" ? "text-[#174b3f]" : "text-slate-400"} />
                   <span>Методы API</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setApiModalTab("ai_prompt")}
-                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer flex-1 ${
                     apiModalTab === "ai_prompt"
-                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                      ? "bg-white text-[#103a31] shadow-2xs border border-[#cde0be]"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60 border border-transparent"
                   }`}
                 >
-                  <Sparkles size={13} className={apiModalTab === "ai_prompt" ? "text-amber-600" : "text-slate-400"} />
+                  <Sparkles size={13} className={apiModalTab === "ai_prompt" ? "text-[#174b3f]" : "text-slate-400"} />
                   <span>Для ИИ</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setApiModalTab("mcp")}
-                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer flex-1 whitespace-nowrap ${
                     apiModalTab === "mcp"
-                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                      ? "bg-white text-[#103a31] shadow-2xs border border-[#cde0be]"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60 border border-transparent"
                   }`}
                 >
-                  <Compass size={13} className={apiModalTab === "mcp" ? "text-teal-700" : "text-slate-400"} />
-                  <span>MCP (Claude)</span>
+                  <Compass size={13} className={apiModalTab === "mcp" ? "text-[#174b3f]" : "text-slate-400"} />
+                  <span>MCP (Claude / Cursor)</span>
                 </button>
               </div>
 
@@ -8773,37 +9950,37 @@ ${webLink}`;
               {apiModalTab === "key" && (
                 <div className="space-y-4">
                   {/* Balance Callout */}
-                  <div className="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-xl p-3.5">
-                    <div className="text-xs font-semibold text-teal-800">Баланс аккаунта</div>
-                    <div className="text-lg sm:text-xl font-black text-teal-950 mt-0.5">
+                  <div className="bg-[#f4f8ef] border border-[#cde0be] rounded-xl p-3.5">
+                    <div className="text-xs font-semibold text-[#174b3f]">Баланс аккаунта</div>
+                    <div className="text-lg sm:text-xl font-black text-[#103a31] mt-0.5 tl-num">
                       {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
                     </div>
-                    <div className="text-[11px] text-teal-700/90 mt-0.5">
+                    <div className="text-[11px] text-slate-600 mt-0.5">
                       Списание происходит с вашего общего баланса по тарифам аккаунта.
                     </div>
                   </div>
 
                   {/* Newly Generated Key Alert */}
                   {newlyGeneratedKey && (
-                    <div className="bg-emerald-50 border-2 border-emerald-300 rounded-xl p-3.5 space-y-2 animate-fadeIn">
-                      <div className="flex items-center gap-2 text-emerald-950 font-extrabold text-xs">
-                        <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                    <div className="bg-[#f4f8ef] border-2 border-[#9ec089] rounded-xl p-3.5 space-y-2 animate-fadeIn">
+                      <div className="flex items-center gap-2 text-[#103a31] font-extrabold text-xs">
+                        <CheckCircle2 size={16} className="text-[#174b3f] shrink-0" />
                         <span>Ключ успешно создан и готов к работе:</span>
                       </div>
-                      <div className="flex items-center gap-2 bg-white border border-emerald-200 rounded-lg p-2">
+                      <div className="flex items-center gap-2 bg-white border border-[#cde0be] rounded-lg p-2">
                         <code className="text-xs font-mono font-bold text-slate-800 break-all select-all flex-1">
                           {newlyGeneratedKey}
                         </code>
                         <button
                           type="button"
                           onClick={() => copyApiText(newlyGeneratedKey, "new_key")}
-                          className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold transition-colors cursor-pointer shrink-0 flex items-center gap-1"
+                          className="tl-btn-primary px-2.5 py-1.5 rounded-md text-xs cursor-pointer shrink-0 flex items-center gap-1"
                         >
                           {apiCopiedField === "new_key" ? <Check size={13} /> : <Copy size={13} />}
                           <span>{apiCopiedField === "new_key" ? "Скопировано" : "Копировать"}</span>
                         </button>
                       </div>
-                      <div className="text-[11px] text-emerald-800">
+                      <div className="text-[11px] text-[#174b3f]">
                         Скопируйте и сохраните ключ сейчас: после перезагрузки он не показывается. В этой сессии ключ подставлен в примеры на соседних вкладках.
                       </div>
                     </div>
@@ -8812,7 +9989,7 @@ ${webLink}`;
                   {/* Existing Key Management */}
                   {loadingApiKeys ? (
                     <div className="py-8 flex flex-col items-center justify-center gap-2 text-slate-400">
-                      <Loader2 size={24} className="animate-spin text-teal-600" />
+                      <Loader2 size={24} className="animate-spin text-[#174b3f]" />
                       <span className="text-xs">Загрузка ключей доступа...</span>
                     </div>
                   ) : apiKeys.length > 0 ? (
@@ -8820,6 +9997,7 @@ ${webLink}`;
                       <div className="text-xs font-bold text-slate-700">Ваши активные ключи доступа:</div>
                       <p className="text-[11px] text-slate-600">Полный ключ показывается только после создания. Если он не сохранён, создайте новый; прежний продолжает работать до отзыва.</p>
                       {apiKeys.map((k) => {
+                        const isConfirmingRevoke = confirmRevokeKeyId === k.id;
                         return (
                           <div key={k.id} className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5">
                             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -8828,24 +10006,53 @@ ${webLink}`;
                                   {`${k.key_prefix}••••••••••••`}
                                 </span>
 
-                                <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                                <span className="px-2 py-0.5 rounded bg-[#e7efe0] text-[#103a31] text-[10px] font-bold">
                                   Активен
                                 </span>
                               </div>
-                              <div className="flex items-center gap-2">
-
-                                <button
-                                  type="button"
-                                  onClick={() => revokeCustomerApiKey(k.id)}
-                                  disabled={revokingKeyId === k.id}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-md text-xs font-bold transition-colors cursor-pointer"
-                                >
-                                  {revokingKeyId === k.id ? <Loader2 size={12} className="animate-spin" /> : <XCircle size={12} />}
-                                  <span>Отозвать</span>
-                                </button>
-                              </div>
+                              {!isConfirmingRevoke ? (
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmRevokeKeyId(k.id)}
+                                    disabled={revokingKeyId === k.id}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-md text-xs font-bold transition-colors cursor-pointer"
+                                  >
+                                    {revokingKeyId === k.id ? <Loader2 size={12} className="animate-spin" /> : <XCircle size={12} />}
+                                    <span>Отозвать</span>
+                                  </button>
+                                </div>
+                              ) : null}
                             </div>
-                            <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-3">
+
+                            {isConfirmingRevoke ? (
+                              <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-[11px] font-semibold text-rose-900">
+                                  Отключить ключ? Интеграции с ним сразу перестанут работать.
+                                </span>
+                                <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmRevokeKeyId(null)}
+                                    disabled={revokingKeyId === k.id}
+                                    className="px-2.5 py-1 rounded-md bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-[11px] font-bold cursor-pointer"
+                                  >
+                                    Отмена
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void revokeCustomerApiKey(k.id)}
+                                    disabled={revokingKeyId === k.id}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold cursor-pointer disabled:opacity-50"
+                                  >
+                                    {revokingKeyId === k.id ? <Loader2 size={11} className="animate-spin" /> : null}
+                                    <span>Да, отозвать</span>
+                                  </button>
+                                </div>
+                              </div>
+                            ) : null}
+
+                            <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-3 tl-num">
                               <span>Создан: {k.created_at ? new Date(k.created_at).toLocaleDateString("ru-RU") : "—"}</span>
                               <span>Всего вызовов: <strong>{k.total_spent || 0}</strong></span>
                               {k.last_used_at && <span>Последний вызов: {new Date(k.last_used_at).toLocaleDateString("ru-RU")}</span>}
@@ -8858,7 +10065,7 @@ ${webLink}`;
                           type="button"
                           onClick={createCustomerApiKey}
                           disabled={generatingApiKey}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-[#f4f8ef] text-[#174b3f] border border-[#b7c9af] rounded-lg text-xs font-bold transition-colors cursor-pointer"
                         >
                           {generatingApiKey ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />}
                           <span>Сгенерировать дополнительный ключ</span>
@@ -8866,8 +10073,8 @@ ${webLink}`;
                       </div>
                     </div>
                   ) : (
-                    <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-6 text-center space-y-3">
-                      <div className="w-10 h-10 rounded-full bg-teal-100 text-teal-700 flex items-center justify-center mx-auto">
+                    <div className="bg-[#f8faf6] border border-[#dfe5dc] rounded-2xl p-6 text-center space-y-3">
+                      <div className="w-10 h-10 rounded-full bg-[#e7efe0] text-[#174b3f] flex items-center justify-center mx-auto">
                         <Key size={20} />
                       </div>
                       <div className="space-y-1">
@@ -8880,7 +10087,7 @@ ${webLink}`;
                         type="button"
                         onClick={createCustomerApiKey}
                         disabled={generatingApiKey}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all cursor-pointer"
+                        className="tl-btn-primary inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs shadow-sm cursor-pointer"
                       >
                         {generatingApiKey ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
                         <span>Создать API-ключ</span>
@@ -8903,15 +10110,25 @@ ${webLink}`;
               {apiModalTab === "methods" && (
                 <div className="space-y-3.5 text-xs text-slate-700">
                   <div className="bg-slate-900 text-slate-100 p-3 rounded-xl font-mono text-[11px] space-y-1">
-                    <div className="text-slate-400"># Базовый адрес API и авторизация:</div>
-                    <div><span className="text-teal-400">BASE_URL:</span> https://tenderlex.ru/api/v1/mcp</div>
-                    <div className="break-all"><span className="text-teal-400">HEADER:</span> Authorization: Bearer {effectiveKeyPlaceholder}</div>
+                    <div className="flex items-center justify-between gap-2 pb-1">
+                      <span className="text-slate-400"># Базовый адрес API и авторизация:</span>
+                      <button
+                        type="button"
+                        onClick={() => copyApiText(baseHeaderSnippet, "base_header")}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-slate-200 font-sans text-[11px] font-semibold transition-colors cursor-pointer shrink-0"
+                      >
+                        {apiCopiedField === "base_header" ? <Check size={11} className="text-emerald-300" /> : <Copy size={11} />}
+                        <span>{apiCopiedField === "base_header" ? "Скопировано" : "Скопировать"}</span>
+                      </button>
+                    </div>
+                    <div><span className="text-emerald-300">BASE_URL:</span> https://tenderlex.ru/api/v1/mcp</div>
+                    <div className="break-all"><span className="text-emerald-300">HEADER:</span> Authorization: Bearer {effectiveKeyPlaceholder}</div>
                   </div>
 
                   <div className="space-y-2">
                     <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200 text-[11px]">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="font-mono font-bold text-[#103a31] bg-[#f4f8ef] px-2 py-0.5 rounded border border-[#cde0be] text-[11px]">
                           POST /suppliers/search
                         </span>
                         <span className="text-slate-500 text-[11px] font-semibold">Поиск поставщиков</span>
@@ -8922,8 +10139,8 @@ ${webLink}`;
                     </div>
 
                     <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[11px]">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="font-mono font-bold text-[#103a31] bg-[#f4f8ef] px-2 py-0.5 rounded border border-[#cde0be] text-[11px]">
                           POST /products/exact-analogs
                         </span>
                         <span className="text-slate-500 text-[11px] font-semibold">Подбор товара и аналогов</span>
@@ -8934,8 +10151,8 @@ ${webLink}`;
                     </div>
 
                     <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono font-bold text-sky-800 bg-sky-50 px-2 py-0.5 rounded border border-sky-200 text-[11px]">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="font-mono font-bold text-[#103a31] bg-[#f4f8ef] px-2 py-0.5 rounded border border-[#cde0be] text-[11px]">
                           POST /procurements/analyze
                         </span>
                         <span className="text-slate-500 text-[11px] font-semibold">Анализ документации и рисков</span>
@@ -8946,7 +10163,7 @@ ${webLink}`;
                     </div>
 
                     <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
                         <span className="font-mono font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 text-[11px]">
                           GET /balance
                         </span>
@@ -8958,8 +10175,8 @@ ${webLink}`;
                     </div>
                   </div>
 
-                  <div className="rounded-xl border border-teal-200 bg-teal-50 p-3 space-y-2">
-                    <strong className="text-teal-900">Файлы, мониторинг цен и попозиционный выбор</strong>
+                  <div className="rounded-xl border border-[#cde0be] bg-[#f4f8ef] p-3 space-y-1.5 text-slate-700">
+                    <strong className="text-[#103a31]">Файлы, мониторинг цен и попозиционный выбор</strong>
                     <p><code>POST /jobs</code>: multipart/form-data, режим, текст или файлы и уникальный <code>Idempotency-Key</code>. Для геоприоритета передайте вместе город и радиус 10–5000 км.</p>
                     <p><code>GET /jobs/&#123;id&#125;</code> возвращает статус и список позиций. Передайте выбранные ID и ревизию в <code>POST /jobs/&#123;id&#125;/position-selection</code>. Результат: <code>GET /jobs/&#123;id&#125;/download</code>.</p>
                     <p>Ближайшие поставщики идут первыми; дальние и неизвестные адреса отмечаются отдельно. Подбор товара формирует отчёт Word.</p>
@@ -8973,13 +10190,13 @@ ${webLink}`;
                       <button
                         type="button"
                         onClick={() => copyApiText(curlExampleText, "curl")}
-                        className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-700 hover:text-teal-800 cursor-pointer"
+                        className="inline-flex items-center gap-1 text-[11px] font-bold text-[#174b3f] hover:text-[#103a31] cursor-pointer"
                       >
                         {apiCopiedField === "curl" ? <Check size={12} /> : <Copy size={12} />}
                         <span>{apiCopiedField === "curl" ? "Скопировано!" : "Скопировать cURL"}</span>
                       </button>
                     </div>
-                    <pre className="bg-slate-900 text-teal-300 p-3 rounded-xl font-mono text-[10.5px] overflow-x-auto leading-relaxed">
+                    <pre className="bg-slate-900 text-emerald-300 p-3 rounded-xl font-mono text-[10.5px] overflow-x-auto leading-relaxed">
                       {curlExampleText}
                     </pre>
                   </div>
@@ -8989,16 +10206,33 @@ ${webLink}`;
               {/* Tab 3: Для ИИ и быстрой разработки */}
               {apiModalTab === "ai_prompt" && (
                 <div className="space-y-3">
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 leading-relaxed">
-                    <strong>Инструкция для быстрой разработки и ИИ-ассистентов:</strong> скопируйте текст ниже и отправьте в Cursor, ChatGPT, Claude или вашему программисту. Агент сразу поймёт структуру API и корректно встроит TenderLex в вашу систему или CRM.
+                  <div className="bg-[#f8faf6] border border-[#dfe5dc] rounded-xl p-3 text-xs text-slate-700 leading-relaxed">
+                    <strong className="text-slate-900">Инструкция для быстрой разработки и ИИ-ассистентов:</strong> скопируйте текст ниже и отправьте в Cursor, ChatGPT, Claude или вашему программисту. Агент сразу поймёт структуру API и корректно встроит TenderLex в вашу систему или CRM.
                   </div>
 
-                  <div className="flex items-center justify-between">
+                  {!newlyGeneratedKey ? (
+                    <div className="px-3 py-2 rounded-lg bg-amber-50/70 border border-amber-200/80 text-[11px] text-amber-950 flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        {apiKeys.length === 0
+                          ? "В тексте ниже стоит заглушка <ВАШ_API_КЛЮЧ> — создайте ключ, чтобы он подставился автоматически."
+                          : "Подставьте ваш сохранённый ключ вместо <ВАШ_API_КЛЮЧ> или создайте новый ключ."}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setApiModalTab("key")}
+                        className="font-bold text-[#174b3f] hover:text-[#103a31] underline cursor-pointer shrink-0"
+                      >
+                        Перейти к ключам →
+                      </button>
+                    </div>
+                  ) : null}
+
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-bold text-slate-800">Готовая задача для нейросети:</span>
                     <button
                       type="button"
                       onClick={() => copyApiText(aiPromptText, "ai_prompt")}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-extrabold transition-colors cursor-pointer shadow-2xs"
+                      className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer"
                     >
                       {apiCopiedField === "ai_prompt" ? <Check size={13} /> : <Copy size={13} />}
                       <span>{apiCopiedField === "ai_prompt" ? "Скопировано в буфер!" : "Скопировать задачу для ИИ"}</span>
@@ -9011,34 +10245,51 @@ ${webLink}`;
                 </div>
               )}
 
-              {/* Tab 4: MCP (Claude Desktop) */}
+              {/* Tab 4: MCP (Claude / Cursor) */}
               {apiModalTab === "mcp" && (
                 <div className="space-y-3">
-                  <div className="bg-teal-50 border border-teal-200 rounded-xl p-3 text-xs text-teal-900 leading-relaxed space-y-2">
+                  <div className="bg-[#f4f8ef] border border-[#cde0be] rounded-xl p-3 text-xs text-slate-700 leading-relaxed space-y-2">
                     <div>
-                      <strong>Прямое подключение к Claude Desktop по протоколу MCP:</strong> позволяет Claude напрямую искать поставщиков, подбирать аналоги и анализировать документацию TenderLex из чата.
+                      <strong className="text-[#103a31]">Прямое подключение к Claude Desktop и Cursor по протоколу MCP:</strong> позволяет ИИ-ассистенту напрямую искать поставщиков, подбирать аналоги и анализировать документацию TenderLex из чата.
                     </div>
-                    <div className="flex items-center gap-2 pt-1">
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
                       <a
                         href="/scripts/tenderlex_mcp.py"
                         download="tenderlex_mcp.py"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                        className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer"
                       >
                         <Download size={13} />
                         <span>Скачать tenderlex_mcp.py</span>
                       </a>
-                      <span className="text-[11px] text-teal-800">
+                      <span className="text-[11px] text-slate-600">
                         (Автономный Python-скрипт, без сторонних библиотек)
                       </span>
                     </div>
                   </div>
+
+                  {!newlyGeneratedKey ? (
+                    <div className="px-3 py-2 rounded-lg bg-amber-50/70 border border-amber-200/80 text-[11px] text-amber-950 flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        {apiKeys.length === 0
+                          ? "Для запуска MCP нужен API-ключ — создайте его, и он сразу подставится в JSON ниже."
+                          : "Подставьте ваш сохранённый ключ вместо <ВАШ_API_КЛЮЧ> или создайте новый."}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setApiModalTab("key")}
+                        className="font-bold text-[#174b3f] hover:text-[#103a31] underline cursor-pointer shrink-0"
+                      >
+                        Перейти к ключам →
+                      </button>
+                    </div>
+                  ) : null}
 
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-slate-800">Конфиг для claude_desktop_config.json:</span>
                     <button
                       type="button"
                       onClick={() => copyApiText(mcpConfigText, "mcp_cfg")}
-                      className="inline-flex items-center gap-1 text-xs font-bold text-teal-700 hover:text-teal-800 cursor-pointer"
+                      className="inline-flex items-center gap-1 text-xs font-bold text-[#174b3f] hover:text-[#103a31] cursor-pointer"
                     >
                       {apiCopiedField === "mcp_cfg" ? <Check size={13} /> : <Copy size={13} />}
                       <span>{apiCopiedField === "mcp_cfg" ? "Скопировано!" : "Скопировать JSON"}</span>
@@ -9067,7 +10318,7 @@ ${webLink}`;
               <div className="flex justify-end pt-2 border-t border-slate-100 shrink-0">
                 <button
                   type="button"
-                  onClick={() => setShowApiModal(false)}
+                  onClick={closeApiModal}
                   className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
                 >
                   Закрыть
@@ -9080,346 +10331,372 @@ ${webLink}`;
 
 
       {/* Top-Up Balance Modal */}
-      {showTopUpModal ? (
-        <div
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setShowTopUpModal(false);
-          }}
-        >
-          <section
-            className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-6 max-w-xl w-full shadow-2xl border border-slate-200 space-y-4 flex flex-col font-sans my-auto max-h-[95vh] overflow-y-auto"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="topup-modal-title"
-          >
-            {/* Modal Header */}
-            <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3 shrink-0">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 shrink-0">
-                  <Wallet size={20} aria-hidden="true" />
-                </div>
-                <div>
-                  <h2 id="topup-modal-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-tight">
-                    Пополнение баланса
-                  </h2>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Единый баланс на все 3 модуля. Чем больше сумма — тем выше бонус на счёт.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors shrink-0 cursor-pointer"
-                onClick={() => setShowTopUpModal(false)}
-                aria-label="Закрыть окно"
-              >
-                <X size={18} />
-              </button>
-            </div>
+      {showTopUpModal ? (() => {
+        const depositPkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
+        const popularPkgId =
+          depositPkgs.find((p) => p.price_rub === 5000)?.id ||
+          depositPkgs.find((p) => p.badge && /хит|популяр/i.test(p.badge))?.id ||
+          null;
+        const baseTaskRates = [
+          session?.balance?.effective_prices?.supplier_search?.price_rub ?? session?.function_prices?.supplier_search?.price_rub,
+          session?.balance?.effective_prices?.exact_product?.price_rub ?? session?.function_prices?.exact_product?.price_rub,
+          session?.balance?.effective_prices?.procurement_report?.price_rub ?? session?.function_prices?.procurement_report?.price_rub,
+        ].filter((v): v is number => typeof v === "number" && v > 0);
+        const minTaskRateRub = baseTaskRates.length > 0 ? Math.min(...baseTaskRates) : 99;
+        const calc = (() => {
+          if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
+            return {
+              bonusRub: selectedTopUpPackage.bonus_rub,
+              totalRub: selectedTopUpPackage.total_rub,
+              percent: selectedTopUpPackage.bonus_percent,
+            };
+          }
+          return calculateDepositBonus(customTopUpRub);
+        })();
+        const approxTasks = Math.floor(calc.totalRub / minTaskRateRub);
+        const phoneDigits = payerPhone.replace(/\D/g, "");
+        const isPhoneValid = phoneDigits.length >= 10;
+        const isAmountValid = customTopUpRub >= 500;
+        const matchedPkg =
+          selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub
+            ? selectedTopUpPackage
+            : null;
+        const pkgName = matchedPkg?.name || "Пополнение баланса";
+        const tgMsg = encodeURIComponent(
+          `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
+        );
+        const tgUrl = `${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${tgMsg}`;
 
-            {/* Payment Method Switcher Tabs */}
-            <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200/80 text-xs font-semibold shrink-0">
-              <button
-                type="button"
-                onClick={() => setTopUpTab("card")}
-                className={`flex-1 py-2 px-3 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  topUpTab === "card"
-                    ? "bg-white text-emerald-800 font-bold shadow-xs border border-slate-200/60"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                <div className="flex items-center gap-1">
-                  <CreditCard size={14} className={topUpTab === "card" ? "text-emerald-600" : "text-slate-400"} />
-                  <QrCode size={13} className={topUpTab === "card" ? "text-indigo-600" : "text-slate-400"} />
-                </div>
-                <span>Оплата онлайн (Карта, СБП)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTopUpTab("b2b")}
-                className={`flex-1 py-2 px-3 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  topUpTab === "b2b"
-                    ? "bg-white text-slate-900 font-bold shadow-xs border border-slate-200/60"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                <Building2 size={14} className={topUpTab === "b2b" ? "text-slate-700" : "text-slate-400"} />
-                <span>Счёт для юрлиц</span>
-              </button>
-            </div>
+        const cardValidationHint = !isAmountValid
+          ? "Минимальная сумма пополнения — 500 ₽"
+          : !isPhoneValid
+          ? "Укажите номер телефона (10 цифр) для чека и связи"
+          : "";
 
-            {/* Balance Guarantee Badge */}
-            <div className="flex items-start gap-2.5 p-2.5 bg-emerald-50/80 border border-emerald-200/80 rounded-xl text-xs text-emerald-950 font-medium shrink-0">
-              <CheckCircle2 size={16} className="text-emerald-700 shrink-0 mt-0.5" />
-              <span>
-                <strong>Гарантия списания:</strong> средства с баланса расходуются только после успешной выдачи готового результата. Если по ТЗ ничего не найдено — баланс сохраняется.
-              </span>
-            </div>
+        const b2bMissingFields: string[] = [];
+        if (!isAmountValid) b2bMissingFields.push("сумму от 500 ₽");
+        if (!invoiceInn.trim()) b2bMissingFields.push("ИНН");
+        if (!invoiceName.trim()) b2bMissingFields.push("наименование компании");
+        if (!isPhoneValid) b2bMissingFields.push("телефон");
+        const b2bValidationHint = b2bMissingFields.length > 0 ? `Заполните: ${b2bMissingFields.join(", ")}` : "";
 
-            {/* TAB 1: Transfer to Card / Telegram */}
-            {topUpTab === "card" ? (
-              <>
-                {/* Quick Packages Grid */}
-                <div className="space-y-2">
-                  <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-                    Выберите пакет с бонусом:
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {(session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES).map((pkg) => {
-                      const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
-                      return (
-                        <button
-                          key={pkg.id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedTopUpPackage(pkg);
-                            setCustomTopUpRub(pkg.price_rub);
-                          }}
-                          className={`p-2.5 rounded-xl border text-left transition-all relative cursor-pointer flex flex-col justify-between ${
-                            isSelected
-                              ? "bg-emerald-50/80 border-emerald-500 ring-2 ring-emerald-500/30 shadow-xs"
-                              : "bg-slate-50/70 border-slate-200/90 hover:bg-slate-100/80 hover:border-slate-300"
-                          }`}
-                        >
-                          {pkg.badge ? (
-                            <span className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-extrabold text-[9px] shadow-2xs">
-                              {pkg.badge}
-                            </span>
-                          ) : null}
-                          <div>
-                            <div className="text-xs font-bold text-slate-900">{pkg.name}</div>
-                            <div className="text-sm font-black text-slate-900 mt-0.5">
-                              {pkg.price_rub.toLocaleString("ru-RU")} ₽
-                            </div>
-                          </div>
-                          <div className="mt-2 pt-1.5 border-t border-slate-200/70 text-[11px] space-y-0.5">
-                            <div className="text-emerald-700 font-bold">
-                              На баланс: {pkg.total_rub.toLocaleString("ru-RU")} ₽
-                            </div>
-                            {pkg.bonus_rub > 0 ? (
-                              <div className="text-[10px] text-emerald-600 font-medium">
-                                +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽ бонус
-                              </div>
-                            ) : (
-                              <div className="text-[10px] text-slate-400 font-normal">без бонуса</div>
-                            )}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Custom Amount Input */}
-                <div className="space-y-1.5 pt-1">
-                  <label htmlFor="custom-topup-input" className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
-                    Или введите другую сумму:
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <div className="relative flex-1">
-                      <input
-                        id="custom-topup-input"
-                        type="number"
-                        min={500}
-                        step={500}
-                        value={customTopUpRub || ""}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value, 10) || 0;
-                          setCustomTopUpRub(val);
-                          const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
-                          const match = pkgs.find((p) => p.price_rub === val) || null;
-                          setSelectedTopUpPackage(match);
-                        }}
-                        placeholder="5000"
-                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                        ₽
-                      </span>
+        const renderPackageRows = () => (
+          <div className="space-y-1.5 tl-num">
+            {depositPkgs.map((pkg) => {
+              const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
+              const isPopular = pkg.id === popularPkgId;
+              const effectiveTaskRub =
+                pkg.total_rub > 0 ? Math.round(minTaskRateRub * (pkg.price_rub / pkg.total_rub)) : Math.round(minTaskRateRub);
+              return (
+                <button
+                  key={pkg.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedTopUpPackage(pkg);
+                    setCustomTopUpRub(pkg.price_rub);
+                  }}
+                  className={`w-full px-3 py-2 rounded-xl border text-left transition-all cursor-pointer flex items-center justify-between gap-2.5 ${
+                    isSelected
+                      ? "bg-[#f4f8ef] border-[#174b3f] ring-1 ring-[#174b3f]/25"
+                      : "bg-white border-slate-200 hover:bg-slate-50 hover:border-[#b7c9af]"
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span
+                      className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                        isSelected ? "border-[#174b3f]" : "border-slate-300"
+                      }`}
+                    >
+                      {isSelected ? <span className="w-2 h-2 rounded-full bg-[#174b3f]" /> : null}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-xs font-extrabold text-slate-900">{pkg.name}</span>
+                        {isPopular ? (
+                          <span className="px-1.5 py-0.5 rounded bg-[#174b3f] text-white font-bold text-[10px] leading-none">
+                            Хит
+                          </span>
+                        ) : null}
+                        {pkg.bonus_rub > 0 ? (
+                          <span className="text-[10px] text-slate-500 whitespace-nowrap">
+                            ~{effectiveTaskRub} ₽/задача
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        На баланс:{" "}
+                        <strong className="text-[#174b3f] font-bold">
+                          {pkg.total_rub.toLocaleString("ru-RU")} ₽
+                        </strong>
+                      </div>
                     </div>
                   </div>
+                  <div className="text-right shrink-0 flex flex-col items-end gap-0.5">
+                    <span className="text-xs sm:text-sm font-black text-slate-900 whitespace-nowrap">
+                      {pkg.price_rub.toLocaleString("ru-RU")} ₽
+                    </span>
+                    {pkg.bonus_rub > 0 ? (
+                      <span className="px-1.5 py-0.5 rounded bg-[#e7efe0] text-[#103a31] text-[10px] font-bold whitespace-nowrap">
+                        +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-slate-400">без бонуса</span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        );
+
+        return (
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setShowTopUpModal(false);
+            }}
+          >
+            <section
+              className="bg-white rounded-2xl p-4 sm:p-6 max-w-4xl w-full shadow-2xl border border-slate-200 space-y-3.5 flex flex-col font-sans my-auto max-h-[94vh] overflow-y-auto"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="topup-modal-title"
+            >
+              {/* Modal Header */}
+              <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3 shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-[#f4f8ef] border border-[#cde0be] text-[#174b3f] shrink-0">
+                    <Wallet size={20} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <h2 id="topup-modal-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-tight">
+                      Пополнение баланса
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Единый бессрочный баланс на все инструменты TenderLex. Чем больше сумма — тем выше бонус.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors shrink-0 cursor-pointer"
+                  onClick={() => setShowTopUpModal(false)}
+                  aria-label="Закрыть окно"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Payment Method Switcher Tabs + Compact Guarantee */}
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 shrink-0">
+                <div className="flex items-center gap-1 p-1 bg-[#f8faf6] rounded-xl border border-[#dfe5dc] text-xs font-semibold sm:min-w-[360px]">
+                  <button
+                    type="button"
+                    onClick={() => setTopUpTab("card")}
+                    className={`flex-1 py-2 px-3 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                      topUpTab === "card"
+                        ? "bg-white text-[#103a31] font-bold shadow-2xs border border-[#cde0be]"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <CreditCard size={14} className={topUpTab === "card" ? "text-[#174b3f]" : "text-slate-400"} aria-hidden="true" />
+                    <span>Оплата онлайн (Карта, СБП)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTopUpTab("b2b")}
+                    className={`flex-1 py-2 px-3 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                      topUpTab === "b2b"
+                        ? "bg-white text-[#103a31] font-bold shadow-2xs border border-[#cde0be]"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <Building2 size={14} className={topUpTab === "b2b" ? "text-[#174b3f]" : "text-slate-400"} aria-hidden="true" />
+                    <span>Счёт для юрлиц</span>
+                  </button>
                 </div>
 
-                {/* Live Calculation Card */}
-                {(() => {
-                  const calc = (() => {
-                    if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
-                      return {
-                        bonusRub: selectedTopUpPackage.bonus_rub,
-                        totalRub: selectedTopUpPackage.total_rub,
-                        percent: selectedTopUpPackage.bonus_percent,
-                      };
-                    }
-                    return calculateDepositBonus(customTopUpRub);
-                  })();
-                  const approxTasks = Math.floor(calc.totalRub / 99);
-                  return (
-                    <div className="p-3.5 rounded-xl bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-200/90 space-y-2">
+                <div className="flex items-center gap-2 px-3 py-2 bg-[#f4f8ef] border border-[#cde0be] rounded-xl text-[11px] text-[#103a31] font-medium flex-1">
+                  <CheckCircle2 size={14} className="text-[#174b3f] shrink-0" aria-hidden="true" />
+                  <span>
+                    <strong>Гарантия:</strong> списание только по готовому результату, средства не сгорают.
+                  </span>
+                </div>
+              </div>
+
+              {/* TAB 1: Online Payment (2-Column Above-the-Fold Desktop Layout) */}
+              {topUpTab === "card" ? (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+                  {/* Left column: 5-row Package Selector + Custom Amount */}
+                  <div className="lg:col-span-7 space-y-2.5">
+                    <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      Выберите пакет с бонусом:
+                    </div>
+                    {renderPackageRows()}
+
+                    <div className="pt-1 space-y-1">
+                      <label htmlFor="custom-topup-input" className="text-[11px] font-semibold text-slate-600 block">
+                        Или введите другую сумму (от 500 ₽):
+                      </label>
+                      <div className="relative">
+                        <input
+                          id="custom-topup-input"
+                          type="number"
+                          min={500}
+                          step={500}
+                          value={customTopUpRub || ""}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value, 10) || 0;
+                            setCustomTopUpRub(val);
+                            const match = depositPkgs.find((p) => p.price_rub === val) || null;
+                            setSelectedTopUpPackage(match);
+                          }}
+                          placeholder="5000"
+                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] pr-8 tl-num"
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                          ₽
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right column: Summary + Payment Methods + Contacts + Primary CTA */}
+                  <div className="lg:col-span-5 space-y-3">
+                    {/* Calculation Summary */}
+                    <div className="p-3.5 rounded-xl bg-[#f4f8ef] border border-[#cde0be] space-y-1.5 tl-num">
                       <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
                         <span>Сумма к оплате:</span>
                         <strong className="text-slate-900 font-bold">{customTopUpRub.toLocaleString("ru-RU")} ₽</strong>
                       </div>
                       {calc.bonusRub > 0 ? (
-                        <div className="flex items-center justify-between text-xs font-semibold text-emerald-700">
+                        <div className="flex items-center justify-between text-xs font-semibold text-[#174b3f]">
                           <span>Бонус сервиса ({calc.percent}%):</span>
                           <strong className="font-extrabold">+{calc.bonusRub.toLocaleString("ru-RU")} ₽</strong>
                         </div>
                       ) : null}
-                      <div className="pt-2 border-t border-emerald-200/60 flex items-center justify-between">
+                      <div className="pt-2 border-t border-[#cde0be] flex items-center justify-between">
                         <div>
                           <span className="text-xs font-bold text-slate-900 block">Поступит на баланс:</span>
                           <span className="text-[10px] text-slate-500">
                             {`хватит примерно на ${approxTasks} задач`}
                           </span>
                         </div>
-                        <div className="text-lg sm:text-xl font-black text-emerald-700">
+                        <div className="text-lg sm:text-xl font-black text-[#103a31]">
                           {calc.totalRub.toLocaleString("ru-RU")} ₽
                         </div>
                       </div>
                     </div>
-                  );
-                })()}
 
-                {/* Online Payment Badges & Details */}
-                <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
-                  <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center justify-between">
-                    <span>Способы оплаты через ЮKassa:</span>
-                    <span className="text-[10px] text-emerald-700 font-semibold flex items-center gap-1">
-                      <CheckCircle2 size={12} className="text-emerald-600" /> Без комиссии
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-700">
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 font-medium text-[11px] shadow-2xs">
-                      <CreditCard size={13} className="text-emerald-600" /> Карты МИР, Visa, Mastercard
-                    </span>
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 font-medium text-[11px] shadow-2xs">
-                      <QrCode size={13} className="text-indigo-600" /> СБП (QR-код и приложение банка)
-                    </span>
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 font-medium text-[11px] shadow-2xs">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> SberPay / Mir Pay
-                    </span>
-                  </div>
-                </div>
-
-                {/* Contact details for online payment */}
-                <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2.5">
-                  <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center justify-between">
-                    <span>Контакты для связи и чека:</span>
-                    <span className="text-[10px] text-slate-500 font-normal">
-                      Для подтверждения и поддержки
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {/* Phone (mandatory) */}
-                    <div className="space-y-1">
-                      <label htmlFor="topup-phone-input" className="text-xs font-bold text-slate-700 flex items-center justify-between">
-                        <span>Телефон <span className="text-rose-500">*</span></span>
-                      </label>
-                      <div className="relative">
-                        <input
-                          id="topup-phone-input"
-                          type="tel"
-                          value={payerPhone}
-                          onChange={(e) => setPayerPhone(formatPhoneRu(e.target.value))}
-                          placeholder="+7 (999) 000-00-00"
-                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pl-8"
-                        />
-                        <Phone size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    {/* Compact Online Payment Methods */}
+                    <div className="p-2.5 bg-[#f8faf6] border border-[#dfe5dc] rounded-xl space-y-1.5">
+                      <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider flex items-center justify-between">
+                        <span>ЮKassa</span>
+                        <span className="text-[#174b3f] font-semibold flex items-center gap-1 normal-case">
+                          <CheckCircle2 size={11} aria-hidden="true" /> Без комиссии
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-700">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white border border-slate-200 font-medium">
+                          <CreditCard size={12} className="text-[#174b3f]" aria-hidden="true" /> МИР, Visa, MC
+                        </span>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white border border-slate-200 font-medium">
+                          <QrCode size={12} className="text-[#174b3f]" aria-hidden="true" /> СБП (QR)
+                        </span>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white border border-slate-200 font-medium">
+                          SberPay / Mir Pay
+                        </span>
                       </div>
                     </div>
 
-                    {/* Telegram (optional) */}
-                    <div className="space-y-1">
-                      <label htmlFor="topup-tg-input" className="text-xs font-semibold text-slate-700 flex items-center justify-between">
-                        <span>Ник в Telegram</span>
-                        <span className="text-[10px] font-normal text-slate-400">опционально</span>
-                      </label>
-                      <div className="relative">
-                        <input
-                          id="topup-tg-input"
-                          type="text"
-                          value={payerTelegram}
-                          onChange={(e) => {
-                            let val = e.target.value.trim();
-                            if (val.startsWith("https://t.me/")) val = val.replace("https://t.me/", "");
-                            if (val.startsWith("t.me/")) val = val.replace("t.me/", "");
-                            if (val && !val.startsWith("@")) val = "@" + val;
-                            setPayerTelegram(val);
-                          }}
-                          placeholder="@username"
-                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pl-8"
-                        />
-                        <MessageCircle size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    {/* Contacts */}
+                    <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
+                      <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                        Контакты для чека и поддержки
+                      </div>
+                      <div className="space-y-1">
+                        <label htmlFor="topup-phone-input" className="text-xs font-bold text-slate-700 block">
+                          Телефон <span className="text-rose-500">*</span>
+                        </label>
+                        <div className="relative">
+                          <input
+                            id="topup-phone-input"
+                            type="tel"
+                            value={payerPhone}
+                            onChange={(e) => setPayerPhone(formatPhoneRu(e.target.value))}
+                            placeholder="+7 (999) 000-00-00"
+                            className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] pl-8"
+                          />
+                          <Phone size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label htmlFor="topup-tg-input" className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+                          <span>Ник в Telegram</span>
+                          <span className="text-[10px] font-normal text-slate-400">опционально</span>
+                        </label>
+                        <div className="relative">
+                          <input
+                            id="topup-tg-input"
+                            type="text"
+                            value={payerTelegram}
+                            onChange={(e) => {
+                              let val = e.target.value.trim();
+                              if (val.startsWith("https://t.me/")) val = val.replace("https://t.me/", "");
+                              if (val.startsWith("t.me/")) val = val.replace("t.me/", "");
+                              if (val && !val.startsWith("@")) val = "@" + val;
+                              setPayerTelegram(val);
+                            }}
+                            placeholder="@username"
+                            className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] pl-8"
+                          />
+                          <MessageCircle size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </div>
 
-                {onlinePayError ? (
-                  <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 space-y-1">
-                    <div className="font-bold flex items-center gap-1.5">
-                      <AlertTriangle size={14} className="text-rose-600 shrink-0" />
-                      <span>{onlinePayError}</span>
-                    </div>
-                    <p className="text-[11px] text-rose-700">
-                      Если онлайн-оплата временно недоступна, вы можете пополнить баланс через менеджера в Telegram.
-                    </p>
-                  </div>
-                ) : null}
+                    {onlinePayError ? (
+                      <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 space-y-1">
+                        <div className="font-bold flex items-center gap-1.5">
+                          <AlertTriangle size={14} className="text-rose-600 shrink-0" />
+                          <span>{onlinePayError}</span>
+                        </div>
+                        <p className="text-[11px] text-rose-700">
+                          Если онлайн-оплата временно недоступна, можно пополнить баланс через менеджера в Telegram.
+                        </p>
+                      </div>
+                    ) : null}
 
-                {/* Primary Online Payment Action */}
-                {(() => {
-                  const calc = (() => {
-                    if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
-                      return {
-                        bonusRub: selectedTopUpPackage.bonus_rub,
-                        totalRub: selectedTopUpPackage.total_rub,
-                        percent: selectedTopUpPackage.bonus_percent,
-                      };
-                    }
-                    return calculateDepositBonus(customTopUpRub);
-                  })();
-                  const matchedPkg =
-                    selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub
-                      ? selectedTopUpPackage
-                      : null;
-                  const pkgName = matchedPkg?.name || "Пополнение баланса";
-                  const tgMsg = encodeURIComponent(
-                    `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
-                  );
-                  const tgUrl = `${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${tgMsg}`;
-
-                  return (
-                    <div className="space-y-2 pt-1">
+                    {/* Primary CTA + Explicit Validation Hint */}
+                    <div className="space-y-1.5">
                       <button
                         type="button"
-                        disabled={isPayingOnline || customTopUpRub < 500 || !payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10}
+                        disabled={isPayingOnline || !isAmountValid || !isPhoneValid}
                         onClick={handleStartOnlinePayment}
-                        className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs sm:text-sm font-bold transition-all shadow-sm hover:shadow cursor-pointer disabled:opacity-50 active:scale-[0.99]"
+                        className="tl-btn-primary w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs sm:text-sm shadow-sm cursor-pointer tl-num"
                       >
                         {isPayingOnline ? (
                           <>
                             <Loader2 size={16} className="animate-spin" />
-                            <span>Переход в платёжный шлюз ЮKassa...</span>
+                            <span>Переход в ЮKassa...</span>
                           </>
                         ) : (
                           <>
-                            <CreditCard size={16} />
+                            <CreditCard size={15} aria-hidden="true" />
                             <span>Оплатить {customTopUpRub.toLocaleString("ru-RU")} ₽ (Карта, СБП)</span>
-                            {calc.bonusRub > 0 ? (
-                              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-emerald-700 text-[10px] font-extrabold text-white">
-                                +{calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус
-                              </span>
-                            ) : null}
                           </>
                         )}
                       </button>
 
-                      <div className="flex items-center justify-between gap-2 pt-1 text-[11px] text-slate-500">
+                      {cardValidationHint ? (
+                        <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200/80 rounded-lg px-2.5 py-1.5 text-center font-medium">
+                          {cardValidationHint}
+                        </p>
+                      ) : null}
+
+                      <div className="flex items-center justify-between gap-2 pt-0.5 text-[11px] text-slate-500">
                         <span className="flex items-center gap-1">
-                          <CheckCircle2 size={12} className="text-emerald-600" />
+                          <CheckCircle2 size={12} className="text-[#174b3f]" aria-hidden="true" />
                           Моментальное зачисление
                         </span>
                         <a
@@ -9428,463 +10705,395 @@ ${webLink}`;
                           rel="noreferrer"
                           className="text-slate-600 hover:text-slate-900 underline font-medium"
                         >
-                          Оплата переводом через Telegram
+                          Через Telegram
                         </a>
                       </div>
                     </div>
-                  );
-                })()}
-              </>
-            ) : null}
+                  </div>
+                </div>
+              ) : null}
 
-            {/* TAB 2: Interactive B2B Invoice Generator */}
-            {topUpTab === "b2b" ? (
-              <div className="space-y-4 py-1">
-                {!invoiceCreated ? (
-                  <>
-                    {/* Step 1: Package / Custom Amount */}
-                    <div className="space-y-2">
-                      <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-                        1. Выберите сумму или пакет:
-                      </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {(session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES).map((pkg) => {
-                          const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
-                          return (
-                            <button
-                              key={pkg.id}
-                              type="button"
-                              onClick={() => {
-                                setSelectedTopUpPackage(pkg);
-                                setCustomTopUpRub(pkg.price_rub);
-                              }}
-                              className={`p-2.5 rounded-xl border text-left transition-all relative cursor-pointer flex flex-col justify-between ${
-                                isSelected
-                                  ? "bg-emerald-50/80 border-emerald-500 ring-2 ring-emerald-500/30 shadow-xs"
-                                  : "bg-slate-50/70 border-slate-200/90 hover:bg-slate-100/80 hover:border-slate-300"
-                              }`}
-                            >
-                              {pkg.badge ? (
-                                <span className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-extrabold text-[9px] shadow-2xs">
-                                  {pkg.badge}
-                                </span>
-                              ) : null}
-                              <div>
-                                <div className="text-xs font-bold text-slate-900">{pkg.name}</div>
-                                <div className="text-sm font-black text-slate-900 mt-0.5">
-                                  {pkg.price_rub.toLocaleString("ru-RU")} ₽
-                                </div>
-                              </div>
-                              <div className="mt-2 pt-1.5 border-t border-slate-200/70 text-[11px] space-y-0.5">
-                                <div className="text-emerald-700 font-bold">
-                                  На баланс: {pkg.total_rub.toLocaleString("ru-RU")} ₽
-                                </div>
-                                {pkg.bonus_rub > 0 ? (
-                                  <div className="text-[10px] text-emerald-600 font-medium">
-                                    +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽ бонус
-                                  </div>
-                                ) : (
-                                  <div className="text-[10px] text-slate-400 font-normal">без бонуса</div>
-                                )}
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-
-                      {/* Custom Amount */}
-                      <div className="pt-1">
-                        <label htmlFor="b2b-custom-amount" className="text-[11px] font-semibold text-slate-600 block mb-1">
-                          Или укажите произвольную сумму:
-                        </label>
-                        <div className="relative">
-                          <input
-                            id="b2b-custom-amount"
-                            type="number"
-                            min={500}
-                            step={500}
-                            value={customTopUpRub || ""}
-                            onChange={(e) => {
-                              const val = parseInt(e.target.value, 10) || 0;
-                              setCustomTopUpRub(val);
-                              const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
-                              const match = pkgs.find((p) => p.price_rub === val) || null;
-                              setSelectedTopUpPackage(match);
-                            }}
-                            placeholder="5000"
-                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
-                          />
-                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                            ₽
-                          </span>
+              {/* TAB 2: Interactive B2B Invoice Generator */}
+              {topUpTab === "b2b" ? (
+                <div className="space-y-3.5">
+                  {!invoiceCreated ? (
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+                      {/* Left Column: Step 1 Package & Amount */}
+                      <div className="lg:col-span-5 space-y-2.5">
+                        <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                          1. Выберите пакет или сумму:
                         </div>
-                      </div>
+                        {renderPackageRows()}
 
-                      {/* Calculation Summary */}
-                      {(() => {
-                        const calc = (() => {
-                          if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
-                            return {
-                              bonusRub: selectedTopUpPackage.bonus_rub,
-                              totalRub: selectedTopUpPackage.total_rub,
-                              percent: selectedTopUpPackage.bonus_percent,
-                            };
-                          }
-                          return calculateDepositBonus(customTopUpRub);
-                        })();
-                        return (
-                          <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200/90 flex items-center justify-between text-xs">
-                            <div>
-                              <span className="text-slate-600">К оплате по счёту: </span>
-                              <strong className="text-slate-900 font-bold">{customTopUpRub.toLocaleString("ru-RU")} ₽</strong>
-                              {calc.bonusRub > 0 ? (
-                                <span className="ml-2 text-emerald-700 font-bold">
-                                  (+{calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус {calc.percent}%)
-                                </span>
-                              ) : null}
-                            </div>
-                            <div className="text-right">
-                              <span className="text-[10px] text-slate-500 block">Поступит на баланс:</span>
-                              <strong className="text-emerald-700 font-black text-sm">{calc.totalRub.toLocaleString("ru-RU")} ₽</strong>
-                            </div>
-                          </div>
-                        );
-                      })()}
-                    </div>
-
-                    {/* Step 2: Company Requisites */}
-                    <div className="space-y-3 pt-1 border-t border-slate-200/80">
-                      <div className="flex items-center justify-between">
-                        <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-                          2. Реквизиты вашей компании / ИП:
-                        </div>
-                        {invoiceInnFound ? (
-                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-full">
-                            <Check size={12} />
-                            <span>Найдено в ФНС</span>
-                          </span>
-                        ) : null}
-                      </div>
-
-                      {/* INN Input with DaData auto-lookup */}
-                      <div className="space-y-1">
-                        <label htmlFor="b2b-inn-input" className="text-xs font-bold text-slate-700 block">
-                          ИНН организации или ИП <span className="text-rose-500">*</span>
-                        </label>
-                        <div className="relative">
-                          <input
-                            id="b2b-inn-input"
-                            type="text"
-                            maxLength={12}
-                            value={invoiceInn}
-                            onChange={(e) => {
-                              const val = e.target.value.replace(/\D/g, "");
-                              setInvoiceInn(val);
-                              setInvoiceInnFound(false);
-                              setInvoiceInnError("");
-                              if (val.length === 10 || val.length === 12) {
-                                // Auto-fetch from DaData
-                                const handleLookup = async () => {
-                                  setInvoiceLoadingInn(true);
-                                  try {
-                                    const res = await fetch(`/api/customer/dadata/company-by-inn?inn=${val}`);
-                                    const data = await res.json();
-                                    if (data.found && data.company) {
-                                      setInvoiceName(data.company.company_name || data.company.full_name || "");
-                                      setInvoiceKpp(data.company.kpp || "");
-                                      setInvoiceAddress(data.company.legal_address || "");
-                                      setInvoiceInnFound(true);
-                                    } else {
-                                      setInvoiceInnError(data.message || "Организация не найдена в ФНС");
-                                    }
-                                  } catch (err) {
-                                    // Ignored
-                                  } finally {
-                                    setInvoiceLoadingInn(false);
-                                  }
-                                };
-                                handleLookup();
-                              }
-                            }}
-                            placeholder="Введите 10 цифр для юрлиц или 12 цифр для ИП"
-                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-10"
-                          />
-                          {invoiceLoadingInn ? (
-                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-600">
-                              <Loader2 size={16} className="animate-spin" />
-                            </span>
-                          ) : (
-                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
-                              <Building2 size={16} />
-                            </span>
-                          )}
-                        </div>
-                        {invoiceInnError ? (
-                          <p className="text-[11px] text-amber-700 mt-1">{invoiceInnError}</p>
-                        ) : (
-                          <p className="text-[10px] text-slate-500">
-                            Введите ИНН — название, КПП и адрес подтянутся автоматически из ФНС.
-                          </p>
-                        )}
-                      </div>
-
-                      {/* Company Name */}
-                      <div className="space-y-1">
-                        <label htmlFor="b2b-company-name" className="text-xs font-bold text-slate-700 block">
-                          Наименование организации или ИП <span className="text-rose-500">*</span>
-                        </label>
-                        <input
-                          id="b2b-company-name"
-                          type="text"
-                          value={invoiceName}
-                          onChange={(e) => setInvoiceName(e.target.value)}
-                          placeholder="ООО «Ромашка» или ИП Иванов И.И."
-                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        {/* KPP (optional) */}
-                        <div className="space-y-1">
-                          <label htmlFor="b2b-kpp-input" className="text-xs font-bold text-slate-700 block">
-                            КПП <span className="text-[10px] font-normal text-slate-400">(для юрлиц)</span>
-                          </label>
-                          <input
-                            id="b2b-kpp-input"
-                            type="text"
-                            maxLength={9}
-                            value={invoiceKpp}
-                            onChange={(e) => setInvoiceKpp(e.target.value)}
-                            placeholder="770101001"
-                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
-                          />
-                        </div>
-
-                        {/* Legal Address */}
-                        <div className="space-y-1 sm:col-span-2">
-                          <label htmlFor="b2b-address-input" className="text-xs font-bold text-slate-700 block">
-                            Юридический адрес
-                          </label>
-                          <input
-                            id="b2b-address-input"
-                            type="text"
-                            value={invoiceAddress}
-                            onChange={(e) => setInvoiceAddress(e.target.value)}
-                            placeholder="г. Москва, ул. Тверская, д. 10"
-                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Email for sending invoice */}
-                      <div className="space-y-1">
-                        <label htmlFor="b2b-email-input" className="text-xs font-bold text-slate-700 block">
-                          Email для получения счёта и закрывающих документов
-                        </label>
-                        <input
-                          id="b2b-email-input"
-                          type="email"
-                          value={invoiceEmail || session?.user?.email || ""}
-                          onChange={(e) => setInvoiceEmail(e.target.value)}
-                          placeholder="buh@company.ru"
-                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
-                        />
-                      </div>
-
-                      {/* Contact phone and Telegram for invoice */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        <div className="space-y-1">
-                          <label htmlFor="b2b-phone-input" className="text-xs font-bold text-slate-700 flex items-center justify-between">
-                            <span>Контактный телефон <span className="text-rose-500">*</span></span>
+                        <div className="pt-1 space-y-1">
+                          <label htmlFor="b2b-custom-amount" className="text-[11px] font-semibold text-slate-600 block">
+                            Или укажите произвольную сумму:
                           </label>
                           <div className="relative">
                             <input
-                              id="b2b-phone-input"
-                              type="tel"
-                              value={payerPhone}
-                              onChange={(e) => setPayerPhone(formatPhoneRu(e.target.value))}
-                              placeholder="+7 (999) 000-00-00"
-                              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pl-8"
-                            />
-                            <Phone size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                          </div>
-                        </div>
-
-                        <div className="space-y-1">
-                          <label htmlFor="b2b-tg-input" className="text-xs font-semibold text-slate-700 flex items-center justify-between">
-                            <span>Ник в Telegram</span>
-                            <span className="text-[10px] font-normal text-slate-400">опционально</span>
-                          </label>
-                          <div className="relative">
-                            <input
-                              id="b2b-tg-input"
-                              type="text"
-                              value={payerTelegram}
+                              id="b2b-custom-amount"
+                              type="number"
+                              min={500}
+                              step={500}
+                              value={customTopUpRub || ""}
                               onChange={(e) => {
-                                let val = e.target.value.trim();
-                                if (val.startsWith("https://t.me/")) val = val.replace("https://t.me/", "");
-                                if (val.startsWith("t.me/")) val = val.replace("t.me/", "");
-                                if (val && !val.startsWith("@")) val = "@" + val;
-                                setPayerTelegram(val);
+                                const val = parseInt(e.target.value, 10) || 0;
+                                setCustomTopUpRub(val);
+                                const match = depositPkgs.find((p) => p.price_rub === val) || null;
+                                setSelectedTopUpPackage(match);
                               }}
-                              placeholder="@username"
-                              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pl-8"
+                              placeholder="5000"
+                              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] pr-8 tl-num"
                             />
-                            <MessageCircle size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                              ₽
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="p-3 rounded-xl bg-[#f4f8ef] border border-[#cde0be] flex items-center justify-between gap-2 text-xs tl-num">
+                          <div>
+                            <span className="text-[11px] text-slate-600 block">К оплате по счёту:</span>
+                            <strong className="text-slate-900 font-extrabold text-sm">{customTopUpRub.toLocaleString("ru-RU")} ₽</strong>
+                            {calc.bonusRub > 0 ? (
+                              <span className="block text-[10px] text-[#174b3f] font-bold">
+                                +{calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус ({calc.percent}%)
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="text-right">
+                            <span className="text-[10px] text-slate-500 block">На баланс:</span>
+                            <strong className="text-[#103a31] font-black text-base">{calc.totalRub.toLocaleString("ru-RU")} ₽</strong>
                           </div>
                         </div>
                       </div>
 
-                      {invoiceSubmitError ? (
-                        <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700">
-                          {invoiceSubmitError}
-                        </div>
-                      ) : null}
-
-                      {/* Submit Button */}
-                      <div className="pt-2">
-                        <button
-                          type="button"
-                          disabled={invoiceSubmitting || customTopUpRub < 500 || !invoiceInn.trim() || !invoiceName.trim() || !payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10}
-                          onClick={async () => {
-                            if (!customTopUpRub || customTopUpRub < 500) {
-                              setInvoiceSubmitError("Минимальная сумма счёта — 500 ₽");
-                              return;
-                            }
-                            if (!invoiceInn.trim()) {
-                              setInvoiceSubmitError("Укажите ИНН организации или ИП");
-                              return;
-                            }
-                            if (!invoiceName.trim()) {
-                              setInvoiceSubmitError("Укажите наименование компании или ИП");
-                              return;
-                            }
-                            if (!payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10) {
-                              setInvoiceSubmitError("Укажите контактный номер телефона для связи");
-                              return;
-                            }
-                            setInvoiceSubmitting(true);
-                            setInvoiceSubmitError("");
-                            try {
-                              const matchedPkg =
-                                selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub
-                                  ? selectedTopUpPackage
-                                  : null;
-                              const pkgName = matchedPkg?.name || "Пополнение баланса";
-                              const emailToSend = (invoiceEmail.trim() || session?.user?.email || "").trim();
-                              const res = await fetch("/api/customer/invoices", {
-                                method: "POST",
-                                credentials: "same-origin",
-                                headers: {
-                                  "Content-Type": "application/json",
-                                  ...(csrf ? { "x-csrf-token": csrf } : {}),
-                                },
-                                body: JSON.stringify({
-                                  amount_rub: customTopUpRub,
-                                  tariff_name: pkgName,
-                                  buyer_inn: invoiceInn.replace(/\D/g, "").trim(),
-                                  buyer_kpp: invoiceKpp.trim(),
-                                  buyer_name: invoiceName.trim(),
-                                  buyer_address: invoiceAddress.trim(),
-                                  buyer_email: emailToSend,
-                                  buyer_phone: payerPhone.trim(),
-                                  buyer_telegram: payerTelegram.trim().replace(/^@/, ""),
-                                }),
-                              });
-                              const data = await res.json();
-                              if (!res.ok) {
-                                throw new Error(data.detail || "Не удалось выставить счёт");
-                              }
-                              setInvoiceCreated(data.invoice);
-                              loadCustomerInvoices();
-                            } catch (err: any) {
-                              setInvoiceSubmitError(err.message || "Ошибка при создании счёта");
-                            } finally {
-                              setInvoiceSubmitting(false);
-                            }
-                          }}
-                          className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
-                        >
-                          {invoiceSubmitting ? (
-                            <>
-                              <Loader2 size={16} className="animate-spin" />
-                              <span>Формируем счёт...</span>
-                            </>
-                          ) : (
-                            <>
-                              <Receipt size={16} />
-                              <span>Сформировать счёт на {customTopUpRub.toLocaleString("ru-RU")} ₽</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  /* Screen 2: Invoice Successfully Created */
-                  <div className="space-y-4">
-                    <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-300 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="inline-flex items-center gap-1.5 text-xs font-extrabold text-emerald-800 bg-emerald-100 px-2.5 py-1 rounded-full">
-                          <CheckCircle2 size={14} className="text-emerald-600" />
-                          <span>Счёт сформирован</span>
-                        </div>
-                        <span className="text-xs font-mono font-bold text-slate-500">
-                          {invoiceCreated.created_at ? new Date(invoiceCreated.created_at).toLocaleDateString("ru-RU") : "Сегодня"}
-                        </span>
-                      </div>
-
-                      <div>
-                        <h3 className="text-base sm:text-lg font-black text-slate-900">
-                          Счёт № {invoiceCreated.invoice_number}
-                        </h3>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Плательщик: <b>{invoiceCreated.buyer_name}</b> (ИНН {invoiceCreated.buyer_inn})
-                        </p>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-emerald-200/70 text-xs">
-                        <div>
-                          <span className="text-[10px] text-slate-500 block uppercase font-semibold">Сумма к оплате:</span>
-                          <strong className="text-base font-black text-slate-900">
-                            {invoiceCreated.amount_rub.toLocaleString("ru-RU")} ₽
-                          </strong>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-[10px] text-emerald-700 block uppercase font-semibold">На баланс:</span>
-                          <strong className="text-base font-black text-emerald-700">
-                            {invoiceCreated.total_credit_rub.toLocaleString("ru-RU")} ₽
-                          </strong>
-                          {invoiceCreated.bonus_rub > 0 ? (
-                            <span className="text-[10px] text-emerald-600 block">
-                              (+{invoiceCreated.bonus_rub.toLocaleString("ru-RU")} ₽ бонус)
+                      {/* Right Column: Step 2 Company Requisites */}
+                      <div className="lg:col-span-7 space-y-2.5 bg-[#f8faf6] p-3.5 sm:p-4 rounded-xl border border-[#dfe5dc]">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                            2. Реквизиты вашей компании / ИП:
+                          </div>
+                          {invoiceInnFound ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-[#103a31] bg-[#e7efe0] px-2 py-0.5 rounded-full">
+                              <Check size={12} />
+                              <span>Найдено в ФНС</span>
                             </span>
+                          ) : null}
+                        </div>
+
+                        {/* INN Input with DaData auto-lookup */}
+                        <div className="space-y-1">
+                          <label htmlFor="b2b-inn-input" className="text-xs font-bold text-slate-700 block">
+                            ИНН организации или ИП <span className="text-rose-500">*</span>
+                          </label>
+                          <div className="relative">
+                            <input
+                              id="b2b-inn-input"
+                              type="text"
+                              maxLength={12}
+                              value={invoiceInn}
+                              onChange={(e) => {
+                                const val = e.target.value.replace(/\D/g, "");
+                                setInvoiceInn(val);
+                                setInvoiceInnFound(false);
+                                setInvoiceInnError("");
+                                if (val.length === 10 || val.length === 12) {
+                                  const handleLookup = async () => {
+                                    setInvoiceLoadingInn(true);
+                                    try {
+                                      const res = await fetch(`/api/customer/dadata/company-by-inn?inn=${val}`);
+                                      const data = await res.json();
+                                      if (data.found && data.company) {
+                                        setInvoiceName(data.company.company_name || data.company.full_name || "");
+                                        setInvoiceKpp(data.company.kpp || "");
+                                        setInvoiceAddress(data.company.legal_address || "");
+                                        setInvoiceInnFound(true);
+                                      } else {
+                                        setInvoiceInnError(data.message || "Организация не найдена в ФНС");
+                                      }
+                                    } catch (err) {
+                                      // Ignored
+                                    } finally {
+                                      setInvoiceLoadingInn(false);
+                                    }
+                                  };
+                                  handleLookup();
+                                }
+                              }}
+                              placeholder="Введите 10 цифр для юрлиц или 12 цифр для ИП"
+                              className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] pr-10"
+                            />
+                            {invoiceLoadingInn ? (
+                              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[#174b3f]">
+                                <Loader2 size={16} className="animate-spin" />
+                              </span>
+                            ) : (
+                              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                                <Building2 size={16} />
+                              </span>
+                            )}
+                          </div>
+                          {invoiceInnError ? (
+                            <p className="text-[11px] text-amber-700">{invoiceInnError}</p>
+                          ) : (
+                            <p className="text-[10px] text-slate-500">
+                              Введите ИНН — название, КПП и адрес подтянутся автоматически из ФНС.
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Company Name */}
+                        <div className="space-y-1">
+                          <label htmlFor="b2b-company-name" className="text-xs font-bold text-slate-700 block">
+                            Наименование организации или ИП <span className="text-rose-500">*</span>
+                          </label>
+                          <input
+                            id="b2b-company-name"
+                            type="text"
+                            value={invoiceName}
+                            onChange={(e) => setInvoiceName(e.target.value)}
+                            placeholder="Подставится по ИНН автоматически или введите вручную"
+                            className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f]"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          <div className="space-y-1">
+                            <label htmlFor="b2b-kpp-input" className="text-xs font-bold text-slate-700 block">
+                              КПП <span className="text-[10px] font-normal text-slate-400">(для юрлиц)</span>
+                            </label>
+                            <input
+                              id="b2b-kpp-input"
+                              type="text"
+                              maxLength={9}
+                              value={invoiceKpp}
+                              onChange={(e) => setInvoiceKpp(e.target.value)}
+                              placeholder="770101001"
+                              className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f]"
+                            />
+                          </div>
+
+                          <div className="space-y-1 sm:col-span-2">
+                            <label htmlFor="b2b-address-input" className="text-xs font-bold text-slate-700 block">
+                              Юридический адрес
+                            </label>
+                            <input
+                              id="b2b-address-input"
+                              type="text"
+                              value={invoiceAddress}
+                              onChange={(e) => setInvoiceAddress(e.target.value)}
+                              placeholder="Юридический адрес организации"
+                              className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f]"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label htmlFor="b2b-email-input" className="text-xs font-bold text-slate-700 block">
+                            Email для получения счёта и закрывающих документов
+                          </label>
+                          <input
+                            id="b2b-email-input"
+                            type="email"
+                            value={invoiceEmail || session?.user?.email || ""}
+                            onChange={(e) => setInvoiceEmail(e.target.value)}
+                            placeholder="buh@company.ru"
+                            className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f]"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div className="space-y-1">
+                            <label htmlFor="b2b-phone-input" className="text-xs font-bold text-slate-700 block">
+                              Контактный телефон <span className="text-rose-500">*</span>
+                            </label>
+                            <div className="relative">
+                              <input
+                                id="b2b-phone-input"
+                                type="tel"
+                                value={payerPhone}
+                                onChange={(e) => setPayerPhone(formatPhoneRu(e.target.value))}
+                                placeholder="+7 (999) 000-00-00"
+                                className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] pl-8"
+                              />
+                              <Phone size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="b2b-tg-input" className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+                              <span>Ник в Telegram</span>
+                              <span className="text-[10px] font-normal text-slate-400">опционально</span>
+                            </label>
+                            <div className="relative">
+                              <input
+                                id="b2b-tg-input"
+                                type="text"
+                                value={payerTelegram}
+                                onChange={(e) => {
+                                  let val = e.target.value.trim();
+                                  if (val.startsWith("https://t.me/")) val = val.replace("https://t.me/", "");
+                                  if (val.startsWith("t.me/")) val = val.replace("t.me/", "");
+                                  if (val && !val.startsWith("@")) val = "@" + val;
+                                  setPayerTelegram(val);
+                                }}
+                                placeholder="@username"
+                                className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] pl-8"
+                              />
+                              <MessageCircle size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                            </div>
+                          </div>
+                        </div>
+
+                        {invoiceSubmitError ? (
+                          <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700">
+                            {invoiceSubmitError}
+                          </div>
+                        ) : null}
+
+                        {/* Submit Button + Inline Missing-Fields Hint */}
+                        <div className="space-y-1.5 pt-1">
+                          <button
+                            type="button"
+                            disabled={invoiceSubmitting || !isAmountValid || !invoiceInn.trim() || !invoiceName.trim() || !isPhoneValid}
+                            onClick={async () => {
+                              if (!customTopUpRub || customTopUpRub < 500) {
+                                setInvoiceSubmitError("Минимальная сумма счёта — 500 ₽");
+                                return;
+                              }
+                              if (!invoiceInn.trim()) {
+                                setInvoiceSubmitError("Укажите ИНН организации или ИП");
+                                return;
+                              }
+                              if (!invoiceName.trim()) {
+                                setInvoiceSubmitError("Укажите наименование компании или ИП");
+                                return;
+                              }
+                              if (!payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10) {
+                                setInvoiceSubmitError("Укажите контактный номер телефона для связи");
+                                return;
+                              }
+                              setInvoiceSubmitting(true);
+                              setInvoiceSubmitError("");
+                              try {
+                                const emailToSend = (invoiceEmail.trim() || session?.user?.email || "").trim();
+                                const res = await fetch("/api/customer/invoices", {
+                                  method: "POST",
+                                  credentials: "same-origin",
+                                  headers: {
+                                    "Content-Type": "application/json",
+                                    ...(csrf ? { "x-csrf-token": csrf } : {}),
+                                  },
+                                  body: JSON.stringify({
+                                    amount_rub: customTopUpRub,
+                                    tariff_name: pkgName,
+                                    buyer_inn: invoiceInn.replace(/\D/g, "").trim(),
+                                    buyer_kpp: invoiceKpp.trim(),
+                                    buyer_name: invoiceName.trim(),
+                                    buyer_address: invoiceAddress.trim(),
+                                    buyer_email: emailToSend,
+                                    buyer_phone: payerPhone.trim(),
+                                    buyer_telegram: payerTelegram.trim().replace(/^@/, ""),
+                                  }),
+                                });
+                                const data = await res.json();
+                                if (!res.ok) {
+                                  throw new Error(data.detail || "Не удалось выставить счёт");
+                                }
+                                setInvoiceCreated(data.invoice);
+                                loadCustomerInvoices();
+                              } catch (err: any) {
+                                setInvoiceSubmitError(err.message || "Ошибка при создании счёта");
+                              } finally {
+                                setInvoiceSubmitting(false);
+                              }
+                            }}
+                            className="tl-btn-primary w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs sm:text-sm shadow-sm cursor-pointer tl-num"
+                          >
+                            {invoiceSubmitting ? (
+                              <>
+                                <Loader2 size={16} className="animate-spin" />
+                                <span>Формируем счёт...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Receipt size={15} aria-hidden="true" />
+                                <span>Сформировать счёт на {customTopUpRub.toLocaleString("ru-RU")} ₽</span>
+                              </>
+                            )}
+                          </button>
+                          {b2bValidationHint ? (
+                            <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200/80 rounded-lg px-2.5 py-1.5 text-center font-medium">
+                              {b2bValidationHint}
+                            </p>
                           ) : null}
                         </div>
                       </div>
                     </div>
+                  ) : (
+                    /* Screen 2: Invoice Successfully Created */
+                    <div className="space-y-4 max-w-2xl mx-auto">
+                      <div className="p-4 rounded-2xl bg-[#f4f8ef] border border-[#9ec089] space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="inline-flex items-center gap-1.5 text-xs font-extrabold text-[#103a31] bg-[#e7efe0] px-2.5 py-1 rounded-full">
+                            <CheckCircle2 size={14} className="text-[#174b3f]" />
+                            <span>Счёт сформирован</span>
+                          </div>
+                          <span className="text-xs font-mono font-bold text-slate-500">
+                            {invoiceCreated.created_at ? new Date(invoiceCreated.created_at).toLocaleDateString("ru-RU") : "Сегодня"}
+                          </span>
+                        </div>
 
-                    {/* Action Buttons */}
-                    <div className="space-y-2">
-                      <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-                        Действия со счётом:
+                        <div>
+                          <h3 className="text-base sm:text-lg font-black text-slate-900 tl-num">
+                            Счёт № {invoiceCreated.invoice_number}
+                          </h3>
+                          <p className="text-xs text-slate-600 mt-0.5">
+                            Плательщик: <b>{invoiceCreated.buyer_name}</b> (ИНН {invoiceCreated.buyer_inn})
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#cde0be] text-xs tl-num">
+                          <div>
+                            <span className="text-[10px] text-slate-500 block uppercase font-semibold">Сумма к оплате:</span>
+                            <strong className="text-base font-black text-slate-900">
+                              {invoiceCreated.amount_rub.toLocaleString("ru-RU")} ₽
+                            </strong>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-[10px] text-[#174b3f] block uppercase font-semibold">На баланс:</span>
+                            <strong className="text-base font-black text-[#103a31]">
+                              {invoiceCreated.total_credit_rub.toLocaleString("ru-RU")} ₽
+                            </strong>
+                            {invoiceCreated.bonus_rub > 0 ? (
+                              <span className="text-[10px] text-[#174b3f] block">
+                                (+{invoiceCreated.bonus_rub.toLocaleString("ru-RU")} ₽ бонус)
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
                       </div>
 
+                      {/* Action Buttons */}
+                      <div className="space-y-2">
+                        <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                          Действия со счётом:
+                        </div>
+
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {/* Download PDF */}
                           <a
                             href={`/api/customer/invoices/${invoiceCreated.id}/download?format=pdf`}
                             download
-                            className="flex items-center justify-center gap-2 p-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer text-center"
+                            className="tl-btn-primary flex items-center justify-center gap-2 p-2.5 rounded-xl text-xs transition-all cursor-pointer text-center"
                           >
                             <Download size={15} className="shrink-0" />
                             <span>Скачать PDF (.pdf)</span>
                           </a>
 
-                          {/* Upload Proof */}
-                          <label className="flex items-center justify-center gap-2 p-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer text-center">
+                          <label className="flex items-center justify-center gap-2 p-2.5 bg-[#f4f8ef] hover:bg-[#e7efe0] text-[#103a31] border border-[#cde0be] rounded-xl text-xs font-bold transition-all cursor-pointer text-center">
                             <Upload size={15} className="shrink-0" />
-                            <span>{invoiceProofUploading === invoiceCreated.id ? "Отправка…" : "📎 Отправить платёжку"}</span>
+                            <span>{invoiceProofUploading === invoiceCreated.id ? "Отправка…" : "Отправить платёжку"}</span>
                             <input
                               type="file"
                               className="hidden"
@@ -9902,186 +11111,150 @@ ${webLink}`;
                             />
                           </label>
 
-                        {/* Download Excel */}
-                        <a
-                          href={`/api/customer/invoices/${invoiceCreated.id}/download?format=xlsx`}
-                          download
-                          className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
-                        >
-                          <FileSpreadsheet size={15} className="text-emerald-600 shrink-0" />
-                          <span>Скачать Excel (.xlsx)</span>
-                        </a>
+                          <a
+                            href={`/api/customer/invoices/${invoiceCreated.id}/download?format=xlsx`}
+                            download
+                            className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
+                          >
+                            <FileSpreadsheet size={15} className="text-[#174b3f] shrink-0" />
+                            <span>Скачать Excel (.xlsx)</span>
+                          </a>
 
-                        {/* Print / View A4 HTML */}
-                        <a
-                          href={`/api/customer/invoices/${invoiceCreated.id}/html`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
-                        >
-                          <Printer size={15} className="text-slate-600 shrink-0" />
-                          <span>Печать и просмотр (А4)</span>
-                        </a>
+                          <a
+                            href={`/api/customer/invoices/${invoiceCreated.id}/html`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex items-center justify-center gap-2 p-2.5 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 transition-all shadow-2xs cursor-pointer text-center"
+                          >
+                            <Printer size={15} className="text-slate-600 shrink-0" />
+                            <span>Печать и просмотр (А4)</span>
+                          </a>
 
-                        {/* Send Email */}
-                        <button
-                          type="button"
-                          disabled={invoiceEmailSending}
-                          onClick={async () => {
-                            setInvoiceEmailSending(true);
-                            try {
-                              const res = await fetch(`/api/customer/invoices/${invoiceCreated.id}/send-email`, {
-                                method: "POST",
-                                credentials: "same-origin",
-                                headers: {
-                                  "Content-Type": "application/json",
-                                  ...(csrf ? { "x-csrf-token": csrf } : {}),
-                                },
-                                body: JSON.stringify({ email: invoiceCreated.buyer_email || session?.user?.email }),
-                              });
-                              const data = await res.json();
-                              if (!res.ok) throw new Error(data.detail || "Ошибка отправки");
-                              setInvoiceEmailSent(true);
-                              setTimeout(() => setInvoiceEmailSent(false), 4000);
-                            } catch (err: any) {
-                              alert(err.message || "Не удалось отправить счёт");
-                            } finally {
-                              setInvoiceEmailSending(false);
-                            }
-                          }}
-                          className={`flex items-center justify-center gap-2 p-2.5 border rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer text-center ${
-                            invoiceEmailSent
-                              ? "bg-emerald-50 text-emerald-800 border-emerald-300"
-                              : "bg-white hover:bg-slate-50 text-slate-900 border-slate-300"
-                          }`}
-                        >
-                          {invoiceEmailSending ? (
-                            <Loader2 size={15} className="animate-spin text-teal-600" />
-                          ) : invoiceEmailSent ? (
-                            <Check size={15} className="text-emerald-600" />
-                          ) : (
-                            <Mail size={15} className="text-teal-600" />
-                          )}
-                          <span>{invoiceEmailSent ? "Отправлено на почту!" : "Отправить на email"}</span>
-                        </button>
+                          <button
+                            type="button"
+                            disabled={invoiceEmailSending}
+                            onClick={async () => {
+                              setInvoiceEmailSending(true);
+                              setInvoiceEmailError("");
+                              try {
+                                const res = await fetch(`/api/customer/invoices/${invoiceCreated.id}/send-email`, {
+                                  method: "POST",
+                                  credentials: "same-origin",
+                                  headers: {
+                                    "Content-Type": "application/json",
+                                    ...(csrf ? { "x-csrf-token": csrf } : {}),
+                                  },
+                                  body: JSON.stringify({ email: invoiceCreated.buyer_email || session?.user?.email }),
+                                });
+                                const data = await res.json();
+                                if (!res.ok) throw new Error(data.detail || "Ошибка отправки");
+                                setInvoiceEmailSent(true);
+                                setTimeout(() => setInvoiceEmailSent(false), 4000);
+                              } catch (err: any) {
+                                setInvoiceEmailError(err?.message || "Не удалось отправить счёт на почту");
+                              } finally {
+                                setInvoiceEmailSending(false);
+                              }
+                            }}
+                            className={`flex items-center justify-center gap-2 p-2.5 border rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer text-center ${
+                              invoiceEmailSent
+                                ? "bg-[#f4f8ef] text-[#103a31] border-[#9ec089]"
+                                : "bg-white hover:bg-slate-50 text-slate-900 border-slate-300"
+                            }`}
+                          >
+                            {invoiceEmailSending ? (
+                              <Loader2 size={15} className="animate-spin text-[#174b3f]" />
+                            ) : invoiceEmailSent ? (
+                              <Check size={15} className="text-[#174b3f]" />
+                            ) : (
+                              <Mail size={15} className="text-[#174b3f]" />
+                            )}
+                            <span>{invoiceEmailSent ? "Отправлено на почту!" : "Отправить на email"}</span>
+                          </button>
 
-                        {/* Copy Bank Details for 1C/Bank-Client */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const detailsText = `Получатель: ИП Груздев Игорь Вячеславович\nИНН: 352516048881\nР/с: 40802810217430000342\nБанк: АО "АЛЬФА-БАНК"\nБИК: 044525593\nК/с: 30101810200000000593\nСумма: ${invoiceCreated.amount_rub} руб.\nНазначение: Оплата по счету № ${invoiceCreated.invoice_number} за услуги сервиса TenderLex. Без НДС.`;
+                              navigator.clipboard.writeText(detailsText);
+                              setInvoiceDetailsCopied(true);
+                              setTimeout(() => setInvoiceDetailsCopied(false), 2500);
+                            }}
+                            className="sm:col-span-2 flex items-center justify-center gap-2 p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 transition-all cursor-pointer text-center"
+                          >
+                            {invoiceDetailsCopied ? (
+                              <Check size={15} className="text-[#174b3f]" />
+                            ) : (
+                              <Copy size={15} className="text-slate-600" />
+                            )}
+                            <span>{invoiceDetailsCopied ? "Реквизиты скопированы!" : "Скопировать реквизиты для банк-клиента / 1С"}</span>
+                          </button>
+                        </div>
+                        {invoiceEmailError ? (
+                          <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-800">
+                            {invoiceEmailError}
+                          </div>
+                        ) : null}
+                        {invoiceProofMessage ? (
+                          <div className={`p-2.5 rounded-xl border text-xs font-semibold ${invoiceProofMessage.includes("отправлена") ? "bg-[#f4f8ef] border-[#cde0be] text-[#103a31]" : "bg-rose-50 border-rose-200 text-rose-800"}`}>
+                            {invoiceProofMessage}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="pt-1 text-center">
                         <button
                           type="button"
                           onClick={() => {
-                            const detailsText = `Получатель: ИП Груздев Игорь Вячеславович\nИНН: 352516048881\nР/с: 40802810217430000342\nБанк: АО "АЛЬФА-БАНК"\nБИК: 044525593\nК/с: 30101810200000000593\nСумма: ${invoiceCreated.amount_rub} руб.\nНазначение: Оплата по счету № ${invoiceCreated.invoice_number} за услуги сервиса TenderLex. Без НДС.`;
-                            navigator.clipboard.writeText(detailsText);
-                            setInvoiceDetailsCopied(true);
-                            setTimeout(() => setInvoiceDetailsCopied(false), 2500);
+                            setInvoiceCreated(null);
+                            setInvoiceInnFound(false);
+                            setInvoiceEmailError("");
                           }}
-                          className="sm:col-span-2 flex items-center justify-center gap-2 p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 transition-all cursor-pointer text-center"
+                          className="text-xs text-slate-500 hover:text-slate-800 underline cursor-pointer"
                         >
-                          {invoiceDetailsCopied ? (
-                            <Check size={15} className="text-emerald-600" />
-                          ) : (
-                            <Copy size={15} className="text-slate-600" />
-                          )}
-                          <span>{invoiceDetailsCopied ? "Реквизиты скопированы!" : "Скопировать реквизиты для банк-клиента / 1С"}</span>
+                          Сформировать другой счёт
                         </button>
                       </div>
                     </div>
+                  )}
 
-                    {/* Reset Button */}
-                    <div className="pt-2 text-center flex items-center justify-center gap-4">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setInvoiceCreated(null);
-                          setInvoiceInnFound(false);
-                        }}
-                        className="text-xs text-slate-500 hover:text-slate-800 underline cursor-pointer"
-                      >
-                        Сформировать другой счёт
-                      </button>
-                    </div>
+                  {/* Clean B2B Footer: Back to online payment + Link to centralized Invoices tab */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTopUpTab("card");
+                        setInvoiceCreated(null);
+                        setInvoiceEmailError("");
+                      }}
+                      className="text-xs text-[#174b3f] hover:text-[#103a31] font-semibold underline cursor-pointer"
+                    >
+                      ← Вернуться к оплате онлайн (Карта, СБП)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowTopUpModal(false);
+                        setHistoryModalTab("invoices");
+                        setShowHistoryModal(true);
+                        loadCustomerInvoices();
+                      }}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-[#174b3f] hover:text-[#103a31] bg-[#f4f8ef] hover:bg-[#e7efe0] border border-[#cde0be] px-3 py-1.5 rounded-lg transition-colors cursor-pointer tl-num"
+                    >
+                      <Receipt size={13} aria-hidden="true" />
+                      <span>
+                        {customerInvoices.length > 0
+                          ? `Выставленные счета (${customerInvoices.length}) →`
+                          : "Счета для юрлиц в истории →"}
+                      </span>
+                    </button>
                   </div>
-                )}
-
-                <div className="text-center pt-2 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTopUpTab("card");
-                      setInvoiceCreated(null);
-                    }}
-                    className="text-xs text-emerald-700 hover:text-emerald-800 font-semibold underline cursor-pointer"
-                  >
-                    ← Вернуться к оплате онлайн (Карта, СБП)
-                  </button>
                 </div>
-
-                {customerInvoices.length > 0 ? (() => {
-                  const totalPages = Math.ceil(customerInvoices.length / CUSTOMER_INVOICES_PER_PAGE);
-                  const startIndex = (customerInvoicesPage - 1) * CUSTOMER_INVOICES_PER_PAGE;
-                  const currentInvoices = customerInvoices.slice(startIndex, startIndex + CUSTOMER_INVOICES_PER_PAGE);
-                  return (
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3 space-y-2 mt-4">
-                      <div className="flex items-center justify-between">
-                        <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700">Мои счета ({customerInvoices.length})</div>
-                        {totalPages > 1 ? (
-                          <div className="text-[11px] text-slate-500">Страница {customerInvoicesPage} из {totalPages}</div>
-                        ) : null}
-                      </div>
-                      {currentInvoices.map((invoice) => {
-                        const statusLabel = invoice.status === "paid" ? "Оплачен" : invoice.status === "proof_submitted" ? "Платёжка на проверке" : invoice.status === "rejected" ? "Нужна новая платёжка" : invoice.status === "cancelled" ? "Отменён" : "Ожидает оплаты";
-                        const canUpload = invoice.status === "issued" || invoice.status === "rejected" || invoice.status === "proof_submitted";
-                        return (
-                          <div key={invoice.id} className="rounded-xl border border-slate-200 bg-white p-3 flex flex-col gap-2">
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <div className="text-xs font-bold text-slate-900">№ {invoice.invoice_number}</div>
-                                <div className="text-[11px] text-slate-500">{invoice.created_at ? new Date(invoice.created_at).toLocaleDateString("ru-RU") : ""}</div>
-                              </div>
-                              <span className="text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-1">{statusLabel}</span>
-                            </div>
-                            <div className="text-xs text-slate-700">{invoice.amount_rub.toLocaleString("ru-RU")} ₽ · бонус {invoice.bonus_rub.toLocaleString("ru-RU")} ₽</div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <a className="text-[11px] font-bold text-teal-700 underline" href={`/api/customer/invoices/${invoice.id}/download?format=pdf`} download>Скачать PDF</a>
-                              {canUpload ? (
-                                <label className="text-[11px] font-bold text-slate-700 underline cursor-pointer">
-                                  {invoiceProofUploading === invoice.id ? "Отправка…" : invoice.status === "proof_submitted" ? "Загрузить исправленную платёжка" : "Прикрепить платёжку"}
-                                  <input type="file" className="hidden" accept="application/pdf,image/jpeg,image/png" disabled={invoiceProofUploading === invoice.id} onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file && file.size <= 10 * 1024 * 1024) uploadInvoiceProof(invoice.id, file); else if (file) setInvoiceProofMessage("Файл должен быть не больше 10 МБ"); event.currentTarget.value = ""; }} />
-                                </label>
-                              ) : null}
-                            </div>
-                          </div>
-                        );
-                      })}
-                      {totalPages > 1 ? (
-                        <div className="flex items-center justify-between pt-2">
-                          <button
-                            type="button"
-                            onClick={() => setCustomerInvoicesPage((p) => Math.max(1, p - 1))}
-                            disabled={customerInvoicesPage <= 1}
-                            className="px-3 py-1.5 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 disabled:opacity-40"
-                          >
-                            ← Назад
-                          </button>
-                          <div className="text-xs font-bold text-slate-600">{customerInvoicesPage} / {totalPages}</div>
-                          <button
-                            type="button"
-                            onClick={() => setCustomerInvoicesPage((p) => Math.min(totalPages, p + 1))}
-                            disabled={customerInvoicesPage >= totalPages}
-                            className="px-3 py-1.5 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 disabled:opacity-40"
-                          >
-                            Вперед →
-                          </button>
-                        </div>
-                      ) : null}
-                      {invoiceProofMessage ? <p className={`text-[11px] ${invoiceProofMessage.includes("отправлена") ? "text-emerald-700" : "text-rose-700"}`}>{invoiceProofMessage}</p> : null}
-                    </div>
-                  );
-                })() : null}
-              </div>
-            ) : null}
-          </section>
-        </div>
-      ) : null}
+              ) : null}
+            </section>
+          </div>
+        );
+      })() : null}
       </div>
     </main>
   );
@@ -10095,15 +11268,15 @@ function JobStageSteps({ progress }: { progress: number }) {
   const currentStep = Math.min(processingStages.length - 1, Math.floor((boundedProgress / 100) * processingStages.length));
 
   return (
-    <div className="flex items-center gap-1 flex-wrap text-[10px] text-slate-500 mt-1" aria-label="Этапы обработки задачи">
+    <div className="flex items-center gap-1 flex-wrap text-[10px] text-slate-500 mt-0.5" aria-label="Этапы обработки задачи">
       {processingStages.map((stage, index) => (
         <span
           key={stage}
           className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
             index < currentStep
-              ? "bg-teal-100 text-teal-800"
+              ? "bg-teal-50 text-teal-800 border border-teal-200/70"
               : index === currentStep
-              ? "bg-amber-100 text-amber-800 animate-pulse"
+              ? "bg-amber-100 text-amber-900 border border-amber-300"
               : "bg-slate-100 text-slate-400"
           }`}
         >

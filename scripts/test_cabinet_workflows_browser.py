@@ -109,6 +109,7 @@ def fixture(browser, authenticated=True, jobs=None, flags=True):
                 if params.get('mode'): items=[item for item in items if item['mode']==params['mode'][0]]
                 payload={'items':items,'total':len(items),'limit':15,'offset':0}
         elif path=='/api/customer/api-keys':payload={'keys':[]}
+        elif path=='/api/customer/invoices':payload={'items':[],'total':0}
         elif path=='/api/customer/billing/transactions':payload={'items':[],'total':0}
         elif path.endswith('/choose-strategy'):
             state['jobs']=[];payload={'ok':True,'message':'Стратегия сохранена'}
@@ -117,7 +118,8 @@ def fixture(browser, authenticated=True, jobs=None, flags=True):
         elif re.search(r'/download(?:/[^/]+)?$',path):
             route.fulfill(status=200,content_type='application/octet-stream',headers={'Content-Disposition':'attachment; filename=fixture.docx'},body='synthetic fixture');return
         elif any(path.endswith('/'+suffix) for suffix in ['cancel','accept-partial','decline-partial','find-more-suppliers','start-supplier-search']):payload={'ok':True,'message':'Тестовый ответ'}
-        elif path.startswith('/api/chat/'):payload={'messages':[],'ok':True}
+        elif path.startswith('/api/chat/') or path.startswith('/api/customer/chat/'):payload={'messages':[],'ok':True}
+        elif path=='/api/public/auth/challenge':payload={'token':'fixture-challenge','ts':1700000000}
         else:
             state['unhandled'].append(path)
             route.fulfill(status=400,content_type='application/json',body=json.dumps({'detail':'Blocked by browser fixture'}));return
@@ -252,9 +254,8 @@ with sync_playwright() as p:
         if marker=='Пополнение баланса':
             dialog.get_by_role('button',name='Счёт для юрлиц',exact=True).click()
             check('legal invoice tab retained','счёт' in dialog.inner_text().lower())
-            dialog.get_by_role('button',name=re.compile('^СБП')).click()
+            dialog.get_by_role('button',name=re.compile('^Оплата онлайн')).click()
             check('SBP availability state retained','СБП' in dialog.inner_text())
-            dialog.get_by_role('button',name='Оплата картой',exact=True).click()
             check('card payment tab retained','пакет' in dialog.inner_text().lower())
         close_dialog()
     check('opening all account dialogs has no mutations',not state['mutations'])
@@ -310,7 +311,8 @@ with sync_playwright() as p:
     check('registration legal consents preserved',page.locator('form input[type=checkbox]').count()==2)
     page.get_by_placeholder('Ваше имя').fill('Тест')
     page.get_by_placeholder('name@company.ru').fill('qa@example.invalid')
-    page.get_by_placeholder('••••••••').fill('Synthetic-Only-123')
+    page.get_by_placeholder('Не менее 10 символов').fill('Synthetic-Only-123')
+    page.get_by_placeholder('Повторите пароль').fill('Synthetic-Only-123')
     # Click the full labels, the same target a human uses, never force check.
     for i in range(2):page.locator('form label').filter(has=page.locator('input[type=checkbox]')).nth(i).click(position={'x':25,'y':10})
     page.locator('form button[type=submit]').click()

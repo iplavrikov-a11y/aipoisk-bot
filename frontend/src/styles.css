@@ -546,6 +546,23 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   cursor: default;
 }
 .client-state { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; align-items: center; }
+.client-quick-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+.client-quick-btn:hover {
+  color: #0f766e;
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
 .client-actions-menu {
   position: relative;
 }
@@ -1099,11 +1116,59 @@ button.admin-resolved-link-btn:focus-visible,
   color: #0d9488;
   text-decoration: underline;
 }
+.job-client-open-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  margin-left: 2px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: all 0.15s ease;
+}
+.job-client-open-btn:hover {
+  color: #0f766e;
+  background: #f0fdfa;
+  border-color: #99f6e4;
+}
 .job-subline {
   margin: 2px 0 0;
   font-size: 12px;
   color: #64748b;
   line-height: 1.35;
+}
+.job-expanded-details {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: #334155;
+  line-height: 1.45;
+}
+.job-expanded-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.job-expanded-row {
+  word-break: break-word;
+}
+.job-actions-strip .icon-button.small.accent-active {
+  color: #0f766e;
+  background: #f0fdfa;
+  border-color: #99f6e4;
 }
 .job-card-actions {
   display: flex;
@@ -2273,6 +2338,11 @@ button.meta-tag.supplement-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.15) !important;
 }
+.tariff-clean-table input.t-input.is-saved {
+  border-color: #10b981 !important;
+  background: #ecfdf5 !important;
+  color: #065f46;
+}
 .tariff-clean-table input.t-input.text {
   width: 100%;
 }
@@ -2355,6 +2425,25 @@ button.meta-tag.supplement-btn:focus-visible {
 .module-pill-tag.exact_product { background: #e0e7ff; color: #3730a3; }
 .module-pill-tag.procurement_report { background: #fef3c7; color: #92400e; }
 .module-pill-tag.supplier_search_extra { background: #f1f5f9; color: #475569; }
+.module-pill-tag.price_monitoring { background: #dcfce7; color: #166534; }
+.tariff-static-desc {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 13px;
+  color: #334155;
+}
+.tariff-summary-footer {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 7px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  font-size: 12.5px;
+  color: #475569;
+}
+.tariff-summary-footer strong {
+  color: #0f766e;
+}
 
 /* Collapsible panel */
 .tariff-collapsible-panel {

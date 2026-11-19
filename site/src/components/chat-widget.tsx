@@ -1,6 +1,7 @@
 'use client';
 
 import { PublicSiteLink } from "@/components/public-site-link";
+import { usePathname } from 'next/navigation';
 
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -55,10 +56,20 @@ const PRESETS = [
   { id: 'admin', label: '💬 Связаться с администратором', text: 'Здравствуйте! Хочу проконсультироваться с администратором TenderLex.' },
 ];
 
+const CABINET_TOPIC_PROMPTS = [
+  { id: 'task', label: 'Вопрос по задаче', draft: 'Здравствуйте! Нужна помощь по задаче: ' },
+  { id: 'billing', label: 'Оплата и счёт', draft: 'Здравствуйте! Есть вопрос по пополнению или счёту: ' },
+  { id: 'tz', label: 'Помощь с ТЗ', draft: 'Здравствуйте! Подскажите, как лучше загрузить ТЗ: ' },
+  { id: 'api', label: 'Интеграция API', draft: 'Здравствуйте! Вопрос по API и подключению: ' },
+];
+
 export function ChatWidget() {
+  const pathname = usePathname();
+  const isCabinetPage = Boolean(pathname?.startsWith('/cabinet'));
   const [isOpen, setIsOpen] = useState(false);
   const [isPillDismissed, setIsPillDismissed] = useState(false);
   const [isCustomerMode, setIsCustomerMode] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
   const [customerName, setCustomerName] = useState('');
   const [sessionId, setSessionId] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -78,6 +89,7 @@ export function ChatWidget() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messageFeedRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
   const messagesRef = useRef<Message[]>([]);
   const isOpenRef = useRef(false);
   const pollControllerRef = useRef<AbortController | null>(null);
@@ -233,6 +245,7 @@ export function ChatWidget() {
                 setUnreadCount(data.unread_admin_count);
               }
             }
+            setAuthChecked(true);
             return;
           }
         }
@@ -241,6 +254,7 @@ export function ChatWidget() {
       }
 
       if (disposed) return;
+      setAuthChecked(true);
       // Guest Mode initialization
       let sid = localStorage.getItem('tenderlex_chat_session_id');
       if (!sid || sid.toLowerCase().startsWith('tg_')) {
@@ -521,10 +535,23 @@ export function ChatWidget() {
     handleSend(`[Контакт сохранен]: ${val}`);
   }
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    (window as unknown as { __tenderlexChatUnread?: number }).__tenderlexChatUnread = unreadCount;
+    window.dispatchEvent(new CustomEvent('tenderlex_chat_unread', { detail: { count: unreadCount } }));
+  }, [unreadCount]);
+
+  // Inside authenticated /cabinet (and while checking session on /cabinet),
+  // chat opens from the sidebar & task cards so no floating bottom-right pill overlaps buttons.
+  const hideFloatingPill = isCabinetPage && (!authChecked || isCustomerMode);
+  if (hideFloatingPill && !isOpen) {
+    return null;
+  }
+
   return (
     <div className="fixed bottom-4 right-4 z-50 font-sans">
       {/* Floating Action Button (Compact Dismissible Pill) */}
-      {!isOpen && !isPillDismissed && (
+      {!isOpen && !isPillDismissed && !hideFloatingPill && (
         <div className="relative group flex items-center bg-gradient-to-r from-teal-700 via-teal-800 to-slate-900 text-white pl-2.5 pr-1 py-1 rounded-full shadow-lg hover:shadow-teal-900/30 hover:scale-[1.02] transition-all duration-200 border border-teal-400/30">
           <button
             type="button"
@@ -568,13 +595,13 @@ export function ChatWidget() {
 
       {/* Chat Window Modal */}
       {isOpen && (
-        <div className="w-[360px] sm:w-[410px] h-[550px] max-h-[85vh] bg-white rounded-3xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-200">
+        <div className="w-[360px] sm:w-[410px] h-[550px] max-h-[85vh] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-200">
           {/* Header */}
-          <div className="bg-gradient-to-r from-slate-900 via-teal-950 to-teal-900 text-white px-4 py-3.5 flex items-center justify-between border-b border-teal-800/40">
+          <div className="bg-[#174b3f] text-white px-4 py-3.5 flex items-center justify-between border-b border-[#103a31]">
             <div className="flex items-center gap-3">
-              <div className="relative w-10 h-10 rounded-2xl bg-teal-600/30 border border-teal-400/30 flex items-center justify-center shrink-0 overflow-hidden">
+              <div className="relative w-10 h-10 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center shrink-0 overflow-hidden">
                 <img src="/tenderlex-logo.png" alt="TenderLex" className="w-8 h-8 object-contain" />
-                <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-400 rounded-full ring-2 ring-slate-900" />
+                <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-400 rounded-full ring-2 ring-[#174b3f]" />
               </div>
               <div className="flex flex-col">
                 <h3 className="font-extrabold text-sm text-white flex items-center gap-1.5">
@@ -583,7 +610,7 @@ export function ChatWidget() {
                 </h3>
                 <span className="text-[11px] text-teal-200/90 font-medium flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
-                  {customerName ? `${customerName} • Онлайн` : 'Специалисты онлайн'}
+                  {isCustomerMode ? 'Поддержка и эксперты · Онлайн' : 'Специалисты онлайн'}
                 </span>
               </div>
             </div>
@@ -610,8 +637,8 @@ export function ChatWidget() {
             </div>
           </div>
 
-          {/* Quick Presets Bar (only in guest mode) */}
-          {!isCustomerMode && (
+          {/* Quick Presets Bar */}
+          {!isCustomerMode ? (
             <div className="bg-slate-50 border-b border-slate-200/80 p-2.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
               {PRESETS.map((p) => (
                 <button
@@ -623,7 +650,28 @@ export function ChatWidget() {
                 </button>
               ))}
             </div>
-          )}
+          ) : messages.length === 0 && !activeJobContext ? (
+            <div className="bg-[#f8faf6] border-b border-[#e5e9e2] px-3 py-2 space-y-1.5">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                Быстрый выбор темы
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {CABINET_TOPIC_PROMPTS.map((topic) => (
+                  <button
+                    key={topic.id}
+                    type="button"
+                    onClick={() => {
+                      setInputText(topic.draft);
+                      chatInputRef.current?.focus();
+                    }}
+                    className="bg-white hover:bg-[#f4f8ef] text-[#174b3f] border border-[#cde0be] font-semibold text-[11px] px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                  >
+                    {topic.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           {/* Night / Off-hours Notice */}
           {!isCustomerMode && workHours && !workHours.is_open && workHours.notice && (
@@ -634,34 +682,47 @@ export function ChatWidget() {
 
           {/* Active Job Context Tag Banner */}
           {activeJobContext && (
-            <div className="bg-teal-50 border-b border-teal-200 px-3.5 py-1.5 flex items-center justify-between text-xs text-teal-950">
+            <div className="bg-[#f2f5ee] border-b border-[#dfe5dc] px-3.5 py-1.5 flex items-center justify-between text-xs text-[#103a31]">
               <div className="flex items-center gap-1.5 truncate">
-                <span className="font-bold text-teal-800 shrink-0">
-                  📌 Задача {activeJobContext.jobNumber ? `#${activeJobContext.jobNumber}` : ''}:
+                <Tag className="w-3 h-3 shrink-0 text-[#174b3f]" aria-hidden="true" />
+                <span className="font-bold text-[#174b3f] shrink-0">
+                  Задача {activeJobContext.jobNumber ? `#${activeJobContext.jobNumber}` : ''}:
                 </span>
                 <span className="truncate text-slate-600">{activeJobContext.jobTitle || 'Вопрос по задаче'}</span>
               </div>
               <button
                 type="button"
                 onClick={() => setActiveJobContext(null)}
-                className="ml-2 text-teal-700 hover:text-teal-950 font-bold text-xs cursor-pointer shrink-0"
+                className="ml-2 p-0.5 text-[#174b3f] hover:text-[#103a31] hover:bg-[#e7efe0] rounded cursor-pointer shrink-0 transition-colors"
                 title="Сбросить привязку к задаче"
+                aria-label="Сбросить привязку к задаче"
               >
-                ✕
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
             </div>
           )}
 
           {/* Messages Feed */}
           <div ref={messageFeedRef} className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-slate-50/50">
+            {isCustomerMode && messages.length === 0 ? (
+              <div className="p-3.5 rounded-2xl bg-white border border-slate-200/90 text-xs text-slate-700 leading-relaxed shadow-2xs space-y-1">
+                <div className="font-bold text-slate-900">
+                  Здравствуйте{customerName ? `, ${customerName}` : ''}!
+                </div>
+                <p className="text-slate-600">
+                  Напишите ваш вопрос или выберите тему выше — специалист TenderLex поможет с закупкой, расчётом или оплатой.
+                </p>
+              </div>
+            ) : null}
             {messages.map((m) => {
               const isAdmin = m.sender === 'admin';
               return (
                 <div key={m.id} className={`flex flex-col ${isAdmin ? 'items-start' : 'items-end'}`}>
                   {/* Task context badge if message is tied to a specific job */}
                   {m.job_id && (
-                    <span className="text-[10px] text-teal-800 bg-teal-100/80 font-semibold px-2 py-0.5 rounded-md mb-1 max-w-[85%] truncate">
-                      📌 Задача #{m.job_number || m.job_id.slice(0, 4)}: {m.job_title}
+                    <span className="inline-flex items-center gap-1 text-[10px] text-[#174b3f] bg-[#e7efe0] font-semibold px-2 py-0.5 rounded-md mb-1 max-w-[85%] truncate">
+                      <Tag className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
+                      <span className="truncate">Задача #{m.job_number || m.job_id.slice(0, 4)}: {m.job_title}</span>
                     </span>
                   )}
 
@@ -669,7 +730,7 @@ export function ChatWidget() {
                     className={`max-w-[88%] p-3 rounded-2xl text-xs leading-relaxed ${
                       isAdmin
                         ? 'bg-white text-slate-800 border border-slate-200/90 shadow-2xs rounded-tl-xs'
-                        : 'bg-teal-700 text-white shadow-sm rounded-tr-xs'
+                        : 'bg-[#174b3f] text-white shadow-sm rounded-tr-xs'
                     }`}
                   >
                     {m.preset && (
@@ -703,7 +764,7 @@ export function ChatWidget() {
                     )}
                   </div>
                   <span className="text-[10px] text-slate-400 mt-1 px-1">
-                    {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {new Date(m.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
                   </span>
                 </div>
               );
@@ -827,6 +888,7 @@ export function ChatWidget() {
             className="p-2.5 bg-white border-t border-slate-200 flex items-center gap-2"
           >
             <input
+              ref={chatInputRef}
               type="text"
               disabled={isBlocked}
               placeholder={
@@ -838,12 +900,12 @@ export function ChatWidget() {
               }
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              className="flex-1 bg-slate-100 focus:bg-white disabled:opacity-60 text-slate-900 placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-transparent focus:border-teal-500 focus:outline-none transition-all"
+              className="flex-1 bg-slate-100 focus:bg-white disabled:opacity-60 text-slate-900 placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-transparent focus:border-[#174b3f] focus:outline-none transition-all"
             />
             <button
               type="submit"
               disabled={isBlocked || !inputText.trim() || isSending}
-              className="bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white p-2.5 rounded-xl transition-all shadow-xs shrink-0 cursor-pointer"
+              className="bg-[#174b3f] hover:bg-[#103a31] disabled:opacity-50 text-white p-2.5 rounded-xl transition-all shadow-xs shrink-0 cursor-pointer"
               aria-label="Отправить сообщение"
             >
               <Send className="w-4 h-4" />

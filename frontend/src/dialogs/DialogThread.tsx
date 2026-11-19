@@ -35,8 +35,10 @@ import {
   formatDayKey,
   formatFileSize,
   formatTimeOnly,
+  isAiAutoReplyMessage,
   isImageFilename,
   jobStatusMeta,
+  stripAiRobotPrefix,
 } from './constants'
 
 interface DialogThreadProps {
@@ -111,8 +113,7 @@ export function DialogThread({
   const [jobFilesSearch, setJobFilesSearch] = useState('')
 
   const filterRef = useRef<HTMLDivElement>(null)
-  const templatesRef = useRef<HTMLDivElement>(null)
-  const jobFilesRef = useRef<HTMLDivElement>(null)
+  const quickToolsRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const lastScrollKeyRef = useRef('')
 
@@ -122,10 +123,8 @@ export function DialogThread({
       if (filterDropdownOpen && filterRef.current && !filterRef.current.contains(target)) {
         setFilterDropdownOpen(false)
       }
-      if (templatesOpen && templatesRef.current && !templatesRef.current.contains(target)) {
+      if ((templatesOpen || jobFilesPickerOpen) && quickToolsRef.current && !quickToolsRef.current.contains(target)) {
         setTemplatesOpen(false)
-      }
-      if (jobFilesPickerOpen && jobFilesRef.current && !jobFilesRef.current.contains(target)) {
         setJobFilesPickerOpen(false)
       }
     }
@@ -622,8 +621,10 @@ export function DialogThread({
             const showDayDivider = dayKey !== lastDayKey
             lastDayKey = dayKey
 
-            const isSystem = msg.channel === 'system'
-            const isAdmin = msg.sender_role === 'admin'
+            const isAiAuto = isAiAutoReplyMessage(msg.channel, msg.message)
+            const isSystem = msg.channel === 'system' && !isAiAuto
+            const isAdmin = msg.sender_role === 'admin' || isAiAuto
+            const displayMessage = isAiAuto ? stripAiRobotPrefix(msg.message) : msg.message
             const linkedJob = msg.job_id ? jobsById.get(msg.job_id) : undefined
             const jobStatus = linkedJob ? jobStatusMeta(linkedJob.job_status) : null
 
@@ -683,8 +684,8 @@ export function DialogThread({
 
                     <div
                       style={{
-                        background: isAdmin ? '#f0fdfa' : '#fff',
-                        border: isAdmin ? '1px solid #99f6e4' : '1px solid #e2e8f0',
+                        background: isAiAuto ? '#eef2ff' : isAdmin ? '#f0fdfa' : '#fff',
+                        border: isAiAuto ? '1px solid #c7d2fe' : isAdmin ? '1px solid #99f6e4' : '1px solid #e2e8f0',
                         borderRadius: isAdmin ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
                         padding: '9px 13px',
                         fontSize: 12.5,
@@ -695,7 +696,12 @@ export function DialogThread({
                         boxShadow: '0 1px 2px rgba(15, 23, 42, 0.04)',
                       }}
                     >
-                      {msg.message}
+                      {isAiAuto && (
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginBottom: 6, fontSize: 10.5, fontWeight: 700, color: '#3730a3', background: '#e0e7ff', border: '1px solid #c7d2fe', padding: '1px 8px', borderRadius: 99 }}>
+                          🤖 ИИ-автоответ · отправлен клиенту
+                        </div>
+                      )}
+                      <div>{displayMessage}</div>
 
                       {msg.attachments && msg.attachments.length > 0 && (
                         <div style={{ marginTop: msg.message ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 6, borderTop: msg.message ? (isAdmin ? '1px solid #ccfbf1' : '1px solid #f1f5f9') : 'none', paddingTop: msg.message ? 7 : 0 }}>
@@ -741,17 +747,26 @@ export function DialogThread({
 
                     {/* Footer meta row */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3, fontSize: 10.5, color: '#64748b', flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: 600, color: isAdmin ? '#0d9488' : '#334155' }}>
-                        {isAdmin ? 'Вы' : name}
+                      <span style={{ fontWeight: 600, color: isAiAuto ? '#4f46e5' : isAdmin ? '#0d9488' : '#334155' }}>
+                        {isAiAuto ? 'ИИ-помощник' : isAdmin ? 'Вы' : name}
                       </span>
-                      {msg.channel && channelBadgeLabel(msg.channel) && (
-                        <span style={{ fontSize: 10, color: '#475569', background: '#f1f5f9', padding: '0 5px', borderRadius: 4 }}>
-                          {channelBadgeLabel(msg.channel)}
+                      {(isAiAuto || (msg.channel && channelBadgeLabel(msg.channel))) && (
+                        <span style={{ fontSize: 10, color: isAiAuto ? '#3730a3' : '#475569', background: isAiAuto ? '#eef2ff' : '#f1f5f9', padding: '0 5px', borderRadius: 4 }}>
+                          {isAiAuto ? '🤖 Автоответ' : channelBadgeLabel(msg.channel)}
                         </span>
                       )}
                       <span>{formatTimeOnly(msg.created_at)}</span>
                       {isAdmin && (
-                        <span title={msg.is_read_by_client ? 'Прочитано клиентом' : 'Отправлено (ещё не прочитано клиентом)'} style={{ display: 'inline-flex', alignItems: 'center', color: msg.is_read_by_client ? '#0d9488' : '#94a3b8' }}>
+                        <span
+                          title={
+                            isAiAuto
+                              ? 'Автоответ доставлен клиенту в виджет чата'
+                              : msg.is_read_by_client
+                                ? 'Прочитано клиентом'
+                                : 'Отправлено (ещё не прочитано клиентом)'
+                          }
+                          style={{ display: 'inline-flex', alignItems: 'center', color: isAiAuto ? '#4f46e5' : msg.is_read_by_client ? '#0d9488' : '#94a3b8' }}
+                        >
                           {msg.is_read_by_client ? <CheckCheck size={12} /> : <Check size={12} />}
                         </span>
                       )}
@@ -794,7 +809,10 @@ export function DialogThread({
         )}
 
         {/* Context & Quick Tools Row */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+        <div
+          ref={quickToolsRef}
+          style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}
+        >
           {!isGuest && clientJobs.length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, flex: '1 1 240px', minWidth: 200 }}>
               <span style={{ fontSize: 11, fontWeight: 600, color: '#64748b', flexShrink: 0 }}>Ответ в:</span>
@@ -826,175 +844,173 @@ export function DialogThread({
             </div>
           )}
 
-          {/* Templates Popover */}
-          <div ref={templatesRef} style={{ position: 'relative' }}>
+          {/* Templates Trigger */}
+          <button
+            type="button"
+            onClick={() => {
+              setTemplatesOpen(v => !v)
+              setJobFilesPickerOpen(false)
+            }}
+            className="ghost"
+            style={{ minHeight: 28, padding: '3px 8px', fontSize: 11.5, fontWeight: 600 }}
+          >
+            <Sparkles size={12} color="#0d9488" />
+            <span>Шаблоны</span>
+          </button>
+
+          {/* Attach from Job Results Trigger */}
+          {!isGuest && clientJobs.length > 0 && (
             <button
               type="button"
               onClick={() => {
-                setTemplatesOpen(v => !v)
-                setJobFilesPickerOpen(false)
+                setJobFilesPickerOpen(v => !v)
+                setTemplatesOpen(false)
               }}
               className="ghost"
               style={{ minHeight: 28, padding: '3px 8px', fontSize: 11.5, fontWeight: 600 }}
+              title="Прикрепить готовый файл результата любой задачи клиента"
             >
-              <Sparkles size={12} color="#0d9488" />
-              <span>Шаблоны</span>
+              <FolderOpen size={12} color="#0284c7" />
+              <span>Из результатов</span>
             </button>
+          )}
 
-            {templatesOpen && (
-              <div
-                style={{
-                  position: 'absolute',
-                  bottom: 'calc(100% + 6px)',
-                  left: 0,
-                  zIndex: 40,
-                  width: 320,
-                  background: '#fff',
-                  border: '1px solid #cbd5e1',
-                  borderRadius: 8,
-                  boxShadow: '0 10px 25px rgba(15, 23, 42, 0.16)',
-                  padding: 8,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                }}
-              >
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', padding: '2px 4px' }}>
-                  Быстрая вставка ответа:
-                </div>
-                {QUICK_REPLY_TEMPLATES.map(tpl => (
-                  <button
-                    key={tpl.id}
-                    type="button"
-                    onClick={() => {
-                      onReplyTextChange(replyText.trim() ? `${replyText.trim()}\n\n${tpl.text}` : tpl.text)
-                      setTemplatesOpen(false)
-                      composerRef?.current?.focus()
-                    }}
-                    style={{
-                      flexDirection: 'column',
-                      alignItems: 'flex-start',
-                      textAlign: 'left',
-                      background: '#f8fafc',
-                      color: '#0f172a',
-                      border: '1px solid #e2e8f0',
-                      borderRadius: 6,
-                      padding: '6px 8px',
-                      minHeight: 'auto',
-                      gap: 2,
-                    }}
-                  >
-                    <strong style={{ fontSize: 11.5, color: '#0f766e' }}>{tpl.title}</strong>
-                    <span style={{ fontSize: 10.5, color: '#64748b', fontWeight: 400, lineHeight: 1.3 }}>
-                      {tpl.text}
-                    </span>
-                  </button>
-                ))}
+          {templatesOpen && (
+            <div
+              style={{
+                position: 'absolute',
+                bottom: 'calc(100% + 6px)',
+                ...( !isGuest && clientJobs.length > 0 ? { right: 0 } : { left: 0 } ),
+                zIndex: 40,
+                width: 'min(360px, 100%)',
+                maxHeight: 340,
+                overflowY: 'auto',
+                background: '#fff',
+                border: '1px solid #cbd5e1',
+                borderRadius: 8,
+                boxShadow: '0 10px 25px rgba(15, 23, 42, 0.16)',
+                padding: 8,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', padding: '2px 4px' }}>
+                Быстрая вставка ответа:
               </div>
-            )}
-          </div>
-
-          {/* Attach from Job Results Popover */}
-          {!isGuest && clientJobs.length > 0 && (
-            <div ref={jobFilesRef} style={{ position: 'relative' }}>
-              <button
-                type="button"
-                onClick={() => {
-                  setJobFilesPickerOpen(v => !v)
-                  setTemplatesOpen(false)
-                }}
-                className="ghost"
-                style={{ minHeight: 28, padding: '3px 8px', fontSize: 11.5, fontWeight: 600 }}
-                title="Прикрепить готовый файл результата любой задачи клиента"
-              >
-                <FolderOpen size={12} color="#0284c7" />
-                <span>Из результатов</span>
-              </button>
-
-              {jobFilesPickerOpen && (
-                <div
+              {QUICK_REPLY_TEMPLATES.map(tpl => (
+                <button
+                  key={tpl.id}
+                  type="button"
+                  onClick={() => {
+                    onReplyTextChange(replyText.trim() ? `${replyText.trim()}\n\n${tpl.text}` : tpl.text)
+                    setTemplatesOpen(false)
+                    composerRef?.current?.focus()
+                  }}
                   style={{
-                    position: 'absolute',
-                    bottom: 'calc(100% + 6px)',
-                    right: 0,
-                    zIndex: 40,
-                    width: 340,
-                    maxHeight: 330,
-                    background: '#fff',
-                    border: '1px solid #cbd5e1',
-                    borderRadius: 8,
-                    boxShadow: '0 10px 25px rgba(15, 23, 42, 0.16)',
-                    padding: 8,
-                    display: 'flex',
                     flexDirection: 'column',
-                    gap: 6,
+                    alignItems: 'flex-start',
+                    textAlign: 'left',
+                    background: '#f8fafc',
+                    color: '#0f172a',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 6,
+                    padding: '6px 8px',
+                    minHeight: 'auto',
+                    gap: 2,
                   }}
                 >
-                  <div style={{ fontSize: 11, fontWeight: 700, color: '#0f172a' }}>Прикрепить файл результата задачи:</div>
-                  <input
-                    type="text"
-                    placeholder="Поиск по #номеру или названию..."
-                    value={jobFilesSearch}
-                    onChange={e => setJobFilesSearch(e.target.value)}
-                    style={{ minHeight: 28, padding: '4px 8px', fontSize: 11.5 }}
-                    autoFocus
-                  />
-                  <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {jobsWithResultFiles.length === 0 ? (
-                      <div style={{ fontSize: 11, color: '#94a3b8', padding: 12, textAlign: 'center' }}>
-                        Готовых файлов не найдено
-                      </div>
-                    ) : (
-                      jobsWithResultFiles.map(j => {
-                        const jobFiles = [
-                          ...(j.result_files || []).map(f => ({ file: f, srcId: j.job_id, isRerun: false })),
-                          ...(j.rerun_files || []).map(f => ({ file: f, srcId: j.rerun_id || j.job_id, isRerun: true })),
-                        ]
-                        return (
-                          <div key={j.job_id} style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 6, background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              #{j.job_number || j.job_id.slice(0, 4)} · {j.job_title}
-                            </div>
-                            {jobFiles.map((entry, idx) => (
-                              <button
-                                key={`${entry.srcId}-${entry.file.kind}-${idx}`}
-                                type="button"
-                                onClick={() => {
-                                  onAddPendingJobFile({
-                                    job_id: entry.srcId,
-                                    job_number: j.job_number,
-                                    kind: entry.file.kind,
-                                    filename: entry.file.filename,
-                                    label: entry.file.label || entry.file.filename,
-                                  })
-                                  if (!replyJobId) onReplyJobIdChange(j.job_id)
-                                  setJobFilesPickerOpen(false)
-                                }}
-                                style={{
-                                  justifyContent: 'space-between',
-                                  textAlign: 'left',
-                                  minHeight: 26,
-                                  padding: '3px 7px',
-                                  fontSize: 11,
-                                  background: '#fff',
-                                  color: '#0f766e',
-                                  border: '1px solid #cbd5e1',
-                                  borderRadius: 5,
-                                }}
-                              >
-                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                  {entry.isRerun ? '👑 ' : '📄 '}{entry.file.label || entry.file.filename}
-                                </span>
-                                <span style={{ fontSize: 10, color: '#64748b', flexShrink: 0 }}>+ Прикрепить</span>
-                              </button>
-                            ))}
-                          </div>
-                        )
-                      })
-                    )}
+                  <strong style={{ fontSize: 11.5, color: '#0f766e' }}>{tpl.title}</strong>
+                  <span style={{ fontSize: 10.5, color: '#64748b', fontWeight: 400, lineHeight: 1.3 }}>
+                    {tpl.text}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {jobFilesPickerOpen && !isGuest && clientJobs.length > 0 && (
+            <div
+              style={{
+                position: 'absolute',
+                bottom: 'calc(100% + 6px)',
+                right: 0,
+                zIndex: 40,
+                width: 'min(360px, 100%)',
+                maxHeight: 340,
+                background: '#fff',
+                border: '1px solid #cbd5e1',
+                borderRadius: 8,
+                boxShadow: '0 10px 25px rgba(15, 23, 42, 0.16)',
+                padding: 8,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#0f172a' }}>Прикрепить файл результата задачи:</div>
+              <input
+                type="text"
+                placeholder="Поиск по #номеру или названию..."
+                value={jobFilesSearch}
+                onChange={e => setJobFilesSearch(e.target.value)}
+                style={{ minHeight: 28, padding: '4px 8px', fontSize: 11.5 }}
+                autoFocus
+              />
+              <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {jobsWithResultFiles.length === 0 ? (
+                  <div style={{ fontSize: 11, color: '#94a3b8', padding: 12, textAlign: 'center' }}>
+                    Готовых файлов не найдено
                   </div>
-                </div>
-              )}
+                ) : (
+                  jobsWithResultFiles.map(j => {
+                    const jobFiles = [
+                      ...(j.result_files || []).map(f => ({ file: f, srcId: j.job_id, isRerun: false })),
+                      ...(j.rerun_files || []).map(f => ({ file: f, srcId: j.rerun_id || j.job_id, isRerun: true })),
+                    ]
+                    return (
+                      <div key={j.job_id} style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 6, background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          #{j.job_number || j.job_id.slice(0, 4)} · {j.job_title}
+                        </div>
+                        {jobFiles.map((entry, idx) => (
+                          <button
+                            key={`${entry.srcId}-${entry.file.kind}-${idx}`}
+                            type="button"
+                            onClick={() => {
+                              onAddPendingJobFile({
+                                job_id: entry.srcId,
+                                job_number: j.job_number,
+                                kind: entry.file.kind,
+                                filename: entry.file.filename,
+                                label: entry.file.label || entry.file.filename,
+                              })
+                              if (!replyJobId) onReplyJobIdChange(j.job_id)
+                              setJobFilesPickerOpen(false)
+                            }}
+                            style={{
+                              justifyContent: 'space-between',
+                              textAlign: 'left',
+                              minHeight: 26,
+                              padding: '3px 7px',
+                              fontSize: 11,
+                              background: '#fff',
+                              color: '#0f766e',
+                              border: '1px solid #cbd5e1',
+                              borderRadius: 5,
+                            }}
+                          >
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {entry.isRerun ? '👑 ' : '📄 '}{entry.file.label || entry.file.filename}
+                            </span>
+                            <span style={{ fontSize: 10, color: '#64748b', flexShrink: 0 }}>+ Прикрепить</span>
+                          </button>
+                        ))}
+                      </div>
+                    )
+                  })
+                )}
+              </div>
             </div>
           )}
         </div>

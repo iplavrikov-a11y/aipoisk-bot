@@ -9,7 +9,7 @@ import {
   X,
 } from 'lucide-react'
 import { DialogClientCandidate, DialogItem, DialogQueueTab } from './types'
-import { channelBadgeLabel, formatRelativeTime } from './constants'
+import { channelBadgeLabel, formatRelativeTime, isAiAutoReplyMessage, stripAiRobotPrefix } from './constants'
 
 interface DialogSidebarProps {
   dialogs: DialogItem[]
@@ -341,7 +341,9 @@ export function DialogSidebar({
             const isSelected = d.client_id === selectedClientId
             const jobsCount = d.jobs_count ?? d.jobs?.length ?? 0
             const isClosed = d.dialog_status === 'closed' && !d.is_blocked
-            const chLabel = channelBadgeLabel(d.last_channel)
+            const isAiLast = Boolean(d.last_is_ai_reply || isAiAutoReplyMessage(d.last_channel, d.last_message))
+            const chLabel = isAiLast ? '' : channelBadgeLabel(d.last_channel)
+            const previewText = isAiLast ? stripAiRobotPrefix(d.last_message) : (d.last_message || 'Диалог с клиентом')
             return (
               <div
                 key={d.client_id}
@@ -392,7 +394,15 @@ export function DialogSidebar({
                       ✓ Закрыт
                     </span>
                   )}
-                  {!d.is_blocked && !isClosed && d.needs_reply && d.unread_admin_count === 0 && (
+                  {!d.is_blocked && !isClosed && isAiLast && (
+                    <span
+                      title="ИИ-помощник отправил первичный автоответ; специалист ещё не подключался"
+                      style={{ fontSize: 10, fontWeight: 700, background: '#eef2ff', color: '#3730a3', border: '1px solid #c7d2fe', padding: '0px 5px', borderRadius: 4 }}
+                    >
+                      🤖 Ответил ИИ
+                    </span>
+                  )}
+                  {!d.is_blocked && !isClosed && !isAiLast && d.needs_reply && d.unread_admin_count === 0 && (
                     <span style={{ fontSize: 10, fontWeight: 700, background: '#fff7ed', color: '#c2410c', border: '1px solid #fed7aa', padding: '0px 5px', borderRadius: 4 }}>
                       ⏳ Ждёт ответа
                     </span>
@@ -427,8 +437,12 @@ export function DialogSidebar({
                       flex: 1,
                     }}
                   >
-                    {d.last_sender_role === 'admin' && <span style={{ color: '#0d9488', marginRight: 4 }}>Вы:</span>}
-                    {d.last_message || 'Диалог с клиентом'}
+                    {isAiLast ? (
+                      <span style={{ color: '#4f46e5', fontWeight: 600, marginRight: 4 }}>ИИ:</span>
+                    ) : d.last_sender_role === 'admin' ? (
+                      <span style={{ color: '#0d9488', marginRight: 4 }}>Вы:</span>
+                    ) : null}
+                    {previewText}
                   </p>
                   {d.unread_admin_count > 0 && (
                     <span style={{ background: '#ef4444', color: '#fff', fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 99, flexShrink: 0 }}>

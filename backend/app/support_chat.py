@@ -117,8 +117,21 @@ _CHANNEL_LABELS = {
     "admin_web": "🖥 Админ-панель",
     "tg_dm": "💬 Админ (ЛС бота)",
     "tg_topic": "🗂 Админ (Группа/Тема)",
+    "ai_auto": "🤖 ИИ-автоответ",
     "system": "⚙️ Система",
 }
+
+
+def is_ai_auto_reply_message(msg: JobChatMessage | None) -> bool:
+    """Detect both new channel='ai_auto' and legacy channel='system' 🤖 auto-replies."""
+    if msg is None:
+        return False
+    ch = str(getattr(msg, "channel", "") or "").strip()
+    if ch == "ai_auto":
+        return True
+    if ch == "system" and str(getattr(msg, "message", "") or "").lstrip().startswith("🤖"):
+        return True
+    return False
 
 _LEGACY_BULK_IMPORTED = False
 _LEGACY_CHECKED_SIDS: set[str] = set()
@@ -175,6 +188,143 @@ def set_guest_chat_cookie(response: Any, session_id: str) -> None:
         secure=secure_cookie,
         path="/",
     )
+
+
+def extract_verified_guest_session_id_from_cookie(cookie_val: str | None) -> str | None:
+    """Extract and cryptographically verify guest session ID from signed tenderlex_guest_chat cookie."""
+    raw = str(cookie_val or "").strip()
+    if not raw or "." not in raw:
+        return None
+    sid_part, _sig = raw.rsplit(".", 1)
+    try:
+        clean_sid = validate_guest_session_id(sid_part)
+    except ValueError:
+        return None
+    if clean_sid.startswith("tg_"):
+        return None
+    if not verify_guest_chat_cookie(raw, clean_sid):
+        return None
+    return clean_sid
+
+
+def clear_guest_chat_cookie(response: Any) -> None:
+    if response is None or not hasattr(response, "delete_cookie"):
+        return
+    try:
+        response.delete_cookie(key=GUEST_CHAT_COOKIE, path="/")
+    except Exception:
+        return
+
+
+def link_guest_chat_session_to_client(
+    db: Session,
+    *,
+    session_id: str,
+    client_id: str,
+) -> dict[str, Any]:
+    """Attach a verified guest website chat session and its messages to a registered client account."""
+    clean_cid = str(client_id or "").strip()
+    if not clean_cid or is_guest_client_id(clean_cid):
+        return {"linked": False, "moved_messages": 0, "reason": "invalid_client"}
+    try:
+        clean_sid = validate_guest_session_id(session_id)
+    except ValueError:
+        return {"linked": False, "moved_messages": 0, "reason": "invalid_session"}
+    if clean_sid.startswith("tg_"):
+        return {"linked": False, "moved_messages": 0, "reason": "tg_session_unsupported"}
+
+    client = db.get(Client, clean_cid)
+    if not client:
+        return {"linked": False, "moved_messages": 0, "reason": "client_not_found"}
+
+    guest = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == clean_sid).first()
+    guest_client_key = f"{GUEST_CLIENT_PREFIX}{clean_sid}"
+
+    if guest is not None:
+        if guest.linked_client_id and guest.linked_client_id != clean_cid:
+            return {"linked": False, "moved_messages": 0, "reason": "already_linked_other"}
+        if guest.status == "blocked":
+            return {"linked": False, "moved_messages": 0, "reason": "guest_blocked"}
+
+    blocked_row = (
+        db.query(SupportBlockedActor.id)
+        .filter(
+            SupportBlockedActor.actor_type == "guest_session",
+            SupportBlockedActor.actor_value == clean_sid,
+        )
+        .first()
+    )
+    if blocked_row:
+        return {"linked": False, "moved_messages": 0, "reason": "guest_blocked"}
+
+    guest_msg_count = (
+        db.query(func.count(JobChatMessage.id))
+        .filter(JobChatMessage.client_id == guest_client_key)
+        .scalar()
+        or 0
+    )
+    if guest is None and guest_msg_count == 0:
+        return {"linked": False, "moved_messages": 0, "reason": "empty_session"}
+
+    moved_messages = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == guest_client_key)
+        .update({"client_id": clean_cid}, synchronize_session=False)
+    )
+
+    guest_dialog_key = f"guest:{clean_sid}"
+    client_dialog_key = f"client:{clean_cid}"
+
+    (
+        db.query(SupportTelegramMessageMap)
+        .filter(SupportTelegramMessageMap.dialog_key == guest_dialog_key)
+        .update(
+            {"dialog_key": client_dialog_key, "client_id": clean_cid},
+            synchronize_session=False,
+        )
+    )
+    (
+        db.query(SupportTelegramSession)
+        .filter(SupportTelegramSession.dialog_key == guest_dialog_key)
+        .update(
+            {"dialog_key": client_dialog_key, "client_id": clean_cid},
+            synchronize_session=False,
+        )
+    )
+
+    guest_state = db.query(SupportDialogState).filter(SupportDialogState.dialog_key == guest_dialog_key).first()
+    client_state = db.query(SupportDialogState).filter(SupportDialogState.dialog_key == client_dialog_key).first()
+    if guest_state is not None:
+        if client_state is None:
+            guest_state.dialog_key = client_dialog_key
+            guest_state.client_id = clean_cid
+            guest_state.updated_at = now_utc()
+        else:
+            if not int(client_state.telegram_thread_id or 0) and int(guest_state.telegram_thread_id or 0):
+                client_state.telegram_group_id = guest_state.telegram_group_id
+                client_state.telegram_thread_id = guest_state.telegram_thread_id
+                client_state.topic_title = guest_state.topic_title or client_state.topic_title
+            if guest_state.last_message_at and (
+                client_state.last_message_at is None or guest_state.last_message_at > client_state.last_message_at
+            ):
+                client_state.last_message_at = guest_state.last_message_at
+                client_state.last_channel = guest_state.last_channel or client_state.last_channel
+            if guest_state.status == "open" and client_state.status == "closed" and moved_messages > 0:
+                client_state.status = "open"
+            client_state.updated_at = now_utc()
+            db.delete(guest_state)
+
+    if guest is not None:
+        guest.linked_client_id = clean_cid
+        guest.updated_at = now_utc()
+
+    db.flush()
+    return {
+        "linked": True,
+        "moved_messages": int(moved_messages or 0),
+        "session_id": clean_sid,
+        "client_id": clean_cid,
+    }
 
 
 def reset_legacy_import_cache_for_tests() -> None:
@@ -1432,6 +1582,7 @@ def _build_incoming_card_html(
     attachments: list[dict[str, Any]] | None,
     channel: str,
     include_reply_hint: bool = True,
+    ai_auto_reply: str = "",
 ) -> str:
     ch_label = _CHANNEL_LABELS.get(channel, channel or "Сайт")
     lines = [
@@ -1454,6 +1605,13 @@ def _build_incoming_card_html(
     if attachments:
         att_names = ", ".join(html.escape(str(a.get("name") or "файл")) for a in attachments[:8])
         lines.append(f"📎 <b>Вложения:</b> {att_names}")
+    clean_ai_reply = str(ai_auto_reply or "").strip()
+    if clean_ai_reply:
+        clean_ai_reply = re.sub(r"^\s*🤖\s*", "", clean_ai_reply)
+        lines.extend([
+            "",
+            f"🤖 <b>Автоответ ИИ отправлен клиенту:</b>\n<i>{html.escape(clean_ai_reply[:800])}</i>",
+        ])
     if include_reply_hint:
         lines.extend([
             "",
@@ -1475,6 +1633,7 @@ async def notify_admins_of_incoming_message(
     allow_in_test: bool = False,
     skip_dm: bool = False,
     quiet_night: bool | None = None,
+    ai_auto_reply: str = "",
 ) -> dict[str, Any]:
     """Dispatch real-time notifications of an incoming client/guest message to Forum Topic + Admin Bot DMs."""
     from .security_shield import get_support_work_hours_status
@@ -1515,6 +1674,7 @@ async def notify_admins_of_incoming_message(
             attachments=attachments,
             channel=channel,
             include_reply_hint=False,
+            ai_auto_reply=ai_auto_reply,
         )
         if is_quiet_night:
             topic_html = "🌙 <i>Ночное обращение (без звука в ЛС)</i>\n" + topic_html
@@ -1543,6 +1703,7 @@ async def notify_admins_of_incoming_message(
         attachments=attachments,
         channel=channel,
         include_reply_hint=True,
+        ai_auto_reply=ai_auto_reply,
     )
     markup = admin_dm_reply_markup(state.id, job_id=job_id, include_enter=True)
     for admin_id in admin_ids:

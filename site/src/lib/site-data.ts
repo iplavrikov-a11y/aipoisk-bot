@@ -46,6 +46,7 @@ export type PublicSitePayload = {
   };
   trial: {
     enabled: boolean;
+    balance_rub?: number;
     supplier_search_limit: number;
     procurement_report_limit: number;
     file_limit: number;
@@ -58,6 +59,7 @@ export type PublicSitePayload = {
     procurement_report: FunctionPriceItem;
     supplier_search_extra: FunctionPriceItem;
     analysis_and_suppliers: FunctionPriceItem;
+    price_monitoring?: FunctionPriceItem;
   };
   tariff_groups: {
     deposit?: PublicTariff[];
@@ -176,6 +178,7 @@ const fallbackData: PublicSitePayload = {
   },
   trial: {
     enabled: false,
+    balance_rub: 495,
     supplier_search_limit: 1,
     procurement_report_limit: 1,
     file_limit: 10,
@@ -188,6 +191,7 @@ const fallbackData: PublicSitePayload = {
     procurement_report: { price_kopeks: 9900, price_rub: 99 },
     supplier_search_extra: { price_kopeks: 4900, price_rub: 49 },
     analysis_and_suppliers: { price_kopeks: 19800, price_rub: 198 },
+    price_monitoring: { price_kopeks: 5000, price_rub: 50 },
   },
   tariff_groups: {
     deposit: defaultDepositPackages,
@@ -210,7 +214,7 @@ function apiBaseUrl() {
 export async function getSiteData(): Promise<PublicSitePayload> {
   try {
     const response = await fetch(`${apiBaseUrl()}/api/public/site`, {
-      next: { revalidate: 300 },
+      next: { revalidate: 60 },
       headers: {
         accept: "application/json",
       },

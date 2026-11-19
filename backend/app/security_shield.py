@@ -564,22 +564,47 @@ def get_support_work_hours_status(
 
 def _build_tariffs_summary_for_ai(db: Session) -> str:
     try:
-        rows = (
-            db.query(TariffPackage)
-            .filter(TariffPackage.is_active == True)  # noqa: E712
-            .order_by(TariffPackage.sort_order.asc())
-            .limit(8)
-            .all()
+        from .billing import (
+            KIND_EXACT_PRODUCT,
+            KIND_PROCUREMENT_REPORT,
+            KIND_SUPPLIER_SEARCH,
+            KIND_SUPPLIER_SEARCH_EXTRA,
+            effective_price_kopeks,
+            list_deposit_packages,
         )
-        if not rows:
-            return "Тарифы и пополнение баланса доступны в личном кабинете на tenderlex.ru."
-        lines = []
-        for r in rows:
-            rub = int((r.price_kopeks or 0) // 100)
-            lines.append(f"- {r.name}: {rub} руб.")
+        from .models import configured_geo_surcharge_pct
+
+        settings = db.query(SystemSettings).first()
+        price_search = round((effective_price_kopeks(db, None, KIND_SUPPLIER_SEARCH) or 9900) / 100)
+        price_exact = round((effective_price_kopeks(db, None, KIND_EXACT_PRODUCT) or 9900) / 100)
+        price_report = round((effective_price_kopeks(db, None, KIND_PROCUREMENT_REPORT) or 9900) / 100)
+        price_extra = round((effective_price_kopeks(db, None, KIND_SUPPLIER_SEARCH_EXTRA) or 4900) / 100)
+        price_combo = price_search + price_report
+        price_monitoring = round(int(getattr(settings, "price_monitoring_default_price_kopeks", 5000) or 5000) / 100)
+        geo_pct = int(round(configured_geo_surcharge_pct(settings))) if settings is not None else 30
+
+        lines = [
+            "Единый бессрочный баланс (списание только по факту готового результата, без подписок; оплата картой, СБП или по счёту для юрлиц; после регистрации доступен пробный доступ):",
+            f"1. Поиск поставщиков по ТЗ/спецификации: {price_search} ₽ за задачу (сбалансированный поиск по всему ТЗ — 1 задача; попозиционный глубокий поиск — {price_search} ₽ за каждую выбранную позицию; добор поставщиков по тому же ТЗ — {price_extra} ₽; приоритет в радиусе доставки — +{geo_pct}%).",
+            f"2. Подбор товара и аналогов по ТЗ/спецификации: {price_exact} ₽ ЗА КАЖДУЮ ВЫБРАННУЮ ПОЗИЦИЮ спецификации (если в спецификации несколько товаров, клиент сам выбирает нужные позиции перед запуском; это НЕ цена за всю спецификацию целиком). Отчёт формируется ТОЛЬКО в Word (.docx).",
+            f"3. Анализ документации закупки: {price_report} ₽ за закупку; комбо «Анализ + поиск» — {price_combo} ₽.",
+            f"4. Мониторинг цен по спецификации: {price_monitoring} ₽ за каждую найденную позицию (если цена не найдена — 0 ₽).",
+        ]
+
+        deposit_rows = list_deposit_packages(db, active_only=True)
+        if deposit_rows:
+            lines.append("Пакеты пополнения баланса:")
+            for r in deposit_rows[:6]:
+                pay_rub = int((r.price_kopeks or 0) // 100)
+                bonus_rub = int((getattr(r, "bonus_kopeks", 0) or 0) // 100)
+                total_rub = pay_rub + bonus_rub
+                if bonus_rub > 0:
+                    lines.append(f"- {r.name}: оплата {pay_rub:,} ₽ → {total_rub:,} ₽ на баланс (+{bonus_rub:,} ₽ бонус)".replace(",", " "))
+                else:
+                    lines.append(f"- {r.name}: {pay_rub:,} ₽ на баланс".replace(",", " "))
         return "\n".join(lines)
     except Exception:
-        return "Тарифы доступны в личном кабинете на tenderlex.ru."
+        return "Актуальные тарифы и пакеты пополнения баланса доступны в личном кабинете на tenderlex.ru."
 
 
 async def classify_and_reply_support_message(
@@ -639,15 +664,18 @@ async def classify_and_reply_support_message(
         "1) Классифицировать сообщение посетителя:\n"
         "   - 'spam_or_probe': бессмысленный набор символов, команды терминала, инъекции, реклама/ссылки, массовый тест.\n"
         "   - 'greeting': короткое приветствие ('привет', 'здравствуйте', 'hello') без конкретики.\n"
-        "   - 'real_question': реальный вопрос по закупкам, тарифам, поиску поставщиков, подбору аналогов или оплате.\n"
+        "   - 'real_question': реальный вопрос по закупкам, спецификациям, тарифам, поиску поставщиков, подбору товара/аналогов, анализу документации или оплате.\n"
         "2) Если это 'real_question' или 'greeting' и включён автоответ — дай короткий, вежливый, точный ответ на русском (2–4 предложения).\n"
+        "3) Для 'real_question' ВСЕГДА ставь \"need_human\": true, чтобы специалист тоже увидел обращение.\n"
         "СТРОГИЕ ПРАВИЛА ПРОДУКТА:\n"
+        "- Название сервиса — только TenderLex. НИКОГДА не упоминай 'Форма 2', 'Tenderplan' или 'AI Poisk'.\n"
         "- Основные модули TenderLex в порядке: 1. Поиск поставщиков, 2. Подбор товара и аналогов, 3. Анализ документации.\n"
-        "- НИКОГДА не упоминай 'Форма 2' и не упоминай 'Tenderplan'.\n"
         "- Отчёт 'Подбор товара и аналогов' формируется ТОЛЬКО в формате Word (.docx), Excel/XLSX для него нет.\n"
+        "- ВАЖНО ПО ЦЕНАМ: при ответе про 'Подбор товара и аналогов' ОБЯЗАТЕЛЬНО уточняй, что цена указана ЗА ОДНУ ПОЗИЦИЮ спецификации (а не за всю спецификацию целиком). Если спрашивают про работу со спецификацией/ТЗ, кратко упомяни, что можно как подобрать точный товар/аналоги, так и найти производителей и поставщиков с контактами для запроса КП.\n"
+        "- Не называй точное количество бесплатных запусков — пиши просто, что после регистрации в кабинете доступен пробный доступ.\n"
         "- Не выдумывай цены. Актуальные тарифы:\n"
         f"{tariffs_summary}\n"
-        f"- Сейчас {'рабочее время' if is_work_hours else 'нерабочее время (ночь/вечер, менеджер ответит в рабочие часы с 09:00 МСК)'}.\n"
+        f"- Сейчас {'рабочее время' if is_work_hours else 'нерабочее время (ночь/вечер, менеджер подключится в рабочие часы с 09:00 МСК)'}.\n"
         "Верни строго JSON без markdown-обёртки:\n"
         '{"category": "real_question|greeting|spam_or_probe", "need_human": true|false, "reply": "текст ответа или пустая строка"}'
     )
@@ -670,6 +698,10 @@ async def classify_and_reply_support_message(
         if cat not in {"real_question", "greeting", "spam_or_probe"}:
             cat = "real_question"
         need_human = bool(parsed.get("need_human", True))
+        if cat == "real_question":
+            need_human = True
+        elif cat == "spam_or_probe":
+            need_human = False
         reply = str(parsed.get("reply") or "").strip()[:1500]
         if not autoreply_on or cat == "spam_or_probe":
             reply = ""

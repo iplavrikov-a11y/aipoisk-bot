@@ -309,3 +309,202 @@ def test_challenge_secret_derivation_and_ephemeral_fallback(monkeypatch):
     eph2 = _challenge_secret()
     assert len(eph1) == 32
     assert eph1 == eph2
+
+
+@pytest.mark.asyncio
+async def test_ai_autoreply_enforces_need_human_and_accurate_tariffs_prompt():
+    from app.security_shield import _build_tariffs_summary_for_ai
+
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        summary = _build_tariffs_summary_for_ai(db)
+        assert "1. Поиск поставщиков" in summary
+        assert "2. Подбор товара и аналогов" in summary
+        assert "3. Анализ документации" in summary
+        assert "ЗА КАЖДУЮ ВЫБРАННУЮ ПОЗИЦИЮ" in summary
+        assert "Word (.docx)" in summary
+        assert "Форма 2" not in summary
+        assert "Tenderplan" not in summary
+
+        settings = db.query(SystemSettings).first()
+        if settings is None:
+            settings = SystemSettings(id=1)
+            db.add(settings)
+        settings.custom_ai_providers_json = '[{"id":"p1","name":"Test","apiKey":"sk-or-test-key","baseUrl":"https://openrouter.ai/api/v1"}]'
+        settings.support_ai_antispam_enabled = True
+        settings.support_ai_auto_reply_enabled = True
+        db.commit()
+
+        with patch("app.security_shield.call_llm", autospec=True) as mock_llm:
+            # Even if LLM says need_human=false on a real_question, backend enforces need_human=True
+            mock_llm.return_value = '{"category": "real_question", "need_human": false, "reply": "Да, подберём товар и аналоги за 99 ₽ за позицию в Word (.docx)."}'
+            result = await classify_and_reply_support_message(
+                db,
+                text="Ваш сервис позволяет подобрать товар по Спецификации?",
+                is_guest=True,
+                is_work_hours=True,
+                force_in_test=True,
+            )
+            assert result["category"] == "real_question"
+            assert result["need_human"] is True
+            assert "Word (.docx)" in result["reply"]
+    finally:
+        db.close()
+
+
+def test_guest_chat_ai_reply_channel_notification_and_dialog_status(client: TestClient):
+    from app.models import JobChatMessage
+    from app.support_chat import _build_incoming_card_html
+
+    ts = int(datetime.now().timestamp() * 1000)
+    sid = f"sess_ai_flow_{ts}"
+    ai_text = "Да, можем подобрать товар и аналоги (99 ₽ за позицию, отчёт в Word .docx) и найти поставщиков."
+
+    with (
+        patch(
+            "app.main.classify_and_reply_support_message",
+            new=AsyncMock(return_value={"category": "real_question", "need_human": False, "reply": ai_text, "used_ai": True}),
+        ),
+        patch("app.main.notify_admins_of_incoming_message", new_callable=AsyncMock) as mock_notify,
+    ):
+        res = client.post(
+            "/api/public/guest-chat/send",
+            json={"sessionId": sid, "text": "Подскажите, подбираете товар по спецификации?"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["ai_reply"]["sender"] == "admin"
+        assert ai_text in body["ai_reply"]["text"]
+        assert mock_notify.await_count == 1
+        assert mock_notify.await_args.kwargs.get("ai_auto_reply") == ai_text
+
+    db = SessionLocal()
+    try:
+        ai_msg = (
+            db.query(JobChatMessage)
+            .filter(JobChatMessage.guest_session_id == sid, JobChatMessage.sender_role == "admin")
+            .first()
+        )
+        assert ai_msg is not None
+        assert ai_msg.channel == "ai_auto"
+    finally:
+        db.close()
+
+    dialogs_res = client.get("/api/admin/dialogs")
+    assert dialogs_res.status_code == 200
+    target = next((d for d in dialogs_res.json()["dialogs"] if d.get("guest_session_id") == sid), None)
+    assert target is not None
+    assert target["last_channel"] == "ai_auto"
+    assert target["last_is_ai_reply"] is True
+    assert target["needs_reply"] is True
+
+    card_html = _build_incoming_card_html(
+        {
+            "is_guest": True,
+            "display_name": "Гость сайта",
+            "email": "",
+            "phone": "",
+            "tg_username": "",
+            "job_label": "",
+        },
+        text="Подскажите по спецификации",
+        attachments=None,
+        channel="guest_web",
+        ai_auto_reply=ai_text,
+    )
+    assert "Автоответ ИИ отправлен клиенту" in card_html
+    assert "99 ₽ за позицию" in card_html
+
+
+def test_guest_chat_links_to_client_on_login_and_rejects_forged_cookie(client: TestClient):
+    from app.models import Client, JobChatMessage, SupportGuestSession, WebUser
+    from app.support_chat import GUEST_CHAT_COOKIE, link_guest_chat_session_to_client
+    from app.web_auth import hash_password
+
+    ts = int(datetime.now().timestamp() * 1000)
+    sid = f"sess_link_{ts}"
+    guest_tc = TestClient(app, base_url="https://testserver")
+
+    with (
+        patch(
+            "app.main.classify_and_reply_support_message",
+            new=AsyncMock(return_value={"category": "real_question", "need_human": True, "reply": "Ответили гостю", "used_ai": True}),
+        ),
+        patch("app.main.notify_admins_of_incoming_message", new_callable=AsyncMock),
+    ):
+        send_res = guest_tc.post(
+            "/api/public/guest-chat/send",
+            json={"sessionId": sid, "text": "Хочу проверить подбор по спецификации"},
+        )
+        assert send_res.status_code == 200
+        assert GUEST_CHAT_COOKIE in send_res.cookies
+
+    db = SessionLocal()
+    email = f"linked_{ts}@company-real.ru"
+    password = "StrongPassword123!"
+    try:
+        c = Client(telegram_id=f"web_link_{ts}", name="Тест Клиент Связка", is_active=True)
+        db.add(c)
+        db.flush()
+        wu = WebUser(
+            client_id=c.id,
+            email=email,
+            name="Тест Клиент Связка",
+            password_hash=hash_password(password),
+            is_active=True,
+        )
+        db.add(wu)
+        db.commit()
+        client_id = c.id
+    finally:
+        db.close()
+
+    # Forged cookie must NOT link
+    forged_tc = TestClient(app, base_url="https://testserver")
+    forged_tc.cookies.set(GUEST_CHAT_COOKIE, f"{sid}.badsignature")
+    forged_login = forged_tc.post("/api/customer/auth/login", json={"email": email, "password": password})
+    assert forged_login.status_code == 200
+
+    db = SessionLocal()
+    try:
+        guest_row = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == sid).first()
+        assert guest_row is not None
+        assert guest_row.linked_client_id == ""
+    finally:
+        db.close()
+
+    # Real guest browser with valid signed cookie logs in -> guest chat migrates seamlessly to client_id
+    real_login = guest_tc.post("/api/customer/auth/login", json={"email": email, "password": password})
+    assert real_login.status_code == 200
+
+    db = SessionLocal()
+    try:
+        guest_row = db.query(SupportGuestSession).filter(SupportGuestSession.session_id == sid).first()
+        assert guest_row is not None
+        assert guest_row.linked_client_id == client_id
+
+        migrated = (
+            db.query(JobChatMessage)
+            .filter(JobChatMessage.client_id == client_id)
+            .order_by(JobChatMessage.created_at.asc())
+            .all()
+        )
+        assert len(migrated) == 2
+        assert migrated[0].sender_role == "client"
+        assert migrated[1].channel == "ai_auto"
+
+        # Attempting to steal already-linked session for another client fails cleanly
+        c2 = Client(telegram_id=f"web_other_{ts}", name="Другой Клиент", is_active=True)
+        db.add(c2)
+        db.commit()
+        steal_res = link_guest_chat_session_to_client(db, session_id=sid, client_id=c2.id)
+        assert steal_res["linked"] is False
+        assert steal_res["reason"] == "already_linked_other"
+    finally:
+        db.close()
+
+    # Authenticated customer chat endpoint immediately returns the pre-registration messages
+    cust_msgs = guest_tc.get("/api/customer/chat/messages")
+    assert cust_msgs.status_code == 200
+    assert len(cust_msgs.json()["messages"]) == 2
