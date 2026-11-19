@@ -212,6 +212,7 @@ type SessionPayload = {
     custom_report_separate_tab?: boolean;
     batch_report_max_items?: number;
     geo_radius_surcharge_pct?: number;
+    direct_payment_only?: boolean;
   };
   balance?: {
     supplier_search: BalanceCounter;
@@ -254,6 +255,7 @@ type SessionPayload = {
     provider: string;
     instructions: string;
     yookassa_ready: boolean;
+    direct_payment_only?: boolean;
   };
   referral?: {
     referral_code: string;
@@ -4121,7 +4123,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
 
   if (!authenticated) {
     return (
-      <main className="tl-cabinet tl-cabinet-auth cabinet-page min-h-screen bg-slate-50/70 flex flex-col items-center justify-center p-4 sm:p-8 font-sans text-slate-900">
+      <main className="tl-cabinet tl-cabinet-auth cabinet-page min-h-screen bg-slate-50/70 flex flex-col items-center justify-center p-4 pb-24 sm:p-8 sm:pb-24 font-sans text-slate-900">
         <header className="tl-cabinet-auth-header w-full max-w-5xl mx-auto flex items-center justify-between pb-6 mb-8 border-b border-slate-200/80">
           <a className="flex items-center gap-3 font-extrabold text-slate-900 text-xl hover:text-teal-700 transition-colors" href="/">
             <Image src="/tenderlex-logo.png" alt="TenderLex" width={36} height={36} priority />
@@ -4240,6 +4242,12 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                   </svg>
                   <span>{authMode === "login" ? "Войти с Яндекс ID" : "Создать кабинет через Яндекс ID"}</span>
                 </a>
+
+                <p className="text-[11px] leading-snug text-slate-600 bg-slate-100/90 border border-slate-200/80 rounded-lg py-1.5 px-2.5 text-center">
+                  {authMode === "login"
+                    ? "Если Telegram не открывается без VPN — войдите через Яндекс ID или по email ниже."
+                    : "Если Telegram не открывается без VPN — создайте кабинет через Яндекс ID или по email ниже."}
+                </p>
 
                 <p className="text-[11px] leading-snug text-slate-500 text-center px-1">
                   Продолжая через Telegram или Яндекс ID, вы принимаете{" "}
@@ -5206,6 +5214,13 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
           const geoSurchargePct = session?.user?.geo_radius_surcharge_pct ?? 30;
           const hasPriceMonitoring = Boolean(session?.user?.allowed_price_monitoring);
           const hasBatchAnalysis = Boolean(session?.user?.allowed_custom_batch_report);
+          const isDirectPaymentOnlyTariffs = Boolean(
+            session?.user?.direct_payment_only || session?.payment?.direct_payment_only
+          );
+          const hasCustomTariffsPanel = Boolean(
+            session?.has_custom_tariffs || session?.balance?.has_custom_tariffs
+          );
+          const effectiveMaxBonusPercent = (hasCustomTariffsPanel || isDirectPaymentOnlyTariffs) ? 0 : maxBonusPercent;
 
           return (
             <section id="cabinet-tariffs" className="tl-cabinet-tariffs space-y-3" aria-label="Тарифы и пополнение баланса">
@@ -5306,23 +5321,58 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                   ) : null}
                 </div>
 
-                {/* Column 2: Пакеты пополнения баланса */}
+                {/* Column 2: Пакеты пополнения баланса / Персональные условия */}
+                {isDirectPaymentOnlyTariffs ? (
+                  <div className="space-y-2.5 bg-[#f8faf6] p-3.5 rounded-xl border border-[#dfe5dc] flex flex-col justify-between">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-[#e5e9e2]">
+                        <span className="text-[10px] font-bold text-[#174b3f] uppercase tracking-wider">
+                          Персональные условия пополнения
+                        </span>
+                        <span className="text-[10px] font-bold text-[#103a31] bg-[#e7efe0] px-1.5 py-0.5 rounded">
+                          Спецтариф
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-700 leading-relaxed">
+                        Для вашего аккаунта подключены персональные сниженные тарифы. Пополнение баланса по персональным условиям проходит напрямую через личного менеджера — без комиссий и с быстрым зачислением.
+                      </p>
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        Если потребуется оплата по счёту для юрлица (УПД/ЭДО) или онлайн-оплата картой на сайте, напишите менеджеру — согласуем условия под этот способ оплаты.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedTopUpPackage(null);
+                        setCustomTopUpRub(3000);
+                        setShowTopUpModal(true);
+                        setShowTariffs(false);
+                      }}
+                      className="tl-btn-primary w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs cursor-pointer"
+                    >
+                      <MessageCircle size={13} aria-hidden="true" />
+                      <span>Пополнить через менеджера</span>
+                    </button>
+                  </div>
+                ) : (
                 <div className="space-y-1.5 bg-[#f8faf6] p-3 rounded-xl border border-[#dfe5dc]">
                   <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-[#e5e9e2]">
                     <span className="text-[10px] font-bold text-[#174b3f] uppercase tracking-wider">
-                      {maxBonusPercent > 0 ? "Пакеты пополнения с бонусом" : "Пакеты пополнения баланса"}
+                      {effectiveMaxBonusPercent > 0 ? "Пакеты пополнения с бонусом" : "Пакеты пополнения баланса"}
                     </span>
-                    {maxBonusPercent > 0 ? (
+                    {effectiveMaxBonusPercent > 0 ? (
                       <span className="text-[10px] font-bold text-[#174b3f] bg-[#e7efe0] px-1.5 py-0.5 rounded">
-                        до +{maxBonusPercent}% на счёт
+                        до +{effectiveMaxBonusPercent}% на счёт
                       </span>
                     ) : null}
                   </div>
                   <div className="space-y-1.5 pt-0.5 tl-num">
                     {depositPkgs.map((pkg) => {
-                      const isPopular = pkg.id === popularPkgId;
+                      const isPopular = !hasCustomTariffsPanel && pkg.id === popularPkgId;
+                      const shownBonusRub = hasCustomTariffsPanel ? 0 : pkg.bonus_rub;
+                      const shownTotalRub = hasCustomTariffsPanel ? pkg.price_rub : pkg.total_rub;
                       const effectiveTaskRub =
-                        pkg.total_rub > 0 ? Math.round(baseTaskRateRub * (pkg.price_rub / pkg.total_rub)) : baseTaskRateRub;
+                        shownTotalRub > 0 ? Math.round(baseTaskRateRub * (pkg.price_rub / shownTotalRub)) : baseTaskRateRub;
                       return (
                         <div
                           key={pkg.id}
@@ -5340,7 +5390,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                                   Хит
                                 </span>
                               ) : null}
-                              {pkg.bonus_rub > 0 ? (
+                              {shownBonusRub > 0 ? (
                                 <span className="text-[10px] text-slate-500 whitespace-nowrap">
                                   ~{effectiveTaskRub} ₽/задача
                                 </span>
@@ -5349,16 +5399,18 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                             <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
                               <span className="font-bold text-slate-700 whitespace-nowrap">{pkg.price_rub.toLocaleString("ru-RU")} ₽</span>
                               <span className="text-slate-400">→</span>
-                              <span className="font-extrabold text-[#174b3f] whitespace-nowrap">{pkg.total_rub.toLocaleString("ru-RU")} ₽ на баланс</span>
+                              <span className="font-extrabold text-[#174b3f] whitespace-nowrap">{shownTotalRub.toLocaleString("ru-RU")} ₽ на баланс</span>
                             </div>
                           </div>
                           <div className="tl-topup-package__action flex items-center gap-1.5 shrink-0">
-                            {pkg.bonus_rub > 0 ? (
+                            {shownBonusRub > 0 ? (
                               <span className="px-1.5 py-0.5 rounded bg-[#e7efe0] text-[#103a31] text-[10px] font-bold whitespace-nowrap">
-                                +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽
+                                +{shownBonusRub.toLocaleString("ru-RU")} ₽
                               </span>
                             ) : (
-                              <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">без бонуса</span>
+                              <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">
+                                {hasCustomTariffsPanel ? "спецтариф" : "без бонуса"}
+                              </span>
                             )}
                             <button
                               type="button"
@@ -5383,6 +5435,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                     })}
                   </div>
                 </div>
+                )}
               </div>
 
               {/* Action Banner inside Tariffs */}
@@ -5391,27 +5444,29 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                   Средства на балансе не сгорают, расходуются только по факту выполненных задач.
                 </span>
                 <div className="flex flex-wrap items-center gap-2 ml-auto">
+                  {!isDirectPaymentOnlyTariffs ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
+                        setSelectedTopUpPackage(defPkg);
+                        setCustomTopUpRub(defPkg?.price_rub || 5000);
+                        setTopUpTab("b2b");
+                        setShowTopUpModal(true);
+                        setShowTariffs(false);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-[#f4f8ef] text-[#174b3f] border border-[#b7c9af] rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      <Building2 size={13} aria-hidden="true" />
+                      <span>Выставить счёт юрлицу</span>
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => {
                       const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
-                      setSelectedTopUpPackage(defPkg);
-                      setCustomTopUpRub(defPkg?.price_rub || 5000);
-                      setTopUpTab("b2b");
-                      setShowTopUpModal(true);
-                      setShowTariffs(false);
-                    }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-[#f4f8ef] text-[#174b3f] border border-[#b7c9af] rounded-lg text-xs font-bold transition-colors cursor-pointer"
-                  >
-                    <Building2 size={13} aria-hidden="true" />
-                    <span>Выставить счёт юрлицу</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
-                      setSelectedTopUpPackage(defPkg);
-                      setCustomTopUpRub(defPkg?.price_rub || 5000);
+                      setSelectedTopUpPackage(isDirectPaymentOnlyTariffs ? null : defPkg);
+                      setCustomTopUpRub(isDirectPaymentOnlyTariffs ? 3000 : (defPkg?.price_rub || 5000));
                       setTopUpTab("card");
                       setShowTopUpModal(true);
                       setShowTariffs(false);
@@ -5419,7 +5474,13 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                     className="tl-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer"
                   >
                     <PlusCircle size={13} aria-hidden="true" />
-                    <span>Пополнить баланс с бонусом</span>
+                    <span>
+                      {isDirectPaymentOnlyTariffs
+                        ? "Пополнить через менеджера"
+                        : effectiveMaxBonusPercent > 0
+                        ? "Пополнить баланс с бонусом"
+                        : "Пополнить баланс"}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -9169,7 +9230,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                   </button>
                 </div>
 
-                {historyModalTab === "invoices" ? (
+                {historyModalTab === "invoices" && !(session?.user?.direct_payment_only || session?.payment?.direct_payment_only) ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -9190,10 +9251,11 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                   <button
                     type="button"
                     onClick={() => {
+                      const isDirect = Boolean(session?.user?.direct_payment_only || session?.payment?.direct_payment_only);
                       const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
                       const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
-                      setSelectedTopUpPackage(defPkg);
-                      setCustomTopUpRub(defPkg?.price_rub || 5000);
+                      setSelectedTopUpPackage(isDirect ? null : defPkg);
+                      setCustomTopUpRub(isDirect ? 3000 : (defPkg?.price_rub || 5000));
                       closeHistoryModal();
                       setTopUpTab("card");
                       setShowTopUpModal(true);
@@ -9359,24 +9421,36 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                       <div className="space-y-1">
                         <p className="text-sm font-semibold text-slate-700">Выставленных счетов пока нет</p>
                         <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                          Вы можете сформировать счёт по ИНН компании, скачать PDF/Excel и прикрепить платёжное поручение для быстрого зачисления
+                          {session?.user?.direct_payment_only || session?.payment?.direct_payment_only
+                            ? "Для вашего аккаунта действуют персональные тарифы — пополнение проходит напрямую через менеджера. Если потребуется оплата по безналичному счёту для юрлица, напишите менеджеру."
+                            : "Вы можете сформировать счёт по ИНН компании, скачать PDF/Excel и прикрепить платёжное поручение для быстрого зачисления"}
                         </p>
                       </div>
                       <button
                         type="button"
                         onClick={() => {
+                          const isDirect = Boolean(session?.user?.direct_payment_only || session?.payment?.direct_payment_only);
                           const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
                           const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
-                          setSelectedTopUpPackage(defPkg);
-                          setCustomTopUpRub(defPkg?.price_rub || 5000);
+                          setSelectedTopUpPackage(isDirect ? null : defPkg);
+                          setCustomTopUpRub(isDirect ? 3000 : (defPkg?.price_rub || 5000));
                           closeHistoryModal();
-                          setTopUpTab("b2b");
+                          setTopUpTab(isDirect ? "card" : "b2b");
                           setShowTopUpModal(true);
                         }}
                         className="tl-btn-primary inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs cursor-pointer"
                       >
-                        <Building2 size={14} aria-hidden="true" />
-                        <span>Выставить счёт для юрлица</span>
+                        {session?.user?.direct_payment_only || session?.payment?.direct_payment_only ? (
+                          <>
+                            <MessageCircle size={14} aria-hidden="true" />
+                            <span>Пополнить через менеджера</span>
+                          </>
+                        ) : (
+                          <>
+                            <Building2 size={14} aria-hidden="true" />
+                            <span>Выставить счёт для юрлица</span>
+                          </>
+                        )}
                       </button>
                     </div>
                   ) : (
@@ -10459,6 +10533,12 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
 
       {/* Top-Up Balance Modal */}
       {showTopUpModal ? (() => {
+        const isDirectPaymentOnly = Boolean(
+          session?.user?.direct_payment_only || session?.payment?.direct_payment_only
+        );
+        const hasCustomTariffs = Boolean(
+          session?.has_custom_tariffs || session?.balance?.has_custom_tariffs
+        );
         const depositPkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
         const popularPkgId =
           depositPkgs.find((p) => p.price_rub === 5000)?.id ||
@@ -10468,9 +10548,19 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
           session?.balance?.effective_prices?.supplier_search?.price_rub ?? session?.function_prices?.supplier_search?.price_rub,
           session?.balance?.effective_prices?.exact_product?.price_rub ?? session?.function_prices?.exact_product?.price_rub,
           session?.balance?.effective_prices?.procurement_report?.price_rub ?? session?.function_prices?.procurement_report?.price_rub,
+          session?.user?.allowed_custom_batch_report
+            ? (session?.balance?.effective_prices?.custom_batch_report?.price_rub ?? session?.function_prices?.custom_batch_report?.price_rub)
+            : undefined,
         ].filter((v): v is number => typeof v === "number" && v > 0);
         const minTaskRateRub = baseTaskRates.length > 0 ? Math.min(...baseTaskRates) : 99;
         const calc = (() => {
+          if (hasCustomTariffs || isDirectPaymentOnly) {
+            return {
+              bonusRub: 0,
+              totalRub: customTopUpRub,
+              percent: 0,
+            };
+          }
           if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
             return {
               bonusRub: selectedTopUpPackage.bonus_rub,
@@ -10489,10 +10579,26 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
             ? selectedTopUpPackage
             : null;
         const pkgName = matchedPkg?.name || "Пополнение баланса";
+        const accountLabel =
+          session?.user?.email && !session.user.email.endsWith("@telegram.tenderlex.ru")
+            ? session.user.email
+            : session?.user?.name || session?.user?.email || "";
         const tgMsg = encodeURIComponent(
-          `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
+          isDirectPaymentOnly
+            ? `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ по персональному тарифу. Мой аккаунт: ${accountLabel}`
+            : calc.bonusRub > 0
+            ? `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${accountLabel}`
+            : `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽. Мой аккаунт: ${accountLabel}`
         );
         const tgUrl = `${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${tgMsg}`;
+        const customOverrideRates = Object.entries(session?.balance?.effective_prices || {})
+          .filter(([, item]) => item && item.source === "client_override" && item.enabled && item.price_rub > 0)
+          .map(([kind, item]) => ({
+            kind,
+            label: item.label || kind,
+            priceRub: item.price_rub,
+          }));
+        const directAmountPresets = [1000, 3000, 5000, 10000];
 
         const cardValidationHint = !isAmountValid
           ? "Минимальная сумма пополнения — 500 ₽"
@@ -10511,9 +10617,11 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
           <div className="space-y-1.5 tl-num">
             {depositPkgs.map((pkg) => {
               const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
-              const isPopular = pkg.id === popularPkgId;
+              const isPopular = !hasCustomTariffs && pkg.id === popularPkgId;
+              const displayedBonusRub = hasCustomTariffs ? 0 : pkg.bonus_rub;
+              const displayedTotalRub = hasCustomTariffs ? pkg.price_rub : pkg.total_rub;
               const effectiveTaskRub =
-                pkg.total_rub > 0 ? Math.round(minTaskRateRub * (pkg.price_rub / pkg.total_rub)) : Math.round(minTaskRateRub);
+                displayedTotalRub > 0 ? Math.round(minTaskRateRub * (pkg.price_rub / displayedTotalRub)) : Math.round(minTaskRateRub);
               return (
                 <button
                   key={pkg.id}
@@ -10544,7 +10652,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                             Хит
                           </span>
                         ) : null}
-                        {pkg.bonus_rub > 0 ? (
+                        {displayedBonusRub > 0 ? (
                           <span className="text-[10px] text-slate-500 whitespace-nowrap">
                             ~{effectiveTaskRub} ₽/задача
                           </span>
@@ -10553,7 +10661,7 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                       <div className="text-[11px] text-slate-500 mt-0.5">
                         На баланс:{" "}
                         <strong className="text-[#174b3f] font-bold">
-                          {pkg.total_rub.toLocaleString("ru-RU")} ₽
+                          {displayedTotalRub.toLocaleString("ru-RU")} ₽
                         </strong>
                       </div>
                     </div>
@@ -10562,12 +10670,14 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                     <span className="text-xs sm:text-sm font-black text-slate-900 whitespace-nowrap">
                       {pkg.price_rub.toLocaleString("ru-RU")} ₽
                     </span>
-                    {pkg.bonus_rub > 0 ? (
+                    {displayedBonusRub > 0 ? (
                       <span className="px-1.5 py-0.5 rounded bg-[#e7efe0] text-[#103a31] text-[10px] font-bold whitespace-nowrap">
-                        +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽
+                        +{displayedBonusRub.toLocaleString("ru-RU")} ₽
                       </span>
                     ) : (
-                      <span className="text-[10px] text-slate-400">без бонуса</span>
+                      <span className="text-[10px] text-slate-400">
+                        {hasCustomTariffs ? "спецтариф" : "без бонуса"}
+                      </span>
                     )}
                   </div>
                 </button>
@@ -10597,10 +10707,14 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                   </div>
                   <div>
                     <h2 id="topup-modal-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-tight">
-                      Пополнение баланса
+                      {isDirectPaymentOnly ? "Пополнение по персональному тарифу" : "Пополнение баланса"}
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Единый бессрочный баланс на все инструменты TenderLex. Чем больше сумма — тем выше бонус.
+                      {isDirectPaymentOnly
+                        ? "Для вашего аккаунта подключены персональные сниженные тарифы — пополнение проходит напрямую через менеджера."
+                        : hasCustomTariffs
+                        ? "Единый бессрочный баланс на все инструменты TenderLex по вашим персональным тарифам."
+                        : "Единый бессрочный баланс на все инструменты TenderLex. Чем больше сумма — тем выше бонус."}
                     </p>
                   </div>
                 </div>
@@ -10614,6 +10728,151 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                 </button>
               </div>
 
+              {isDirectPaymentOnly ? (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+                  {/* Left column: Active Personal Tariffs + Amount Picker */}
+                  <div className="lg:col-span-7 space-y-3.5">
+                    {customOverrideRates.length > 0 ? (
+                      <div className="p-3.5 rounded-xl bg-[#f4f8ef] border border-[#cde0be] space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-bold text-[#103a31] uppercase tracking-wider">
+                            Ваши персональные тарифы
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full bg-[#e7efe0] text-[#103a31] text-[10px] font-bold">
+                            Спецусловия активны
+                          </span>
+                        </div>
+                        <div className="space-y-1.5 tl-num">
+                          {customOverrideRates.map((item) => (
+                            <div
+                              key={item.kind}
+                              className="flex items-center justify-between gap-2 text-xs bg-white/80 border border-[#dfe8d6] rounded-lg px-2.5 py-1.5"
+                            >
+                              <span className="font-semibold text-slate-700">{item.label}</span>
+                              <strong className="font-extrabold text-[#103a31]">
+                                {item.priceRub.toLocaleString("ru-RU")} ₽
+                              </strong>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="space-y-2">
+                      <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                        Выберите сумму пополнения:
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 tl-num">
+                        {directAmountPresets.map((preset) => {
+                          const isSelected = customTopUpRub === preset;
+                          return (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => {
+                                setSelectedTopUpPackage(null);
+                                setCustomTopUpRub(preset);
+                              }}
+                              className={`px-3 py-2.5 rounded-xl border text-center transition-all cursor-pointer ${
+                                isSelected
+                                  ? "bg-[#f4f8ef] border-[#174b3f] text-[#103a31] ring-1 ring-[#174b3f]/25 font-extrabold"
+                                  : "bg-white border-slate-200 text-slate-800 hover:bg-slate-50 hover:border-[#b7c9af] font-bold"
+                              }`}
+                            >
+                              <div className="text-sm">{preset.toLocaleString("ru-RU")} ₽</div>
+                              <div className="text-[10px] text-slate-500 font-medium mt-0.5">
+                                ~{Math.floor(preset / minTaskRateRub)} задач
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="pt-1 space-y-1">
+                        <label htmlFor="direct-custom-topup-input" className="text-[11px] font-semibold text-slate-600 block">
+                          Или введите произвольную сумму (от 500 ₽):
+                        </label>
+                        <div className="relative">
+                          <input
+                            id="direct-custom-topup-input"
+                            type="number"
+                            min={500}
+                            step={500}
+                            value={customTopUpRub || ""}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10) || 0;
+                              setSelectedTopUpPackage(null);
+                              setCustomTopUpRub(val);
+                            }}
+                            placeholder="3000"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] pr-8 tl-num"
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                            ₽
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right column: Summary + Polite Explanation + Telegram CTA */}
+                  <div className="lg:col-span-5 space-y-3">
+                    <div className="p-3.5 rounded-xl bg-[#f4f8ef] border border-[#cde0be] space-y-2 tl-num">
+                      <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
+                        <span>Сумма к пополнению:</span>
+                        <strong className="text-slate-900 font-bold">
+                          {customTopUpRub.toLocaleString("ru-RU")} ₽
+                        </strong>
+                      </div>
+                      <div className="pt-2 border-t border-[#cde0be] flex items-center justify-between">
+                        <div>
+                          <span className="text-xs font-bold text-slate-900 block">Поступит на баланс:</span>
+                          <span className="text-[10px] text-slate-500">
+                            {isAmountValid ? `хватит примерно на ${approxTasks} задач` : "минимальная сумма 500 ₽"}
+                          </span>
+                        </div>
+                        <div className="text-lg sm:text-xl font-black text-[#103a31]">
+                          {customTopUpRub.toLocaleString("ru-RU")} ₽
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-[#f8faf6] border border-[#dfe5dc] text-xs text-slate-700 leading-relaxed space-y-2">
+                      <p>
+                        <strong className="text-[#103a31]">Как пополнить по персональному тарифу:</strong>{" "}
+                        персональные сниженные цены действуют при прямом пополнении баланса через личного менеджера — без комиссий, зачисление занимает несколько минут.
+                      </p>
+                      <p className="text-[11px] text-slate-600">
+                        Если вам потребуется оплата по безналичному счёту для юрлица (с УПД/ЭДО) или онлайн-оплата картой на сайте, напишите менеджеру — согласуем условия под этот способ оплаты.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <a
+                        href={tgUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="tl-btn-primary w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs sm:text-sm shadow-sm cursor-pointer tl-num"
+                      >
+                        <MessageCircle size={15} aria-hidden="true" />
+                        <span>
+                          {isAmountValid
+                            ? `Пополнить ${customTopUpRub.toLocaleString("ru-RU")} ₽ через менеджера`
+                            : "Написать менеджеру в Telegram"}
+                        </span>
+                      </a>
+
+                      <div className="flex items-center gap-2 px-3 py-2 bg-[#f4f8ef] border border-[#cde0be] rounded-xl text-[11px] text-[#103a31] font-medium">
+                        <CheckCircle2 size={14} className="text-[#174b3f] shrink-0" aria-hidden="true" />
+                        <span>
+                          <strong>Гарантия:</strong> списание только по готовому результату, средства не сгорают.
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
               {/* Payment Method Switcher Tabs + Compact Guarantee */}
               <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 shrink-0">
                 <div className="flex items-center gap-1 p-1 bg-[#f8faf6] rounded-xl border border-[#dfe5dc] text-xs font-semibold sm:min-w-[360px]">
@@ -11378,6 +11637,8 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
                   </div>
                 </div>
               ) : null}
+                </>
+              )}
             </section>
           </div>
         );

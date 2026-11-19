@@ -244,6 +244,11 @@ def cluster_and_reconcile_item_quotes(
             norm_u = normalize_unit(item_res.unit)
 
             for q in valid_quotes:
+                # Не перезаписываем котировки, для которых уже выполнен явный размерный пересчет
+                if (q.conversion_comment or "").strip() or (
+                    q.raw_price_rub and abs(float(q.raw_price_rub) - float(q.price_rub)) > 0.01
+                ):
+                    continue
                 q_ratio = q.price_rub / min_p
 
                 # 1. Пропан (баллон 50л vs кг, коэффициент 21)
@@ -630,6 +635,23 @@ async def process_single_item(
     candidate_urls: list[str] = []
     url_to_meta: dict[str, YandexSearchResult] = {}
 
+    async def _engine_search(query_text: str) -> list[YandexSearchResult]:
+        try:
+            return await engine.search(
+                query_text,
+                max_results=20,
+                enrich_query=False,
+                filter_marketplaces=filter_marketplaces,
+                allow_b2b_retailers=True,
+            )
+        except TypeError:
+            return await engine.search(
+                query_text,
+                max_results=20,
+                enrich_query=False,
+                filter_marketplaces=filter_marketplaces,
+            )
+
     # ВОЛНА 1: Первичные коммерческие запросы (ИИ по Правилу 14 с алгоритмическим фоллбэком)
     queries: list[str] = []
     if settings.has_active_ai_provider:
@@ -650,9 +672,7 @@ async def process_single_item(
             before_w1 = len(candidate_urls)
             results: list[YandexSearchResult] = []
             try:
-                results = await engine.search(
-                    q, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
-                )
+                results = await _engine_search(q)
                 diagnostics["search_results"] += len(results)
                 for r in results:
                     if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign, geo_scope=geo_scope):
@@ -697,149 +717,193 @@ async def process_single_item(
         )
         return len([q for q in item_res.quotes if q.price_rub > 0 and not q.is_outlier])
 
-    async def _evaluate_candidates(urls: list[str], extraction_limit: int) -> None:
-        nonlocal llm_extractions_done
-        for url in urls:
-            if llm_extractions_done >= min(extraction_limit, MAX_LLM_EXTRACTIONS_PER_ITEM):
-                logger.debug("Wave extraction budget reached (%d) for '%s'", extraction_limit, clean)
-                break
-            if _get_consensus_count() >= target_suppliers:
-                logger.debug("Target consensus reached (%d suppliers) for '%s'", target_suppliers, clean)
-                break
-            if len([q for q in item_res.quotes if q.price_rub > 0]) >= target_suppliers * 2 + 4:
-                break
+    drilldown_kws = [
+        tok
+        for tok in re.findall(r"[а-яёa-z0-9-]{3,}", clean.lower())
+        if tok not in {"для", "или", "под", "без", "при", "тип", "вид", "гост"}
+    ][:6]
+
+    async def _fetch_and_extract_one(orig_url: str, domain: str, base_domain: str) -> dict[str, Any]:
+        res_info: dict[str, Any] = {
+            "url": orig_url,
+            "domain": domain,
+            "base_domain": base_domain,
+            "quote": None,
+            "extracted": False,
+            "fetch_unavailable": False,
+            "snippet_fallback": False,
+            "foreign_rejected": False,
+        }
+        try:
+            resolved_urls: list[str] = []
             try:
-                domain = urlparse(url).netloc.lower().replace("www.", "")
-                base_domain = _get_base_domain(domain)
-                if domain in seen_domains or base_domain in seen_domains:
-                    continue
-                if url in attempted_urls:
-                    continue
-                if base_domain_attempts.get(base_domain, 0) >= MAX_ATTEMPTS_PER_BASE_DOMAIN:
-                    diagnostics["domain_attempt_limit"] += 1
-                    continue
+                page_text, inn, kpp, contacts = await fetch_page_content_and_meta(
+                    http_client,
+                    orig_url,
+                    drilldown_keywords=drilldown_kws,
+                    resolved_url_out=resolved_urls,
+                )
+            except TypeError:
+                page_text, inn, kpp, contacts = await fetch_page_content_and_meta(http_client, orig_url)
+            effective_url = resolved_urls[0] if (resolved_urls and resolved_urls[0]) else orig_url
+            res_info["url"] = effective_url
 
-                attempted_urls.add(url)
-                base_domain_attempts[base_domain] = base_domain_attempts.get(base_domain, 0) + 1
-                diagnostics["fetch_attempts"] += 1
+            raw_page_text = str(page_text or "")
+            meta = url_to_meta.get(orig_url)
 
-                page_text, inn, kpp, contacts = await fetch_page_content_and_meta(http_client, url)
-                raw_page_text = str(page_text or "")
-                meta = url_to_meta.get(url)
+            # Объединяем сниппет поисковой выдачи со страницей (критично при WAF, динамическом JS или капче)
+            snippet_block = ""
+            if meta and (meta.snippet or meta.title):
+                snippet_block = f"[ПОИСКОВЫЙ СНИППЕТ ЯНДЕКСА]: {meta.title} | {meta.snippet}\n\n"
 
-                # Объединяем сниппет поисковой выдачи со страницей (критично при WAF, динамическом JS или капче)
-                snippet_block = ""
-                if meta and (meta.snippet or meta.title):
-                    snippet_block = f"[ПОИСКОВЫЙ СНИППЕТ ЯНДЕКСА]: {meta.title} | {meta.snippet}\n\n"
-
-                if not page_text or len(page_text) < 60:
-                    diagnostics["fetch_unavailable"] += 1
-                    if snippet_block:
-                        diagnostics["snippet_fallbacks"] += 1
-                        page_text = snippet_block + f"Источник: {url}"
-                    else:
-                        continue
+            if not page_text or len(page_text) < 60:
+                res_info["fetch_unavailable"] = True
+                if snippet_block:
+                    res_info["snippet_fallback"] = True
+                    page_text = snippet_block + f"Источник: {effective_url}"
                 else:
-                    page_text = snippet_block + page_text
+                    return res_info
+            else:
+                page_text = snippet_block + page_text
 
-                if not page_text or len(page_text) < 30:
-                    continue
+            if not page_text or len(page_text) < 30:
+                return res_info
 
-                # Дополнительная проверка на иностранный язык контента
-                if filter_foreign and is_foreign_source(url, page_text, geo_scope=geo_scope):
-                    diagnostics["foreign_rejections"] += 1
-                    logger.debug("Skip foreign source by content for %s", url)
-                    continue
+            # Дополнительная проверка на иностранный язык контента
+            if filter_foreign and is_foreign_source(effective_url, page_text, geo_scope=geo_scope):
+                res_info["foreign_rejected"] = True
+                logger.debug("Skip foreign source by content for %s", effective_url)
+                return res_info
 
-                llm_extractions_done += 1
-                diagnostics["extraction_attempts"] = llm_extractions_done
-                # Реестр федеральных сетей
+            res_info["extracted"] = True
+            # Реестр федеральных сетей
+            for kd, kdata in KNOWN_MAJOR_RETAILERS.items():
+                if _domain_matches(domain, kd):
+                    if not inn:
+                        inn = kdata["inn"]
+                    if not contacts:
+                        contacts = kdata["contacts"]
+                    break
+
+            quote = await extract_supplier_quote(
+                settings=settings,
+                target_item_name=clean,
+                target_unit=unit,
+                url=effective_url,
+                page_text=page_text,
+                pre_inn=inn,
+                pre_kpp=kpp,
+                pre_contacts=contacts,
+            )
+            if quote and (quote.price_rub > 0 or not quote.is_price_found):
+                if quote.price_rub > 0:
+                    grounding_price = quote.raw_price_rub or quote.price_rub
+                    page_price_match = find_price_grounding_match(grounding_price, raw_page_text)
+                    snippet_price_match = find_price_grounding_match(grounding_price, snippet_block)
+                    if page_price_match is not None:
+                        quote.evidence_level = "page_content"
+                        evidence_text = raw_page_text
+                        evidence_match = page_price_match
+                    elif snippet_price_match is not None:
+                        quote.evidence_level = "search_snippet"
+                        evidence_text = snippet_block
+                        evidence_match = snippet_price_match
+                    else:
+                        quote.evidence_level = "unknown"
+                        evidence_text = ""
+                        evidence_match = None
+                    quote.retrieved_at = datetime.now(timezone.utc).isoformat()
+                    quote.source_excerpt = _price_evidence_excerpt(evidence_text, evidence_match)
+                else:
+                    quote.evidence_level = "catalog_offer"
+                    quote.retrieved_at = datetime.now(timezone.utc).isoformat()
+                    quote.source_excerpt = "Товар в каталоге поставщика (цена по запросу)"
+
                 for kd, kdata in KNOWN_MAJOR_RETAILERS.items():
                     if _domain_matches(domain, kd):
-                        if not inn:
-                            inn = kdata["inn"]
-                        if not contacts:
-                            contacts = kdata["contacts"]
+                        quote.company_name = kdata["company_name"]
+                        quote.inn = kdata["inn"]
+                        if not quote.contacts:
+                            quote.contacts = kdata["contacts"]
                         break
 
-                quote = await extract_supplier_quote(
-                    settings=settings,
-                    target_item_name=clean,
-                    target_unit=unit,
-                    url=url,
-                    page_text=page_text,
-                    pre_inn=inn,
-                    pre_kpp=kpp,
-                    pre_contacts=contacts,
-                )
-                if quote and (quote.price_rub > 0 or not quote.is_price_found):
-                    if quote.price_rub > 0:
-                        grounding_price = quote.raw_price_rub or quote.price_rub
-                        page_price_match = find_price_grounding_match(grounding_price, raw_page_text)
-                        snippet_price_match = find_price_grounding_match(grounding_price, snippet_block)
-                        if page_price_match is not None:
-                            quote.evidence_level = "page_content"
-                            evidence_text = raw_page_text
-                            evidence_match = page_price_match
-                        elif snippet_price_match is not None:
-                            quote.evidence_level = "search_snippet"
-                            evidence_text = snippet_block
-                            evidence_match = snippet_price_match
-                        else:
-                            quote.evidence_level = "unknown"
-                            evidence_text = ""
-                            evidence_match = None
-                        quote.retrieved_at = datetime.now(timezone.utc).isoformat()
-                        quote.source_excerpt = _price_evidence_excerpt(evidence_text, evidence_match)
-                    else:
-                        quote.evidence_level = "catalog_offer"
-                        quote.retrieved_at = datetime.now(timezone.utc).isoformat()
-                        quote.source_excerpt = "Товар в каталоге поставщика (цена по запросу)"
+                res_info["quote"] = quote
+            return res_info
+        except Exception as exc:
+            logger.debug("Error processing url %s: %s", orig_url, exc)
+            return res_info
 
-                    for kd, kdata in KNOWN_MAJOR_RETAILERS.items():
-                        if _domain_matches(domain, kd):
-                            quote.company_name = kdata["company_name"]
-                            quote.inn = kdata["inn"]
-                            if not quote.contacts:
-                                quote.contacts = kdata["contacts"]
-                            break
+    async def _enrich_quote_inn_and_company(quote: SupplierQuote, domain: str) -> None:
+        # Если ИНН уже извлечен со страницы или через DaData в extract_supplier_quote — сохраняем в кэш домена
+        if quote.inn and domain and not domain_inn_cache.get(domain):
+            domain_inn_cache[domain] = {
+                "inn": quote.inn,
+                "company_name": quote.company_name,
+                "kpp": quote.kpp,
+                "contacts": quote.contacts,
+            }
 
-                    # Если ИНН уже извлечен со страницы или через DaData в extract_supplier_quote — сохраняем в кэш домена
-                    if quote.inn and domain and not domain_inn_cache.get(domain):
+        if not quote.inn and domain:
+            cached_entry = domain_inn_cache.get(domain)
+            if cached_entry is not None:
+                if cached_entry.get("inn"):
+                    quote.inn = cached_entry["inn"]
+                    if cached_entry.get("company_name"):
+                        quote.company_name = cached_entry["company_name"]
+                    if cached_entry.get("kpp"):
+                        quote.kpp = cached_entry["kpp"]
+                    if cached_entry.get("contacts") and not quote.contacts:
+                        quote.contacts = cached_entry["contacts"]
+            else:
+                resolved = False
+                try:
+                    from ..dadata_client import enrich_company_by_inn_or_query
+                    d_site = await enrich_company_by_inn_or_query(domain=domain)
+                    if d_site and d_site.get("inn"):
+                        quote.inn = d_site["inn"]
+                        if d_site.get("company_name"):
+                            quote.company_name = d_site["company_name"]
+                        if d_site.get("kpp"):
+                            quote.kpp = d_site["kpp"]
+                        city_or_addr = d_site.get("city") or d_site.get("legal_address")
+                        if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                            quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
                         domain_inn_cache[domain] = {
                             "inn": quote.inn,
                             "company_name": quote.company_name,
                             "kpp": quote.kpp,
                             "contacts": quote.contacts,
                         }
+                        resolved = True
+                except Exception as d_exc:
+                    logger.debug("DaData domain lookup failed for %s: %s", domain, d_exc)
 
-                    # Если ИНН поставщика всё ещё не найден, проверяем кэш доменов или обогащаем через DaData/поиск
-                    if not quote.inn and domain:
-                        cached_entry = domain_inn_cache.get(domain)
-                        if cached_entry is not None:
-                            if cached_entry.get("inn"):
-                                quote.inn = cached_entry["inn"]
-                                if cached_entry.get("company_name"):
-                                    quote.company_name = cached_entry["company_name"]
-                                if cached_entry.get("kpp"):
-                                    quote.kpp = cached_entry["kpp"]
-                                if cached_entry.get("contacts") and not quote.contacts:
-                                    quote.contacts = cached_entry["contacts"]
-                        else:
-                            # 1. Сначала пробуем бесплатный DaData по сайту (0 платных запросов к Яндексу)
-                            resolved = False
-                            try:
-                                from ..dadata_client import enrich_company_by_inn_or_query
-                                d_site = await enrich_company_by_inn_or_query(domain=domain)
-                                if d_site and d_site.get("inn"):
-                                    quote.inn = d_site["inn"]
-                                    if d_site.get("company_name"):
-                                        quote.company_name = d_site["company_name"]
-                                    if d_site.get("kpp"):
-                                        quote.kpp = d_site["kpp"]
-                                    city_or_addr = d_site.get("city") or d_site.get("legal_address")
-                                    if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
-                                        quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                if not resolved and quote.price_rub > 0 and http_client is not None:
+                    from .extractor import _extract_inn_kpp_contacts
+                    for req_path in ("/rekvizity/", "/contacts/"):
+                        try:
+                            probe_resp = await http_client.get(
+                                f"https://{domain}{req_path}",
+                                timeout=httpx.Timeout(2.5, connect=1.5),
+                            )
+                            if getattr(probe_resp, "status_code", 0) == 200 and getattr(probe_resp, "text", ""):
+                                p_inn, p_kpp, p_contacts = _extract_inn_kpp_contacts(probe_resp.text)
+                                if p_inn:
+                                    quote.inn = p_inn
+                                    if p_kpp and not quote.kpp:
+                                        quote.kpp = p_kpp
+                                    if p_contacts and not quote.contacts:
+                                        quote.contacts = p_contacts
+                                    from ..dadata_client import enrich_company_by_inn
+                                    d_info = await enrich_company_by_inn(quote.inn)
+                                    if d_info:
+                                        if d_info.get("company_name"):
+                                            quote.company_name = d_info["company_name"]
+                                        if not quote.kpp and d_info.get("kpp"):
+                                            quote.kpp = d_info["kpp"]
+                                        city_or_addr = d_info.get("city") or d_info.get("legal_address")
+                                        if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                                            quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
                                     domain_inn_cache[domain] = {
                                         "inn": quote.inn,
                                         "company_name": quote.company_name,
@@ -847,107 +911,141 @@ async def process_single_item(
                                         "contacts": quote.contacts,
                                     }
                                     resolved = True
-                            except Exception as d_exc:
-                                logger.debug("DaData domain lookup failed for %s: %s", domain, d_exc)
+                                    break
+                        except Exception:
+                            pass
 
-                            # 1b. Быстрая прямая проверка стандартных страниц реквизитов домена (/rekvizity/, /contacts/) без платных запросов
-                            if not resolved and quote.price_rub > 0 and http_client is not None:
-                                from .extractor import _extract_inn_kpp_contacts
-                                for req_path in ("/rekvizity/", "/contacts/"):
-                                    try:
-                                        probe_resp = await http_client.get(
-                                            f"https://{domain}{req_path}",
-                                            timeout=httpx.Timeout(2.5, connect=1.5),
-                                        )
-                                        if getattr(probe_resp, "status_code", 0) == 200 and getattr(probe_resp, "text", ""):
-                                            p_inn, p_kpp, p_contacts = _extract_inn_kpp_contacts(probe_resp.text)
-                                            if p_inn:
-                                                quote.inn = p_inn
-                                                if p_kpp and not quote.kpp:
-                                                    quote.kpp = p_kpp
-                                                if p_contacts and not quote.contacts:
-                                                    quote.contacts = p_contacts
-                                                from ..dadata_client import enrich_company_by_inn
-                                                d_info = await enrich_company_by_inn(quote.inn)
-                                                if d_info:
-                                                    if d_info.get("company_name"):
-                                                        quote.company_name = d_info["company_name"]
-                                                    if not quote.kpp and d_info.get("kpp"):
-                                                        quote.kpp = d_info["kpp"]
-                                                    city_or_addr = d_info.get("city") or d_info.get("legal_address")
-                                                    if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
-                                                        quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
-                                                domain_inn_cache[domain] = {
-                                                    "inn": quote.inn,
-                                                    "company_name": quote.company_name,
-                                                    "kpp": quote.kpp,
-                                                    "contacts": quote.contacts,
-                                                }
-                                                resolved = True
-                                                break
-                                    except Exception:
-                                        pass
+                inn_queries_used = int(diagnostics.get("inn_yandex_queries", 0) or 0)
+                if (
+                    not resolved
+                    and quote.price_rub > 0
+                    and inn_queries_used < 2
+                    and isinstance(engine, YandexSearchEngine)
+                ):
+                    diagnostics["inn_yandex_queries"] = inn_queries_used + 1
+                    try:
+                        inn_query = f'"{domain}" ИНН'
+                        async with search_semaphore:
+                            inn_res = await engine.search(inn_query, max_results=3, enrich_query=False, filter_marketplaces=False)
+                        found_inn = False
+                        for ir in inn_res:
+                            text_c = f"{ir.title} {ir.snippet}"
+                            m_inns = re.findall(r'(?:ИНН|инн)[\s:№#«"\'\xa0]{0,10}(\d{10}|\d{12})\b', text_c)
+                            if m_inns:
+                                quote.inn = m_inns[0]
+                                from ..dadata_client import enrich_company_by_inn
+                                d_info = await enrich_company_by_inn(quote.inn)
+                                if d_info:
+                                    if d_info.get("company_name"):
+                                        quote.company_name = d_info["company_name"]
+                                    if not quote.kpp and d_info.get("kpp"):
+                                        quote.kpp = d_info["kpp"]
+                                    city_or_addr = d_info.get("city") or d_info.get("legal_address")
+                                    if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                                        quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+                                domain_inn_cache[domain] = {
+                                    "inn": quote.inn,
+                                    "company_name": quote.company_name,
+                                    "kpp": quote.kpp,
+                                    "contacts": quote.contacts,
+                                }
+                                found_inn = True
+                                break
+                        if not found_inn:
+                            domain_inn_cache[domain] = {}
+                    except Exception as e_inn:
+                        logger.debug("Fallback domain INN search failed for %s: %s", domain, e_inn)
+                        domain_inn_cache[domain] = {}
 
-                            # 2. Платный поиск ИНН в Яндексе внутри цикла кандидатов выполняем ТОЛЬКО для котировок с реальной ценой (quote.price_rub > 0), не более 2 раз на позицию.
-                            # Для котировок "по запросу" (price_rub == 0) не тратим платные запросы заранее.
-                            inn_queries_used = int(diagnostics.get("inn_yandex_queries", 0) or 0)
-                            if (
-                                not resolved
-                                and quote.price_rub > 0
-                                and inn_queries_used < 2
-                                and isinstance(engine, YandexSearchEngine)
-                            ):
-                                diagnostics["inn_yandex_queries"] = inn_queries_used + 1
-                                try:
-                                    inn_query = f'"{domain}" ИНН'
-                                    async with search_semaphore:
-                                        inn_res = await engine.search(inn_query, max_results=3, enrich_query=False, filter_marketplaces=False)
-                                    found_inn = False
-                                    for ir in inn_res:
-                                        text_c = f"{ir.title} {ir.snippet}"
-                                        m_inns = re.findall(r'(?:ИНН|инн)[\s:№#«"\'\xa0]{0,10}(\d{10}|\d{12})\b', text_c)
-                                        if m_inns:
-                                            quote.inn = m_inns[0]
-                                            from ..dadata_client import enrich_company_by_inn
-                                            d_info = await enrich_company_by_inn(quote.inn)
-                                            if d_info:
-                                                if d_info.get("company_name"):
-                                                    quote.company_name = d_info["company_name"]
-                                                if not quote.kpp and d_info.get("kpp"):
-                                                    quote.kpp = d_info["kpp"]
-                                                city_or_addr = d_info.get("city") or d_info.get("legal_address")
-                                                if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
-                                                    quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
-                                            domain_inn_cache[domain] = {
-                                                "inn": quote.inn,
-                                                "company_name": quote.company_name,
-                                                "kpp": quote.kpp,
-                                                "contacts": quote.contacts,
-                                            }
-                                            found_inn = True
-                                            break
-                                    if not found_inn:
-                                        domain_inn_cache[domain] = {}
-                                except Exception as e_inn:
-                                    logger.debug("Fallback domain INN search failed for %s: %s", domain, e_inn)
-                                    domain_inn_cache[domain] = {}
+        clean_cname = (quote.company_name or "").lower().replace("www.", "").strip()
+        if quote.inn and (not clean_cname or clean_cname == domain or "." in clean_cname or not quote.kpp):
+            try:
+                from ..dadata_client import enrich_company_by_inn
+                d_info = await enrich_company_by_inn(quote.inn)
+                if d_info:
+                    if d_info.get("company_name"):
+                        quote.company_name = d_info["company_name"]
+                    if not quote.kpp and d_info.get("kpp"):
+                        quote.kpp = d_info["kpp"]
+                    city_or_addr = d_info.get("city") or d_info.get("legal_address")
+                    if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                        quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+            except Exception as e_enrich:
+                logger.debug("DaData company enrichment failed for %s (INN %s): %s", domain, quote.inn, e_enrich)
 
-                    # Если ИНН найден, но официальное наименование компании не заполнено или равно домену, обогащаем через DaData
-                    clean_cname = (quote.company_name or "").lower().replace("www.", "").strip()
-                    if quote.inn and (not clean_cname or clean_cname == domain or "." in clean_cname or not quote.kpp):
-                        try:
-                            from ..dadata_client import enrich_company_by_inn
-                            d_info = await enrich_company_by_inn(quote.inn)
-                            if d_info:
-                                if d_info.get("company_name"):
-                                    quote.company_name = d_info["company_name"]
-                                if not quote.kpp and d_info.get("kpp"):
-                                    quote.kpp = d_info["kpp"]
-                                city_or_addr = d_info.get("city") or d_info.get("legal_address")
-                                if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
-                                    quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
-                        except Exception as e_enrich:
-                            logger.debug("DaData company enrichment failed for %s (INN %s): %s", domain, quote.inn, e_enrich)
+    async def _evaluate_candidates(urls: list[str], extraction_limit: int) -> None:
+        nonlocal llm_extractions_done
+        hard_limit = min(extraction_limit, MAX_LLM_EXTRACTIONS_PER_ITEM)
+        while True:
+            remaining_budget = hard_limit - llm_extractions_done
+            if remaining_budget <= 0:
+                logger.debug("Wave extraction budget reached (%d) for '%s'", extraction_limit, clean)
+                break
+            consensus_now = _get_consensus_count()
+            if consensus_now >= target_suppliers:
+                logger.debug("Target consensus reached (%d suppliers) for '%s'", target_suppliers, clean)
+                break
+            if len([q for q in item_res.quotes if q.price_rub > 0]) >= target_suppliers * 2 + 4:
+                break
+
+            needed = max(1, target_suppliers - consensus_now)
+            batch_cap = min(4, remaining_budget, needed)
+
+            batch: list[tuple[str, str, str]] = []
+            batch_base_domains: set[str] = set()
+            for url in urls:
+                if len(batch) >= batch_cap:
+                    break
+                domain = urlparse(url).netloc.lower().replace("www.", "")
+                base_domain = _get_base_domain(domain)
+                if domain in seen_domains or base_domain in seen_domains:
+                    continue
+                if url in attempted_urls:
+                    continue
+                if base_domain in batch_base_domains:
+                    continue
+                if base_domain_attempts.get(base_domain, 0) >= MAX_ATTEMPTS_PER_BASE_DOMAIN:
+                    diagnostics["domain_attempt_limit"] += 1
+                    attempted_urls.add(url)
+                    continue
+
+                attempted_urls.add(url)
+                base_domain_attempts[base_domain] = base_domain_attempts.get(base_domain, 0) + 1
+                diagnostics["fetch_attempts"] += 1
+                batch_base_domains.add(base_domain)
+                batch.append((url, domain, base_domain))
+
+            if not batch:
+                break
+
+            if len(batch) == 1:
+                batch_results = [await _fetch_and_extract_one(*batch[0])]
+            else:
+                batch_results = list(
+                    await asyncio.gather(*(_fetch_and_extract_one(*b) for b in batch))
+                )
+
+            for res_info in batch_results:
+                if res_info["fetch_unavailable"]:
+                    diagnostics["fetch_unavailable"] += 1
+                if res_info["snippet_fallback"]:
+                    diagnostics["snippet_fallbacks"] += 1
+                if res_info["foreign_rejected"]:
+                    diagnostics["foreign_rejections"] += 1
+                if res_info["extracted"]:
+                    llm_extractions_done += 1
+                    diagnostics["extraction_attempts"] = llm_extractions_done
+
+                quote = res_info["quote"]
+                domain = res_info["domain"]
+                base_domain = res_info["base_domain"]
+                url = res_info["url"]
+
+                if quote is not None:
+                    if domain in seen_domains or base_domain in seen_domains:
+                        diagnostics["duplicate_suppliers"] += 1
+                        continue
+                    await _enrich_quote_inn_and_company(quote, domain)
                     if quote.inn and quote.inn in seen_inns:
                         diagnostics["duplicate_suppliers"] += 1
                         logger.debug("Skip duplicate supplier INN %s for %s", quote.inn, url)
@@ -958,10 +1056,8 @@ async def process_single_item(
                     seen_domains.add(base_domain)
                     item_res.quotes.append(quote)
                     diagnostics["quotes_accepted"] += 1
-                else:
+                elif res_info["extracted"]:
                     diagnostics["extraction_rejected"] += 1
-            except Exception as exc:
-                logger.debug("Error processing url %s: %s", url, exc)
 
     await _evaluate_candidates(candidate_urls, WAVE_1_EXTRACTION_LIMIT)
 
@@ -987,9 +1083,7 @@ async def process_single_item(
                 before_w2 = len(wave2_urls)
                 b_results: list[YandexSearchResult] = []
                 try:
-                    b_results = await engine.search(
-                        bq, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
-                    )
+                    b_results = await _engine_search(bq)
                     diagnostics["search_results"] += len(b_results)
                     for r in b_results:
                         if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign, geo_scope=geo_scope):
@@ -1040,9 +1134,7 @@ async def process_single_item(
                 before_w3 = len(wave3_urls)
                 w_results: list[YandexSearchResult] = []
                 try:
-                    w_results = await engine.search(
-                        wq, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
-                    )
+                    w_results = await _engine_search(wq)
                     diagnostics["search_results"] += len(w_results)
                     for r in w_results:
                         if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign, geo_scope=geo_scope):
@@ -1056,6 +1148,25 @@ async def process_single_item(
                 wave3_needed = max(4, MAX_LLM_EXTRACTIONS_PER_ITEM - llm_extractions_done + 2)
                 if len(wave3_urls) >= wave3_needed or len(candidate_urls) + len(wave2_urls) + len(wave3_urls) >= 42 or (len(w_results) >= 8 and added_w3 <= 1):
                     break
+
+        # Дополнительный канал web-grounding/поискового адаптера (строго аддитивно, если настроен и Яндекса не хватило)
+        adapter_base = str(getattr(settings, "supplier_search_adapter_base_url", "") or "").strip()
+        adapter_key = str(getattr(settings, "supplier_search_adapter_api_key", "") or "").strip()
+        if adapter_base and adapter_key and len(wave3_urls) < 6:
+            try:
+                from ..supplier_search import _search_with_adapter
+                adapter_q = wave3_queries[0] if wave3_queries else f"{clean} купить цена"
+                adapter_cands = await asyncio.wait_for(
+                    _search_with_adapter(settings, [adapter_q], max_results=6),
+                    timeout=12.0,
+                )
+                for ac in adapter_cands:
+                    ac_url = getattr(ac, "url", "")
+                    if ac_url and is_valid_domain(ac_url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign, geo_scope=geo_scope):
+                        if ac_url not in candidate_urls and ac_url not in wave2_urls and ac_url not in wave3_urls:
+                            wave3_urls.append(ac_url)
+            except Exception as ad_exc:
+                logger.debug("Wave 3 search adapter supplement skipped: %s", ad_exc)
 
         if wave3_urls:
             await _evaluate_candidates(wave3_urls, MAX_LLM_EXTRACTIONS_PER_ITEM)

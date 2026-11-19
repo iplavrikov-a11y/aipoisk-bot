@@ -106,7 +106,7 @@ def _ensure_postgres_number_triggers(connection) -> None:
         )
 
 
-SCHEMA_MIGRATION_VERSION = "2026-11-19-express-assessment-v1"
+SCHEMA_MIGRATION_VERSION = "2026-11-19-direct-payment-only-v1"
 _PG_INIT_ADVISORY_LOCK_KEY = 73948102
 
 
@@ -302,6 +302,9 @@ def _ensure_schema() -> None:
                 "BOOLEAN DEFAULT FALSE" if connection.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"
             ),
             "custom_report_prompt": "TEXT DEFAULT ''",
+            "direct_payment_only": (
+                "BOOLEAN DEFAULT FALSE" if connection.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"
+            ),
             "monthly_supplier_search_limit": "INTEGER DEFAULT 100",
             "monthly_procurement_report_limit": "INTEGER DEFAULT 100",
             "money_balance_kopeks": "INTEGER DEFAULT 0",

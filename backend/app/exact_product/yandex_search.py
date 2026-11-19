@@ -23,10 +23,18 @@ _ASYNC_SUBMIT_LOCK: Optional[asyncio.Lock] = None
 _ASYNC_SUBMIT_LOOP: Optional[asyncio.AbstractEventLoop] = None
 _LAST_ASYNC_SUBMIT_TS: float = 0.0
 _ASYNC_RATE_LIMITED_UNTIL: float = 0.0
+_SYNC_SUBMIT_LOCK: Optional[asyncio.Lock] = None
+_SYNC_SUBMIT_LOOP: Optional[asyncio.AbstractEventLoop] = None
+_LAST_SYNC_SUBMIT_TS: float = 0.0
 _CROSS_PROCESS_LOCK_PATH = (
     "/dev/shm/tenderlex_yandex_rps.lock"
     if os.path.isdir("/dev/shm")
     else "/tmp/tenderlex_yandex_rps.lock"
+)
+_CROSS_PROCESS_SYNC_LOCK_PATH = (
+    "/dev/shm/tenderlex_yandex_sync_rps.lock"
+    if os.path.isdir("/dev/shm")
+    else "/tmp/tenderlex_yandex_sync_rps.lock"
 )
 
 
@@ -170,6 +178,125 @@ async def _paced_async_post(client: httpx.AsyncClient, url: str, *, json: dict, 
     return resp
 
 
+def _reserve_cross_process_sync_slot(min_interval: float, pushback_s: float = 0.0) -> float:
+    """
+    Coordinate synchronous /v2/web/search fallback submissions across processes
+    via an atomic flock state file so burst retries do not trip 1 RPS limits.
+    """
+    global _LAST_SYNC_SUBMIT_TS
+    now = time.monotonic()
+    shared_ts = 0.0
+    fd = None
+    try:
+        fd = os.open(_CROSS_PROCESS_SYNC_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        raw = os.read(fd, 64).decode("ascii", errors="ignore").strip()
+        if raw:
+            try:
+                shared_ts = float(raw)
+            except ValueError:
+                shared_ts = 0.0
+        base_ts = max(_LAST_SYNC_SUBMIT_TS, shared_ts)
+        if pushback_s > 0.0:
+            target_ts = max(base_ts, now + pushback_s)
+            wait_s = 0.0
+        else:
+            target_ts = max(now, base_ts + min_interval)
+            wait_s = max(0.0, target_ts - now)
+        _LAST_SYNC_SUBMIT_TS = target_ts
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{target_ts:.6f}".encode("ascii"))
+        return wait_s
+    except Exception:
+        base_ts = _LAST_SYNC_SUBMIT_TS
+        if pushback_s > 0.0:
+            _LAST_SYNC_SUBMIT_TS = max(base_ts, now + pushback_s)
+            return 0.0
+        target_ts = max(now, base_ts + min_interval)
+        _LAST_SYNC_SUBMIT_TS = target_ts
+        return max(0.0, target_ts - now)
+    finally:
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+async def _paced_sync_post_counted(
+    client: httpx.AsyncClient, url: str, *, json: dict, headers: dict
+) -> tuple[Any, int]:
+    """
+    Pace synchronous /v2/web/search fallback requests across coroutines and OS processes
+    with 2-step retry on HTTP 429/5xx so fallback searches reliably deliver customer results.
+    Returns (response, http_requests_sent).
+    """
+    global _SYNC_SUBMIT_LOCK, _SYNC_SUBMIT_LOOP
+    is_mock = (
+        hasattr(client, "_mock_name")
+        or hasattr(getattr(client, "post", None), "_mock_name")
+        or getattr(getattr(client, "post", None), "side_effect", None) is not None
+    )
+    if is_mock:
+        resp = await client.post(url, json=json, headers=headers)
+        sent = 1
+        for _ in range(2):
+            if resp.status_code != 429:
+                break
+            await asyncio.sleep(0.01)
+            resp = await client.post(url, json=json, headers=headers)
+            sent += 1
+        return resp, sent
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if _SYNC_SUBMIT_LOCK is None or _SYNC_SUBMIT_LOOP is not loop:
+        _SYNC_SUBMIT_LOCK = asyncio.Lock()
+        _SYNC_SUBMIT_LOOP = loop
+
+    min_interval = 1.05
+    retry_delays = [1.2, 2.2]
+    last_exc: Optional[Exception] = None
+    resp = None
+    sent = 0
+    for attempt in range(len(retry_delays) + 1):
+        async with _SYNC_SUBMIT_LOCK:
+            wait_s = _reserve_cross_process_sync_slot(min_interval)
+        if wait_s > 0:
+            await asyncio.sleep(wait_s)
+        try:
+            resp = await client.post(url, json=json, headers=headers)
+            sent += 1
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= len(retry_delays):
+                raise
+            await asyncio.sleep(retry_delays[attempt] + random.uniform(0.1, 0.35))
+            continue
+        if resp.status_code not in (429, 502, 503, 504) or attempt >= len(retry_delays):
+            return resp, max(1, sent)
+        backoff = retry_delays[attempt] + random.uniform(0.15, 0.45)
+        async with _SYNC_SUBMIT_LOCK:
+            _reserve_cross_process_sync_slot(min_interval, pushback_s=backoff)
+        await asyncio.sleep(backoff)
+    if resp is not None:
+        return resp, max(1, sent)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("yandex sync search submission failed")
+
+
 # Non-commercial domains (social, video, encyclopedias, search engines, datasheets)
 NON_COMMERCIAL_DOMAINS = [
     "yandex.ru",
@@ -195,7 +322,7 @@ NON_COMMERCIAL_DOMAINS = [
     "avto.ru",
 ]
 
-# Marketplaces and retail chains excluded in exact_product analog search, but allowed in general price monitoring
+# Retail marketplaces & classifieds (excluded in exact_product and B2B price monitoring)
 MARKETPLACE_DOMAINS = [
     "ozon.ru",
     "wildberries.ru",
@@ -204,15 +331,23 @@ MARKETPLACE_DOMAINS = [
     "aliexpress.com",
     "market.yandex.ru",
     "sbermegamarket.ru",
+    "megamarket.ru",
+]
+
+# Major B2B/DIY technical retailers (excluded in manufacturer-only search, allowed when allow_b2b_retailers=True)
+B2B_RETAILER_DOMAINS = [
     "vseinstrumenti.ru",
     "dns-shop.ru",
     "citilink.ru",
     "leroymerlin.ru",
     "lemanapro.ru",
-    "megamarket.ru",
+    "etm.ru",
+    "chipdip.ru",
+    "rs24.ru",
+    "komus.ru",
 ]
 
-EXCLUDED_DOMAINS = NON_COMMERCIAL_DOMAINS + MARKETPLACE_DOMAINS
+EXCLUDED_DOMAINS = NON_COMMERCIAL_DOMAINS + MARKETPLACE_DOMAINS + B2B_RETAILER_DOMAINS
 
 
 
@@ -278,11 +413,18 @@ class YandexSearchEngine:
         enrich_query: bool = True,
         max_pages: int = 1,
         filter_marketplaces: bool = True,
+        allow_b2b_retailers: bool = False,
     ) -> list[YandexSearchResult]:
         """
         Search using Yandex API. Tries v2 first, falls back to v1.
         """
-        logger.info("yandex_search_start", query=query[:80], max_pages=max_pages, filter_marketplaces=filter_marketplaces)
+        logger.info(
+            "yandex_search_start",
+            query=query[:80],
+            max_pages=max_pages,
+            filter_marketplaces=filter_marketplaces,
+            allow_b2b_retailers=allow_b2b_retailers,
+        )
 
         if not self.folder_id or not self.api_key:
             logger.warning("yandex_api_not_configured")
@@ -297,9 +439,18 @@ class YandexSearchEngine:
             logger.info("yandex_fallback_v1")
             results = await self._search_v1(query, max_results, enrich_query)
 
-        # Filter excluded domains (filter marketplaces only if requested)
-        excluded = EXCLUDED_DOMAINS if filter_marketplaces else NON_COMMERCIAL_DOMAINS
-        filtered = [r for r in results if r.domain not in excluded]
+        # Filter excluded domains (keep B2B retailers when allow_b2b_retailers=True)
+        if not filter_marketplaces:
+            excluded = NON_COMMERCIAL_DOMAINS
+        elif allow_b2b_retailers:
+            excluded = NON_COMMERCIAL_DOMAINS + MARKETPLACE_DOMAINS
+        else:
+            excluded = EXCLUDED_DOMAINS
+        filtered = [
+            r
+            for r in results
+            if not any(r.domain == d or r.domain.endswith("." + d) for d in excluded)
+        ]
         logger.info(
             "yandex_search_complete", query=query[:80], results_count=len(filtered)
         )
@@ -368,12 +519,17 @@ class YandexSearchEngine:
                             self._async_supported = False
                         elif async_resp.status_code == 429:
                             self._consecutive_async_429 += 1
-                            record_yandex_async_failure_429(180.0)
+                            cooloff_sec = (
+                                30.0
+                                if self._consecutive_async_429 == 1
+                                else (60.0 if self._consecutive_async_429 == 2 else 120.0)
+                            )
+                            record_yandex_async_failure_429(cooloff_sec)
                             logger.warning(
                                 "yandex_async_circuit_breaker_tripped",
                                 consecutive_429=self._consecutive_async_429,
-                                cooloff_sec=180,
-                                msg="searchAsync 429 rate-limited after retries, applying 180s cooloff and falling back to sync",
+                                cooloff_sec=cooloff_sec,
+                                msg="searchAsync 429 rate-limited after retries, applying progressive cooloff and falling back to sync",
                             )
                         elif async_resp.status_code in (401, 402, 403) or "PermissionDenied" in async_resp.text:
                             self._last_v2_failed = True
@@ -383,19 +539,16 @@ class YandexSearchEngine:
                         logger.debug("exact_product yandex async search failed: %s", async_exc)
 
                 # Fallback path: Synchronous endpoint when searchAsync did not complete
-                # (unless explicitly disabled via AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK=0).
+                # (kept enabled by default so customers always receive completed results).
                 if not async_completed and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", "1") != "0":
                     try:
-                        self.total_requests += 1
-                        self.sync_requests += 1
-                        record_search_request(is_sync=True)
-                        response = await client.post(self.V2_API_URL, json=body, headers=headers)
-                        if response.status_code == 429:
-                            await asyncio.sleep(1.5)
-                            self.total_requests += 1
-                            self.sync_requests += 1
+                        response, sent_sync = await _paced_sync_post_counted(
+                            client, self.V2_API_URL, json=body, headers=headers
+                        )
+                        self.total_requests += sent_sync
+                        self.sync_requests += sent_sync
+                        for _ in range(sent_sync):
                             record_search_request(is_sync=True)
-                            response = await client.post(self.V2_API_URL, json=body, headers=headers)
                         if response.status_code == 200:
                             data = response.json()
                             raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""

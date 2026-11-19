@@ -238,6 +238,7 @@ class Client(Base):
     allowed_custom_batch_report: Mapped[bool] = mapped_column(Boolean, default=False)
     custom_report_separate_tab: Mapped[bool] = mapped_column(Boolean, default=False)
     custom_report_prompt: Mapped[str] = mapped_column(Text, default="")
+    direct_payment_only: Mapped[bool] = mapped_column(Boolean, default=False)
     monthly_job_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=0)

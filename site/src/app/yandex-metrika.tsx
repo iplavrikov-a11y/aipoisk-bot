@@ -146,9 +146,14 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
     setSettingsOpen(false);
   }
 
+  const isCabinetRoute = Boolean(pathname?.startsWith("/cabinet"));
+
   return <>
     {consent === "unknown" || settingsOpen ? (
-      <aside className="cookie-consent" aria-label="Настройки аналитики">
+      <aside
+        className={`cookie-consent${isCabinetRoute ? " cookie-consent--cabinet" : ""}`}
+        aria-label="Настройки аналитики"
+      >
         <p>Необходимые cookie обеспечивают работу сайта и кабинета. Аналитика включается только с вашего согласия (<a href="/privacy#cookies">Подробнее</a>).</p>
         <div>
           <button type="button" className="cookie-secondary" onClick={() => choose("denied")}>Только необходимые</button>

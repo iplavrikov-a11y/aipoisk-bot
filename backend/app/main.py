@@ -3666,6 +3666,12 @@ async def dadata_company_by_inn_api(
         return {"found": False, "message": f"Ошибка сервиса подсказок: {e}"}
 
 
+DIRECT_PAYMENT_ONLY_MESSAGE = (
+    "Для вашего аккаунта действуют персональные тарифы. "
+    "Пополнение баланса по персональным условиям проходит напрямую через менеджера в Telegram."
+)
+
+
 @app.post("/api/customer/invoices")
 async def customer_create_invoice_api(
     request: Request,
@@ -3677,6 +3683,11 @@ async def customer_create_invoice_api(
         raise HTTPException(
             status_code=403,
             detail="Подтвердите email перед выставлением счёта.",
+        )
+    if context.user.client and bool(getattr(context.user.client, "direct_payment_only", False)):
+        raise HTTPException(
+            status_code=403,
+            detail=DIRECT_PAYMENT_ONLY_MESSAGE,
         )
     body = await request.json()
     try:
@@ -4248,6 +4259,8 @@ def customer_create_yookassa_payment_api(
     client = context.user.client
     if not client:
         raise HTTPException(status_code=400, detail="Аккаунт клиента не найден")
+    if bool(getattr(client, "direct_payment_only", False)):
+        raise HTTPException(status_code=403, detail=DIRECT_PAYMENT_ONLY_MESSAGE)
 
     from .billing import calculate_deposit_bonus_kopeks
 
@@ -9273,7 +9286,9 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
             "provider": settings.payment_provider or "manual",
             "instructions": settings.payment_instructions or "",
             "yookassa_ready": _settings_yookassa_ready(settings),
+            "direct_payment_only": bool(user.client and getattr(user.client, "direct_payment_only", False)),
         },
+        "has_custom_tariffs": bool(balance.get("has_custom_tariffs", False)),
         "referral": (
             __import__("app.referral", fromlist=["get_referral_stats"]).get_referral_stats(db, user.client)
             if user.client
@@ -9335,6 +9350,7 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "allowed_custom_batch_report": _client_can_use_batch_report(settings, user.client),
         "custom_report_separate_tab": _client_batch_report_separate_tab(settings, user.client),
         "batch_report_max_items": _client_batch_report_max_items(settings, user.client),
+        "direct_payment_only": bool(user.client and getattr(user.client, "direct_payment_only", False)),
         "geo_radius_surcharge_pct": configured_geo_surcharge_pct(settings),
         "is_trial": client_uses_trial_access(db, user.client) if user.client else False,
         "created_at": user.created_at.isoformat() if user.created_at else None,
@@ -11252,6 +11268,7 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "allowed_custom_batch_report": bool(getattr(client, "allowed_custom_batch_report", False)),
         "custom_report_separate_tab": bool(getattr(client, "custom_report_separate_tab", False)),
         "custom_report_prompt": str(getattr(client, "custom_report_prompt", "") or ""),
+        "direct_payment_only": bool(getattr(client, "direct_payment_only", False)),
         "monthly_job_limit": client.monthly_job_limit,
         "monthly_supplier_search_limit": client.monthly_supplier_search_limit,
         "monthly_procurement_report_limit": client.monthly_procurement_report_limit,

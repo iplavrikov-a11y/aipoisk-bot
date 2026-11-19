@@ -179,6 +179,147 @@ def is_reference_price_url(url: str) -> bool:
         return False
 
 
+def is_soft_404(html: str) -> bool:
+    """
+    Определяет 'soft 404' страницы — сайты, возвращающие HTTP 200 OK при ошибке 404
+    (Страница не найдена, Товар не найден, Запрашиваемая страница не существует).
+    """
+    if not html:
+        return False
+    head_snippet = html[:15000].lower()
+
+    title_m = re.search(r"<title[^>]*>(.*?)</title>", head_snippet, re.DOTALL)
+    if title_m:
+        t_text = title_m.group(1).strip()
+        if any(
+            p in t_text
+            for p in (
+                "404",
+                "страница не найдена",
+                "страницы не существует",
+                "page not found",
+                "ошибка 404",
+                "не найдено",
+                "не найдена",
+                "not found",
+            )
+        ):
+            return True
+
+    h1_m = re.search(r"<h1[^>]*>(.*?)</h1>", head_snippet, re.DOTALL)
+    if h1_m:
+        h1_text = h1_m.group(1).strip()
+        if any(
+            p in h1_text
+            for p in (
+                "404",
+                "страница не найдена",
+                "page not found",
+                "ошибка 404",
+                "запрашиваемая страница не найдена",
+                "страница не существует",
+            )
+        ):
+            return True
+
+    soft_patterns = (
+        "запрашиваемая страница не найдена",
+        "страница, которую вы ищете, не найдена",
+        "страница, которую вы запросили, не существует",
+        "к сожалению, запрашиваемая страница не существует",
+        "к сожалению, страница не найдена",
+        "товар не найден или удален",
+        "товар не существует или был удален",
+        "раздел не найден",
+        "404 not found",
+    )
+    return any(pat in head_snippet for pat in soft_patterns)
+
+
+def find_exact_product_card_in_html(
+    html: str,
+    base_url: str,
+    keywords: Optional[List[str]] = None,
+) -> str:
+    """
+    Если ссылка вела на общий каталог/категорию, анализирует HTML страницы и находит
+    прямую ссылку на карточку товара (/goods/..., /product/..., /item/...),
+    наилучшим образом совпадающую с ключевыми словами позиции.
+    """
+    if not html or not base_url:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        clean_kws = [k.lower().strip() for k in (keywords or []) if k and len(k.strip()) >= 2]
+        base_net = urlparse(base_url).netloc.lower().replace("www.", "")
+
+        candidates: List[Tuple[int, str]] = []
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if (
+                not href
+                or href.startswith("#")
+                or href.startswith("javascript:")
+                or href.startswith("mailto:")
+                or href.startswith("tel:")
+            ):
+                continue
+            full_u = urljoin(base_url, href)
+            parsed = urlparse(full_u)
+            if parsed.netloc.lower().replace("www.", "") != base_net:
+                continue
+            path = parsed.path.lower()
+            if not path or path in ("/", "/catalog", "/catalog/", "/page/catalog", "/page/catalog/"):
+                continue
+            if any(
+                np in path
+                for np in (
+                    "/cart",
+                    "/checkout",
+                    "/login",
+                    "/register",
+                    "/contact",
+                    "/about",
+                    "/delivery",
+                    "/news",
+                    "/blog",
+                    "/policy",
+                )
+            ):
+                continue
+            if any(
+                path.endswith(ext)
+                for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".ico", ".css", ".js")
+            ):
+                continue
+
+            text = a.get_text(" ", strip=True).lower()
+            title_attr = str(a.get("title") or "").lower()
+            combined = f"{text} {title_attr} {path}"
+
+            is_product_pattern = any(
+                p in path
+                for p in ("/goods/", "/product/", "/item/", "/tovar/", "/card/", "/p/", "/sku/", "/products/")
+            )
+            score = 4 if is_product_pattern else 0
+
+            matches = 0
+            for kw in clean_kws:
+                if kw in combined:
+                    matches += 1
+                    score += 2
+
+            if (matches >= 1 and score >= 4) or (matches >= 2 and score >= 2):
+                candidates.append((score, full_u))
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            return candidates[0][1]
+    except Exception:
+        pass
+    return ""
+
+
 def is_foreign_source(url: str, text: str = "", geo_scope: str = "ru") -> bool:
     """Определяет иностранные сайты, зарубежные TLD и сервисы трансграничного выкупа с учетом geo_scope."""
     try:
@@ -500,9 +641,13 @@ def extract_schema_org_product_data(soup: BeautifulSoup) -> Tuple[Optional[Dict[
 async def fetch_page_content_and_meta(
     client: httpx.AsyncClient,
     url: str,
+    *,
+    drilldown_keywords: Optional[List[str]] = None,
+    resolved_url_out: Optional[List[str]] = None,
 ) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """
     Скачивает страницу, извлекает текст, ИНН, КПП и контакты (включая подвал).
+    При необходимости автоматически проваливается из листинга/каталога в точную карточку товара (1 переход).
     Возвращает (текст_страницы, inn, kpp, contacts).
     """
     headers = {
@@ -539,6 +684,31 @@ async def fetch_page_content_and_meta(
             return None, None, None, None
 
         raw_html = resp.text
+        if is_soft_404(raw_html[:15000]):
+            return None, None, None, None
+
+        # Автоматический переход из листинга/каталога в конкретную карточку товара (1 hop)
+        if drilldown_keywords and (is_listing_url(current_url) or not is_deep_product_url(current_url)):
+            exact_card = find_exact_product_card_in_html(raw_html, current_url, keywords=drilldown_keywords)
+            if exact_card and exact_card != current_url:
+                try:
+                    await async_validate_public_http_url(exact_card)
+                    card_resp = await client.get(
+                        exact_card,
+                        headers=headers,
+                        timeout=httpx.Timeout(7.0, connect=2.5),
+                    )
+                    if getattr(card_resp, "status_code", 0) == 200 and getattr(card_resp, "text", ""):
+                        if not is_soft_404(card_resp.text[:15000]):
+                            raw_html = card_resp.text
+                            current_url = exact_card
+                except Exception:
+                    pass
+
+        if resolved_url_out is not None:
+            resolved_url_out.append(current_url)
+        url = current_url
+
         inn, kpp, contacts = _extract_inn_kpp_contacts(raw_html)
 
         soup = BeautifulSoup(raw_html, "html.parser")
@@ -1067,13 +1237,13 @@ URL страницы: {url}
      в) Металлопрокат и весовые товары:
         - Если заказчик просит в тоннах (т), а на сайте цена за 1 метр погонный: пересчитай в тонну по весу метра. Если вес метра неизвестен, отклони (is_price_found: false), так как цена за метр (~50-500 руб) не может быть ценой за тонну.
         - Если на сайте за кг, а заказчик просит в тоннах: умножь на 1000.
-     г) Цена за тару/упаковку:
-        - Заполняй pack_quantity и pack_base_unit ТОЛЬКО если страница явно сообщает,
-          сколько базовых единиц содержит оплачиваемая упаковка. Не выводи массу,
-          объём или количество из названия товара, типа тары, обычной практики или цены.
-        - Для неоднозначной тары оставляй эти поля null и сохраняй исходную цену с
-          site_unit. Не путай геометрический объём тары с количеством товара без
-          явного факта на странице.
+     г) Цена за тару/упаковку/рулон/лист/плиты:
+        - Заполняй pack_quantity, pack_base_unit и is_price_for_whole_pack: true, когда страница явно сообщает
+          содержимое упаковки или точные геометрические размеры (например: рулон 1.5 м × 50 м -> pack_quantity=75.0,
+          pack_base_unit="м2"; упаковка 6 плит 1000×600×50 мм -> pack_quantity=0.18, pack_base_unit="м3";
+          ведро 10 л -> pack_quantity=10.0, pack_base_unit="л"; мешок 25 кг -> pack_quantity=25.0, pack_base_unit="кг").
+        - Не выводи массу, объём или количество из названия товара, типа тары, обычной практики или цены без явных цифр на странице.
+        - Для неоднозначной тары оставляй эти поля null и сохраняй исходную цену с site_unit. Не путай геометрический объём тары с количеством товара без явного факта на странице.
    - В поле price_rub запиши ИТОГОВУЮ цену СТРОГО за 1 единицу "{norm_unit}".
    - В conversion_comment запиши подробную математическую формулу расчета.
 4. РЕКВИЗИТЫ ПОСТАВЩИКА:
@@ -1266,11 +1436,27 @@ URL страницы: {url}
             existing_comment="",
         )
 
+        ai_conv_price: Optional[float] = None
+        if parsed.get("price_rub") is not None:
+            try:
+                cp = float(str(parsed.get("price_rub")).replace(" ", "").replace(",", "."))
+                if cp > 0:
+                    ai_conv_price = round(cp, 2)
+            except Exception:
+                ai_conv_price = None
+        ai_conv_comment = str(parsed.get("conversion_comment") or "").strip()
+
         # A known source unit must either match the requested unit or have an
-        # explicit, dimensionally valid conversion.  This protects arbitrary
-        # product classes (including non-wearable paired goods) without a
-        # product-name allowlist or price-based guesswork.
-        if site_unit and normalize_unit(site_unit) != norm_unit and not calc_comment:
+        # explicit, dimensionally valid conversion (deterministic pack math or
+        # evidenced LLM dimensional conversion where price actually changed).
+        has_evidenced_ai_conversion = bool(
+            ai_conv_price is not None
+            and raw_price_val > 0
+            and abs(ai_conv_price - raw_price_val) > 0.01
+            and ai_conv_comment
+            and 0.0005 <= (ai_conv_price / raw_price_val) <= 2000.0
+        )
+        if site_unit and normalize_unit(site_unit) != norm_unit and not calc_comment and not has_evidenced_ai_conversion:
             logger.debug(
                 "Rejected quote for %s: source unit %r has no evidenced conversion to %r",
                 url,
@@ -1279,8 +1465,15 @@ URL страницы: {url}
             )
             return None
 
-        final_price_val = calc_price if (calc_price > 0 and calc_comment) else (float(parsed.get("price_rub")) if parsed.get("price_rub") is not None else raw_price_val)
-        conv_comment = calc_comment or str(parsed.get("conversion_comment") or "").strip()
+        if calc_price > 0 and calc_comment:
+            final_price_val = calc_price
+            conv_comment = calc_comment
+        elif has_evidenced_ai_conversion and ai_conv_price is not None:
+            final_price_val = ai_conv_price
+            conv_comment = ai_conv_comment
+        else:
+            final_price_val = ai_conv_price if ai_conv_price is not None else raw_price_val
+            conv_comment = ai_conv_comment
         match_reason = str(parsed.get("semantic_match_reason") or "").strip()
 
         # Реквизиты

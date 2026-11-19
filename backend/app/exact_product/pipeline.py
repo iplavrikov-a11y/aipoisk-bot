@@ -14,8 +14,13 @@ from ..models import SystemSettings
 from .deep import (
     auto_fill_ai_recommendations,
     auto_rotate_clean_analogs,
+    compute_spec_compliance,
     detect_exact_products_deep,
     drop_nonconforming_analogs,
+    resolve_clarify_parameters,
+    resolve_standards_parameters,
+    sanitize_and_verify_all_position_urls,
+    sanitize_glued_brands_and_models,
     sanitize_shops_from_positions,
 )
 from .models import (
@@ -437,63 +442,138 @@ async def _analyze_exact_product(
             raise ValueError("Выберите хотя бы одну позицию для подбора")
         if len(selected_positions) > MAX_EXACT_POSITIONS_PER_JOB:
             raise ValueError(f"За один запуск можно выбрать не более {MAX_EXACT_POSITIONS_PER_JOB} позиций")
-        from .matcher import detect_exact_products_characteristic_first
-        positions_raw = []
-        for index, row in enumerate(selected_positions, 1):
-            outcome = None
-            error = ""
-            requirements = row.get("requirements") or []
-            row_name = str(row.get("name") or row.get("name_in_tz") or "").strip()
-            matcher_row = dict(row)
-            selected_context = "Позиция исходной спецификации: " + row_name
-            for requirement in requirements:
-                if isinstance(requirement, dict):
-                    selected_context += "\n" + str(requirement.get("param_name") or requirement.get("name") or "Характеристика") + ": " + str(requirement.get("tz_requirement") or requirement.get("value") or "")
-            if row.get("source_excerpt"):
-                selected_context += "\nИсходная строка: " + str(row["source_excerpt"])
-            if row.get("unit"):
-                selected_context += "\nЕдиница измерения: " + str(row["unit"])
-            if row.get("quantity"):
-                selected_context += "\nКоличество: " + str(row["quantity"])
-            if not requirements and row_name:
-                # The customer's literal designation is a search target, not inferred specs.
-                matcher_row["name"] = row_name
-                matcher_row["requirements"] = [{"param_name": "Наименование из спецификации", "tz_requirement": row_name}]
-            if requirements or row_name:
-                try:
-                    result = await detect_exact_products_characteristic_first(
-                        selected_context, procurement_title, _notify,
-                        full_context=selected_context, prepared_positions=[matcher_row],
-                        evidence_data={},
-                    )
-                    if result and result[0]:
-                        from .validation import validate_exact_products
-                        candidates = validate_exact_products(result[0], result[1], has_doc_text=True)
-                        candidates = drop_nonconforming_analogs(auto_rotate_clean_analogs(candidates))
-                        outcome = dict(candidates[0]) if candidates else None
-                    if outcome:
-                        outcome["verified_documents"] = result[1]
-                        specs = outcome.get("specs_breakdown") or []
-                        if not requirements or not specs or any(spec.get("status") != "match" for spec in specs):
-                            outcome["status"] = "needs_clarification"
-                        if not requirements:
-                            outcome["reasoning"] = "Кандидат найден по наименованию из исходной строки. Для подтверждения взаимозаменяемости необходимо уточнить технические характеристики."
-                except Exception as exc:
-                    logger.exception("Selected product position failed")
-                    error = "Не удалось завершить проверку позиции; требуется повторный поиск"
-            outcome = outcome or {
-                "name_in_tz": row.get("name") or row.get("name_in_tz") or f"Позиция {index}",
-                "identified_brand": "", "identified_model": "", "manufacturer": "",
-                "confidence": 0, "specs_breakdown": [],
-                "status": "needs_clarification" if not requirements else "not_found",
-                "reasoning": "Недостаточно характеристик для подбора" if not requirements else "Подходящая модель в этом поиске не найдена",
-            }
-            outcome["position_no"] = row.get("position_no") or index
-            outcome["position_id"] = str(row.get("position_id") or row.get("id") or "")
-            if error:
-                outcome["status"] = "error"
-                outcome["error"] = error
-            positions_raw.append(outcome)
+        from .matcher import (
+            detect_exact_products_characteristic_first,
+            detect_minprom_registry_requirement,
+        )
+        from .validation import validate_exact_products
+
+        gisp_needed = detect_minprom_registry_requirement(context) is not False
+        pos_sem = asyncio.Semaphore(2)
+        total_sel = len(selected_positions)
+
+        async def _process_selected_row(index: int, row: Dict[str, Any]) -> Dict[str, Any]:
+            async with pos_sem:
+                outcome = None
+                error = ""
+                requirements = row.get("requirements") or []
+                row_name = str(row.get("name") or row.get("name_in_tz") or "").strip()
+                matcher_row = dict(row)
+                selected_context = "Позиция исходной спецификации: " + row_name
+                for requirement in requirements:
+                    if isinstance(requirement, dict):
+                        selected_context += (
+                            "\n"
+                            + str(requirement.get("param_name") or requirement.get("name") or "Характеристика")
+                            + ": "
+                            + str(requirement.get("tz_requirement") or requirement.get("value") or "")
+                        )
+                if row.get("source_excerpt"):
+                    selected_context += "\nИсходная строка: " + str(row["source_excerpt"])
+                if row.get("unit"):
+                    selected_context += "\nЕдиница измерения: " + str(row["unit"])
+                if row.get("quantity"):
+                    selected_context += "\nКоличество: " + str(row["quantity"])
+                if not requirements and row_name:
+                    # The customer's literal designation is a search target, not inferred specs.
+                    matcher_row["name"] = row_name
+                    matcher_row["requirements"] = [{"param_name": "Наименование из спецификации", "tz_requirement": row_name}]
+                if requirements or row_name:
+                    try:
+                        await _notify(
+                            min(85, 10 + int(65 * (index - 1) / max(1, total_sel))),
+                            f"Позиция {index} из {total_sel}: подбор точной модели и аналогов...",
+                        )
+                        result = await detect_exact_products_characteristic_first(
+                            selected_context,
+                            procurement_title,
+                            _notify,
+                            full_context=selected_context,
+                            prepared_positions=[matcher_row],
+                            evidence_data={},
+                        )
+                        if result and result[0]:
+                            candidates = list(result[0])
+                            verified_docs_pos = list(result[1] or [])
+                            existing_urls_pos = {
+                                str(d.get("url") or "")
+                                for d in verified_docs_pos
+                                if isinstance(d, dict) and d.get("url")
+                            }
+                            for cand in candidates:
+                                sanitize_glued_brands_and_models(cand)
+
+                            # Точечный добор параметров и верификация стандартов ГОСТ/ТУ на реальных документах
+                            if verified_docs_pos:
+                                has_clarify = any(
+                                    any(str(s.get("status") or "") == "clarify" for s in (c.get("specs_breakdown") or []) if isinstance(s, dict))
+                                    for c in candidates
+                                    if isinstance(c, dict)
+                                )
+                                if requirements and has_clarify:
+                                    try:
+                                        await resolve_clarify_parameters(candidates, existing_urls_pos, verified_docs_pos)
+                                    except Exception as cl_err:
+                                        logger.debug("selected_resolve_clarify_failed: %s", cl_err)
+                                if re.search(r"\b(?:ГОСТ|ТУ|СТО)\b", selected_context, re.IGNORECASE):
+                                    try:
+                                        await resolve_standards_parameters(candidates, selected_context, existing_urls_pos, verified_docs_pos)
+                                    except Exception as std_err:
+                                        logger.debug("selected_resolve_standards_failed: %s", std_err)
+
+                            candidates = validate_exact_products(candidates, verified_docs_pos, has_doc_text=True)
+                            candidates = drop_nonconforming_analogs(auto_rotate_clean_analogs(candidates))
+
+                            for cand in candidates:
+                                c_specs = cand.get("specs_breakdown") or []
+                                if c_specs:
+                                    cand["confidence"] = compute_spec_compliance(c_specs)
+
+                            # Обогащение записями Реестра Минпромторга (ГИСП)
+                            if gisp_needed and candidates:
+                                try:
+                                    from .product_brand_detector import enrich_positions_with_minprom_registry_ai
+                                    candidates = await enrich_positions_with_minprom_registry_ai(candidates)
+                                except Exception as gisp_err:
+                                    logger.debug("selected_minprom_enrich_failed: %s", gisp_err)
+
+                            # Физическая проверка ссылок (отсечение 404/soft-404/инструкций сборки)
+                            try:
+                                candidates = await sanitize_and_verify_all_position_urls(candidates)
+                            except Exception as url_err:
+                                logger.debug("selected_url_verify_failed: %s", url_err)
+
+                            candidates = sanitize_shops_from_positions(candidates)
+                            outcome = dict(candidates[0]) if candidates else None
+                        if outcome:
+                            outcome["verified_documents"] = verified_docs_pos
+                            specs = outcome.get("specs_breakdown") or []
+                            if not requirements or not specs or any(spec.get("status") != "match" for spec in specs):
+                                outcome["status"] = "needs_clarification"
+                            if not requirements:
+                                outcome["reasoning"] = "Кандидат найден по наименованию из исходной строки. Для подтверждения взаимозаменяемости необходимо уточнить технические характеристики."
+                    except Exception:
+                        logger.exception("Selected product position failed")
+                        error = "Не удалось завершить проверку позиции; требуется повторный поиск"
+                outcome = outcome or {
+                    "name_in_tz": row.get("name") or row.get("name_in_tz") or f"Позиция {index}",
+                    "identified_brand": "", "identified_model": "", "manufacturer": "",
+                    "confidence": 0, "specs_breakdown": [],
+                    "status": "needs_clarification" if not requirements else "not_found",
+                    "reasoning": "Недостаточно характеристик для подбора" if not requirements else "Подходящая модель в этом поиске не найдена",
+                }
+                outcome["position_no"] = row.get("position_no") or index
+                outcome["position_id"] = str(row.get("position_id") or row.get("id") or "")
+                if error:
+                    outcome["status"] = "error"
+                    outcome["error"] = error
+                return outcome
+
+        positions_raw = list(
+            await asyncio.gather(
+                *(_process_selected_row(index, row) for index, row in enumerate(selected_positions, 1))
+            )
+        )
     else:
         positions_raw = await detect_exact_products_deep(
             report_text=context, procurement_title=procurement_title,
@@ -622,10 +702,18 @@ async def _analyze_exact_product(
                     web_sources_collected.append(d["domain"])
 
     try:
-        await auto_fill_ai_recommendations(
-            settings=settings,
-            positions=[p for p in typed_positions if p.status == "found"],
-        )
+        eligible_for_recs = [
+            p
+            for p in typed_positions
+            if p.status in ("found", "needs_clarification")
+            and p.identified_brand
+            and p.identified_model
+        ]
+        if eligible_for_recs and getattr(settings, "has_active_ai_provider", False):
+            await auto_fill_ai_recommendations(
+                settings=settings,
+                positions=eligible_for_recs,
+            )
     except Exception as auto_exc:
         logger.debug("auto_fill_recommendations_failed: %s", auto_exc)
 

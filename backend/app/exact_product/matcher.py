@@ -1532,6 +1532,7 @@ async def expand_candidate_sources_ai(
     seen_urls: set,
     requirements: List[Dict[str, str]],
     max_sources: int = 4,
+    executed_queries: Optional[set] = None,
 ) -> Dict[str, Any]:
     """
     Добирает 3-5 независимых источников (дилеры, официальный сайт, PDF)
@@ -1562,7 +1563,17 @@ async def expand_candidate_sources_ai(
     q_passport = f"{item_anchor}{brand} {model} паспорт PDF"
 
     curr_cov = float((candidate.get("matrix") or {}).get("coverage") or 0.0)
-    expand_queries = [q_passport] if (len(existing_domains) >= 2 or curr_cov >= 0.75) else [q_specs, q_passport]
+    raw_expand_queries = [q_passport] if (len(existing_domains) >= 2 or curr_cov >= 0.75) else [q_specs, q_passport]
+    expand_queries: List[str] = []
+    for eq in raw_expand_queries:
+        norm_eq = " ".join(eq.lower().split())
+        if executed_queries is not None:
+            if norm_eq in executed_queries:
+                continue
+            executed_queries.add(norm_eq)
+        expand_queries.append(eq)
+    if not expand_queries:
+        return candidate
 
     raw_results = []
     search_res_list = await asyncio.gather(
@@ -2413,8 +2424,8 @@ _ROUND2_QUERIES_LLM_PROMPT = """Ты — ведущий специалист п�
 {specs_text}
 
 Твоя задача — составить 3-5 точных, естественных поисковых запросов для Яндекса/Google (длиной 3-7 слов):
-1. Если текущий кандидат забракован (имеет расхождения с ТЗ) — сформируй запросы для поиска АЛЬТЕРНАТИВНОГО оборудования/товара, который точно удовлетворяет проблемным характеристикам (без стоп-слов 'не менее'/'не более').
-2. Если текущий кандидат подходит без расхождений — сформируй запросы для нахождения официального паспорта изделия, руководства по эксплуатации или технического описания завода-изготовителя (с маркерами 'паспорт PDF', 'руководство характеристики').
+1. Если текущий кандидат забракован (имеет расхождения с ТЗ) — сформируй запросы для поиска АЛЬТЕРНАТИВНОГО оборудования/товара, который точно удовлетворяет проблемным характеристикам (без стоп-слов 'не менее'/'не более' и БЕЗ упоминания забракованного бренда/модели).
+2. Если текущий кандидат подходит без расхождений — сформируй 1-2 запроса для нахождения официального паспорта изделия/руководства завода-изготовителя И 1-2 запроса для поиска конкурирующих аналогов других производителей по категории и ключевым параметрам (БЕЗ названия исходного бренда и модели в запросе аналогов).
 
 Ответь СТРОГО в формате JSON — список из 3-5 строк:
 ["запрос 1", "запрос 2", "запрос 3"]"""
@@ -2723,9 +2734,21 @@ async def detect_exact_products_characteristic_first(
         if not queries:
             return None
 
+        executed_queries: set[str] = set()
+
         async def search_and_fetch(query_list: List[str], max_docs: int) -> Tuple[List[Any], List[Dict[str, Any]], set]:
             raw_candidates: List[Any] = []
             sem_search = asyncio.Semaphore(4)
+            unique_queries: List[str] = []
+            for raw_q in query_list:
+                q_clean = str(raw_q or "").strip()
+                q_norm = " ".join(q_clean.lower().split())
+                if not q_norm or q_norm in executed_queries:
+                    continue
+                executed_queries.add(q_norm)
+                unique_queries.append(q_clean)
+            if not unique_queries:
+                return [], [], set()
 
             async def _run_one_search(q: str):
                 async with sem_search:
@@ -2735,7 +2758,7 @@ async def detect_exact_products_characteristic_first(
                         logger.debug("characteristic_query_err", query=q, error=str(s_err))
                         return []
 
-            search_tasks = [_run_one_search(q) for q in query_list]
+            search_tasks = [_run_one_search(q) for q in unique_queries]
             nested_res = await asyncio.gather(*search_tasks, return_exceptions=True)
             for res in nested_res:
                 if isinstance(res, list):
@@ -2891,16 +2914,33 @@ async def detect_exact_products_characteristic_first(
                 round2_queries = await _second_round_queries_ai(best, pos_requirements, pos_name)
             if clean_brand_count < 2 and best:
                 b_val = str(best.get("brand") or "").strip()
-                if b_val and _is_clean_maker_or_brand(b_val):
-                    round2_queries.append(f"{pos_name} аналоги {b_val}")
-                round2_queries.append(f"{pos_name} завод производитель аналоги")
-                round2_queries.append(f"{pos_name} производители в России")
+                m_val = str(best.get("model") or "").strip()
+                # Убираем исходный бренд и модель из названия, чтобы найти конкурирующие аналоги других производителей
+                generic_item = pos_name
+                for tok in (b_val, m_val):
+                    if tok and len(tok) >= 2:
+                        generic_item = re.sub(rf"(?i)\b{re.escape(tok)}\b", " ", generic_item)
+                generic_item = " ".join(generic_item.split()).strip(" -–—,.;:")
+                if len(generic_item) < 3:
+                    generic_item = clean_pos_base or pos_name
+                spec_hints = [
+                    c
+                    for c in (
+                        _compact_requirement(r["tz_requirement"], r["param_name"]) or ""
+                        for r in pos_requirements
+                    )
+                    if c and len(c) <= 25
+                ][:2]
+                spec_tail = " ".join(spec_hints).strip()
+                if spec_tail:
+                    round2_queries.append(f"{generic_item} {spec_tail} производители аналоги")
+                round2_queries.append(f"{generic_item} завод производитель каталог моделей")
+                round2_queries.append(f"{generic_item} российские производители характеристики")
             if pos_hint:
                 ph_b = str(pos_hint.get("brand") or "").strip()
                 ph_m = str(pos_hint.get("model") or "").strip()
                 if ph_b and _is_clean_maker_or_brand(ph_b):
                     round2_queries.append(f"{pos_name} {ph_b} {ph_m}".strip())
-                    round2_queries.append(f"{pos_name} аналоги {ph_b}")
                 if pos_hint.get("analogs"):
                     for a in pos_hint["analogs"]:
                         ab = a.get("brand") or ""
@@ -2971,12 +3011,24 @@ async def detect_exact_products_characteristic_first(
             top_to_expand = []
             for top_c in ranked[:2]:
                 c_key = f"{top_c.get('brand')} {top_c.get('model')}".lower().strip()
+                if c_key in consensus_checked:
+                    continue
                 consensus_checked.add(c_key)
                 if not top_c.get("is_tender_evidence"):
                     top_to_expand.append(top_c)
             if top_to_expand:
                 await asyncio.gather(
-                    *(expand_candidate_sources_ai(tc, pos_name, _seen, pos_requirements, max_sources=3) for tc in top_to_expand),
+                    *(
+                        expand_candidate_sources_ai(
+                            tc,
+                            pos_name,
+                            _seen,
+                            pos_requirements,
+                            max_sources=3,
+                            executed_queries=executed_queries,
+                        )
+                        for tc in top_to_expand
+                    ),
                     return_exceptions=True,
                 )
                 for tc in top_to_expand:
@@ -2988,7 +3040,14 @@ async def detect_exact_products_characteristic_first(
             if best:
                 best_key = f"{best.get('brand')} {best.get('model')}".lower().strip()
                 if best_key not in consensus_checked and not best.get("is_tender_evidence"):
-                    await expand_candidate_sources_ai(best, pos_name, _seen, pos_requirements, max_sources=4)
+                    await expand_candidate_sources_ai(
+                        best,
+                        pos_name,
+                        _seen,
+                        pos_requirements,
+                        max_sources=4,
+                        executed_queries=executed_queries,
+                    )
                     if len(best.get("fused_docs", [])) >= 2:
                         best["matrix"] = await enrich_candidate_multi_source_consensus_ai(best, pos_requirements, pos_name)
                     ranked = rank_candidates(candidates, hint_brand=hint_b, hint_model=eff_model, minprom_required=is_minprom_req, minprom_manufacturers=minprom_mfrs)

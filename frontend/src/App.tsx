@@ -93,6 +93,7 @@ type Client = {
   allowed_custom_batch_report?: boolean
   custom_report_separate_tab?: boolean
   custom_report_prompt?: string
+  direct_payment_only?: boolean
   monthly_job_limit: number
   monthly_supplier_search_limit: number
   monthly_procurement_report_limit: number
@@ -287,6 +288,7 @@ type Job = {
   created_by_telegram_id: string
   mode: string
   mode_label: string
+  is_custom_batch_report?: boolean
   supplier_search_policy: string
   supplier_search_run_type: string
   multi_item_mode?: string
@@ -1429,6 +1431,19 @@ export function App() {
   const lastSyncVersionKeyRef = useRef<string>('')
   const prevClientsCountRef = useRef<number>(-1)
   const prevUnreadDialogsRef = useRef<number>(-1)
+  const activeClientMutationsRef = useRef<number>(0)
+
+  const handleClientUpdated = useCallback((updatedClient: Client) => {
+    setClients(prev => prev.map(item => (item.id === updatedClient.id ? updatedClient : item)))
+  }, [])
+
+  const handleOptimisticClientPatch = useCallback((clientId: string, patch: Partial<Client>) => {
+    setClients(prev => prev.map(item => (item.id === clientId ? { ...item, ...patch } : item)))
+  }, [])
+
+  const handleClientMutationState = useCallback((delta: 1 | -1) => {
+    activeClientMutationsRef.current = Math.max(0, activeClientMutationsRef.current + delta)
+  }, [])
 
   const addToast = useCallback((toast: Omit<AdminToast, 'id' | 'createdAt'>) => {
     const id = Math.random().toString(36).slice(2, 9)
@@ -1806,7 +1821,7 @@ export function App() {
               api<Dashboard>('/api/dashboard').catch(() => null),
             ])
             if (!cancelled) {
-              if (cData) setClients(cData)
+              if (cData && activeClientMutationsRef.current === 0) setClients(cData)
               if (dData) setDashboard(dData)
             }
             setIsClientsSyncing(false)
@@ -2020,6 +2035,9 @@ export function App() {
               tariffs={tariffs}
               passwordResets={passwordResets}
               onChange={loadAll}
+              onClientUpdated={handleClientUpdated}
+              onOptimisticClientPatch={handleOptimisticClientPatch}
+              onClientMutationState={handleClientMutationState}
               onNavigateToClientJobs={handleNavigateToClientJobs}
               onNavigateToClientDialog={handleNavigateToClientDialog}
               onNavigateToMcp={() => setView('mcp')}
@@ -2694,11 +2712,30 @@ function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
   )
 }
 
+type ClientCardTab = 'finance' | 'pricing' | 'access' | 'vip'
+
+function clientHasCustomTariffs(client: Client): boolean {
+  return Boolean(
+    client.has_custom_tariffs ||
+    client.usage?.has_custom_tariffs ||
+    (client.usage?.effective_prices &&
+      Object.values(client.usage.effective_prices).some(p => p?.source === 'client_override'))
+  )
+}
+
+function clientCustomTariffsCount(client: Client): number {
+  if (!client.usage?.effective_prices) return 0
+  return Object.values(client.usage.effective_prices).filter(p => p?.source === 'client_override').length
+}
+
 function ClientsView({
   clients,
   tariffs = [],
   passwordResets,
   onChange,
+  onClientUpdated,
+  onOptimisticClientPatch,
+  onClientMutationState,
   onNavigateToClientJobs,
   onNavigateToClientDialog,
   onNavigateToMcp,
@@ -2713,6 +2750,9 @@ function ClientsView({
   tariffs?: TariffPackage[]
   passwordResets: PasswordResetRequest[]
   onChange: () => Promise<void>
+  onClientUpdated?: (client: Client) => void
+  onOptimisticClientPatch?: (clientId: string, patch: Partial<Client>) => void
+  onClientMutationState?: (delta: 1 | -1) => void
   onNavigateToClientJobs?: (clientId: string) => void
   onNavigateToClientDialog?: (clientId: string) => void
   onNavigateToMcp?: () => void
@@ -2730,11 +2770,32 @@ function ClientsView({
   const balanceRequestsInFlight = useRef<Record<string, boolean>>({})
   const [mergeForms, setMergeForms] = useState<Record<string, string>>({})
   const [expandedClients, setExpandedClients] = useState<Record<string, boolean>>({})
+  const [activeClientTabs, setActiveClientTabs] = useState<Record<string, ClientCardTab>>({})
   const [priceForms, setPriceForms] = useState<Record<string, string>>({})
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
+  const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({})
+  const [supplierTargetDrafts, setSupplierTargetDrafts] = useState<Record<string, string>>({})
   const [resetNotes, setResetNotes] = useState<Record<string, string>>({})
   const [temporaryPasswords, setTemporaryPasswords] = useState<Record<string, string>>({})
   const [deletingClientId, setDeletingClientId] = useState<string | null>(null)
-  const [savedClientNotes, setSavedClientNotes] = useState<Record<string, boolean>>({})
+  const [savingFlags, setSavingFlags] = useState<Record<string, boolean>>({})
+  const [savedIndicators, setSavedIndicators] = useState<Record<string, boolean>>({})
+  const [balanceBusy, setBalanceBusy] = useState<Record<string, boolean>>({})
+
+  function flashSaved(key: string) {
+    setSavedIndicators(prev => ({ ...prev, [key]: true }))
+    window.setTimeout(() => {
+      setSavedIndicators(prev => ({ ...prev, [key]: false }))
+    }, 2200)
+  }
+
+  function getClientTab(clientId: string): ClientCardTab {
+    return activeClientTabs[clientId] || 'finance'
+  }
+
+  function setClientTab(clientId: string, tab: ClientCardTab) {
+    setActiveClientTabs(prev => ({ ...prev, [clientId]: tab }))
+  }
 
   // Pagination & Filtering state
   const [searchQuery, setSearchQuery] = useState('')
@@ -2748,7 +2809,7 @@ function ClientsView({
       setPage(1)
     }
   }, [selectedClientIdFromParent])
-  const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg' | 'api'>('all')
+  const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg' | 'direct' | 'custom_prices' | 'vip' | 'api'>('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(() => {
     try {
@@ -2821,6 +2882,18 @@ function ClientsView({
     () => clients.filter(c => (c.usage?.money?.available_kopeks || 0) > 0).length,
     [clients]
   )
+  const directClientsCount = useMemo(
+    () => clients.filter(c => Boolean(c.direct_payment_only)).length,
+    [clients]
+  )
+  const customPricesClientsCount = useMemo(
+    () => clients.filter(c => clientHasCustomTariffs(c)).length,
+    [clients]
+  )
+  const vipClientsCount = useMemo(
+    () => clients.filter(c => Boolean(c.allowed_custom_batch_report)).length,
+    [clients]
+  )
   const apiClientsCount = useMemo(
     () => clients.filter(c => c.has_api_key || (c.api_keys && c.api_keys.length > 0) || c.source === 'api').length,
     [clients]
@@ -2839,6 +2912,12 @@ function ClientsView({
         if (!realAccounts.length && !client.telegram_id) return false
       } else if (clientFilter === 'balance') {
         if (!client.usage?.money || client.usage.money.available_kopeks <= 0) return false
+      } else if (clientFilter === 'direct') {
+        if (!client.direct_payment_only) return false
+      } else if (clientFilter === 'custom_prices') {
+        if (!clientHasCustomTariffs(client)) return false
+      } else if (clientFilter === 'vip') {
+        if (!client.allowed_custom_batch_report) return false
       } else if (clientFilter === 'api') {
         if (!client.has_api_key && (!client.api_keys || client.api_keys.length === 0) && client.source !== 'api') return false
       }
@@ -2878,15 +2957,43 @@ function ClientsView({
   const shownTo = Math.min(currentPage * pageSize, filteredClients.length)
   const pagedClients = filteredClients.slice((currentPage - 1) * pageSize, currentPage * pageSize)
 
-  async function patchClient(client: Client, patch: Partial<Client>) {
-    await api(`/api/clients/${client.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
-    await onChange()
+  async function patchClient(client: Client, patch: Partial<Client>, savedKey?: string) {
+    const busyKey = savedKey || `${client.id}:patch`
+    onOptimisticClientPatch?.(client.id, patch)
+    onClientMutationState?.(1)
+    setSavingFlags(prev => ({ ...prev, [busyKey]: true }))
+    try {
+      const updated = await api<Client>(`/api/clients/${client.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      })
+      if (updated && updated.id && onClientUpdated) {
+        onClientUpdated(updated)
+      } else {
+        await onChange()
+      }
+      if (savedKey) flashSaved(savedKey)
+    } catch (err) {
+      if (onClientUpdated) onClientUpdated(client)
+      alert(`Не удалось сохранить настройку: ${formatError(err)}`)
+    } finally {
+      setSavingFlags(prev => ({ ...prev, [busyKey]: false }))
+      onClientMutationState?.(-1)
+    }
   }
-  function patchClientSupplierTarget(client: Client, input: HTMLInputElement) {
-    const value = Math.floor(Number(input.value))
-    const nextValue = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0
-    input.value = String(nextValue)
-    if (nextValue !== (client.supplier_target_min || 0)) void patchClient(client, { supplier_target_min: nextValue })
+  async function saveClientSupplierTarget(client: Client, rawValue?: string) {
+    const raw = rawValue ?? supplierTargetDrafts[client.id] ?? (client.supplier_target_min ? String(client.supplier_target_min) : '')
+    const trimmed = String(raw).trim()
+    const parsed = trimmed === '' ? 0 : Math.floor(Number(trimmed))
+    const nextValue = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0
+    setSupplierTargetDrafts(prev => {
+      const next = { ...prev }
+      delete next[client.id]
+      return next
+    })
+    if (nextValue !== (client.supplier_target_min || 0)) {
+      await patchClient(client, { supplier_target_min: nextValue }, `${client.id}:supplier_target`)
+    }
   }
   async function deleteClient(client: Client, event?: React.MouseEvent) {
     const label = client.name || client.username || client.telegram_id || 'этого клиента'
@@ -3014,8 +3121,10 @@ function ClientsView({
     const idempotencyKey = balanceRequestIds.current[requestSlot] || crypto.randomUUID()
     balanceRequestIds.current[requestSlot] = idempotencyKey
     balanceRequestsInFlight.current[requestSlot] = true
+    setBalanceBusy(prev => ({ ...prev, [requestSlot]: true }))
+    onClientMutationState?.(1)
     try {
-      await api(`/api/clients/${client.id}/billing/grants`, {
+      const res = await api<{ client?: Client }>(`/api/clients/${client.id}/billing/grants`, {
         method: 'POST',
         body: JSON.stringify({
           kind: 'money',
@@ -3030,9 +3139,18 @@ function ClientsView({
       })
       delete balanceRequestIds.current[requestSlot]
       setGrantForms({ ...grantForms, [client.id]: { ...draft, amount_rub: '' } })
-      await onChange()
+      if (res?.client && onClientUpdated) {
+        onClientUpdated(res.client)
+      } else {
+        await onChange()
+      }
+      flashSaved(`${client.id}:balance_topup`)
+    } catch (err) {
+      alert(`Ошибка пополнения баланса: ${formatError(err)}`)
     } finally {
       delete balanceRequestsInFlight.current[requestSlot]
+      setBalanceBusy(prev => ({ ...prev, [requestSlot]: false }))
+      onClientMutationState?.(-1)
     }
   }
   async function debitClientBalance(client: Client) {
@@ -3045,8 +3163,10 @@ function ClientsView({
     const idempotencyKey = balanceRequestIds.current[requestSlot] || crypto.randomUUID()
     balanceRequestIds.current[requestSlot] = idempotencyKey
     balanceRequestsInFlight.current[requestSlot] = true
+    setBalanceBusy(prev => ({ ...prev, [requestSlot]: true }))
+    onClientMutationState?.(1)
     try {
-      await api(`/api/clients/${client.id}/billing/grants`, {
+      const res = await api<{ client?: Client }>(`/api/clients/${client.id}/billing/grants`, {
         method: 'POST',
         body: JSON.stringify({
           kind: 'money',
@@ -3060,23 +3180,77 @@ function ClientsView({
       })
       delete balanceRequestIds.current[requestSlot]
       setGrantForms({ ...grantForms, [client.id]: { ...draft, debit_amount_rub: '' } })
-      await onChange()
+      if (res?.client && onClientUpdated) {
+        onClientUpdated(res.client)
+      } else {
+        await onChange()
+      }
+      flashSaved(`${client.id}:balance_debit`)
+    } catch (err) {
+      alert(`Ошибка списания: ${formatError(err)}`)
     } finally {
       delete balanceRequestsInFlight.current[requestSlot]
+      setBalanceBusy(prev => ({ ...prev, [requestSlot]: false }))
+      onClientMutationState?.(-1)
     }
   }
   async function saveClientTariffOverride(client: Client, kind: string, fallbackKopeks: number) {
     const key = priceDraftKey(client, kind)
-    const valueRub = Number(priceForms[key] ?? kopeksToRubles(fallbackKopeks))
+    const valueRub = Number(String(priceForms[key] ?? kopeksToRubles(fallbackKopeks)).replace(',', '.'))
     if (!Number.isFinite(valueRub) || valueRub < 0) return
-    await api(`/api/clients/${client.id}/tariff-overrides/${kind}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ kind, price_kopeks: rublesToKopeks(valueRub), is_enabled: valueRub > 0, note: '' }),
-    })
-    const nextForms = { ...priceForms }
-    delete nextForms[key]
-    setPriceForms(nextForms)
-    await onChange()
+    const saveKey = `price:${key}`
+    setSavingFlags(prev => ({ ...prev, [saveKey]: true }))
+    onClientMutationState?.(1)
+    try {
+      const res = await api<{ success?: boolean; client?: Client }>(`/api/clients/${client.id}/tariff-overrides/${kind}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ kind, price_kopeks: rublesToKopeks(valueRub), is_enabled: valueRub > 0, note: '' }),
+      })
+      setPriceForms(prev => {
+        const nextForms = { ...prev }
+        delete nextForms[key]
+        return nextForms
+      })
+      if (res?.client && onClientUpdated) {
+        onClientUpdated(res.client)
+      } else {
+        await onChange()
+      }
+      flashSaved(saveKey)
+    } catch (err) {
+      alert(`Не удалось сохранить цену: ${formatError(err)}`)
+    } finally {
+      setSavingFlags(prev => ({ ...prev, [saveKey]: false }))
+      onClientMutationState?.(-1)
+    }
+  }
+  async function resetClientTariffOverride(client: Client, kind: string) {
+    const key = priceDraftKey(client, kind)
+    const saveKey = `price:${key}`
+    setSavingFlags(prev => ({ ...prev, [saveKey]: true }))
+    onClientMutationState?.(1)
+    try {
+      const res = await api<{ success?: boolean; client?: Client }>(`/api/clients/${client.id}/tariff-overrides/${kind}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ kind, price_kopeks: 0, is_enabled: false, note: '' }),
+      })
+      setPriceForms(prev => {
+        const nextForms = { ...prev }
+        delete nextForms[key]
+        return nextForms
+      })
+      if (res?.client && onClientUpdated) {
+        onClientUpdated(res.client)
+      } else {
+        await onChange()
+      }
+      flashSaved(saveKey)
+    } catch (err) {
+      alert(`Не удалось сбросить цену: ${formatError(err)}`)
+    } finally {
+      setSavingFlags(prev => ({ ...prev, [saveKey]: false }))
+      onClientMutationState?.(-1)
+    }
   }
   async function verifyWebUserEmail(client: Client, user: WebUser) {
     await api(`/api/clients/${client.id}/web-users/${user.id}/verify-email`, { method: 'POST' })
@@ -3107,11 +3281,21 @@ function ClientsView({
   }
   async function patchClientNote(client: Client, value: string) {
     if (value === (client.notes || '')) return
-    await patchClient(client, { notes: value })
-    setSavedClientNotes(prev => ({ ...prev, [client.id]: true }))
-    setTimeout(() => {
-      setSavedClientNotes(prev => ({ ...prev, [client.id]: false }))
-    }, 2200)
+    await patchClient(client, { notes: value }, `${client.id}:note`)
+    setNoteDrafts(prev => {
+      const next = { ...prev }
+      delete next[client.id]
+      return next
+    })
+  }
+  async function patchClientPrompt(client: Client, value: string) {
+    if (value === (client.custom_report_prompt || '')) return
+    await patchClient(client, { custom_report_prompt: value }, `${client.id}:prompt`)
+    setPromptDrafts(prev => {
+      const next = { ...prev }
+      delete next[client.id]
+      return next
+    })
   }
   return (
     <section className="stack">
@@ -3325,6 +3509,63 @@ function ClientsView({
             </button>
             <button
               type="button"
+              className={`ghost small-text ${clientFilter === 'direct' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'direct' ? '#059669' : 'transparent',
+                color: clientFilter === 'direct' ? '#fff' : '#047857',
+                border: '1px solid #a7f3d0',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('direct')
+                setPage(1)
+              }}
+            >
+              💎 Прямая ({directClientsCount})
+            </button>
+            <button
+              type="button"
+              className={`ghost small-text ${clientFilter === 'custom_prices' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'custom_prices' ? '#b45309' : 'transparent',
+                color: clientFilter === 'custom_prices' ? '#fff' : '#b45309',
+                border: '1px solid #fde68a',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('custom_prices')
+                setPage(1)
+              }}
+            >
+              ⭐ Спеццены ({customPricesClientsCount})
+            </button>
+            <button
+              type="button"
+              className={`ghost small-text ${clientFilter === 'vip' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'vip' ? '#4f46e5' : 'transparent',
+                color: clientFilter === 'vip' ? '#fff' : '#4338ca',
+                border: '1px solid #c7d2fe',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('vip')
+                setPage(1)
+              }}
+            >
+              ⚡ VIP ({vipClientsCount})
+            </button>
+            <button
+              type="button"
               className={`ghost small-text ${clientFilter === 'api' ? 'active' : ''}`}
               style={{
                 background: clientFilter === 'api' ? '#7e22ce' : 'transparent',
@@ -3379,15 +3620,31 @@ function ClientsView({
           const debitAmountValid = Number.isFinite(debitAmountRub) && debitAmountRub > 0
           const connectedCount = accounts.filter(account => !account.is_pending).length
           const pendingCount = accounts.filter(account => account.is_pending).length
+          const hasCustomPrices = clientHasCustomTariffs(client)
+          const customPricesCount = clientCustomTariffsCount(client)
+          const activeTab = getClientTab(client.id)
+          const noteValue = noteDrafts[client.id] ?? (client.notes || '')
+          const noteDirty = noteValue !== (client.notes || '')
+          const promptValue = promptDrafts[client.id] ?? (client.custom_report_prompt || '')
+          const promptDirty = promptValue !== (client.custom_report_prompt || '')
+          const supplierTargetValue = supplierTargetDrafts[client.id] ?? (client.supplier_target_min ? String(client.supplier_target_min) : '')
+          const supplierTargetDirty = supplierTargetDrafts[client.id] !== undefined && Number(supplierTargetValue || 0) !== (client.supplier_target_min || 0)
           return (
             <article className={`client-card compact ${expanded ? 'expanded' : ''} ${isNewClient ? 'is-new-client' : ''}`} key={client.id}>
-              <div className="client-card-head compact">
+              <div
+                className="client-card-head compact clickable"
+                onClick={() => setExpandedClients(prev => ({ ...prev, [client.id]: !expanded }))}
+              >
                 <div className="client-title-row compact">
                   <button
+                    type="button"
                     className="client-expand-button compact"
                     title={expanded ? 'Свернуть карточку клиента' : 'Открыть карточку клиента'}
                     aria-expanded={expanded}
-                    onClick={() => setExpandedClients({ ...expandedClients, [client.id]: !expanded })}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setExpandedClients(prev => ({ ...prev, [client.id]: !expanded }))
+                    }}
                   >
                     {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   </button>
@@ -3404,22 +3661,36 @@ function ClientsView({
                           Новый
                         </span>
                       )}
+                      {client.direct_payment_only && (
+                        <span
+                          className="client-flag-badge direct"
+                          title="ЮKassa и выставление счетов скрыты: клиент пополняет баланс напрямую через менеджера. Можно снова включить во вкладке «Финансы и оплата»."
+                        >
+                          💎 Прямая оплата
+                        </span>
+                      )}
+                      {hasCustomPrices && (
+                        <span
+                          className="client-flag-badge custom-price"
+                          title={`У клиента настроены индивидуальные цены (${customPricesCount || 'активны'})`}
+                        >
+                          ⭐ Спеццены{customPricesCount > 0 ? ` (${customPricesCount})` : ''}
+                        </span>
+                      )}
+                      {client.allowed_custom_batch_report && (
+                        <span
+                          className="client-flag-badge vip"
+                          title={client.custom_report_separate_tab
+                            ? 'VIP экспресс-оценка (отдельная вкладка, до 60 закупок)'
+                            : 'VIP экспресс-оценка (подменяет «Анализ документации», до 60 закупок)'}
+                        >
+                          ⚡ VIP
+                        </span>
+                      )}
                       {(client.has_api_key || (client.api_keys && client.api_keys.length > 0)) && (
                         <span
-                          className="badge-api-client"
-                          style={{
-                            background: '#ede9fe',
-                            color: '#6d28d9',
-                            border: '1px solid #c4b5fd',
-                            borderRadius: 4,
-                            padding: '1px 6px',
-                            fontSize: '0.72rem',
-                            fontWeight: 600,
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 3,
-                            cursor: onNavigateToMcp ? 'pointer' : 'default',
-                          }}
+                          className="client-flag-badge api"
+                          style={{ cursor: onNavigateToMcp ? 'pointer' : 'default' }}
                           title="Подключен API-доступ (TenderLex API / CRM). Нажмите для перехода в MCP & API"
                           onClick={(e) => {
                             if (onNavigateToMcp) {
@@ -3464,7 +3735,7 @@ function ClientsView({
                   {pendingCount > 0 && <span className="pill pending">Ожидают: {pendingCount}</span>}
                   {client.usage?.money && <span className="pill balance">{formatMoney(client.usage.money.available_kopeks)}</span>}
                 </div>
-                <div className="client-state">
+                <div className="client-state" onClick={(e) => e.stopPropagation()}>
                   {onNavigateToClientDialog && (
                     <button
                       type="button"
@@ -3511,469 +3782,721 @@ function ClientsView({
                 </div>
               </div>
 
-              {expanded && <div className="client-card-grid">
-                <div className="client-section client-telegram-section">
-                  <div className="section-head">
-                    <h3>Доступы</h3>
-                    <span>
-                      {[
-                        realWebUsers.length ? `Web: ${realWebUsers.length}` : '',
-                        accounts.length ? `Telegram: ${accounts.length}` : '',
-                        client.api_keys && client.api_keys.length ? `API: ${client.api_keys.length}` : '',
-                      ].filter(Boolean).join(' · ') || 'нет'}
-                    </span>
+              {expanded && (
+                <div className="client-card-body">
+                  <div className="client-tabs" role="tablist" aria-label="Разделы карточки клиента">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === 'finance'}
+                      className={`client-tab-btn ${activeTab === 'finance' ? 'active' : ''}`}
+                      onClick={() => setClientTab(client.id, 'finance')}
+                    >
+                      <Coins size={14} />
+                      <span>Финансы и оплата</span>
+                      {client.direct_payment_only && <span className="client-tab-dot direct" title="Только прямая оплата" />}
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === 'pricing'}
+                      className={`client-tab-btn ${activeTab === 'pricing' ? 'active' : ''}`}
+                      onClick={() => setClientTab(client.id, 'pricing')}
+                    >
+                      <SlidersHorizontal size={14} />
+                      <span>Цены и функции</span>
+                      {customPricesCount > 0 && <span className="client-tab-count">{customPricesCount}</span>}
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === 'access'}
+                      className={`client-tab-btn ${activeTab === 'access' ? 'active' : ''}`}
+                      onClick={() => setClientTab(client.id, 'access')}
+                    >
+                      <KeyRound size={14} />
+                      <span>Доступы и заметка</span>
+                      <span className="client-tab-count neutral">{realWebUsers.length + accounts.length + (client.api_keys?.length || 0)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === 'vip'}
+                      className={`client-tab-btn ${activeTab === 'vip' ? 'active' : ''}`}
+                      onClick={() => setClientTab(client.id, 'vip')}
+                    >
+                      <Crown size={14} />
+                      <span>VIP и управление</span>
+                      {client.allowed_custom_batch_report && <span className="client-tab-dot vip" title="VIP активен" />}
+                    </button>
                   </div>
-                  <div className="access-subsection">
-                    <div className="subsection-label">Web-доступ</div>
-                    {webUsers.length > 0 ? (
-                      <div className="web-user-list">
-                        {webUsers.map(user => {
-                          const isSyntheticTg = isSyntheticTelegramEmail(user.email)
-                          return (
-                          <div className="web-user-row" key={user.id}>
-                            <div>
-                              <strong>{isSyntheticTg ? 'Web-вход через Telegram' : user.email}</strong>
-                              <small>
-                                {[
-                                  user.name || 'web-кабинет',
-                                  user.created_at ? `рег. ${formatDate(user.created_at)}` : '',
-                                  !isSyntheticTg ? (user.is_email_verified ? 'email подтверждён' : 'email не подтверждён') : '',
-                                  user.last_login_at ? `вход ${formatDate(user.last_login_at)}` : 'входа ещё не было',
-                                ].filter(Boolean).join(' · ')}
-                              </small>
-                            </div>
-                            <div className="web-user-actions">
-                              {!user.is_active && <StatusBadge status="disabled" />}
-                              {!isSyntheticTg && !user.is_email_verified && (
-                                <button className="small-text" onClick={() => void verifyWebUserEmail(client, user)}>
-                                  <CheckCircle2 size={14} />Подтвердить
-                                </button>
-                              )}
-                              <button
-                                className="icon-button small danger"
-                                title="Удалить web-кабинет"
-                                onClick={() => void deleteWebUser(client, user)}
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
-                          </div>
-                          )
-                        })}
-                      </div>
-                    ) : (
-                      <div className="inline-note">Web-кабинет не привязан.</div>
-                    )}
-                  </div>
-                  <div className="access-subsection">
-                    <div className="subsection-label">Telegram-аккаунты</div>
-                    <div className="account-edit-list">
-                      {accounts.map(account => {
-                        const edit = accountEditDraft(account)
-                        return (
-                          <div className="account-edit-row" key={account.id}>
-                            <label className="mini-field">
-                              <span>Ник</span>
-                              <input value={edit.username} placeholder="@manager" onChange={e => setAccountEditDraft(account, { username: e.target.value })} />
-                            </label>
-                            <label className="mini-field">
-                              <span>Telegram ID</span>
-                              <input value={edit.telegram_id} placeholder={account.is_pending ? 'Введите ID' : 'ID'} onChange={e => setAccountEditDraft(account, { telegram_id: e.target.value })} />
-                            </label>
-                            <label className="mini-field">
-                              <span>Имя</span>
-                              <input value={edit.name} placeholder="Имя менеджера" onChange={e => setAccountEditDraft(account, { name: e.target.value })} />
-                            </label>
-                            <div className="account-edit-actions">
-                              {account.is_pending && <StatusBadge status="account_pending" />}
-                              {!account.is_pending && !account.is_active && <StatusBadge status="disabled" />}
-                              <button className="small-text" onClick={() => void saveAccount(client, account)}>
-                                <Save size={14} />Сохранить
-                              </button>
-                              <button
-                                className="icon-button small danger"
-                                title="Удалить Telegram-аккаунт"
-                                onClick={() => void deleteAccount(client, account)}
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
-                            {account.created_at && (
-                              <div className="account-meta-line">
-                                <small>Зарегистрирован / привязан: {formatDate(account.created_at)}</small>
+
+                  {activeTab === 'finance' && (
+                    <div className="client-tab-panel client-panel-grid two-col">
+                      <div className="client-panel-col">
+                        <div className="client-subcard">
+                          <div className="client-subcard-head">
+                            <h4>Баланс и операции</h4>
+                            {client.usage?.money && (
+                              <div className="client-balance-hero">
+                                <strong>{formatMoney(client.usage.money.available_kopeks)}</strong>
+                                {client.usage.money.reserved_kopeks > 0 && (
+                                  <span className="client-balance-reserved" title="Средства удержаны под задачи в работе">
+                                    В работе: {formatMoney(client.usage.money.reserved_kopeks)}
+                                  </span>
+                                )}
                               </div>
                             )}
                           </div>
-                        )
-                      })}
-                      {!accounts.length && <div className="inline-note">Аккаунты пока не добавлены.</div>}
-                      <details className="compact-form-details account-add-details">
-                        <summary>Добавить Telegram</summary>
-                        <div className="account-add">
-                          <input placeholder="@username" value={draft.username} onChange={e => setAccountDraft(client, { username: e.target.value })} />
-                          <input placeholder="ID вручную" value={draft.telegram_id} onChange={e => setAccountDraft(client, { telegram_id: e.target.value })} />
-                          <input placeholder="Имя" value={draft.name} onChange={e => setAccountDraft(client, { name: e.target.value })} />
-                          <button className="icon-button small" title="Добавить Telegram-аккаунт" onClick={() => void createAccount(client)} disabled={!draft.telegram_id.trim() && !draft.username.trim()}><Plus size={16} /></button>
-                        </div>
-                      </details>
-                    </div>
-                  </div>
-                  <div className="access-subsection">
-                    <div className="subsection-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span>API-доступ (CRM / Интеграции)</span>
-                      {onNavigateToMcp && (
-                        <button
-                          type="button"
-                          className="small-text"
-                          style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
-                          onClick={onNavigateToMcp}
-                        >
-                          Управление в MCP & API →
-                        </button>
-                      )}
-                    </div>
-                    {client.api_keys && client.api_keys.length > 0 ? (
-                      <div className="account-edit-list">
-                        {client.api_keys.map(k => (
-                          <div className="account-edit-row" key={k.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', background: '#f8fafc', borderRadius: 6, marginBottom: 4 }}>
-                            <div>
-                              <strong style={{ fontFamily: 'monospace', fontSize: '0.84rem' }}>{k.key_prefix}...</strong>
-                              <span style={{ marginLeft: 8, fontSize: '0.82rem', color: '#475569' }}>{k.name || 'API Key'}</span>
-                              <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
-                                Всего вызовов: <strong>{k.total_spent || 0}</strong> · Списание с единого баланса клиента
+                          {(() => {
+                            const quickChips = activeDepositPackages.length > 0
+                              ? activeDepositPackages.map(pkg => {
+                                  const priceRub = Math.round(kopeksToRubles(pkg.price_kopeks))
+                                  const bonusRub = Math.round(kopeksToRubles(pkg.bonus_kopeks || 0))
+                                  const formattedPrice = `${priceRub.toLocaleString('ru-RU')} ₽`
+                                  const bonusHint = !hasCustomPrices && bonusRub > 0
+                                    ? ` (+${bonusRub >= 1000 && bonusRub % 100 === 0 ? `${(bonusRub / 1000).toFixed(bonusRub % 1000 === 0 ? 0 : 1)}k` : bonusRub})`
+                                    : ''
+                                  return { label: `${formattedPrice}${bonusHint}`, val: String(priceRub) }
+                                })
+                              : (hasCustomPrices
+                                  ? [
+                                      { label: '1 000 ₽', val: '1000' },
+                                      { label: '3 000 ₽', val: '3000' },
+                                      { label: '5 000 ₽', val: '5000' },
+                                      { label: '10 000 ₽', val: '10000' },
+                                      { label: '25 000 ₽', val: '25000' },
+                                    ]
+                                  : [
+                                      { label: '1 000 ₽', val: '1000' },
+                                      { label: '3 000 ₽ (+500)', val: '3000' },
+                                      { label: '5 000 ₽ (+1.5k)', val: '5000' },
+                                      { label: '10 000 ₽ (+4k)', val: '10000' },
+                                      { label: '25 000 ₽ (+12.5k)', val: '25000' },
+                                    ])
+
+                            const amt = Number(String(grant.amount_rub || 0).replace(',', '.'))
+                            const bonus = hasCustomPrices ? 0 : calculateDynamicBonusRub(amt)
+                            const topupBusy = Boolean(balanceBusy[`${client.id}:grant`])
+                            const debitBusy = Boolean(balanceBusy[`${client.id}:debit`])
+
+                            return (
+                              <div className="balance-adjust-panel">
+                                <div className="client-chip-row">
+                                  {quickChips.map(p => (
+                                    <button
+                                      key={p.val}
+                                      type="button"
+                                      className={`client-amount-chip ${grant.amount_rub === p.val ? 'active' : ''}`}
+                                      onClick={() => setGrantDraft(client, { amount_rub: p.val })}
+                                    >
+                                      {p.label}
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="balance-adjust-row">
+                                  <label className="mini-field">
+                                    <span>
+                                      Пополнить баланс, ₽
+                                      {savedIndicators[`${client.id}:balance_topup`] && <em className="saved-pill">Пополнено</em>}
+                                    </span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={1}
+                                      placeholder="Введите сумму"
+                                      value={grant.amount_rub}
+                                      onChange={e => setGrantDraft(client, { amount_rub: e.currentTarget.value })}
+                                      onKeyDown={e => {
+                                        if (e.key === 'Enter' && grantAmountValid && !topupBusy) void topUpClientBalance(client)
+                                      }}
+                                    />
+                                    {amt > 0 && (
+                                      hasCustomPrices ? (
+                                        <small className="balance-hint neutral">
+                                          Спецтариф: зачислится ровно {amt.toLocaleString('ru-RU')} ₽ (без бонуса)
+                                        </small>
+                                      ) : bonus > 0 ? (
+                                        <small className="balance-hint emerald">
+                                          Итого: {(amt + bonus).toLocaleString('ru-RU')} ₽ ({amt.toLocaleString('ru-RU')} ₽ + бонус {bonus.toLocaleString('ru-RU')} ₽)
+                                        </small>
+                                      ) : null
+                                    )}
+                                  </label>
+                                  <button type="button" onClick={() => void topUpClientBalance(client)} disabled={!grantAmountValid || topupBusy}>
+                                    <Plus size={15} />{topupBusy ? '...' : 'Пополнить'}
+                                  </button>
+                                </div>
+                                <div className="balance-adjust-row">
+                                  <label className="mini-field">
+                                    <span>
+                                      Списать с баланса, ₽
+                                      {savedIndicators[`${client.id}:balance_debit`] && <em className="saved-pill">Списано</em>}
+                                    </span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={1}
+                                      placeholder="Введите сумму"
+                                      value={grant.debit_amount_rub || ''}
+                                      onChange={e => setGrantDraft(client, { debit_amount_rub: e.currentTarget.value })}
+                                      onKeyDown={e => {
+                                        if (e.key === 'Enter' && debitAmountValid && !debitBusy) void debitClientBalance(client)
+                                      }}
+                                    />
+                                  </label>
+                                  <button type="button" className="danger" onClick={() => void debitClientBalance(client)} disabled={!debitAmountValid || debitBusy}>
+                                    <Minus size={15} />{debitBusy ? '...' : 'Списать'}
+                                  </button>
+                                </div>
                               </div>
+                            )
+                          })()}
+                        </div>
+
+                        <div className={`client-subcard client-payment-mode-card ${client.direct_payment_only ? 'is-direct' : ''}`}>
+                          <div className="client-subcard-head">
+                            <h4>Способ оплаты клиента</h4>
+                            {savedIndicators[`${client.id}:direct_payment`] && <span className="saved-pill">Сохранено</span>}
+                          </div>
+                          <div className="client-mode-segmented">
+                            <button
+                              type="button"
+                              className={`client-mode-opt ${!client.direct_payment_only ? 'active' : ''}`}
+                              onClick={() => {
+                                if (client.direct_payment_only) {
+                                  void patchClient(client, { direct_payment_only: false }, `${client.id}:direct_payment`)
+                                }
+                              }}
+                            >
+                              <CreditCard size={14} />
+                              <span>Официально (ЮKassa + счёт)</span>
+                            </button>
+                            <button
+                              type="button"
+                              className={`client-mode-opt direct ${client.direct_payment_only ? 'active' : ''}`}
+                              onClick={() => {
+                                if (!client.direct_payment_only) {
+                                  void patchClient(client, { direct_payment_only: true }, `${client.id}:direct_payment`)
+                                }
+                              }}
+                            >
+                              <Sparkles size={14} />
+                              <span>Только напрямую через менеджера</span>
+                            </button>
+                          </div>
+                          {client.direct_payment_only ? (
+                            <div className="client-notice emerald">
+                              ЮKassa и выставление счетов скрыты в личном кабинете и Telegram-боте — клиент видит персональный тариф и кнопку связи с менеджером. Официальную оплату можно вернуть одним кликом слева.
                             </div>
-                            <div className="account-edit-actions">
-                              {!k.is_active ? <StatusBadge status="disabled" /> : <StatusBadge status="active" />}
+                          ) : hasCustomPrices ? (
+                            <div className="client-notice amber">
+                              У клиента настроены индивидуальные цены, но ЮKassa и счета сейчас открыты. Если спецтариф действует только при прямом переводе — переключите режим справа.
+                            </div>
+                          ) : (
+                            <p className="client-helper-text">
+                              Клиент может самостоятельно оплачивать баланс через ЮKassa (карта, СБП) или выставлять счёт для юрлица.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="client-panel-col">
+                        <div className="client-subcard client-history-card">
+                          <div className="client-subcard-head">
+                            <h4>История баланса</h4>
+                            <span className="client-subcard-meta">{client.recent_billing?.length || 0} последних операций</span>
+                          </div>
+                          <div className="client-history-scroll">
+                            {client.recent_billing?.length ? (
+                              <div className="usage-history">
+                                {client.recent_billing.map(item => (
+                                  <div className="usage-history-row" key={item.id}>
+                                    <div>
+                                      <strong>{item.operation_label}: {item.kind_label}</strong>
+                                      <small>{formatDate(item.created_at)} · {item.note || item.created_by}</small>
+                                    </div>
+                                    <span>{item.amount_kopeks ? formatPrice(item.amount_kopeks) : item.units}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="client-empty-box">Операций по балансу пока нет.</div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {activeTab === 'pricing' && (
+                    <div className="client-tab-panel">
+                      {client.usage?.effective_prices && (
+                        <div className="client-subcard">
+                          <div className="client-subcard-head">
+                            <div>
+                              <h4>Индивидуальные цены</h4>
+                              <p className="client-helper-text">
+                                Комбо «Анализ + поиск» считается автоматически из суммы двух цен. Нажмите дискету для сохранения или «Сброс» для возврата к базовой цене.
+                              </p>
+                            </div>
+                            <span className={`client-status-pill ${customPricesCount > 0 ? 'emerald' : 'neutral'}`}>
+                              {customPricesCount > 0 ? `Личных цен: ${customPricesCount} из 6` : 'Стандартные цены'}
+                            </span>
+                          </div>
+
+                          <div className="client-price-grid">
+                            {(['supplier_search', 'exact_product', 'procurement_report', 'supplier_search_extra', 'price_monitoring', 'custom_batch_report'] as const).map(kind => {
+                              const price = client.usage?.effective_prices?.[kind]
+                              const fallbackKopeks = price?.price_kopeks || 0
+                              const isOverride = price?.source === 'client_override'
+                              const key = priceDraftKey(client, kind)
+                              const saveKey = `price:${key}`
+                              const isSaving = Boolean(savingFlags[saveKey])
+                              const isSaved = Boolean(savedIndicators[saveKey])
+                              const currentDraft = priceDraftValue(client, kind, fallbackKopeks)
+                              const isDirty = priceForms[key] !== undefined && Number(String(priceForms[key]).replace(',', '.')) !== kopeksToRubles(fallbackKopeks)
+                              return (
+                                <div className={`client-price-tile ${isOverride ? 'is-custom' : ''}`} key={kind}>
+                                  <div className="client-price-tile-head">
+                                    <span className="client-price-label">{priceBillingLabel(kind)}</span>
+                                    <span className={`client-price-source ${isOverride ? 'custom' : 'default'}`}>
+                                      {isSaved ? '✓ Сохранено' : isOverride ? 'Личная' : 'Стандарт'}
+                                    </span>
+                                  </div>
+                                  <div className="client-price-controls">
+                                    <div className="client-price-input-wrap">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        step={1}
+                                        value={currentDraft}
+                                        onChange={e => setPriceDraftValue(client, kind, e.currentTarget.value)}
+                                        onKeyDown={e => {
+                                          if (e.key === 'Enter') void saveClientTariffOverride(client, kind, fallbackKopeks)
+                                        }}
+                                      />
+                                      <span className="client-price-rub">₽</span>
+                                    </div>
+                                    <button
+                                      className={`icon-button small ${isDirty ? 'accent' : ''}`}
+                                      type="button"
+                                      title="Сохранить индивидуальную цену"
+                                      disabled={isSaving}
+                                      onClick={() => void saveClientTariffOverride(client, kind, fallbackKopeks)}
+                                    >
+                                      <Save size={14} />
+                                    </button>
+                                    {isOverride && (
+                                      <button
+                                        className="ghost small-text client-price-reset"
+                                        type="button"
+                                        title="Сбросить к стандартной цене"
+                                        disabled={isSaving}
+                                        onClick={() => void resetClientTariffOverride(client, kind)}
+                                      >
+                                        <RotateCw size={12} />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="client-subcard">
+                        <div className="client-subcard-head">
+                          <h4>Дополнительные функции и параметры поиска</h4>
+                        </div>
+                        <div className="client-toggles-grid">
+                          <label className={`client-toggle-card ${client.allowed_price_monitoring ? 'is-on' : ''}`}>
+                            <div className="client-toggle-info">
+                              <strong>Доступ к «Мониторингу цен»</strong>
+                              <small>Открывает клиенту модуль мониторинга цен в кабинете</small>
+                            </div>
+                            <span className="client-switch-wrap">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(client.allowed_price_monitoring)}
+                                onChange={e => void patchClient(client, { allowed_price_monitoring: e.currentTarget.checked }, `${client.id}:pm`)}
+                              />
+                              <span className="client-switch-track" />
+                            </span>
+                          </label>
+
+                          <label className={`client-toggle-card ${client.allowed_geo_radius ? 'is-on' : ''}`}>
+                            <div className="client-toggle-info">
+                              <strong>Поиск в радиусе города</strong>
+                              <small>Разрешает ограничивать поиск поставщиков вокруг выбранного города</small>
+                            </div>
+                            <span className="client-switch-wrap">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(client.allowed_geo_radius)}
+                                onChange={e => void patchClient(client, { allowed_geo_radius: e.currentTarget.checked }, `${client.id}:geo`)}
+                              />
+                              <span className="client-switch-track" />
+                            </span>
+                          </label>
+
+                          <div className="client-toggle-card supplier-target-card">
+                            <div className="client-toggle-info">
+                              <strong>
+                                Минимум поставщиков в выдаче
+                                {savedIndicators[`${client.id}:supplier_target`] && <em className="saved-pill">Сохранено</em>}
+                              </strong>
+                              <small>Пусто или 0 — использовать общее значение из настроек системы</small>
+                            </div>
+                            <div className="client-inline-save-group">
+                              <input
+                                className="supplier-target-input"
+                                type="number"
+                                min={0}
+                                max={100}
+                                step={1}
+                                placeholder="по умолчанию"
+                                value={supplierTargetValue}
+                                onChange={e => setSupplierTargetDrafts(prev => ({ ...prev, [client.id]: e.currentTarget.value }))}
+                                onBlur={() => void saveClientSupplierTarget(client)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') void saveClientSupplierTarget(client)
+                                }}
+                              />
+                              {supplierTargetDirty && (
+                                <button
+                                  type="button"
+                                  className="icon-button small accent"
+                                  title="Сохранить минимум поставщиков"
+                                  onClick={() => void saveClientSupplierTarget(client)}
+                                >
+                                  <Save size={14} />
+                                </button>
+                              )}
                             </div>
                           </div>
-                        ))}
+                        </div>
                       </div>
-                    ) : (
-                      <div className="inline-note" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span>API-ключ пока не привязан.</span>
-                        {onNavigateToMcp && (
+                    </div>
+                  )}
+
+                  {activeTab === 'access' && (
+                    <div className="client-tab-panel">
+                      <div className="client-panel-grid two-col">
+                        <div className="client-subcard">
+                          <div className="client-subcard-head">
+                            <h4>Web-доступ</h4>
+                            <span className="client-subcard-meta">{webUsers.length > 0 ? `${webUsers.length} акк.` : 'нет'}</span>
+                          </div>
+                          {webUsers.length > 0 ? (
+                            <div className="web-user-list">
+                              {webUsers.map(user => {
+                                const isSyntheticTg = isSyntheticTelegramEmail(user.email)
+                                return (
+                                  <div className="web-user-row" key={user.id}>
+                                    <div>
+                                      <strong>{isSyntheticTg ? 'Web-вход через Telegram' : user.email}</strong>
+                                      <small>
+                                        {[
+                                          user.name || 'web-кабинет',
+                                          user.created_at ? `рег. ${formatDate(user.created_at)}` : '',
+                                          !isSyntheticTg ? (user.is_email_verified ? 'email подтверждён' : 'email не подтверждён') : '',
+                                          user.last_login_at ? `вход ${formatDate(user.last_login_at)}` : 'входа ещё не было',
+                                        ].filter(Boolean).join(' · ')}
+                                      </small>
+                                    </div>
+                                    <div className="web-user-actions">
+                                      {!user.is_active && <StatusBadge status="disabled" />}
+                                      {!isSyntheticTg && !user.is_email_verified && (
+                                        <button type="button" className="small-text" onClick={() => void verifyWebUserEmail(client, user)}>
+                                          <CheckCircle2 size={14} />Подтвердить
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        className="icon-button small danger"
+                                        title="Удалить web-кабинет"
+                                        onClick={() => void deleteWebUser(client, user)}
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          ) : (
+                            <div className="client-empty-box">Web-кабинет пока не привязан.</div>
+                          )}
+                        </div>
+
+                        <div className="client-subcard">
+                          <div className="client-subcard-head">
+                            <h4>API-доступ (CRM / Интеграции)</h4>
+                            {onNavigateToMcp && (
+                              <button
+                                type="button"
+                                className="small-text client-link-btn"
+                                onClick={onNavigateToMcp}
+                              >
+                                Управление в MCP & API →
+                              </button>
+                            )}
+                          </div>
+                          {client.api_keys && client.api_keys.length > 0 ? (
+                            <div className="account-edit-list">
+                              {client.api_keys.map(k => (
+                                <div className="web-user-row" key={k.id}>
+                                  <div>
+                                    <strong style={{ fontFamily: 'monospace' }}>{k.key_prefix}... · {k.name || 'API Key'}</strong>
+                                    <small>Всего вызовов: {k.total_spent || 0} · Списание с единого баланса</small>
+                                  </div>
+                                  <div className="web-user-actions">
+                                    {!k.is_active ? <StatusBadge status="disabled" /> : <StatusBadge status="active" />}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="client-empty-box">
+                              <span>API-ключ пока не привязан.</span>
+                              {onNavigateToMcp && (
+                                <button type="button" className="small-text client-link-btn" onClick={onNavigateToMcp}>
+                                  + Создать ключ
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="client-subcard">
+                        <div className="client-subcard-head">
+                          <h4>Telegram-аккаунты</h4>
+                          <span className="client-subcard-meta">Привязано: {accounts.length}</span>
+                        </div>
+                        <div className="account-edit-list">
+                          {accounts.map(account => {
+                            const edit = accountEditDraft(account)
+                            return (
+                              <div className="account-edit-row" key={account.id}>
+                                <label className="mini-field">
+                                  <span>Ник</span>
+                                  <input value={edit.username} placeholder="@manager" onChange={e => setAccountEditDraft(account, { username: e.target.value })} />
+                                </label>
+                                <label className="mini-field">
+                                  <span>Telegram ID</span>
+                                  <input value={edit.telegram_id} placeholder={account.is_pending ? 'Введите ID' : 'ID'} onChange={e => setAccountEditDraft(account, { telegram_id: e.target.value })} />
+                                </label>
+                                <label className="mini-field">
+                                  <span>Имя</span>
+                                  <input value={edit.name} placeholder="Имя менеджера" onChange={e => setAccountEditDraft(account, { name: e.target.value })} />
+                                </label>
+                                <div className="account-edit-actions">
+                                  {account.is_pending && <StatusBadge status="account_pending" />}
+                                  {!account.is_pending && !account.is_active && <StatusBadge status="disabled" />}
+                                  <button type="button" className="small-text" onClick={() => void saveAccount(client, account)}>
+                                    <Save size={14} />Сохранить
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="icon-button small danger"
+                                    title="Удалить Telegram-аккаунт"
+                                    onClick={() => void deleteAccount(client, account)}
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                                {account.created_at && (
+                                  <div className="account-meta-line">
+                                    <small>Зарегистрирован / привязан: {formatDate(account.created_at)}</small>
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                          {!accounts.length && <div className="client-empty-box">Telegram-аккаунты пока не добавлены.</div>}
+                          <details className="compact-form-details account-add-details">
+                            <summary>Добавить Telegram-аккаунт</summary>
+                            <div className="account-add">
+                              <input placeholder="@username" value={draft.username} onChange={e => setAccountDraft(client, { username: e.target.value })} />
+                              <input placeholder="ID вручную" value={draft.telegram_id} onChange={e => setAccountDraft(client, { telegram_id: e.target.value })} />
+                              <input placeholder="Имя" value={draft.name} onChange={e => setAccountDraft(client, { name: e.target.value })} />
+                              <button type="button" className="icon-button small" title="Добавить Telegram-аккаунт" onClick={() => void createAccount(client)} disabled={!draft.telegram_id.trim() && !draft.username.trim()}><Plus size={16} /></button>
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+
+                      <div className="client-subcard">
+                        <div className="client-subcard-head">
+                          <h4>
+                            Заметка администратора
+                            {savedIndicators[`${client.id}:note`] && <em className="saved-pill">Сохранено</em>}
+                          </h4>
                           <button
                             type="button"
                             className="small-text"
-                            style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer' }}
-                            onClick={onNavigateToMcp}
+                            disabled={!noteDirty || Boolean(savingFlags[`${client.id}:note`])}
+                            onClick={() => void patchClientNote(client, noteValue)}
                           >
-                            + Создать ключ
+                            <Save size={14} />Сохранить заметку
                           </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="client-section client-balance-section">
-                  <div className="section-head">
-                    <h3>Финансы</h3>
-                  </div>
-                  {client.usage && (
-                    <div className="balance-compact-list">
-                      {client.usage.money && (
-                        <div className="balance-line">
-                          <div>
-                            <strong>Баланс</strong>
-                            {client.usage.money.reserved_kopeks > 0 && (
-                              <small title="Средства удержаны под задачи в работе">В обработке {formatMoney(client.usage.money.reserved_kopeks)}</small>
-                            )}
-                          </div>
-                          <span>{formatMoney(client.usage.money.available_kopeks)}</span>
                         </div>
-                      )}
+                        <textarea
+                          className="client-full-textarea"
+                          rows={3}
+                          value={noteValue}
+                          placeholder="Внутренний комментарий о клиенте, договорённости по цене или оплате..."
+                          onChange={e => setNoteDrafts(prev => ({ ...prev, [client.id]: e.currentTarget.value }))}
+                          onBlur={() => {
+                            if (noteDirty) void patchClientNote(client, noteValue)
+                          }}
+                        />
+                      </div>
                     </div>
                   )}
-                  <div className="subsection-label">Операции с балансом</div>
-                  <div className="balance-adjust-panel">
-                    {(() => {
-                      const hasCustomPrices = Boolean(
-                        client.has_custom_tariffs ||
-                        client.usage?.has_custom_tariffs ||
-                        (client.usage?.effective_prices &&
-                          Object.values(client.usage.effective_prices).some(p => p?.source === 'client_override'))
-                      )
-                      const quickChips = activeDepositPackages.length > 0
-                        ? activeDepositPackages.map(pkg => {
-                            const priceRub = Math.round(kopeksToRubles(pkg.price_kopeks))
-                            const bonusRub = Math.round(kopeksToRubles(pkg.bonus_kopeks || 0))
-                            const formattedPrice = `${priceRub.toLocaleString('ru-RU')} ₽`
-                            const bonusHint = !hasCustomPrices && bonusRub > 0
-                              ? ` (+${bonusRub >= 1000 && bonusRub % 100 === 0 ? `${(bonusRub / 1000).toFixed(bonusRub % 1000 === 0 ? 0 : 1)}k` : bonusRub})`
-                              : ''
-                            return { label: `${formattedPrice}${bonusHint}`, val: String(priceRub) }
-                          })
-                        : (hasCustomPrices
-                            ? [
-                                { label: '1 000 ₽', val: '1000' },
-                                { label: '3 000 ₽', val: '3000' },
-                                { label: '5 000 ₽', val: '5000' },
-                                { label: '10 000 ₽', val: '10000' },
-                                { label: '25 000 ₽', val: '25000' },
-                              ]
-                            : [
-                                { label: '1 000 ₽', val: '1000' },
-                                { label: '3 000 ₽ (+500)', val: '3000' },
-                                { label: '5 000 ₽ (+1.5k)', val: '5000' },
-                                { label: '10 000 ₽ (+4k)', val: '10000' },
-                                { label: '25 000 ₽ (+12.5k)', val: '25000' },
-                              ])
 
-                      return (
-                        <>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
-                            {quickChips.map(p => (
-                              <button
-                                key={p.val}
-                                type="button"
-                                className="ghost small-text"
-                                style={{
-                                  padding: '2px 8px',
-                                  fontSize: 11,
-                                  background: grant.amount_rub === p.val ? '#0f766e' : '#f1f5f9',
-                                  color: grant.amount_rub === p.val ? '#fff' : '#0f766e',
-                                  fontWeight: 600,
-                                  borderRadius: 6,
-                                }}
-                                onClick={() => setGrantDraft(client, { amount_rub: p.val })}
-                              >
-                                {p.label}
-                              </button>
-                            ))}
+                  {activeTab === 'vip' && (
+                    <div className="client-tab-panel">
+                      <div className="client-subcard client-vip-card">
+                        <div className="client-subcard-head">
+                          <div>
+                            <h4>Персональная экспресс-оценка · VIP</h4>
+                            <p className="client-helper-text">
+                              Персональный лимит до 60 закупок за один запуск и индивидуальный промт под задачи клиента.
+                            </p>
                           </div>
-                          <div className="balance-adjust-row">
-                            <label className="mini-field">
-                              <span>Пополнить баланс, ₽</span>
-                              <input
-                                type="number"
-                                min={0}
-                                step={1}
-                                placeholder="Сумма"
-                                value={grant.amount_rub}
-                                onChange={e => setGrantDraft(client, { amount_rub: e.currentTarget.value })}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter' && grantAmountValid) void topUpClientBalance(client)
-                                }}
-                              />
-                              {(() => {
-                                const amt = Number(String(grant.amount_rub || 0).replace(',', '.'))
-                                if (hasCustomPrices) {
-                                  if (amt > 0) {
-                                    return (
-                                      <small style={{ color: '#64748b', fontWeight: 600, display: 'block', marginTop: 2 }}>
-                                        Индивидуальный тариф: к зачислению ровно {amt.toLocaleString('ru-RU')} ₽ (без бонуса)
-                                      </small>
-                                    )
+                          <span className={`client-status-pill ${client.allowed_custom_batch_report ? 'vip' : 'neutral'}`}>
+                            {client.allowed_custom_batch_report ? '⚡ VIP активен' : 'Отключено'}
+                          </span>
+                        </div>
+
+                        <label className={`client-toggle-card ${client.allowed_custom_batch_report ? 'is-on vip' : ''}`}>
+                          <div className="client-toggle-info">
+                            <strong>Включить персональный VIP-доступ (до 60 закупок)</strong>
+                            <small>Клиент получает пакетную экспресс-оценку с расширенным лимитом и своим промтом</small>
+                          </div>
+                          <span className="client-switch-wrap">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(client.allowed_custom_batch_report)}
+                              onChange={e => void patchClient(client, { allowed_custom_batch_report: e.currentTarget.checked }, `${client.id}:vip_access`)}
+                            />
+                            <span className="client-switch-track" />
+                          </span>
+                        </label>
+
+                        {client.allowed_custom_batch_report && (
+                          <div className="client-vip-mode-block">
+                            <div className="client-vip-mode-title">
+                              Как показывать экспресс-оценку в кабинете клиента:
+                              {savedIndicators[`${client.id}:vip_tab`] && <em className="saved-pill">Сохранено</em>}
+                            </div>
+                            <div className="client-vip-mode-grid">
+                              <button
+                                type="button"
+                                className={`client-vip-mode-option ${!client.custom_report_separate_tab ? 'active' : ''}`}
+                                onClick={() => {
+                                  if (client.custom_report_separate_tab) {
+                                    void patchClient(client, { custom_report_separate_tab: false }, `${client.id}:vip_tab`)
                                   }
-                                  return null
-                                }
-                                const bonus = calculateDynamicBonusRub(amt)
-                                if (bonus > 0) {
-                                  return (
-                                    <small style={{ color: '#0f766e', fontWeight: 600, display: 'block', marginTop: 2 }}>
-                                      Итого: {(amt + bonus).toLocaleString('ru-RU')} ₽ (оплата {amt} ₽ + бонус {bonus.toLocaleString('ru-RU')} ₽)
-                                    </small>
-                                  )
-                                }
-                                return null
-                              })()}
-                            </label>
-                            <button onClick={() => void topUpClientBalance(client)} disabled={!grantAmountValid}>
-                              <Plus size={16} />Пополнить
+                                }}
+                              >
+                                <strong>Вместо «Анализа документации»</strong>
+                                <small>И одиночный анализ, и пакетная выгрузка работают по личному VIP-промту клиента.</small>
+                              </button>
+                              <button
+                                type="button"
+                                className={`client-vip-mode-option ${client.custom_report_separate_tab ? 'active' : ''}`}
+                                onClick={() => {
+                                  if (!client.custom_report_separate_tab) {
+                                    void patchClient(client, { custom_report_separate_tab: true }, `${client.id}:vip_tab`)
+                                  }
+                                }}
+                              >
+                                <strong>Вынести отдельной вкладкой</strong>
+                                <small>Стандартный «Анализ документации» остаётся без изменений, рядом добавляется вкладка «Экспресс-оценка».</small>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="client-prompt-block">
+                          <div className="client-subcard-head">
+                            <div>
+                              <strong>
+                                Индивидуальный промт клиента
+                                {savedIndicators[`${client.id}:prompt`] && <em className="saved-pill">Сохранено</em>}
+                              </strong>
+                              <p className="client-helper-text">
+                                Переопределяет общий шаблон экспресс-оценки. Если оставить пустым — сработает общий шаблон из раздела «Тарифы».
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              className="small-text"
+                              disabled={!promptDirty || Boolean(savingFlags[`${client.id}:prompt`])}
+                              onClick={() => void patchClientPrompt(client, promptValue)}
+                            >
+                              <Save size={14} />{savingFlags[`${client.id}:prompt`] ? 'Сохранение...' : 'Сохранить промт'}
                             </button>
                           </div>
-                        </>
-                      )
-                    })()}
-                    <div className="balance-adjust-row">
-                      <label className="mini-field">
-                        <span>Списать с баланса, ₽</span>
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          placeholder="Сумма"
-                          value={grant.debit_amount_rub || ''}
-                          onChange={e => setGrantDraft(client, { debit_amount_rub: e.currentTarget.value })}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter' && debitAmountValid) void debitClientBalance(client)
-                          }}
-                        />
-                      </label>
-                      <button className="danger" onClick={() => void debitClientBalance(client)} disabled={!debitAmountValid}>
-                        <Minus size={16} />Списать
-                      </button>
-                    </div>
-                  </div>
-                  <details className="client-section billing-history-details">
-                    <summary>
-                      <span>История баланса</span>
-                      <small>{client.recent_billing?.length || 0} операций</small>
-                    </summary>
-                    <div className="usage-history">
-                      {client.recent_billing?.map(item => (
-                        <div className="usage-history-row" key={item.id}>
-                          <div>
-                            <strong>{item.operation_label}: {item.kind_label}</strong>
-                            <small>{formatDate(item.created_at)} · {item.note || item.created_by}</small>
-                          </div>
-                          <span>{item.amount_kopeks ? formatPrice(item.amount_kopeks) : item.units}</span>
-                        </div>
-                      ))}
-                      {!client.recent_billing?.length && <div className="inline-note">Операций по балансу пока нет.</div>}
-                    </div>
-                  </details>
-                </div>
-
-                <div className="client-section client-settings-section">
-                  <h3>Настройки клиента</h3>
-                  <label className="mini-field">
-                    <span>Поставщиков в выдаче</span>
-                    <input
-                      className="supplier-target-input"
-                      type="number"
-                      min={0}
-                      max={100}
-                      step={1}
-                      placeholder="по умолчанию"
-                      defaultValue={client.supplier_target_min || ''}
-                      onBlur={e => patchClientSupplierTarget(client, e.currentTarget)}
-                    />
-                  </label>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '8px 0 10px' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(client.allowed_price_monitoring)}
-                        onChange={e => void patchClient(client, { allowed_price_monitoring: e.currentTarget.checked })}
-                      />
-                      <span>Доступ к «Мониторингу цен»</span>
-                    </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(client.allowed_geo_radius)}
-                        onChange={e => void patchClient(client, { allowed_geo_radius: e.currentTarget.checked })}
-                      />
-                      <span>Поиск в радиусе города</span>
-                    </label>
-                  </div>
-                  <label className="mini-field" style={{ marginBottom: 8 }}>
-                    <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span>Заметка администратора</span>
-                      {savedClientNotes[client.id] && (
-                        <small style={{ color: '#059669', fontWeight: 600 }}>Сохранено</small>
-                      )}
-                    </span>
-                    <textarea
-                      rows={2}
-                      defaultValue={client.notes || ''}
-                      placeholder="Внутренний комментарий о клиенте..."
-                      style={{ width: '100%', fontSize: 12, resize: 'vertical' }}
-                      onBlur={e => void patchClientNote(client, e.currentTarget.value)}
-                    />
-                  </label>
-                  {client.usage?.effective_prices && (
-                    <details className="compact-form-details price-settings-details">
-                      <summary>Индивидуальные цены</summary>
-                      <div className="price-settings-panel">
-                        {(['supplier_search', 'exact_product', 'procurement_report', 'supplier_search_extra', 'price_monitoring', 'custom_batch_report'] as const).map(kind => {
-                          const price = client.usage?.effective_prices?.[kind]
-                          const fallbackKopeks = price?.price_kopeks || 0
-                          return (
-                            <label className="mini-field" key={kind}>
-                              <span>{priceBillingLabel(kind)}, ₽</span>
-                              <div className="price-override-row">
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step={1}
-                                  value={priceDraftValue(client, kind, fallbackKopeks)}
-                                  onChange={e => setPriceDraftValue(client, kind, e.currentTarget.value)}
-                                  onKeyDown={e => {
-                                    if (e.key === 'Enter') void saveClientTariffOverride(client, kind, fallbackKopeks)
-                                  }}
-                                />
-                                <button className="icon-button small" type="button" title="Сохранить цену" onClick={() => void saveClientTariffOverride(client, kind, fallbackKopeks)}>
-                                  <Save size={14} />
-                                </button>
-                              </div>
-                            </label>
-                          )
-                        })}
-                      </div>
-                    </details>
-                  )}
-                  <details className="compact-form-details price-settings-details">
-                    <summary>
-                      Индивидуальная экспресс-оценка {client.allowed_custom_batch_report ? '· VIP' : ''}
-                    </summary>
-                    <div className="price-settings-panel" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={Boolean(client.allowed_custom_batch_report)}
-                          onChange={e => void patchClient(client, { allowed_custom_batch_report: e.currentTarget.checked })}
-                        />
-                        <span>Персональный доступ и расширенный лимит (до 60 закупок)</span>
-                      </label>
-                      {client.allowed_custom_batch_report && (
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                          <input
-                            type="checkbox"
-                            checked={Boolean(client.custom_report_separate_tab)}
-                            onChange={e => void patchClient(client, { custom_report_separate_tab: e.currentTarget.checked })}
+                          <textarea
+                            className="client-prompt-textarea"
+                            rows={8}
+                            value={promptValue}
+                            placeholder="Оставьте пустым, чтобы использовать общий шаблон экспресс-оценки..."
+                            onChange={e => setPromptDrafts(prev => ({ ...prev, [client.id]: e.currentTarget.value }))}
                           />
-                          <span>Вынести в отдельную вкладку (сохранить стандартный «Анализ документации» без изменений)</span>
-                        </label>
-                      )}
-                      <label className="mini-field">
-                        <span>Индивидуальный промт клиента (переопределяет общий шаблон)</span>
-                        <textarea
-                          rows={5}
-                          defaultValue={client.custom_report_prompt || ''}
-                          placeholder="Оставьте пустым, чтобы использовать общий шаблон экспресс-оценки..."
-                          style={{ width: '100%', fontSize: 12, fontFamily: 'monospace' }}
-                          onBlur={e => {
-                            const val = e.currentTarget.value
-                            if (val !== (client.custom_report_prompt || '')) {
-                              void patchClient(client, { custom_report_prompt: val })
-                            }
-                          }}
-                        />
-                      </label>
-                    </div>
-                  </details>
-                </div>
+                        </div>
+                      </div>
 
-                <details className="client-section client-merge-section merge-client-details danger-zone-details">
-                  <summary>Объединение клиентов</summary>
-                  <div className="merge-client-panel">
-                    <p className="field-help">Перенесёт задачи, баланс, Telegram-аккаунты и web-кабинет выбранного клиента в эту карточку.</p>
-                    <label className="mini-field">
-                      <span>Кого присоединить</span>
-                      <select
-                        value={mergeForms[client.id] || ''}
-                        onChange={event => setMergeForms({ ...mergeForms, [client.id]: event.target.value })}
-                      >
-                        <option value="">Выберите клиента</option>
-                        {clients.filter(item => item.id !== client.id).map(item => (
-                          <option key={item.id} value={item.id}>{clientDisplayName(item)}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <button
-                      className="small-text"
-                      onClick={() => void mergeClientIntoTarget(client)}
-                      disabled={!mergeForms[client.id]}
-                    >
-                      <Users size={14} />Объединить
-                    </button>
-                  </div>
-                </details>
-              </div>}
+                      <details className="client-subcard client-danger-zone danger-zone-details">
+                        <summary>Опасная зона: объединение и удаление клиента</summary>
+                        <div className="client-danger-body">
+                          <div className="merge-client-panel">
+                            <p className="field-help">Перенесёт задачи, баланс, Telegram-аккаунты и web-кабинет выбранного клиента в эту карточку. Исходный клиент будет удалён.</p>
+                            <label className="mini-field">
+                              <span>Кого присоединить к этой карточке</span>
+                              <select
+                                value={mergeForms[client.id] || ''}
+                                onChange={event => setMergeForms({ ...mergeForms, [client.id]: event.target.value })}
+                              >
+                                <option value="">Выберите клиента</option>
+                                {clients.filter(item => item.id !== client.id).map(item => (
+                                  <option key={item.id} value={item.id}>{clientDisplayName(item)}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <button
+                              type="button"
+                              className="small-text"
+                              onClick={() => void mergeClientIntoTarget(client)}
+                              disabled={!mergeForms[client.id]}
+                            >
+                              <Users size={14} />Объединить
+                            </button>
+                          </div>
+                          <div className="client-delete-row">
+                            <span>Полное удаление карточки вместе со всеми задачами, балансом и привязками.</span>
+                            <button
+                              type="button"
+                              className="danger small-text"
+                              onClick={(e) => void deleteClient(client, e)}
+                              disabled={deletingClientId === client.id}
+                            >
+                              <Trash2 size={13} />
+                              {deletingClientId === client.id ? 'Удаление...' : 'Удалить клиента'}
+                            </button>
+                          </div>
+                        </div>
+                      </details>
+                    </div>
+                  )}
+                </div>
+              )}
             </article>
           )
         })}
@@ -4362,11 +4885,42 @@ function JobsView({
     })
   }, [clients, jobs])
 
+  const clientsById = useMemo(() => {
+    const map = new Map<string, Client>()
+    for (const c of clients) map.set(c.id, c)
+    return map
+  }, [clients])
+
+  const getExpressInfo = useCallback((job: Job): { isExpress: boolean; batchCount: number | null } => {
+    const titleText = `${job.title || ''} ${job.human_title || ''}`
+    const countMatch = titleText.match(/\((\d+)\s*зак\.?\)/i) || (job.message || '').match(/из\s+(\d+)\b/i)
+    const batchCount = countMatch ? Number(countMatch[1]) : null
+    if (job.is_custom_batch_report || job.mode === 'custom_batch_report') {
+      return { isExpress: true, batchCount }
+    }
+    if (job.mode === 'procurement_report') {
+      if (/экспресс-оценк/i.test(titleText) || /экспресс-оценк/i.test(job.message || '')) {
+        return { isExpress: true, batchCount }
+      }
+      const client = clientsById.get(job.client_id)
+      if (client?.allowed_custom_batch_report && !client.custom_report_separate_tab) {
+        return { isExpress: true, batchCount }
+      }
+    }
+    return { isExpress: false, batchCount: null }
+  }, [clientsById])
+
   const filteredJobs = useMemo(() => jobs
     .filter(job => showInternalJobs || (!job.is_internal && (!job.is_admin_rerun || !job.parent_job_id)))
     .filter(job => !clientFilter || job.client_id === clientFilter)
     .filter(job => !statusFilter || job.status === statusFilter)
-    .filter(job => !modeFilter || job.mode === modeFilter)
+    .filter(job => {
+      if (!modeFilter) return true
+      const express = getExpressInfo(job).isExpress
+      if (modeFilter === 'custom_batch_report') return express
+      if (modeFilter === 'procurement_report') return job.mode === 'procurement_report' && !express
+      return job.mode === modeFilter
+    })
     .filter(job => !policyFilter || (job.supplier_search_policy || 'normal') === policyFilter)
     .filter(job => {
       if (!normalizedQuery) return true
@@ -4394,7 +4948,7 @@ function JobsView({
         ...inputNames,
         ...resultNames,
       ].some(value => String(value || '').toLowerCase().includes(normalizedQuery))
-    }), [jobs, showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery])
+    }), [jobs, showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery, getExpressInfo])
   const pageCount = Math.max(1, Math.ceil(filteredJobs.length / pageSize))
   const currentPage = Math.min(page, pageCount)
   const pageStart = (currentPage - 1) * pageSize
@@ -4418,6 +4972,7 @@ function JobsView({
     { id: 'exact_product', label: 'Подбор товара и аналогов' },
     { id: 'price_monitoring', label: 'Мониторинг цен' },
     { id: 'procurement_report', label: 'Анализ документации' },
+    { id: 'custom_batch_report', label: 'Экспресс-оценка' },
     { id: 'analysis_and_suppliers', label: 'Анализ + поиск' },
   ], [])
   const policyOptions = useMemo(() => [
@@ -4679,10 +5234,12 @@ function JobsView({
           const healthyRerun = getLatestHealthyAdminRerun(job)
           const errorSolvedByAdmin = isAdminErrorSolved(job)
           const supplementBadge = job.has_admin_supplement ? formatSupplementBadge(job) : null
+          const expressInfo = getExpressInfo(job)
+          const displayModeClass = expressInfo.isExpress ? 'custom_batch_report' : job.mode
 
           return (
           <article
-            className={`job-card compact mode-${job.mode} status-${job.status} ${minpromNotFound ? 'minprom-not-found' : ''} ${errorSolvedByAdmin ? 'admin-resolved' : ''} ${job.is_internal ? 'service' : ''}`}
+            className={`job-card compact mode-${displayModeClass} status-${job.status} ${minpromNotFound ? 'minprom-not-found' : ''} ${errorSolvedByAdmin ? 'admin-resolved' : ''} ${job.is_internal ? 'service' : ''}`}
             key={job.id}
             style={{ zIndex: isFilesDropdownOpen ? 50 : undefined, position: 'relative' }}
           >
@@ -4811,8 +5368,10 @@ function JobsView({
                     Админ-доработка
                   </span>
                 )}
-                <span className={`job-module-badge mode-${job.mode}`}>
-                  {job.mode_label || humanMode(job.mode)}
+                <span className={`job-module-badge mode-${displayModeClass}`}>
+                  {expressInfo.isExpress
+                    ? `⚡ Экспресс-оценка${expressInfo.batchCount ? ` · ${expressInfo.batchCount} зак.` : ''}`
+                    : (job.mode_label || humanMode(job.mode))}
                 </span>
 
                 <div className="job-meta-details">
@@ -4852,7 +5411,18 @@ function JobsView({
                   <span className="meta-item count">
                     {awaitingSelection ? 'Ожидает выбора позиций'
                       : expiredSelection ? 'Срок выбора истёк · поиск не запущен'
-                      : !hasResult && ['pending', 'running', 'settling'].includes(job.status) ? 'Поиск ещё выполняется'
+                      : !hasResult && ['pending', 'running', 'settling'].includes(job.status)
+                        ? (expressInfo.isExpress
+                          ? 'Идёт экспресс-оценка'
+                          : job.mode === 'procurement_report'
+                          ? 'Идёт анализ документации'
+                          : job.mode === 'exact_product'
+                          ? 'Идёт подбор товара'
+                          : job.mode === 'price_monitoring'
+                          ? 'Идёт мониторинг цен'
+                          : 'Поиск ещё выполняется')
+                      : expressInfo.isExpress
+                      ? (expressInfo.batchCount ? `${expressInfo.batchCount} зак. · VIP` : 'Личный VIP-промт')
                       : job.mode === 'procurement_report'
                       ? 'Анализ ТЗ'
                       : job.mode === 'exact_product'

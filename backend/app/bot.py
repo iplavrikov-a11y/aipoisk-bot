@@ -38,7 +38,9 @@ from .billing import (
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CONFIRMATION_EXPIRED,
     STATUS_CUSTOMER_DECLINED,
+    KIND_CUSTOM_BATCH_REPORT,
     KIND_EXACT_PRODUCT,
+    KIND_PRICE_MONITORING,
     KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH,
     KIND_SUPPLIER_SEARCH_EXTRA,
@@ -47,6 +49,7 @@ from .billing import (
     cancel_price_monitoring_job,
     cancel_exact_product_job,
     charge_job_reservation,
+    client_has_custom_tariffs,
     client_uses_trial_access,
     client_service_balance_summary,
     effective_price_kopeks,
@@ -579,36 +582,61 @@ def analysis_and_suppliers_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def cabinet_inline_keyboard(web_url: str = "", *, has_web_user: bool = False, contact_url: str = "") -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="💳 Пополнить онлайн (ЮKassa)", callback_data="topup_online_menu")],
-        [InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")],
-    ]
+def cabinet_inline_keyboard(
+    web_url: str = "",
+    *,
+    has_web_user: bool = False,
+    contact_url: str = "",
+    direct_payment_only: bool = False,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if direct_payment_only:
+        if contact_url:
+            rows.append([InlineKeyboardButton(text="💬 Пополнить через менеджера", url=contact_url)])
+        rows.append([InlineKeyboardButton(text="💳 Персональные тарифы", callback_data="open_tariffs")])
+    else:
+        rows.append([InlineKeyboardButton(text="💳 Пополнить онлайн (ЮKassa)", callback_data="topup_online_menu")])
+        rows.append([InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")])
     if web_url:
         label = "🌐 Открыть веб-кабинет" if has_web_user else "🌐 Создать веб-кабинет"
         rows.append([InlineKeyboardButton(text=label, url=web_url)])
-    if contact_url:
+    if contact_url and not direct_payment_only:
         rows.append([InlineKeyboardButton(text="💬 Написать в Telegram", url=contact_url)])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def status_inline_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оплатить онлайн (Карта, СБП)", callback_data="topup_online_menu")],
-            [InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")],
-            [InlineKeyboardButton(text="💳 Все тарифы", callback_data="open_tariffs")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
-        ]
-    )
+def status_inline_keyboard(
+    *,
+    direct_payment_only: bool = False,
+    contact_url: str = "",
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if direct_payment_only:
+        if contact_url:
+            rows.append([InlineKeyboardButton(text="💬 Пополнить через менеджера", url=contact_url)])
+        rows.append([InlineKeyboardButton(text="💳 Персональные тарифы", callback_data="open_tariffs")])
+    else:
+        rows.append([InlineKeyboardButton(text="💳 Оплатить онлайн (Карта, СБП)", callback_data="topup_online_menu")])
+        rows.append([InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")])
+        rows.append([InlineKeyboardButton(text="💳 Все тарифы", callback_data="open_tariffs")])
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def tariffs_inline_keyboard(web_url: str = "") -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="💳 Оплатить онлайн (Карта, СБП)", callback_data="topup_online_menu")],
-        [InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")],
-    ]
+def tariffs_inline_keyboard(
+    web_url: str = "",
+    *,
+    direct_payment_only: bool = False,
+    contact_url: str = "",
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if direct_payment_only:
+        if contact_url:
+            rows.append([InlineKeyboardButton(text="💬 Пополнить через менеджера", url=contact_url)])
+    else:
+        rows.append([InlineKeyboardButton(text="💳 Оплатить онлайн (Карта, СБП)", callback_data="topup_online_menu")])
+        rows.append([InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")])
     if web_url:
         rows.append([InlineKeyboardButton(text="🌐 Открыть веб-кабинет", url=web_url)])
     rows.append([
@@ -618,16 +646,16 @@ def tariffs_inline_keyboard(web_url: str = "") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def topup_online_keyboard(packages: list[TariffPackage]) -> InlineKeyboardMarkup:
+def topup_online_keyboard(packages: list[TariffPackage], *, show_bonus: bool = True) -> InlineKeyboardMarkup:
     rows = []
     for pkg in packages:
         amount_rub = pkg.price_kopeks // 100
-        bonus_rub = (pkg.bonus_kopeks or 0) // 100
-        badge = "🔥 " if pkg.badge or bonus_rub == 1500 else "💳 "
+        bonus_rub = ((pkg.bonus_kopeks or 0) // 100) if show_bonus else 0
+        badge = "🔥 " if (show_bonus and (pkg.badge or bonus_rub == 1500)) else "💳 "
         amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
         bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
         bonus_part = f" (+{bonus_fmt})" if bonus_rub > 0 else ""
-        if amount_rub == 25000:
+        if show_bonus and amount_rub == 25000 and bonus_rub > 0:
             bonus_part = " (+50%)"
         label = f"{badge}{pkg.name} — {amount_fmt}{bonus_part}"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"topup_yk_pkg_{pkg.id}")])
@@ -639,16 +667,16 @@ def topup_online_keyboard(packages: list[TariffPackage]) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def topup_b2b_keyboard(packages: list[TariffPackage]) -> InlineKeyboardMarkup:
+def topup_b2b_keyboard(packages: list[TariffPackage], *, show_bonus: bool = True) -> InlineKeyboardMarkup:
     rows = []
     for pkg in packages:
         amount_rub = pkg.price_kopeks // 100
-        bonus_rub = (pkg.bonus_kopeks or 0) // 100
-        badge = "🔥 " if pkg.badge or bonus_rub == 1500 else "📄 "
+        bonus_rub = ((pkg.bonus_kopeks or 0) // 100) if show_bonus else 0
+        badge = "🔥 " if (show_bonus and (pkg.badge or bonus_rub == 1500)) else "📄 "
         amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
         bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
         bonus_part = f" (+{bonus_fmt})" if bonus_rub > 0 else ""
-        if amount_rub == 25000:
+        if show_bonus and amount_rub == 25000 and bonus_rub > 0:
             bonus_part = " (+50%)"
         label = f"{badge}{pkg.name} — {amount_fmt}{bonus_part}"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"topup_b2b_pkg_{pkg.id}")])
@@ -2044,7 +2072,72 @@ def _low_balance_contact_info(settings, client: Client | None = None, mode: str 
     return contact_handle, contact_url
 
 
+def _client_direct_payment_only(client: Client | None) -> bool:
+    return bool(client and getattr(client, "direct_payment_only", False))
+
+
+def _direct_payment_contact_url(settings, client: Client | None = None, *, amount_rub: int | None = None) -> str:
+    contact_handle = str(getattr(settings, "contact_telegram", "") or "").strip() or "@lexelence"
+    client_num = f" #{client.client_number}" if client and getattr(client, "client_number", None) else ""
+    amount_part = f" на {int(amount_rub):,} ₽".replace(",", " ") if amount_rub and amount_rub > 0 else ""
+    prefill_text = f"Здравствуйте! Хочу пополнить баланс TenderLex{client_num}{amount_part} по персональному тарифу."
+    return _telegram_contact_url_with_text(contact_handle, prefill_text)
+
+
+def _direct_payment_notice_text(db: Session, settings, client: Client | None) -> str:
+    lines = [
+        "💎 <b>Персональные условия оплаты TenderLex</b>",
+        "",
+        "Для вашего аккаунта подключены персональные сниженные тарифы.",
+    ]
+    if client is not None:
+        balances = client_service_balance_summary(db, client)
+        eff = balances.get("effective_prices") or {}
+        custom_lines: list[str] = []
+        price_order = [
+            (KIND_SUPPLIER_SEARCH, "🔎 Поиск поставщиков"),
+            (KIND_EXACT_PRODUCT, "🎯 Подбор товара и аналогов"),
+            (KIND_PROCUREMENT_REPORT, "📄 Анализ документации"),
+            (KIND_CUSTOM_BATCH_REPORT, "📊 Экспресс-оценка закупок"),
+            (KIND_PRICE_MONITORING, "📈 Мониторинг цен"),
+            (KIND_SUPPLIER_SEARCH_EXTRA, "🔎 Добор поставщиков"),
+        ]
+        for kind, label in price_order:
+            item = eff.get(kind) or {}
+            if item.get("source") == "client_override" and item.get("enabled") and int(item.get("price_kopeks") or 0) > 0:
+                custom_lines.append(f"• {label}: <b>{_price_text(int(item['price_kopeks']))}</b>")
+        if custom_lines:
+            lines.extend(["", "<b>Ваши персональные тарифы:</b>", *custom_lines])
+        money = balances.get("money") or {}
+        lines.extend(["", f"Текущий баланс: <b>{_money_text(int(money.get('available_kopeks') or 0))}</b>"])
+    lines.extend([
+        "",
+        "Пополнение баланса по персональным условиям проходит напрямую через личного менеджера — напишите нам в Telegram, и мы быстро зачислим нужную сумму без комиссии.",
+        "",
+        "<i>Если вам потребуется оплата по безналичному счёту для юрлица (УПД/ЭДО) или онлайн-оплата картой на сайте, напишите менеджеру — согласуем условия под этот способ оплаты.</i>",
+    ])
+    return "\n".join(lines)
+
+
+def _direct_payment_keyboard(settings, client: Client | None = None, *, web_url: str = "") -> InlineKeyboardMarkup:
+    contact_url = _direct_payment_contact_url(settings, client)
+    rows: list[list[InlineKeyboardButton]] = []
+    if contact_url:
+        rows.append([InlineKeyboardButton(text="💬 Пополнить через менеджера", url=contact_url)])
+    if web_url:
+        rows.append([InlineKeyboardButton(text="🌐 Открыть веб-кабинет", url=web_url)])
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def low_balance_inline_keyboard(settings, client: Client | None = None, mode: str = "") -> InlineKeyboardMarkup:
+    if _client_direct_payment_only(client):
+        contact_url = _direct_payment_contact_url(settings, client)
+        rows: list[list[InlineKeyboardButton]] = []
+        if contact_url:
+            rows.append([InlineKeyboardButton(text="💬 Пополнить через менеджера", url=contact_url)])
+        rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
     _, contact_url = _low_balance_contact_info(settings, client, mode=mode)
     rows = [
         [InlineKeyboardButton(text="💳 Пополнить баланс онлайн (ЮKassa)", callback_data="topup_online_menu")],
@@ -2852,11 +2945,14 @@ async def show_status(message: Message) -> None:
             .limit(5)
             .all()
         )
+        settings = get_or_create_settings(db)
+        is_direct_only = _client_direct_payment_only(client)
+        direct_contact_url = _direct_payment_contact_url(settings, client) if is_direct_only else ""
         if not jobs:
             await message.answer(
                 "🕘 Задач пока нет\n\n"
                 "Выберите сценарий для создания первой задачи:",
-                reply_markup=status_inline_keyboard(),
+                reply_markup=status_inline_keyboard(direct_payment_only=is_direct_only, contact_url=direct_contact_url),
             )
             return
         lines = ["🕘 Последние задачи"]
@@ -2866,7 +2962,10 @@ async def show_status(message: Message) -> None:
                 f"{index}. {_progress_heading(snapshot)} — {_status_label(snapshot.status)}, {snapshot.progress}%\n"
                 f"   {_friendly_stage_text(snapshot.message)}"
             )
-        await message.answer("\n".join(lines), reply_markup=status_inline_keyboard())
+        await message.answer(
+            "\n".join(lines),
+            reply_markup=status_inline_keyboard(direct_payment_only=is_direct_only, contact_url=direct_contact_url),
+        )
         for job in jobs:
             snapshot = _job_snapshot(job, db)
             job_id = str(job.id)
@@ -2945,10 +3044,14 @@ async def open_status_callback(callback: CallbackQuery) -> None:
                     f"   {_friendly_stage_text(snapshot.message)}"
                 )
             text = "\n".join(lines)
+        settings = get_or_create_settings(db)
+        is_direct_only = _client_direct_payment_only(client)
+        direct_contact_url = _direct_payment_contact_url(settings, client) if is_direct_only else ""
+        status_kb = status_inline_keyboard(direct_payment_only=is_direct_only, contact_url=direct_contact_url)
         try:
-            await callback.message.edit_text(text, reply_markup=status_inline_keyboard())
+            await callback.message.edit_text(text, reply_markup=status_kb)
         except Exception:
-            await callback.message.answer(text, reply_markup=status_inline_keyboard())
+            await callback.message.answer(text, reply_markup=status_kb)
     finally:
         db.close()
 
@@ -3346,10 +3449,22 @@ async def _generate_and_send_b2b_invoice(
     if not client:
         await message.answer("Ошибка: клиент не найден.")
         return
+    if _client_direct_payment_only(client):
+        settings = get_or_create_settings(db)
+        await message.answer(
+            _direct_payment_notice_text(db, settings, client),
+            reply_markup=_direct_payment_keyboard(settings, client),
+            parse_mode=ParseMode.HTML,
+        )
+        return
 
     amount_rub = int(ctx.get("amount_rub", 1000) or 1000)
-    bonus_rub = int(ctx.get("bonus_rub", 0) or 0)
-    credit_rub = int(ctx.get("credit_rub", amount_rub + bonus_rub) or (amount_rub + bonus_rub))
+    if client_has_custom_tariffs(db, client):
+        bonus_rub = 0
+        credit_rub = amount_rub
+    else:
+        bonus_rub = int(ctx.get("bonus_rub", 0) or 0)
+        credit_rub = int(ctx.get("credit_rub", amount_rub + bonus_rub) or (amount_rub + bonus_rub))
     package_name = str(ctx.get("package_name") or "Пополнение баланса")
 
     inv_num = next_invoice_number(db)
@@ -3463,6 +3578,13 @@ async def process_custom_topup_amount(message: Message) -> None:
         if not client:
             await message.answer("Клиент не найден.")
             return
+        if _client_direct_payment_only(client):
+            await message.answer(
+                _direct_payment_notice_text(db, settings, client),
+                reply_markup=_direct_payment_keyboard(settings, client),
+                parse_mode=ParseMode.HTML,
+            )
+            return
 
         bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, client)
         bonus_rub = bonus_kopeks // 100
@@ -3490,7 +3612,15 @@ async def process_custom_b2b_amount(message: Message) -> None:
     user = message.from_user
     db = SessionLocal()
     try:
+        settings = get_or_create_settings(db)
         client, _ = get_or_create_trial_client_by_telegram_id(db, str(user.id if user else ""), username=user.username if user else "", name=user.full_name if user else "")
+        if _client_direct_payment_only(client):
+            await message.answer(
+                _direct_payment_notice_text(db, settings, client),
+                reply_markup=_direct_payment_keyboard(settings, client),
+                parse_mode=ParseMode.HTML,
+            )
+            return
         bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, client)
         bonus_rub = bonus_kopeks // 100
         credit_rub = amount_rub + bonus_rub
@@ -4495,14 +4625,20 @@ async def access_button(message: Message) -> None:
             )
 
         balances = client_service_balance_summary(db, client)
-        contact_url = ""
+        is_direct_only = _client_direct_payment_only(client)
+        contact_url = _direct_payment_contact_url(settings, client) if is_direct_only else ""
         money = balances.get("money") or {}
-        if isinstance(money, dict) and (money.get("available_kopeks", 1) <= 0 or money.get("low")):
+        if not is_direct_only and isinstance(money, dict) and (money.get("available_kopeks", 1) <= 0 or money.get("low")):
             _, contact_url = _low_balance_contact_info(settings, client)
 
         await message.answer(
             cabinet_text,
-            reply_markup=cabinet_inline_keyboard(web_url, has_web_user=has_web_user, contact_url=contact_url),
+            reply_markup=cabinet_inline_keyboard(
+                web_url,
+                has_web_user=has_web_user,
+                contact_url=contact_url,
+                direct_payment_only=is_direct_only,
+            ),
             **_contact_message_options(),
         )
     finally:
@@ -4556,12 +4692,18 @@ async def open_cabinet_callback(callback: CallbackQuery) -> None:
             )
 
         balances = client_service_balance_summary(db, client)
-        contact_url = ""
+        is_direct_only = _client_direct_payment_only(client)
+        contact_url = _direct_payment_contact_url(settings, client) if is_direct_only else ""
         money = balances.get("money") or {}
-        if isinstance(money, dict) and (money.get("available_kopeks", 1) <= 0 or money.get("low")):
+        if not is_direct_only and isinstance(money, dict) and (money.get("available_kopeks", 1) <= 0 or money.get("low")):
             _, contact_url = _low_balance_contact_info(settings, client)
 
-        kb = cabinet_inline_keyboard(web_url, has_web_user=has_web_user, contact_url=contact_url)
+        kb = cabinet_inline_keyboard(
+            web_url,
+            has_web_user=has_web_user,
+            contact_url=contact_url,
+            direct_payment_only=is_direct_only,
+        )
         try:
             await callback.message.edit_text(cabinet_text, reply_markup=kb, **_contact_message_options())
         except Exception:
@@ -4665,6 +4807,17 @@ async def tariffs_button(message: Message) -> None:
     try:
         settings = get_or_create_settings(db)
         web_url = f"{str(settings.public_base_url or 'https://tenderlex.ru').rstrip('/')}/cabinet"
+        telegram_id = str(message.from_user.id if message.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
+            kb = tariffs_inline_keyboard(
+                web_url,
+                direct_payment_only=True,
+                contact_url=_direct_payment_contact_url(settings, client),
+            )
+            await message.answer(text, reply_markup=kb, **_contact_message_options())
+            return
         text = _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
         await message.answer(text, reply_markup=tariffs_inline_keyboard(web_url), **_contact_message_options())
     finally:
@@ -4681,8 +4834,18 @@ async def open_tariffs_callback(callback: CallbackQuery) -> None:
     try:
         settings = get_or_create_settings(db)
         web_url = f"{str(settings.public_base_url or 'https://tenderlex.ru').rstrip('/')}/cabinet"
-        text = _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
-        kb = tariffs_inline_keyboard(web_url)
+        telegram_id = str(callback.from_user.id if callback.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
+            kb = tariffs_inline_keyboard(
+                web_url,
+                direct_payment_only=True,
+                contact_url=_direct_payment_contact_url(settings, client),
+            )
+        else:
+            text = _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
+            kb = tariffs_inline_keyboard(web_url)
         try:
             await callback.message.edit_text(text, reply_markup=kb, **_contact_message_options())
         except Exception:
@@ -4702,6 +4865,19 @@ async def _initiate_yookassa_checkout(
     credit_rub: int,
     package_name: str,
 ) -> None:
+    if _client_direct_payment_only(client):
+        notice = _direct_payment_notice_text(db, settings, client)
+        kb = _direct_payment_keyboard(settings, client)
+        if isinstance(target, CallbackQuery):
+            await target.answer("Для персонального тарифа пополнение проходит через менеджера.", show_alert=True)
+            if target.message:
+                await target.message.answer(notice, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await target.answer(notice, reply_markup=kb, parse_mode=ParseMode.HTML)
+        return
+    if client_has_custom_tariffs(db, client):
+        bonus_rub = 0
+        credit_rub = amount_rub
     bot = target.bot
     bot_info = await bot.get_me() if bot else None
     bot_username = bot_info.username if bot_info and bot_info.username else "tenderlex_bot"
@@ -4815,14 +4991,31 @@ async def topup_online_menu_callback(callback: CallbackQuery) -> None:
     await callback.answer()
     db = SessionLocal()
     try:
+        settings = get_or_create_settings(db)
+        telegram_id = str(callback.from_user.id if callback.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client)
+            kb = _direct_payment_keyboard(settings, client)
+            try:
+                await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+        has_custom = client_has_custom_tariffs(db, client) if client else False
         packages = list_deposit_packages(db)
+        bonus_prompt = (
+            "Выберите сумму пополнения (для вашего аккаунта действуют персональные тарифы — бонусы к пополнению не начисляются):"
+            if has_custom
+            else "🎁 <b>Выберите готовый пакет с бонусом или укажите свою сумму:</b>"
+        )
         text = (
             "💳 <b>Пополнение баланса онлайн через ЮKassa</b>\n\n"
             "Моментальное зачисление средств на ваш единый баланс TenderLex.\n"
             "Способы оплаты: <b>банковские карты (МИР, Visa, Mastercard), СБП, SberPay, Mir Pay</b> без комиссии.\n\n"
-            "🎁 <b>Выберите готовый пакет с бонусом или укажите свою сумму:</b>"
+            f"{bonus_prompt}"
         )
-        kb = topup_online_keyboard(packages)
+        kb = topup_online_keyboard(packages, show_bonus=not has_custom)
         try:
             await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
         except Exception:
@@ -4845,13 +5038,20 @@ async def topup_yk_pkg_callback(callback: CallbackQuery) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
-        if not _bot_yookassa_ready(settings):
-            await callback.answer("Оплата онлайн временно недоступна. Пожалуйста, воспользуйтесь счётом для юрлиц или напишите в поддержку.", show_alert=True)
-            return
-
         client, _ = get_or_create_trial_client_by_telegram_id(db, str(user.id), username=user.username or "", name=user.full_name or "")
         if not client:
             await callback.answer("Клиент не найден.", show_alert=True)
+            return
+        if _client_direct_payment_only(client):
+            await callback.answer("Для персонального тарифа пополнение проходит через менеджера.", show_alert=True)
+            await callback.message.answer(
+                _direct_payment_notice_text(db, settings, client),
+                reply_markup=_direct_payment_keyboard(settings, client),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        if not _bot_yookassa_ready(settings):
+            await callback.answer("Оплата онлайн временно недоступна. Пожалуйста, воспользуйтесь счётом для юрлиц или напишите в поддержку.", show_alert=True)
             return
 
         pkg = db.query(TariffPackage).filter(TariffPackage.id == pkg_id).first()
@@ -4860,7 +5060,7 @@ async def topup_yk_pkg_callback(callback: CallbackQuery) -> None:
             return
 
         amount_rub = pkg.price_kopeks // 100
-        bonus_rub = (pkg.bonus_kopeks or 0) // 100
+        bonus_rub = 0 if client_has_custom_tariffs(db, client) else (pkg.bonus_kopeks or 0) // 100
         credit_rub = amount_rub + bonus_rub
         package_name = pkg.name
 
@@ -4876,16 +5076,39 @@ async def topup_yk_custom_callback(callback: CallbackQuery) -> None:
         return
     await callback.answer()
     chat_id = callback.message.chat.id
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        telegram_id = str(callback.from_user.id if callback.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client)
+            kb = _direct_payment_keyboard(settings, client)
+            try:
+                await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+        has_custom = client_has_custom_tariffs(db, client) if client else False
+    finally:
+        db.close()
     _clear_pending_state(chat_id)
     PENDING_CUSTOM_TOPUP.add(chat_id)
+    bonus_block = (
+        "<i>Для вашего аккаунта действуют персональные тарифы (бонусы к пополнению не начисляются).</i>\n\n"
+        if has_custom
+        else (
+            "🎁 <b>Действуют автоматические бонусы к пополнению:</b>\n"
+            "• от 3 000 ₽ — бонус +17%\n"
+            "• от 5 000 ₽ — бонус +30%\n"
+            "• от 10 000 ₽ — бонус +40%\n"
+            "• от 25 000 ₽ — максимальный бонус +50%\n\n"
+        )
+    )
     text = (
         "✏️ <b>Пополнение баланса на произвольную сумму</b>\n\n"
         "Введите сумму пополнения в рублях (целое число, минимум <b>500 ₽</b>).\n\n"
-        "🎁 <b>Действуют автоматические бонусы к пополнению:</b>\n"
-        "• от 3 000 ₽ — бонус +17%\n"
-        "• от 5 000 ₽ — бонус +30%\n"
-        "• от 10 000 ₽ — бонус +40%\n"
-        "• от 25 000 ₽ — максимальный бонус +50%\n\n"
+        f"{bonus_block}"
         "<i>Отправьте сообщение с суммой (например: <code>5000</code>) или нажмите «Отмена»:</i>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -4983,15 +5206,32 @@ async def topup_b2b_menu_callback(callback: CallbackQuery) -> None:
     await callback.answer()
     db = SessionLocal()
     try:
+        settings = get_or_create_settings(db)
+        telegram_id = str(callback.from_user.id if callback.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client)
+            kb = _direct_payment_keyboard(settings, client)
+            try:
+                await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+        has_custom = client_has_custom_tariffs(db, client) if client else False
         packages = list_deposit_packages(db)
+        bonus_prompt = (
+            "Выберите сумму счёта (для вашего аккаунта действуют персональные тарифы — бонусы к пополнению не начисляются):"
+            if has_custom
+            else "🎁 <b>Выберите сумму счёта (бонус действует и для юрлиц):</b>"
+        )
         text = (
             "🏢 <b>Счёт на оплату для юридических лиц и ИП (безналичный расчёт)</b>\n\n"
             "• Оплата по счёту через любой банк на расчётный счёт в АО «Альфа-Банк».\n"
             "• Автоматическое формирование счёта с синей печатью и подписью в PDF и Excel.\n"
             "• Закрывающие документы (УПД) передаются по ЭДО (Диадок / СБИС) или скан-копиями.\n\n"
-            "🎁 <b>Выберите сумму счёта (бонус действует и для юрлиц):</b>"
+            f"{bonus_prompt}"
         )
-        kb = topup_b2b_keyboard(packages)
+        kb = topup_b2b_keyboard(packages, show_bonus=not has_custom)
         try:
             await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
         except Exception:
@@ -5014,13 +5254,23 @@ async def topup_b2b_pkg_callback(callback: CallbackQuery) -> None:
 
     db = SessionLocal()
     try:
+        settings = get_or_create_settings(db)
+        client, _ = get_client_by_telegram_id(db, str(user.id))
+        if _client_direct_payment_only(client):
+            await callback.answer("Для персонального тарифа пополнение проходит через менеджера.", show_alert=True)
+            await callback.message.answer(
+                _direct_payment_notice_text(db, settings, client),
+                reply_markup=_direct_payment_keyboard(settings, client),
+                parse_mode=ParseMode.HTML,
+            )
+            return
         pkg = db.query(TariffPackage).filter(TariffPackage.id == pkg_id).first()
         if not pkg:
             await callback.answer("Пакет не найден.", show_alert=True)
             return
 
         amount_rub = pkg.price_kopeks // 100
-        bonus_rub = (pkg.bonus_kopeks or 0) // 100
+        bonus_rub = 0 if (client and client_has_custom_tariffs(db, client)) else (pkg.bonus_kopeks or 0) // 100
         credit_rub = amount_rub + bonus_rub
         package_name = pkg.name
 
@@ -5059,16 +5309,39 @@ async def topup_b2b_custom_callback(callback: CallbackQuery) -> None:
         return
     await callback.answer()
     chat_id = callback.message.chat.id
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        telegram_id = str(callback.from_user.id if callback.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client)
+            kb = _direct_payment_keyboard(settings, client)
+            try:
+                await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+        has_custom = client_has_custom_tariffs(db, client) if client else False
+    finally:
+        db.close()
     _clear_pending_state(chat_id)
     PENDING_B2B_CUSTOM_AMOUNT.add(chat_id)
+    bonus_block = (
+        "<i>Для вашего аккаунта действуют персональные тарифы (бонусы к пополнению не начисляются).</i>\n\n"
+        if has_custom
+        else (
+            "🎁 <b>Бонусы начисляются автоматически:</b>\n"
+            "• от 3 000 ₽ — бонус +17%\n"
+            "• от 5 000 ₽ — бонус +30%\n"
+            "• от 10 000 ₽ — бонус +40%\n"
+            "• от 25 000 ₽ — максимальный бонус +50%\n\n"
+        )
+    )
     text = (
         "✏️ <b>Счёт для юрлиц на произвольную сумму</b>\n\n"
         "Введите желаемую сумму счёта в рублях (целое число, минимум <b>500 ₽</b>).\n\n"
-        "🎁 <b>Бонусы начисляются автоматически:</b>\n"
-        "• от 3 000 ₽ — бонус +17%\n"
-        "• от 5 000 ₽ — бонус +30%\n"
-        "• от 10 000 ₽ — бонус +40%\n"
-        "• от 25 000 ₽ — максимальный бонус +50%\n\n"
+        f"{bonus_block}"
         "<i>Отправьте сообщение с суммой (например: <code>15000</code>) или нажмите «Отмена»:</i>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[

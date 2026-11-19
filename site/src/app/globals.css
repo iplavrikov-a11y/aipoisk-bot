@@ -2898,6 +2898,15 @@
     white-space: normal;
     line-height: 1.15;
   }
+
+  .cookie-consent--cabinet {
+    position: static;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    margin: 0 10px 16px;
+    width: auto;
+  }
 }
 
 .legal-document a {

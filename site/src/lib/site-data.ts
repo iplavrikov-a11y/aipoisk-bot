@@ -217,21 +217,54 @@ function apiBaseUrl() {
   ).replace(/\/+$/, "");
 }
 
-export async function getSiteData(): Promise<PublicSitePayload> {
+const SITE_DATA_TTL_MS = 30_000;
+const SITE_DATA_TIMEOUT_MS = 2_500;
+let cachedSiteData: { payload: PublicSitePayload; expiresAt: number } | null = null;
+let inflightSiteData: Promise<PublicSitePayload> | null = null;
+
+async function fetchSiteDataFromApi(): Promise<PublicSitePayload> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SITE_DATA_TIMEOUT_MS);
   try {
     const response = await fetch(`${apiBaseUrl()}/api/public/site`, {
       next: { revalidate: 60 },
       headers: {
         accept: "application/json",
       },
+      signal: controller.signal,
     });
     if (!response.ok) {
-      return fallbackData;
+      return cachedSiteData?.payload ?? fallbackData;
     }
-    return (await response.json()) as PublicSitePayload;
+    const payload = (await response.json()) as PublicSitePayload;
+    cachedSiteData = { payload, expiresAt: Date.now() + SITE_DATA_TTL_MS };
+    return payload;
   } catch {
-    return fallbackData;
+    return cachedSiteData?.payload ?? fallbackData;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+export async function getSiteData(): Promise<PublicSitePayload> {
+  const now = Date.now();
+  if (cachedSiteData && now < cachedSiteData.expiresAt) {
+    return cachedSiteData.payload;
+  }
+  if (cachedSiteData) {
+    if (!inflightSiteData) {
+      inflightSiteData = fetchSiteDataFromApi().finally(() => {
+        inflightSiteData = null;
+      });
+    }
+    return cachedSiteData.payload;
+  }
+  if (!inflightSiteData) {
+    inflightSiteData = fetchSiteDataFromApi().finally(() => {
+      inflightSiteData = null;
+    });
+  }
+  return inflightSiteData;
 }
 
 export function formatRubles(priceKopeks: number) {

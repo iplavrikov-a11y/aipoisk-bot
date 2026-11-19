@@ -171,6 +171,7 @@ class ClientPatch(BaseModel):
     allowed_custom_batch_report: bool | None = None
     custom_report_separate_tab: bool | None = None
     custom_report_prompt: str | None = Field(default=None, max_length=50000)
+    direct_payment_only: bool | None = None
     monthly_job_limit: int | None = Field(default=None, ge=0)
     monthly_supplier_search_limit: int | None = Field(default=None, ge=0)
     monthly_procurement_report_limit: int | None = Field(default=None, ge=0)
