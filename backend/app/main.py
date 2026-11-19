@@ -2182,6 +2182,7 @@ async def customer_batch_report_create_route(
     if len(raw_items) > max_items:
         raise HTTPException(status_code=400, detail=f"За один запуск можно выбрать до {max_items} закупок.")
 
+    from .custom_batch_insights import clean_kontur_url
     from .procurement_sources import normalize_source_url
 
     clean_items: list[dict] = []
@@ -2201,6 +2202,7 @@ async def customer_batch_report_create_route(
                 "publication_date": str(it.get("publication_date") or "").strip()[:60],
                 "deadline_date": str(it.get("deadline_date") or "").strip()[:60],
                 "procurement_type": str(it.get("procurement_type") or "").strip()[:80],
+                "kontur_url": clean_kontur_url(str(it.get("kontur_url") or "")),
                 "eis_url": normalize_source_url(str(it.get("eis_url") or "")),
                 "etp_url": normalize_source_url(str(it.get("etp_url") or "")),
                 "customer_inn": str(it.get("customer_inn") or "").strip()[:40],
@@ -2393,14 +2395,46 @@ def customer_batch_report_detail_route(
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    from .custom_batch_insights import enrich_batch_result_item
+
     job = _customer_job_or_404(db, job_id, context)
+    spec_file = job_dir(job.id) / "input" / "custom_batch_spec.json"
+    spec_data = parse_json_dict(spec_file.read_text(encoding="utf-8")) if spec_file.is_file() else {}
+    spec_filename = str(spec_data.get("filename") or "")
+    raw_spec_items = spec_data.get("items") if isinstance(spec_data.get("items"), list) else []
+    spec_by_id = {
+        str(it.get("id") or ""): it
+        for it in raw_spec_items
+        if isinstance(it, dict) and str(it.get("id") or "")
+    }
+    spec_by_notice = {
+        str(it.get("notice_number") or ""): it
+        for it in raw_spec_items
+        if isinstance(it, dict) and str(it.get("notice_number") or "")
+    }
+    job_human_title = human_job_title(job)
+
     results_file = job_dir(job.id) / "output" / "custom_batch_results.json"
     if results_file.is_file():
         payload = parse_json_dict(results_file.read_text(encoding="utf-8"))
-        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        raw_items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        items = [
+            enrich_batch_result_item(
+                it,
+                spec_item=(
+                    spec_by_id.get(str(it.get("id") or ""))
+                    or spec_by_notice.get(str(it.get("notice_number") or ""))
+                    or (raw_spec_items[idx] if idx < len(raw_spec_items) and isinstance(raw_spec_items[idx], dict) else None)
+                ),
+                job_title=job_human_title,
+                spec_filename=spec_filename,
+            )
+            for idx, it in enumerate(raw_items)
+            if isinstance(it, dict)
+        ]
         return {
             "job_id": job.id,
-            "title": human_job_title(job),
+            "title": job_human_title,
             "status": job.status,
             "progress": job.progress,
             "message": job.message or "",
@@ -2409,32 +2443,37 @@ def customer_batch_report_detail_route(
             "failed_count": int(payload.get("failed_count") or 0),
             "items": items,
         }
-    spec_file = job_dir(job.id) / "input" / "custom_batch_spec.json"
     if spec_file.is_file():
-        spec = parse_json_dict(spec_file.read_text(encoding="utf-8"))
-        raw_items = spec.get("items") if isinstance(spec.get("items"), list) else []
         pending_items = [
-            {
-                "index": idx,
-                "id": str(it.get("id") or f"item-{idx}"),
-                "notice_number": str(it.get("notice_number") or ""),
-                "title": str(it.get("title") or ""),
-                "nmck_raw": str(it.get("nmck_raw") or ""),
-                "publication_date": str(it.get("publication_date") or ""),
-                "deadline_date": str(it.get("deadline_date") or ""),
-                "procurement_type": str(it.get("procurement_type") or ""),
-                "status": "pending",
-                "report_markdown": "",
-                "sources": [],
-                "error": "",
-                "docx_filename": "",
-            }
-            for idx, it in enumerate(raw_items)
+            enrich_batch_result_item(
+                {
+                    "index": idx,
+                    "id": str(it.get("id") or f"item-{idx}"),
+                    "notice_number": str(it.get("notice_number") or ""),
+                    "title": str(it.get("title") or ""),
+                    "nmck_raw": str(it.get("nmck_raw") or ""),
+                    "publication_date": str(it.get("publication_date") or ""),
+                    "deadline_date": str(it.get("deadline_date") or ""),
+                    "procurement_type": str(it.get("procurement_type") or ""),
+                    "kontur_url": str(it.get("kontur_url") or ""),
+                    "eis_url": str(it.get("eis_url") or ""),
+                    "etp_url": str(it.get("etp_url") or ""),
+                    "status": "pending",
+                    "report_markdown": "",
+                    "sources": [],
+                    "error": "",
+                    "docx_filename": "",
+                },
+                spec_item=it,
+                job_title=job_human_title,
+                spec_filename=spec_filename,
+            )
+            for idx, it in enumerate(raw_spec_items)
             if isinstance(it, dict)
         ]
         return {
             "job_id": job.id,
-            "title": human_job_title(job),
+            "title": job_human_title,
             "status": job.status,
             "progress": job.progress,
             "message": job.message or "",

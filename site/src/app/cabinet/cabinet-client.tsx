@@ -6998,15 +6998,19 @@ export function CabinetClient({ initialTrialBalanceRub = 495 }: { initialTrialBa
             const found = jobs.find((j) => j.id === jobId);
             if (found) void downloadJob(found);
           }}
-          onOpenDetailedAnalysis={(noticeNum) => {
-            setBatchReaderData(null);
-            setCabinetSection("workspace");
-            selectScenario("procurement_report");
-            setSourceUrls(noticeNum);
-            if (typeof window !== "undefined") {
-              window.scrollTo({ top: 0, behavior: "smooth" });
-            }
-          }}
+          onOpenDetailedAnalysis={
+            hasSeparateCustomBatchTab
+              ? (noticeNum) => {
+                  setBatchReaderData(null);
+                  setCabinetSection("workspace");
+                  selectScenario("procurement_report");
+                  setSourceUrls(noticeNum);
+                  if (typeof window !== "undefined") {
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                  }
+                }
+              : undefined
+          }
           onClose={() => setBatchReaderData(null)}
         />
       ) : null}

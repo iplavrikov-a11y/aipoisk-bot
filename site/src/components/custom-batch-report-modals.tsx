@@ -8,6 +8,7 @@ import {
   ArrowUpDown,
   Check,
   CheckCircle2,
+  ClipboardList,
   Clock3,
   Copy,
   Download,
@@ -15,11 +16,13 @@ import {
   FileSpreadsheet,
   FileText,
   Loader2,
+  Mail,
   Maximize2,
   Minimize2,
   Move,
   Search,
   Sparkles,
+  TrendingUp,
   X,
 } from "lucide-react";
 import { SafeMarkdownView } from "./safe-markdown-view";
@@ -36,6 +39,7 @@ export type BatchRegistryPreviewItem = {
   deadline_date: string;
   deadline_ts?: number | null;
   procurement_type: string;
+  kontur_url?: string;
   eis_url: string;
   etp_url: string;
   customer_inn: string;
@@ -67,6 +71,17 @@ export type BatchReportResultItem = {
   publication_date: string;
   deadline_date: string;
   procurement_type: string;
+  kontur_url?: string;
+  eis_url?: string;
+  etp_url?: string;
+  margin_rub?: string;
+  margin_pct?: string;
+  margin_rub_value?: number | null;
+  margin_pct_value?: number | null;
+  verdict_text?: string;
+  verdict_is_at_top?: boolean;
+  copy_specs_text?: string;
+  copy_supplier_email_text?: string;
   status: "pending" | "running" | "completed" | "failed" | string;
   report_markdown: string;
   sources?: { title: string; url: string }[];
@@ -89,6 +104,91 @@ export type BatchReportReaderData = {
 function formatRub(kopeks: number): string {
   const rub = kopeks / 100;
   return `${rub.toLocaleString("ru-RU", { maximumFractionDigits: 2 })} ₽`;
+}
+
+function safeHttpUrl(raw?: string | null): string | null {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function copyTextReliable(text: string): Promise<boolean> {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fallback below
+  }
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "0";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function getMarginBadgeStyle(item: BatchReportResultItem): {
+  label: string;
+  classes: string;
+  isLoss: boolean;
+} | null {
+  const rub = String(item.margin_rub || "").trim();
+  const pct = String(item.margin_pct || "").trim();
+  if (!rub && !pct) return null;
+
+  const pctNum = typeof item.margin_pct_value === "number" ? item.margin_pct_value : null;
+  const rubNum = typeof item.margin_rub_value === "number" ? item.margin_rub_value : null;
+  const isLoss =
+    (pctNum !== null && pctNum <= 0) ||
+    (rubNum !== null && rubNum < 0) ||
+    rub.startsWith("−") ||
+    rub.startsWith("-") ||
+    pct.startsWith("−") ||
+    pct.startsWith("-");
+  const isHigh = !isLoss && ((pctNum !== null && pctNum >= 15) || (pctNum === null && rubNum !== null && rubNum > 0));
+
+  const parts = [rub, pct].filter(Boolean).join(" · ");
+  const prefix = isLoss ? "Убыток:" : "Маржа:";
+
+  if (isLoss) {
+    return {
+      label: `${prefix} ${parts}`,
+      classes: "bg-rose-50 text-rose-800 border-rose-200",
+      isLoss: true,
+    };
+  }
+  if (isHigh) {
+    return {
+      label: `${prefix} ${parts}`,
+      classes: "bg-emerald-50 text-emerald-800 border-emerald-200",
+      isLoss: false,
+    };
+  }
+  return {
+    label: `${prefix} ${parts}`,
+    classes: "bg-amber-50 text-amber-800 border-amber-200",
+    isLoss: false,
+  };
 }
 
 type BatchSortField = "default" | "deadline" | "price";
@@ -604,6 +704,19 @@ export function BatchSelectionModal({
                                 {item.procurement_type}
                               </span>
                             ) : null}
+                            {safeHttpUrl(item.kontur_url) ? (
+                              <a
+                                href={safeHttpUrl(item.kontur_url)!}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-bold rounded bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 transition-colors"
+                                title="Открыть закупку в Контур.Закупки"
+                              >
+                                <span>Контур</span>
+                                <ExternalLink size={9} aria-hidden="true" />
+                              </a>
+                            ) : null}
                             {activeSheets.length > 1 && item.sheet_name ? (
                               <span className="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-teal-50 text-teal-800 border border-teal-200">
                                 {item.sheet_name}
@@ -727,6 +840,10 @@ export function BatchResultsReaderModal({
   onClose: () => void;
 }) {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [copiedSpecsIdx, setCopiedSpecsIdx] = useState<number | null>(null);
+  const [copiedEmailIdx, setCopiedEmailIdx] = useState<number | null>(null);
+  const [previewCopyBlock, setPreviewCopyBlock] = useState<"specs" | "email" | null>(null);
+  const [sidebarSort, setSidebarSort] = useState<"default" | "margin_pct" | "margin_rub">("default");
   const [isMaximized, setIsMaximized] = useState(false);
   const [isDesktop, setIsDesktop] = useState(false);
   const [winRect, setWinRect] = useState<WindowRect | null>(null);
@@ -750,6 +867,42 @@ export function BatchResultsReaderModal({
   const safeIdx = activeIndex >= 0 && activeIndex < data.items.length ? activeIndex : 0;
   const activeItem = data.items[safeIdx] || null;
   const isSingle = data.items.length <= 1;
+
+  const hasMarginData = useMemo(
+    () =>
+      data.items.filter(
+        (it) =>
+          typeof it.margin_pct_value === "number" ||
+          typeof it.margin_rub_value === "number"
+      ).length >= 2,
+    [data.items]
+  );
+
+  const orderedSidebarEntries = useMemo(() => {
+    const entries = data.items.map((item, rawIdx) => ({ item, rawIdx }));
+    if (sidebarSort === "default") return entries;
+    return [...entries].sort((a, b) => {
+      const aVal =
+        sidebarSort === "margin_pct"
+          ? a.item.margin_pct_value
+          : a.item.margin_rub_value;
+      const bVal =
+        sidebarSort === "margin_pct"
+          ? b.item.margin_pct_value
+          : b.item.margin_rub_value;
+      const aNum = typeof aVal === "number" && Number.isFinite(aVal) ? aVal : null;
+      const bNum = typeof bVal === "number" && Number.isFinite(bVal) ? bVal : null;
+      if (aNum === null && bNum === null) return a.rawIdx - b.rawIdx;
+      if (aNum === null) return 1;
+      if (bNum === null) return -1;
+      if (bNum !== aNum) return bNum - aNum;
+      return a.rawIdx - b.rawIdx;
+    });
+  }, [data.items, sidebarSort]);
+
+  useEffect(() => {
+    setPreviewCopyBlock(null);
+  }, [safeIdx, data.job_id]);
 
   useEffect(() => {
     const computeInitial = (): WindowRect => {
@@ -882,9 +1035,30 @@ export function BatchResultsReaderModal({
 
   function copyMarkdown(item: BatchReportResultItem) {
     if (!item.report_markdown) return;
-    navigator.clipboard?.writeText(item.report_markdown).then(() => {
+    void copyTextReliable(item.report_markdown).then((ok) => {
+      if (!ok) return;
       setCopiedIdx(item.index);
       setTimeout(() => setCopiedIdx(null), 2000);
+    });
+  }
+
+  function copySpecs(item: BatchReportResultItem) {
+    const text = String(item.copy_specs_text || "").trim();
+    if (!text) return;
+    void copyTextReliable(text).then((ok) => {
+      if (!ok) return;
+      setCopiedSpecsIdx(item.index);
+      setTimeout(() => setCopiedSpecsIdx(null), 2400);
+    });
+  }
+
+  function copySupplierEmail(item: BatchReportResultItem) {
+    const text = String(item.copy_supplier_email_text || "").trim();
+    if (!text) return;
+    void copyTextReliable(text).then((ok) => {
+      if (!ok) return;
+      setCopiedEmailIdx(item.index);
+      setTimeout(() => setCopiedEmailIdx(null), 2400);
     });
   }
 
@@ -1045,14 +1219,45 @@ export function BatchResultsReaderModal({
 
         <div className="flex-1 flex flex-col md:flex-row min-h-0 min-w-0 overflow-hidden">
           {!isSingle ? (
-            <aside className="w-full md:w-72 shrink-0 border-b md:border-b-0 md:border-r border-slate-200 bg-slate-50/60 overflow-y-auto max-h-48 md:max-h-none p-2.5 space-y-1.5">
-              {data.items.map((item, idx) => {
-                const isSelected = idx === safeIdx;
+            <aside className="w-full md:w-80 shrink-0 border-b md:border-b-0 md:border-r border-slate-200 bg-slate-50/60 overflow-y-auto max-h-56 md:max-h-none p-2.5 space-y-1.5">
+              {hasMarginData ? (
+                <div className="flex items-center justify-between gap-1 px-1 pb-1.5 mb-1 border-b border-slate-200/80">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                    <TrendingUp size={11} className="text-teal-600" aria-hidden="true" />
+                    <span>Приоритет</span>
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {(
+                      [
+                        { id: "default", label: "№" },
+                        { id: "margin_pct", label: "Маржа %" },
+                        { id: "margin_rub", label: "Маржа ₽" },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setSidebarSort(opt.id)}
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition-colors cursor-pointer ${
+                          sidebarSort === opt.id
+                            ? "bg-teal-600 text-white border-teal-600 shadow-2xs"
+                            : "bg-white hover:bg-teal-50 text-slate-600 border-slate-200"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {orderedSidebarEntries.map(({ item, rawIdx }) => {
+                const isSelected = rawIdx === safeIdx;
+                const marginBadge = getMarginBadgeStyle(item);
                 return (
                   <button
-                    key={item.id || idx}
+                    key={item.id || rawIdx}
                     type="button"
-                    onClick={() => onSelectIndex(idx)}
+                    onClick={() => onSelectIndex(rawIdx)}
                     className={`w-full text-left p-2.5 rounded-xl border transition-all cursor-pointer flex items-start gap-2.5 ${
                       isSelected
                         ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs"
@@ -1084,6 +1289,15 @@ export function BatchResultsReaderModal({
                       <div className="text-xs text-slate-700 line-clamp-2 mt-0.5 leading-snug">
                         {item.title}
                       </div>
+                      {marginBadge ? (
+                        <div className="mt-1.5 flex items-center gap-1">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[11px] font-extrabold leading-tight ${marginBadge.classes}`}
+                          >
+                            {marginBadge.label}
+                          </span>
+                        </div>
+                      ) : null}
                     </div>
                   </button>
                 );
@@ -1093,121 +1307,311 @@ export function BatchResultsReaderModal({
 
           <main className="flex-1 min-w-0 overflow-y-auto overflow-x-auto p-4 sm:p-6 bg-slate-50/75">
             {activeItem ? (
-              <div className="min-w-0">
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 mb-4 shadow-2xs flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mb-1">
-                      {activeItem.notice_number ? (
-                        <span className="px-2 py-0.5 bg-slate-100 text-slate-800 font-mono font-bold rounded-md">
-                          Извещение № {activeItem.notice_number}
-                        </span>
-                      ) : null}
-                      {activeItem.nmck_raw ? (
-                        <span className="px-2 py-0.5 bg-teal-50 text-teal-800 font-bold rounded-md border border-teal-200">
-                          НМЦК: {activeItem.nmck_raw}
-                        </span>
-                      ) : null}
-                      {activeItem.deadline_date ? (
-                        <span>Подача до: {activeItem.deadline_date}</span>
-                      ) : null}
-                    </div>
-                    <h4 className="text-sm sm:text-base font-extrabold text-slate-900 leading-snug">
-                      {activeItem.title}
-                    </h4>
-                  </div>
+              (() => {
+                const activeMargin = getMarginBadgeStyle(activeItem);
+                const konturHref = safeHttpUrl(activeItem.kontur_url);
+                const eisHref = safeHttpUrl(activeItem.eis_url);
+                const etpHref = safeHttpUrl(activeItem.etp_url);
+                const showFallbackVerdictBanner =
+                  activeItem.status === "completed" &&
+                  Boolean(activeItem.verdict_text) &&
+                  !activeItem.verdict_is_at_top;
+                const hasCopySpecs = Boolean(String(activeItem.copy_specs_text || "").trim());
+                const hasCopyEmail = Boolean(String(activeItem.copy_supplier_email_text || "").trim());
 
-                  {activeItem.status === "completed" ? (
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      {onOpenDetailedAnalysis && activeItem.notice_number ? (
-                        <button
-                          type="button"
-                          onClick={() => onOpenDetailedAnalysis(activeItem.notice_number)}
-                          title="Перенести номер закупки в полный «Анализ документации» (полное ТЗ, нацрежим и готовый запрос КП)"
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#174b3f] hover:bg-[#113930] text-white rounded-lg text-xs font-bold shadow-2xs transition-colors cursor-pointer"
-                        >
-                          <Sparkles size={13} className="text-emerald-200" />
-                          <span>Разобрать детально</span>
-                        </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={() => copyMarkdown(activeItem)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
-                      >
-                        {copiedIdx === activeItem.index ? (
-                          <>
-                            <Check size={13} className="text-emerald-600" />
-                            <span>Скопировано</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy size={13} />
-                            <span>Копировать</span>
-                          </>
-                        )}
-                      </button>
-                      {activeItem.docx_filename ? (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onDownloadItemDocx(
-                              data.job_id,
-                              activeItem.index,
-                              activeItem.docx_filename
-                            )
-                          }
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-teal-50 text-teal-800 border border-teal-300 rounded-lg text-xs font-bold transition-colors cursor-pointer"
-                        >
-                          <FileText size={13} />
-                          <span>Скачать Word</span>
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-
-                {activeItem.status === "completed" && activeItem.report_markdown ? (
-                  <>
-                    <SafeMarkdownView markdown={activeItem.report_markdown} />
-                    {activeItem.sources && activeItem.sources.length > 0 ? (
-                      <div className="mt-6 pt-4 border-t border-slate-200">
-                        <div className="text-xs font-bold text-slate-600 mb-2">
-                          Проверенные страницы товаров и поставщиков из поиска Google:
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {activeItem.sources.map((src, sIdx) => (
+                return (
+                  <div className="min-w-0">
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4 mb-4 shadow-2xs flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mb-1.5">
+                          {activeItem.notice_number ? (
+                            <span className="px-2 py-0.5 bg-slate-100 text-slate-800 font-mono font-bold rounded-md">
+                              Извещение № {activeItem.notice_number}
+                            </span>
+                          ) : null}
+                          {activeItem.nmck_raw ? (
+                            <span className="px-2 py-0.5 bg-teal-50 text-teal-800 font-bold rounded-md border border-teal-200">
+                              НМЦК: {activeItem.nmck_raw}
+                            </span>
+                          ) : null}
+                          {activeMargin ? (
+                            <span
+                              className={`px-2 py-0.5 font-extrabold rounded-md border ${activeMargin.classes}`}
+                            >
+                              {activeMargin.label}
+                            </span>
+                          ) : null}
+                          {konturHref ? (
                             <a
-                              key={`${src.url}-${sIdx}`}
-                              href={src.url}
+                              href={konturHref}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-50 hover:bg-teal-50 text-teal-800 border border-slate-200 hover:border-teal-300 rounded-lg text-xs font-semibold transition-colors"
+                              className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-sky-50 hover:bg-sky-100 text-sky-800 font-bold rounded-md border border-sky-200 hover:border-sky-300 transition-colors"
                             >
-                              <span className="truncate max-w-[240px]">{src.title}</span>
-                              <ExternalLink size={11} className="shrink-0" />
+                              <span>Контур.Закупки</span>
+                              <ExternalLink size={11} aria-hidden="true" />
                             </a>
-                          ))}
+                          ) : null}
+                          {eisHref ? (
+                            <a
+                              href={eisHref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-50 hover:bg-slate-100 text-slate-700 font-semibold rounded-md border border-slate-200 transition-colors"
+                            >
+                              <span>ЕИС</span>
+                              <ExternalLink size={11} aria-hidden="true" />
+                            </a>
+                          ) : null}
+                          {!konturHref && !eisHref && etpHref ? (
+                            <a
+                              href={etpHref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-50 hover:bg-slate-100 text-slate-700 font-semibold rounded-md border border-slate-200 transition-colors"
+                            >
+                              <span>Площадка</span>
+                              <ExternalLink size={11} aria-hidden="true" />
+                            </a>
+                          ) : null}
+                          {activeItem.deadline_date ? (
+                            <span>Подача до: {activeItem.deadline_date}</span>
+                          ) : null}
                         </div>
+                        <h4 className="text-sm sm:text-base font-extrabold text-slate-900 leading-snug">
+                          {activeItem.title}
+                        </h4>
+                      </div>
+
+                      {activeItem.status === "completed" ? (
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          {onOpenDetailedAnalysis && activeItem.notice_number ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenDetailedAnalysis(activeItem.notice_number)}
+                              title="Перенести номер закупки в полный «Анализ документации» (полное ТЗ, нацрежим и готовый запрос КП)"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#174b3f] hover:bg-[#113930] text-white rounded-lg text-xs font-bold shadow-2xs transition-colors cursor-pointer"
+                            >
+                              <Sparkles size={13} className="text-emerald-200" />
+                              <span>Разобрать детально</span>
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => copyMarkdown(activeItem)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                          >
+                            {copiedIdx === activeItem.index ? (
+                              <>
+                                <Check size={13} className="text-emerald-600" />
+                                <span>Скопировано</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy size={13} />
+                                <span>Копировать</span>
+                              </>
+                            )}
+                          </button>
+                          {activeItem.docx_filename ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onDownloadItemDocx(
+                                  data.job_id,
+                                  activeItem.index,
+                                  activeItem.docx_filename
+                                )
+                              }
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-teal-50 text-teal-800 border border-teal-300 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                            >
+                              <FileText size={13} />
+                              <span>Скачать Word</span>
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {showFallbackVerdictBanner ? (
+                      <div
+                        className={`rounded-2xl border p-4 mb-4 shadow-2xs ${
+                          activeMargin?.isLoss
+                            ? "border-rose-200 bg-rose-50/75"
+                            : "border-emerald-200 bg-emerald-50/75"
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                          <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wide text-slate-900">
+                            {activeMargin?.isLoss ? (
+                              <AlertTriangle size={15} className="text-rose-600 shrink-0" />
+                            ) : (
+                              <CheckCircle2 size={15} className="text-emerald-700 shrink-0" />
+                            )}
+                            <span>Итоговый вердикт и финансовый результат</span>
+                          </div>
+                          {activeMargin ? (
+                            <span
+                              className={`px-2.5 py-0.5 rounded-full border text-xs font-extrabold ${activeMargin.classes}`}
+                            >
+                              {activeMargin.label}
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="text-[13px] text-slate-800 leading-relaxed">
+                          {activeItem.verdict_text}
+                        </p>
                       </div>
                     ) : null}
-                  </>
-                ) : activeItem.status === "failed" ? (
-                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1">
-                    <div className="font-bold flex items-center gap-1.5">
-                      <AlertTriangle size={15} className="text-amber-700" />
-                      <span>Документация по этой закупке недоступна</span>
-                    </div>
-                    <p>{activeItem.error || "Не удалось автоматически получить файлы с площадки. Плата за эту закупку не списана."}</p>
+
+                    {activeItem.status === "completed" && activeItem.report_markdown ? (
+                      <>
+                        <SafeMarkdownView markdown={activeItem.report_markdown} />
+
+                        {hasCopySpecs || hasCopyEmail ? (
+                          <div className="mt-5 rounded-2xl border border-teal-200/90 bg-white p-4 shadow-2xs space-y-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <div className="text-xs sm:text-sm font-extrabold text-slate-900">
+                                  Быстрое копирование для работы с поставщиками
+                                </div>
+                                <div className="text-[11px] text-slate-500">
+                                  В один клик скопируйте ключевые требования ТЗ или готовое письмо для отправки на почту
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2.5">
+                              {hasCopySpecs ? (
+                                <div className="inline-flex items-center rounded-xl overflow-hidden border border-slate-300 bg-white shadow-2xs">
+                                  <button
+                                    type="button"
+                                    onClick={() => copySpecs(activeItem)}
+                                    className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-bold transition-colors cursor-pointer ${
+                                      copiedSpecsIdx === activeItem.index
+                                        ? "bg-emerald-600 text-white"
+                                        : "bg-slate-50 hover:bg-teal-50 text-slate-900"
+                                    }`}
+                                  >
+                                    {copiedSpecsIdx === activeItem.index ? (
+                                      <>
+                                        <Check size={14} />
+                                        <span>Характеристики скопированы</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ClipboardList size={14} className="text-teal-700" />
+                                        <span>Скопировать тех. характеристики</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setPreviewCopyBlock((prev) => (prev === "specs" ? null : "specs"))
+                                    }
+                                    className="px-2.5 py-2 text-[11px] font-semibold text-slate-500 hover:text-slate-900 hover:bg-slate-100 border-l border-slate-200 transition-colors cursor-pointer"
+                                    title="Показать или скрыть текст характеристик"
+                                  >
+                                    {previewCopyBlock === "specs" ? "Скрыть" : "Текст"}
+                                  </button>
+                                </div>
+                              ) : null}
+
+                              {hasCopyEmail ? (
+                                <div className="inline-flex items-center rounded-xl overflow-hidden border border-teal-500 bg-white shadow-2xs">
+                                  <button
+                                    type="button"
+                                    onClick={() => copySupplierEmail(activeItem)}
+                                    className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-bold transition-colors cursor-pointer ${
+                                      copiedEmailIdx === activeItem.index
+                                        ? "bg-emerald-600 text-white"
+                                        : "bg-teal-600 hover:bg-teal-700 text-white"
+                                    }`}
+                                  >
+                                    {copiedEmailIdx === activeItem.index ? (
+                                      <>
+                                        <Check size={14} />
+                                        <span>Письмо скопировано</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Mail size={14} />
+                                        <span>Скопировать письмо поставщику</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setPreviewCopyBlock((prev) => (prev === "email" ? null : "email"))
+                                    }
+                                    className="px-2.5 py-2 text-[11px] font-semibold text-teal-800 hover:bg-teal-50 border-l border-teal-200 transition-colors cursor-pointer"
+                                    title="Показать или скрыть текст письма"
+                                  >
+                                    {previewCopyBlock === "email" ? "Скрыть" : "Текст"}
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+
+                            {previewCopyBlock ? (
+                              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                <div className="text-[11px] font-bold text-slate-600 mb-1.5">
+                                  {previewCopyBlock === "specs"
+                                    ? "Текст технических характеристик для копирования:"
+                                    : "Готовое письмо производителю / поставщику:"}
+                                </div>
+                                <pre className="whitespace-pre-wrap font-sans text-xs text-slate-800 leading-relaxed max-h-64 overflow-y-auto">
+                                  {previewCopyBlock === "specs"
+                                    ? activeItem.copy_specs_text
+                                    : activeItem.copy_supplier_email_text}
+                                </pre>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+
+                        {activeItem.sources && activeItem.sources.length > 0 ? (
+                          <div className="mt-6 pt-4 border-t border-slate-200">
+                            <div className="text-xs font-bold text-slate-600 mb-2">
+                              Проверенные страницы товаров и поставщиков из поиска Google:
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {activeItem.sources.map((src, sIdx) => (
+                                <a
+                                  key={`${src.url}-${sIdx}`}
+                                  href={src.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-50 hover:bg-teal-50 text-teal-800 border border-slate-200 hover:border-teal-300 rounded-lg text-xs font-semibold transition-colors"
+                                >
+                                  <span className="truncate max-w-[240px]">{src.title}</span>
+                                  <ExternalLink size={11} className="shrink-0" />
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : activeItem.status === "failed" ? (
+                      <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1">
+                        <div className="font-bold flex items-center gap-1.5">
+                          <AlertTriangle size={15} className="text-amber-700" />
+                          <span>Документация по этой закупке недоступна</span>
+                        </div>
+                        <p>{activeItem.error || "Не удалось автоматически получить файлы с площадки. Плата за эту закупку не списана."}</p>
+                      </div>
+                    ) : (
+                      <div className="py-16 flex flex-col items-center justify-center text-slate-500 gap-3">
+                        <Loader2 size={26} className="animate-spin text-teal-600" />
+                        <p className="text-xs font-medium">
+                          Выгружаем документацию и готовим расчёт модели по этой закупке...
+                        </p>
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  <div className="py-16 flex flex-col items-center justify-center text-slate-500 gap-3">
-                    <Loader2 size={26} className="animate-spin text-teal-600" />
-                    <p className="text-xs font-medium">
-                      Выгружаем документацию и готовим расчёт модели по этой закупке...
-                    </p>
-                  </div>
-                )}
-              </div>
+                );
+              })()
             ) : null}
           </main>
         </div>

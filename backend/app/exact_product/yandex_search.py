@@ -6,6 +6,7 @@ Supports both v1 (legacy XML) and v2 (new async) APIs.
 import os
 import asyncio
 import fcntl
+import hashlib
 import random
 import time
 import httpx
@@ -23,19 +24,34 @@ _ASYNC_SUBMIT_LOCK: Optional[asyncio.Lock] = None
 _ASYNC_SUBMIT_LOOP: Optional[asyncio.AbstractEventLoop] = None
 _LAST_ASYNC_SUBMIT_TS: float = 0.0
 _ASYNC_RATE_LIMITED_UNTIL: float = 0.0
+_ASYNC_CONSECUTIVE_429: int = 0
 _SYNC_SUBMIT_LOCK: Optional[asyncio.Lock] = None
 _SYNC_SUBMIT_LOOP: Optional[asyncio.AbstractEventLoop] = None
 _LAST_SYNC_SUBMIT_TS: float = 0.0
 _CROSS_PROCESS_LOCK_PATH = (
-    "/dev/shm/tenderlex_yandex_rps.lock"
+    "/dev/shm/yandex_cloud_async_rps.lock"
     if os.path.isdir("/dev/shm")
-    else "/tmp/tenderlex_yandex_rps.lock"
+    else "/tmp/yandex_cloud_async_rps.lock"
 )
 _CROSS_PROCESS_SYNC_LOCK_PATH = (
-    "/dev/shm/tenderlex_yandex_sync_rps.lock"
+    "/dev/shm/yandex_cloud_sync_rps.lock"
     if os.path.isdir("/dev/shm")
-    else "/tmp/tenderlex_yandex_sync_rps.lock"
+    else "/tmp/yandex_cloud_sync_rps.lock"
 )
+
+
+def _shared_yandex_lock_path(kind: str, folder_id: str = "") -> str:
+    """
+    Build a cross-project lock path keyed by Yandex Cloud folder_id so separate
+    services sharing one Yandex Search folder (e.g. TenderLex + EmailAgent)
+    coordinate under the same 1.0 RPS quota without tripping 429 bursts.
+    """
+    base_dir = "/dev/shm" if os.path.isdir("/dev/shm") else "/tmp"
+    fid = str(folder_id or "").strip()
+    if fid:
+        digest = hashlib.sha256(fid.encode("utf-8")).hexdigest()[:12]
+        return os.path.join(base_dir, f"yandex_cloud_{kind}_rps_{digest}.lock")
+    return _CROSS_PROCESS_LOCK_PATH if kind == "async" else _CROSS_PROCESS_SYNC_LOCK_PATH
 
 
 def is_yandex_async_available() -> bool:
@@ -49,15 +65,27 @@ def record_yandex_async_failure_429(cooloff_s: float = 180.0) -> None:
     _ASYNC_RATE_LIMITED_UNTIL = time.time() + cooloff_s
 
 
+def record_yandex_async_429_progressive() -> float:
+    """Trip async circuit breaker with progressive cooloff (30s -> 60s -> 120s)."""
+    global _ASYNC_CONSECUTIVE_429
+    _ASYNC_CONSECUTIVE_429 += 1
+    cooloff_s = 30.0 if _ASYNC_CONSECUTIVE_429 == 1 else (60.0 if _ASYNC_CONSECUTIVE_429 == 2 else 120.0)
+    record_yandex_async_failure_429(cooloff_s)
+    return cooloff_s
+
+
 def record_yandex_async_success() -> None:
     """Reset circuit breaker on successful async submission."""
-    global _ASYNC_RATE_LIMITED_UNTIL
+    global _ASYNC_RATE_LIMITED_UNTIL, _ASYNC_CONSECUTIVE_429
     _ASYNC_RATE_LIMITED_UNTIL = 0.0
+    _ASYNC_CONSECUTIVE_429 = 0
 
 
-def _reserve_cross_process_slot(min_interval: float, pushback_s: float = 0.0) -> float:
+def _reserve_cross_process_slot(
+    min_interval: float, pushback_s: float = 0.0, folder_id: str = ""
+) -> float:
     """
-    Coordinate searchAsync submission timestamps across worker/API/bot processes
+    Coordinate searchAsync submission timestamps across worker/API/bot/peer-service processes
     via an atomic flock state file in /dev/shm so concurrent processes never exceed 1.0 RPS.
     Returns wait_s (seconds to sleep before firing the request).
     """
@@ -65,10 +93,11 @@ def _reserve_cross_process_slot(min_interval: float, pushback_s: float = 0.0) ->
     now = time.monotonic()
     shared_ts = 0.0
     fd = None
+    lock_path = _shared_yandex_lock_path("async", folder_id)
     try:
-        fd = os.open(_CROSS_PROCESS_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
         try:
-            os.fchmod(fd, 0o600)
+            os.fchmod(fd, 0o666)
         except OSError:
             pass
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -141,6 +170,7 @@ async def _paced_async_post_counted(
         _ASYNC_SUBMIT_LOCK = asyncio.Lock()
         _ASYNC_SUBMIT_LOOP = loop
 
+    folder_id = str((json or {}).get("folderId") or "")
     min_interval = 1.15
     retry_delays = [1.5, 2.5]
     last_exc: Optional[Exception] = None
@@ -148,7 +178,7 @@ async def _paced_async_post_counted(
     sent = 0
     for attempt in range(len(retry_delays) + 1):
         async with _ASYNC_SUBMIT_LOCK:
-            wait_s = _reserve_cross_process_slot(min_interval)
+            wait_s = _reserve_cross_process_slot(min_interval, folder_id=folder_id)
         if wait_s > 0:
             await asyncio.sleep(wait_s)
         try:
@@ -164,7 +194,7 @@ async def _paced_async_post_counted(
             return resp, max(1, sent)
         backoff = retry_delays[attempt] + random.uniform(0.15, 0.45)
         async with _ASYNC_SUBMIT_LOCK:
-            _reserve_cross_process_slot(min_interval, pushback_s=backoff)
+            _reserve_cross_process_slot(min_interval, pushback_s=backoff, folder_id=folder_id)
         await asyncio.sleep(backoff)
     if resp is not None:
         return resp, max(1, sent)
@@ -178,7 +208,9 @@ async def _paced_async_post(client: httpx.AsyncClient, url: str, *, json: dict, 
     return resp
 
 
-def _reserve_cross_process_sync_slot(min_interval: float, pushback_s: float = 0.0) -> float:
+def _reserve_cross_process_sync_slot(
+    min_interval: float, pushback_s: float = 0.0, folder_id: str = ""
+) -> float:
     """
     Coordinate synchronous /v2/web/search fallback submissions across processes
     via an atomic flock state file so burst retries do not trip 1 RPS limits.
@@ -187,10 +219,11 @@ def _reserve_cross_process_sync_slot(min_interval: float, pushback_s: float = 0.
     now = time.monotonic()
     shared_ts = 0.0
     fd = None
+    lock_path = _shared_yandex_lock_path("sync", folder_id)
     try:
-        fd = os.open(_CROSS_PROCESS_SYNC_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
         try:
-            os.fchmod(fd, 0o600)
+            os.fchmod(fd, 0o666)
         except OSError:
             pass
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -265,6 +298,7 @@ async def _paced_sync_post_counted(
         _SYNC_SUBMIT_LOCK = asyncio.Lock()
         _SYNC_SUBMIT_LOOP = loop
 
+    folder_id = str((json or {}).get("folderId") or "")
     min_interval = 1.05
     retry_delays = [1.2, 2.2]
     last_exc: Optional[Exception] = None
@@ -272,7 +306,7 @@ async def _paced_sync_post_counted(
     sent = 0
     for attempt in range(len(retry_delays) + 1):
         async with _SYNC_SUBMIT_LOCK:
-            wait_s = _reserve_cross_process_sync_slot(min_interval)
+            wait_s = _reserve_cross_process_sync_slot(min_interval, folder_id=folder_id)
         if wait_s > 0:
             await asyncio.sleep(wait_s)
         try:
@@ -288,7 +322,7 @@ async def _paced_sync_post_counted(
             return resp, max(1, sent)
         backoff = retry_delays[attempt] + random.uniform(0.15, 0.45)
         async with _SYNC_SUBMIT_LOCK:
-            _reserve_cross_process_sync_slot(min_interval, pushback_s=backoff)
+            _reserve_cross_process_sync_slot(min_interval, pushback_s=backoff, folder_id=folder_id)
         await asyncio.sleep(backoff)
     if resp is not None:
         return resp, max(1, sent)

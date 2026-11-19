@@ -414,9 +414,15 @@ async def fetch_yandex_search_candidates(
                 # Fallback path: Synchronous endpoint only if explicitly enabled
                 if not async_completed and os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK") == "1":
                     try:
-                        res = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
+                        from .exact_product.yandex_search import _paced_sync_post_counted
+                        res, sync_sent = await _paced_sync_post_counted(
+                            client,
+                            "https://searchapi.api.cloud.yandex.net/v2/web/search",
+                            headers=headers,
+                            json=body,
+                        )
+                        requests_count += sync_sent
                         if res.status_code == 200:
-                            requests_count += 1
                             data = res.json()
                             raw_xml = str(data.get("rawData") or (data.get("response") or {}).get("rawData") or "")
                     except Exception as sync_exc:

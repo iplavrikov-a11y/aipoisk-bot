@@ -1212,3 +1212,130 @@ def test_full_procurement_report_batch_preview_create_and_image_upload(db_sessio
         settings = get_or_create_settings(db)
         settings.batch_report_access_mode = prev_mode
         db.commit()
+
+
+def test_kontur_excel_link_extraction_and_insights(db_session: Session):
+    import asyncio
+    from app.custom_batch_insights import (
+        clean_kontur_url,
+        enrich_batch_result_item,
+        extract_copy_blocks,
+        extract_margin_from_markdown,
+        extract_verdict_info,
+    )
+    from app.custom_batch_registry import parse_procurement_registry_file
+
+    # 1. Excel with Kontur redirect hyperlinks in column 0 (regular + small IS-id)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Выгрузка"
+    ws.append(["Номер", "Название", "НМЦ", "Окончание приема заявок"])
+    ws.append(["32616581082", "Поставка запчастей", 4871046.2, "23.11.2026 10:00"])
+    ws.cell(2, 1).hyperlink = (
+        "https://zakupki.kontur.ru:443/api/redirect?"
+        "url=https%3A%2F%2Fzakupki.kontur.ru%2F32616581082%3Futm_source%3Dzakupki%26utm_medium%3Dexcel"
+        "&metrics.EtpLink=https%3A%2F%2Fwww.rts-tender.ru%2Fpoisk%2Fpoisk-223-fz%3Fkeywords%3D32616581082"
+    )
+    ws.append(["0014926028SP", "Поставка колонки", 86500, "17.11.2026 07:00"])
+    ws.cell(3, 1).hyperlink = (
+        "https://zakupki.kontur.ru:443/api/redirect?"
+        "url=https%3A%2F%2Fzakupki.kontur.ru%2FIS90181888%3Futm_source%3Dzakupki"
+    )
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    settings = get_or_create_settings(db_session)
+    ai_mapping = json.dumps(
+        {
+            "is_procurement_table": True,
+            "data_start_row": 2,
+            "columns": {"notice_number": 0, "title": 1, "nmck": 2, "deadline_date": 3},
+        }
+    )
+    with patch("app.custom_batch_registry.call_llm", new=AsyncMock(return_value=ai_mapping)):
+        parsed = asyncio.run(
+            parse_procurement_registry_file(settings, filename="Контур.Закупки.xlsx", content=buf.getvalue())
+        )
+    assert parsed.is_registry is True
+    assert len(parsed.items) == 2
+    assert parsed.items[0]["kontur_url"] == "https://zakupki.kontur.ru/32616581082"
+    assert parsed.items[0]["etp_url"] == "https://www.rts-tender.ru/poisk/poisk-223-fz?keywords=32616581082"
+    assert parsed.items[1]["kontur_url"] == "https://zakupki.kontur.ru/IS90181888"
+    assert clean_kontur_url("https://zakupki.kontur.ru/IS90181888?utm_source=x&foo=1") == (
+        "https://zakupki.kontur.ru/IS90181888?foo=1"
+    )
+
+    # 2. Margin + Verdict at top + explicit Sections 6 & 7 copy blocks
+    md_new = """### 1. Итоговый вердикт и финансово-маржинальный расчёт
+
+**ИТОГОВЫЙ ВЕРДИКТ:** Высокомаржинальная закупка, рекомендуется просчёт.
+
+| Показатель | Значение |
+| :--- | :--- |
+| **НМЦК (Цена заказчика)** | **329 666,67 ₽** |
+| **Расчётная Валовая Маржа** | **74 666,67 ₽ (22,65%)** |
+
+### 2. Краткое резюме и условия закупки
+| **Наименование объекта закупки** | Цистерна-термос 500 л |
+
+### 6. Ключевые технические характеристики и требования по закупке
+* Вместимость: не менее 500 л
+* Материал: сталь AISI 304 от 2 мм
+
+### 7. Готовое письмо производителю / поставщику
+Тема: Запрос КП — Цистерна-термос 500 л
+
+Добрый день! Просим прислать оптовую цену на 1 шт.
+"""
+    margin = extract_margin_from_markdown(md_new)
+    assert margin["margin_rub"] == "+74 667 ₽"
+    assert margin["margin_pct"] == "22,6%"
+    assert margin["margin_pct_value"] == 22.65
+
+    verdict = extract_verdict_info(md_new)
+    assert "Высокомаржинальная закупка" in verdict["verdict_text"]
+    assert verdict["verdict_is_at_top"] is True
+
+    specs, email = extract_copy_blocks(md_new, title="Цистерна-термос 500 л")
+    assert "AISI 304" in specs
+    assert "Тема: Запрос КП — Цистерна-термос 500 л" in email
+
+    # 3. Negative margin + legacy fallback (no sections 6-7, verdict at bottom)
+    md_legacy = """### 1. Краткое резюме и условия закупки
+| Показатель | Значение |
+| :--- | :--- |
+| **Наименование объекта закупки** | Доски пластиковые для скамеек |
+| **Место поставки** | г. Краснодар |
+| **Срок поставки** | 15 рабочих дней |
+
+### 2. Подбор товара и Сравнительная Таблица Соответствия
+| Характеристика / Параметр из ТЗ | Требование Заказчика (в ТЗ) | Значение предлагаемого товара/аналога |
+| :--- | :--- | :--- |
+| Материал | Полимерпесчаный композит | Полимерпесчаный |
+| Длина | 2000 мм | 2000 мм |
+
+### 5. Финансово-маржинальный расчет и Вердикт
+**ИТОГОВЫЙ ВЕРДИКТ:** Участие не рекомендуется, закупка убыточная.
+
+| Показатель | Значение |
+| :--- | :--- |
+| **Расчетная Валовая Маржа** | **−10 661,30 ₽ (−9,9%)** |
+"""
+    enriched = enrich_batch_result_item(
+        {
+            "index": 0,
+            "notice_number": "0319100022526000114",
+            "title": "Доски пластиковые",
+            "status": "completed",
+            "report_markdown": md_legacy,
+        },
+        spec_filename="Контур.Закупки_17.11.2026",
+    )
+    assert enriched["kontur_url"] == "https://zakupki.kontur.ru/0319100022526000114"
+    assert enriched["margin_rub"] == "−10 661 ₽"
+    assert enriched["margin_pct"] == "−9,9%"
+    assert enriched["margin_rub_value"] < 0
+    assert enriched["verdict_is_at_top"] is False
+    assert "Полимерпесчаный композит" in enriched["copy_specs_text"]
+    assert "Тема: Запрос КП — Доски пластиковые" in enriched["copy_supplier_email_text"]
+

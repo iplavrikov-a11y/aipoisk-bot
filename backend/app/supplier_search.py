@@ -2415,10 +2415,15 @@ async def _discover_suppliers_impl(
             within = item.get("supplier_distance_within_radius")
             rad_rank = 0 if within is True else (1 if within is None else 2)
             dist = item.get("supplier_distance_km")
-            effective_dist = dist if (dist is not None and dist > 0) else 999999
+            effective_dist = int(dist) if isinstance(dist, (int, float)) and dist >= 0 else 999999
             base_key = _supplier_result_sort_key(item)
             return (rad_rank, effective_dist, base_key[0], base_key[1], base_key[2])
         accepted.sort(key=_final_geo_sort)
+        accepted = _apply_strict_local_radius_filter(
+            accepted,
+            target=effective_minimum_target,
+            profile=profile,
+        )
 
     if policy == SUPPLIER_POLICY_MINPROM_PRIORITY:
         def _minprom_priority_sort_key(item: dict) -> int:
@@ -2715,9 +2720,57 @@ async def _enrich_unmatched_registry_suppliers(
                         break
 
             candidate_urls_to_try: list[str] = [site] if site else []
+            tried_urls: set[str] = set()
+            short_prod = " ".join(product.split()[:4])
+
+            async def _crawl_candidates(urls: list[str]) -> None:
+                nonlocal site, evidence_url, contact_url, phone, email
+                for cand_url in urls:
+                    if not cand_url or cand_url in tried_urls:
+                        continue
+                    tried_urls.add(cand_url)
+                    if phone and email and site:
+                        break
+                    try:
+                        pages = await collect_pages(cand_url)
+                        if not pages:
+                            if not site and not cand_url.endswith(".clients.site/"):
+                                site = cand_url
+                                evidence_url = cand_url
+                                contact_url = cand_url
+                            continue
+                        comb_text = "\n".join(p.get("text", "") for p in pages)
+                        cand_dom = base_domain(cand_url)
+                        phones = sorted(set(PHONE_RE.findall(comb_text)))
+                        emails = prioritize_emails(EMAIL_RE.findall(comb_text), cand_dom)
+                        # Filter out aggregator emails that do not belong to a supplier
+                        emails = [
+                            e for e in emails
+                            if base_domain(e.split("@")[-1]) not in EXTRA_AGGREGATOR_DOMAINS
+                            and base_domain(e.split("@")[-1]) not in BLOCKED_DOMAINS
+                        ]
+                        verified_p = _verified_phone("", phones)
+                        if verified_p and not verified_p.startswith("+7"):
+                            verified_p = ""
+                        verified_e = _verified_email("", emails)
+                        if verified_p or verified_e:
+                            site = cand_url
+                            if verified_p and not phone:
+                                phone = verified_p
+                            if verified_e and not email:
+                                email = verified_e
+                            contact_url = contact_page_url(pages, emails, phones) or cand_url
+                            evidence_url = pages[0].get("url") or cand_url
+                            break
+                        elif not site and ".clients.site" not in cand_dom:
+                            site = cand_url
+                            evidence_url = pages[0].get("url") or cand_url
+                            contact_url = cand_url
+                    except Exception as crawl_exc:
+                        logger.warning("Targeted crawl failed for %s: %s", cand_url, crawl_exc)
+
             if not site and search_budget_remaining > 0:
                 primary_q = ""
-                short_prod = " ".join(product.split()[:4])
                 if clean_name and inn:
                     primary_q = f'"{clean_name}" {inn} официальный сайт контакты'
                 elif clean_name:
@@ -2727,52 +2780,22 @@ async def _enrich_unmatched_registry_suppliers(
 
                 try:
                     valid_candidates = await _run_targeted_query(primary_q)
-                    candidate_urls_to_try = [c.url for c in valid_candidates[:3]]
+                    candidate_urls_to_try.extend(c.url for c in valid_candidates[:3])
                 except Exception as search_exc:
                     logger.warning("Targeted search failed for entry %s: %s", inn or mfr, search_exc)
 
-            for cand_url in candidate_urls_to_try:
-                if not cand_url:
-                    continue
-                if phone and email and site:
-                    break
+            await _crawl_candidates(candidate_urls_to_try)
+
+            # Soft fallback query without strict INN when primary query found no contacts
+            # (many Russian factory websites omit INN from indexed pages).
+            if not (phone or email) and clean_name and inn and search_budget_remaining > 0:
+                loc_hint = supplier_city or short_prod
+                fallback_q = f'"{clean_name}" {loc_hint} официальный сайт контакты'.strip()
                 try:
-                    pages = await collect_pages(cand_url)
-                    if not pages:
-                        if not site and not cand_url.endswith(".clients.site/"):
-                            site = cand_url
-                            evidence_url = cand_url
-                            contact_url = cand_url
-                        continue
-                    comb_text = "\n".join(p.get("text", "") for p in pages)
-                    cand_dom = base_domain(cand_url)
-                    phones = sorted(set(PHONE_RE.findall(comb_text)))
-                    emails = prioritize_emails(EMAIL_RE.findall(comb_text), cand_dom)
-                    # Filter out aggregator emails that do not belong to a supplier
-                    emails = [
-                        e for e in emails
-                        if base_domain(e.split("@")[-1]) not in EXTRA_AGGREGATOR_DOMAINS
-                        and base_domain(e.split("@")[-1]) not in BLOCKED_DOMAINS
-                    ]
-                    verified_p = _verified_phone("", phones)
-                    if verified_p and not verified_p.startswith("+7"):
-                        verified_p = ""
-                    verified_e = _verified_email("", emails)
-                    if verified_p or verified_e:
-                        site = cand_url
-                        if verified_p and not phone:
-                            phone = verified_p
-                        if verified_e and not email:
-                            email = verified_e
-                        contact_url = contact_page_url(pages, emails, phones) or cand_url
-                        evidence_url = pages[0].get("url") or cand_url
-                        break
-                    elif not site and ".clients.site" not in cand_dom:
-                        site = cand_url
-                        evidence_url = pages[0].get("url") or cand_url
-                        contact_url = cand_url
-                except Exception as crawl_exc:
-                    logger.warning("Targeted crawl failed for %s: %s", cand_url, crawl_exc)
+                    fallback_candidates = await _run_targeted_query(fallback_q)
+                    await _crawl_candidates([c.url for c in fallback_candidates[:2]])
+                except Exception as fb_exc:
+                    logger.warning("Fallback GISP search failed for entry %s: %s", clean_name, fb_exc)
 
             has_contacts = bool(phone or email)
             # Step 3: Build clean comment
@@ -2839,7 +2862,8 @@ async def _enrich_unmatched_registry_suppliers(
 
 
 async def _enrich_accepted_suppliers_with_dadata(accepted: list[dict]) -> list[dict]:
-    """Enrich missing region, city, and contact person for any accepted suppliers with INN."""
+    """Enrich missing region, city, and contact person concurrently for accepted suppliers with INN."""
+    items_by_inn: dict[str, list[dict]] = {}
     for item in accepted:
         inn = re.sub(r"\D+", "", str(item.get("inn") or ""))
         if not inn or len(inn) not in (10, 12):
@@ -2848,23 +2872,36 @@ async def _enrich_accepted_suppliers_with_dadata(accepted: list[dict]) -> list[d
         need_city = not str(item.get("supplier_city") or "").strip()
         need_contact = not str(item.get("contact_person") or "").strip()
         if need_region or need_city or need_contact:
+            items_by_inn.setdefault(inn, []).append(item)
+
+    if not items_by_inn:
+        return accepted
+
+    sem = asyncio.Semaphore(8)
+
+    async def _fetch_and_apply(inn: str, group: list[dict]) -> None:
+        async with sem:
             try:
                 dadata = await enrich_company_by_inn(inn)
-                if dadata:
-                    if need_region and dadata.get("region"):
-                        item["region"] = dadata["region"]
-                    if need_city:
-                        city_disp = _clean_dadata_city_display(
-                            str(dadata.get("city") or ""),
-                            str(dadata.get("region") or item.get("region") or ""),
-                            str(dadata.get("legal_address") or ""),
-                        )
-                        if city_disp:
-                            item["supplier_city"] = city_disp
-                    if need_contact and dadata.get("management_name"):
-                        item["contact_person"] = dadata["management_name"]
             except Exception:
-                pass
+                return
+            if not dadata:
+                return
+            for item in group:
+                if not str(item.get("region") or "").strip() and dadata.get("region"):
+                    item["region"] = dadata["region"]
+                if not str(item.get("supplier_city") or "").strip():
+                    city_disp = _clean_dadata_city_display(
+                        str(dadata.get("city") or ""),
+                        str(dadata.get("region") or item.get("region") or ""),
+                        str(dadata.get("legal_address") or ""),
+                    )
+                    if city_disp:
+                        item["supplier_city"] = city_disp
+                if not str(item.get("contact_person") or "").strip() and dadata.get("management_name"):
+                    item["contact_person"] = dadata["management_name"]
+
+    await asyncio.gather(*[_fetch_and_apply(inn, grp) for inn, grp in items_by_inn.items()])
     return accepted
 
 
@@ -4622,8 +4659,15 @@ async def _review_candidates_until_target(
             geo_radius_km=geo_radius_km,
             geo_scope=geo_scope,
         )
-        # Early stop: skip batch entirely if we already have enough AND no remaining candidates target underfilled items
-        if len(already_accepted) >= effective_target:
+        # Early stop: when geo_radius_km is set, only count in-radius suppliers toward early stop
+        # so distant Moscow/SPb companies do not prematurely abort checking local candidates.
+        geo_active = bool(delivery_city and geo_radius_km and geo_radius_km > 0)
+        early_stop_count = (
+            sum(1 for r in already_accepted if r.get("supplier_distance_within_radius") is True)
+            if geo_active
+            else len(already_accepted)
+        )
+        if early_stop_count >= effective_target:
             underfilled = _underfilled_item_ids_for(already_accepted)
             remaining_needed = [
                 c for c in candidates[batch_start:]
@@ -4686,7 +4730,12 @@ async def _review_candidates_until_target(
             review_progress,
             f"Проверено сайтов: {stopped_after}/{len(candidates)}, подтверждено {len(accepted)}",
         )
-        if len(accepted) >= effective_target:
+        accepted_stop_count = (
+            sum(1 for r in accepted if r.get("supplier_distance_within_radius") is True)
+            if geo_active
+            else len(accepted)
+        )
+        if accepted_stop_count >= effective_target:
             underfilled_after = _underfilled_item_ids_for(accepted)
             remaining_after = [
                 c for c in candidates[stopped_after:]
@@ -4736,6 +4785,30 @@ _TEST_FIXTURE_DUMMY_PHONES = frozenset({
 })
 
 
+def _apply_strict_local_radius_filter(
+    sorted_items: list[dict],
+    *,
+    target: int,
+    profile: ProcurementProfile | None = None,
+) -> list[dict]:
+    """Keep strictly in-radius suppliers when local pool is already strong enough;
+    otherwise preserve nearest fallback so the customer never gets an empty report."""
+    in_radius_only = [item for item in sorted_items if item.get("supplier_distance_within_radius") is True]
+    min_strict_local = min(max(1, target), 15)
+    if len(in_radius_only) < min_strict_local:
+        return sorted_items
+    if profile and len(profile.items) > 1:
+        covered_items: set[str] = set()
+        for r in in_radius_only:
+            rid = str(r.get("procurement_item_id") or "").strip().lower()
+            for part in rid.replace(",", " ").split():
+                if part:
+                    covered_items.add(part)
+        if not all(it.id.lower() in covered_items for it in profile.items):
+            return sorted_items
+    return in_radius_only
+
+
 def _accepted_supplier_results(
     reviewed: list[dict],
     target: int,
@@ -4778,9 +4851,18 @@ def _accepted_supplier_results(
         def _geo_sort_key(item: dict):
             within = item.get("supplier_distance_within_radius")
             rad_rank = 0 if within is True else (1 if within is None else 2)
+            raw_dist = item.get("supplier_distance_km")
+            dist_val = int(raw_dist) if isinstance(raw_dist, (int, float)) else 999_999
             base_key = _supplier_result_sort_key(item)
-            return (rad_rank, base_key[0], base_key[1], base_key[2])
+            return (rad_rank, dist_val, base_key[0], base_key[1], base_key[2])
         sorted_verified = sorted(verified, key=_geo_sort_key)
+        # Strict local focus when we already have a strong in-radius pool so distant
+        # cities do not flood the report; if local pool is sparse, keep nearest fallback.
+        sorted_verified = _apply_strict_local_radius_filter(
+            sorted_verified,
+            target=target,
+            profile=profile,
+        )
     else:
         sorted_verified = sorted(verified, key=_supplier_result_sort_key)
 
@@ -5250,14 +5332,15 @@ async def _search_with_yandex(
             }
             # Primary: Cost-effective asynchronous search (30.50 ₽ / 1k reqs vs 488 ₽ / 1k reqs sync)
             from .exact_product.yandex_search import (
+                _paced_async_post_counted,
+                _paced_sync_post_counted,
                 is_yandex_async_available,
-                record_yandex_async_failure_429,
+                record_yandex_async_429_progressive,
                 record_yandex_async_success,
             )
             if async_supported and is_yandex_async_available():
                 try:
-                    from .exact_product.yandex_search import _paced_async_post
-                    response = await _paced_async_post(
+                    response, async_sent = await _paced_async_post_counted(
                         client,
                         "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync",
                         headers=headers,
@@ -5283,8 +5366,8 @@ async def _search_with_yandex(
                         async_supported = False
                         last_provider_error = f"http_{response.status_code}"
                     elif response.status_code == 429:
-                        record_yandex_async_failure_429(180.0)
-                        last_provider_error = "http_429_rate_limited"
+                        cooloff_s = record_yandex_async_429_progressive()
+                        last_provider_error = f"http_429_rate_limited_{int(cooloff_s)}s"
                     elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
                         last_provider_error = f"http_{response.status_code}_auth_or_billing"
                         notify_yandex_search_error(response.status_code, response.text, query=query)
@@ -5296,13 +5379,15 @@ async def _search_with_yandex(
                     logger.debug("Yandex async search call failed: %s", async_exc)
 
             # Fallback: Synchronous endpoint when searchAsync is rate-limited/unavailable/timed out
-            # (unless explicitly disabled via AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK=0).
+            # (kept enabled by default so customers always receive completed results).
             if os.getenv("AIPOISK_ALLOW_YANDEX_SYNC_FALLBACK", "1") != "0":
                 try:
-                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
-                    if response.status_code == 429:
-                        await asyncio.sleep(1.5)
-                        response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
+                    response, sync_sent = await _paced_sync_post_counted(
+                        client,
+                        "https://searchapi.api.cloud.yandex.net/v2/web/search",
+                        headers=headers,
+                        json=body,
+                    )
                     if response.status_code == 200:
                         requests_count += 1
                         last_provider_error = ""

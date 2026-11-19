@@ -1966,6 +1966,9 @@ def _process_custom_batch_procurement_report(
             "publication_date": str(it.get("publication_date") or ""),
             "deadline_date": str(it.get("deadline_date") or ""),
             "procurement_type": str(it.get("procurement_type") or ""),
+            "kontur_url": str(it.get("kontur_url") or ""),
+            "eis_url": str(it.get("eis_url") or ""),
+            "etp_url": str(it.get("etp_url") or ""),
             "status": "pending",
             "report_markdown": "",
             "ai_model": "",
@@ -2144,7 +2147,43 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
             custom_res.markdown,
             title=report_title,
         )
+        from .custom_batch_insights import clean_kontur_url, enrich_batch_result_item
+
         notice_val = job.sources[0].value if job.sources else ""
+        single_kontur_url = ""
+        single_eis_url = ""
+        single_etp_url = ""
+        for src in job.sources or []:
+            s_val = str(getattr(src, "value", "") or "").strip()
+            if s_val.lower().startswith(("http://", "https://")):
+                if "kontur.ru" in s_val.lower() and not single_kontur_url:
+                    single_kontur_url = clean_kontur_url(s_val)
+                elif "zakupki.gov.ru" in s_val.lower() and not single_eis_url:
+                    single_eis_url = s_val
+                elif not single_etp_url:
+                    single_etp_url = s_val
+        single_item = enrich_batch_result_item(
+            {
+                "index": 0,
+                "id": "single-0",
+                "notice_number": str(notice_val or ""),
+                "title": subject,
+                "nmck_raw": "",
+                "publication_date": "",
+                "deadline_date": "",
+                "procurement_type": "",
+                "kontur_url": single_kontur_url,
+                "eis_url": single_eis_url,
+                "etp_url": single_etp_url,
+                "status": "completed",
+                "report_markdown": custom_res.markdown,
+                "ai_model": custom_res.model,
+                "sources": custom_res.sources,
+                "error": "",
+                "docx_filename": docx_path.name,
+            },
+            job_title=str(job.title or ""),
+        )
         _write_atomic_json(
             out_dir / CUSTOM_BATCH_RESULTS_FILENAME,
             {
@@ -2152,24 +2191,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
                 "total_count": 1,
                 "completed_count": 1,
                 "failed_count": 0,
-                "items": [
-                    {
-                        "index": 0,
-                        "id": "single-0",
-                        "notice_number": str(notice_val or ""),
-                        "title": subject,
-                        "nmck_raw": "",
-                        "publication_date": "",
-                        "deadline_date": "",
-                        "procurement_type": "",
-                        "status": "completed",
-                        "report_markdown": custom_res.markdown,
-                        "ai_model": custom_res.model,
-                        "sources": custom_res.sources,
-                        "error": "",
-                        "docx_filename": docx_path.name,
-                    }
-                ],
+                "items": [single_item],
             },
         )
         evidence_path = write_evidence(

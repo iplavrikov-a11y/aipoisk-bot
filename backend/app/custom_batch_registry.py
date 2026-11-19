@@ -22,6 +22,7 @@ import openpyxl
 
 from .ai import call_llm, custom_provider_map, parse_json_object
 from .config import config
+from .custom_batch_insights import clean_kontur_url
 from .document_parser import clean_xml_compatible, extract_text, sanitize_filename
 from .models import SystemSettings
 from .procurement_sources import normalize_source_url, official_notice_number_from_url
@@ -53,6 +54,7 @@ COLUMN_MAPPING_SYSTEM_PROMPT = """Ты — ИИ-анализатор струк�
    - publication_date: дата публикации / размещения (необязательно)
    - deadline_date: дата и время окончания приема заявок / срок подачи заявок / подача заявок до (выбирай именно окончание приема заявок, НЕ путай с датой проведения отбора, аукциона или подведения итогов)
    - procurement_type: тип торгов / закон (44-ФЗ, 223-ФЗ, малые закупки и т.п., необязательно)
+   - kontur_url: ссылка на Контур.Закупки (если вынесена в отдельный столбец, необязательно)
    - eis_url: ссылка на ЕИС (необязательно)
    - etp_url: ЭТП / ссылка на площадку (необязательно)
    - customer_inn: ИНН заказчика (необязательно)
@@ -69,6 +71,7 @@ COLUMN_MAPPING_SYSTEM_PROMPT = """Ты — ИИ-анализатор струк�
     "publication_date": 7,
     "deadline_date": 8,
     "procurement_type": 11,
+    "kontur_url": null,
     "eis_url": 12,
     "etp_url": 14,
     "customer_inn": 25,
@@ -512,6 +515,7 @@ async def _parse_xlsx_registry(
         col_pub = _col_int(cols, "publication_date", max_col)
         col_dead = _col_int(cols, "deadline_date", max_col)
         col_type = _col_int(cols, "procurement_type", max_col)
+        col_kontur = _col_int(cols, "kontur_url", max_col)
         col_eis = _col_int(cols, "eis_url", max_col)
         col_etp = _col_int(cols, "etp_url", max_col)
         col_inn = _col_int(cols, "customer_inn", max_col)
@@ -533,23 +537,44 @@ async def _parse_xlsx_registry(
             cust_inn = _format_cell_value(ws_val.cell(r, col_inn + 1).value) if col_inn is not None else ""
             cust_name = _format_cell_value(ws_val.cell(r, col_cust + 1).value) if col_cust is not None else ""
 
+            kontur_url = ""
             eis_url = ""
             etp_url = ""
-            for idx_col in (col_num, col_eis, col_etp):
-                if idx_col is None:
+            checked_cols: set[int] = set()
+            for idx_col in (col_num, col_kontur, col_title, col_eis, col_etp):
+                if idx_col is None or idx_col in checked_cols:
                     continue
+                checked_cols.add(idx_col)
                 lcell = ws_link.cell(r, idx_col + 1)
                 target = str(lcell.hyperlink.target or "").strip() if lcell.hyperlink else ""
                 if not target and isinstance(lcell.value, str) and "http" in lcell.value:
                     target = lcell.value
                 if target:
                     primary_u, etp_u = _unwrap_redirect_url(target)
-                    if "zakupki.gov.ru" in primary_u and not eis_url:
+                    if "kontur.ru" in primary_u.lower() and not kontur_url:
+                        kontur_url = clean_kontur_url(primary_u)
+                    elif "zakupki.gov.ru" in primary_u and not eis_url:
                         eis_url = primary_u
-                    elif primary_u and "kontur.ru" not in primary_u and not etp_url:
+                    elif primary_u and "kontur.ru" not in primary_u.lower() and not etp_url:
                         etp_url = primary_u
                     if etp_u and not etp_url:
                         etp_url = etp_u
+
+            # Fallback scan: if Kontur link lives in another column's hyperlink or text, capture it too.
+            if not kontur_url:
+                for c_idx in range(max_col):
+                    if c_idx in checked_cols:
+                        continue
+                    lcell = ws_link.cell(r, c_idx + 1)
+                    target = str(lcell.hyperlink.target or "").strip() if lcell.hyperlink else ""
+                    if not target and isinstance(lcell.value, str) and "kontur.ru" in lcell.value.lower():
+                        target = lcell.value
+                    if target and "kontur.ru" in target.lower():
+                        primary_u, _ = _unwrap_redirect_url(target)
+                        if "kontur.ru" in primary_u.lower():
+                            kontur_url = clean_kontur_url(primary_u)
+                            if kontur_url:
+                                break
 
             dedup_key = f"{raw_num}::{title[:60]}"
             if dedup_key in seen_keys:
@@ -568,6 +593,7 @@ async def _parse_xlsx_registry(
                     "deadline_date": dead_date[:60],
                     "deadline_ts": parse_deadline_timestamp_ms(dead_date),
                     "procurement_type": proc_type[:80],
+                    "kontur_url": kontur_url[:1000],
                     "eis_url": eis_url[:1000],
                     "etp_url": etp_url[:1000],
                     "customer_inn": cust_inn[:40],
@@ -629,6 +655,7 @@ async def _parse_csv_registry(
     col_pub = _col_int(cols, "publication_date", max_col)
     col_dead = _col_int(cols, "deadline_date", max_col)
     col_type = _col_int(cols, "procurement_type", max_col)
+    col_kontur = _col_int(cols, "kontur_url", max_col)
     default_csv_start = 1 if len(rows) == 1 else 2
     start_idx = max(0, int(mapping.get("data_start_row") or default_csv_start) - 1)
     items: list[dict[str, Any]] = []
@@ -641,6 +668,20 @@ async def _parse_csv_registry(
         pub_date = clean_xml_compatible(r[col_pub]).strip() if col_pub is not None and col_pub < len(r) else ""
         dead_date = clean_xml_compatible(r[col_dead]).strip() if col_dead is not None and col_dead < len(r) else ""
         proc_type = clean_xml_compatible(r[col_type]).strip() if col_type is not None and col_type < len(r) else ""
+        kontur_url = ""
+        if col_kontur is not None and col_kontur < len(r):
+            raw_k = clean_xml_compatible(r[col_kontur]).strip()
+            if raw_k and "kontur.ru" in raw_k.lower():
+                primary_k, _ = _unwrap_redirect_url(raw_k)
+                kontur_url = clean_kontur_url(primary_k)
+        if not kontur_url:
+            for cell_val in r:
+                s_val = clean_xml_compatible(cell_val).strip()
+                if s_val and "kontur.ru" in s_val.lower() and "http" in s_val.lower():
+                    primary_k, _ = _unwrap_redirect_url(s_val)
+                    kontur_url = clean_kontur_url(primary_k)
+                    if kontur_url:
+                        break
         items.append(
             {
                 "id": uuid.uuid4().hex[:12],
@@ -653,6 +694,7 @@ async def _parse_csv_registry(
                 "deadline_date": dead_date[:60],
                 "deadline_ts": parse_deadline_timestamp_ms(dead_date),
                 "procurement_type": proc_type[:80],
+                "kontur_url": kontur_url[:1000],
                 "eis_url": "",
                 "etp_url": "",
                 "customer_inn": "",
@@ -689,6 +731,10 @@ def _build_registry_result_from_llm_payload(
             nmck_raw = clean_xml_compatible(str(item.get("nmck_raw"))).strip()
         etp_u = normalize_source_url(str(item.get("etp_url") or "").strip())
         eis_u = normalize_source_url(str(item.get("eis_url") or "").strip())
+        kontur_u = clean_kontur_url(str(item.get("kontur_url") or "").strip())
+        if not kontur_u and "kontur.ru" in etp_u.lower():
+            kontur_u = clean_kontur_url(etp_u)
+            etp_u = ""
         items.append(
             {
                 "id": uuid.uuid4().hex[:12],
@@ -701,6 +747,7 @@ def _build_registry_result_from_llm_payload(
                 "deadline_date": clean_xml_compatible(str(item.get("deadline_date") or "")).strip()[:60],
                 "deadline_ts": parse_deadline_timestamp_ms(item.get("deadline_date")),
                 "procurement_type": clean_xml_compatible(str(item.get("procurement_type") or "")).strip()[:80],
+                "kontur_url": kontur_u[:1000],
                 "eis_url": eis_u[:1000],
                 "etp_url": etp_u[:1000],
                 "customer_inn": clean_xml_compatible(str(item.get("customer_inn") or "")).strip()[:40],
@@ -868,6 +915,7 @@ def parse_procurement_text_list(raw_text: str) -> RegistryPreviewResult:
             continue
 
         notice_number = ""
+        kontur_url = ""
         eis_url = ""
         etp_url = ""
         proc_type = ""
@@ -876,7 +924,9 @@ def parse_procurement_text_list(raw_text: str) -> RegistryPreviewResult:
             primary_u, extra_etp = _unwrap_redirect_url(tok)
             if not primary_u:
                 continue
-            if "zakupki.gov.ru" in primary_u:
+            if "kontur.ru" in primary_u.lower():
+                kontur_url = clean_kontur_url(primary_u)
+            elif "zakupki.gov.ru" in primary_u:
                 eis_url = primary_u
                 notice_number = official_notice_number_from_url(primary_u)
                 proc_type = "ЕИС"
@@ -903,7 +953,7 @@ def parse_procurement_text_list(raw_text: str) -> RegistryPreviewResult:
                 elif 6 <= len(digits) <= 9:
                     proc_type = "Малая закупка"
 
-        dedup_key = f"{notice_number}::{eis_url or etp_url}".lower()
+        dedup_key = f"{notice_number}::{kontur_url or eis_url or etp_url}".lower()
         if dedup_key in seen_keys:
             continue
         seen_keys.add(dedup_key)
@@ -919,6 +969,7 @@ def parse_procurement_text_list(raw_text: str) -> RegistryPreviewResult:
                 "deadline_date": "",
                 "deadline_ts": None,
                 "procurement_type": proc_type,
+                "kontur_url": kontur_url[:1000],
                 "eis_url": eis_url[:1000],
                 "etp_url": etp_url[:1000],
                 "customer_inn": "",
