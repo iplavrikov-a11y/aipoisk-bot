@@ -454,6 +454,11 @@ async def fetch_custom_tender_bundle(
         if len(parsed_docs) > 1:
             parsed_docs, _ = await asyncio.to_thread(organize_procurement_documents, parsed_docs)
         docs_ctx = combined_document_context(parsed_docs) if parsed_docs else ""
+        if tp_res.source_origin == "eis" and not docs_ctx:
+            return CustomTenderBundle(
+                ok=False,
+                error="Не удалось прочитать документы из ЕИС. Попробуйте запустить анализ позже.",
+            )
         combined = "\n\n".join(
             part for part in (row_header, _strip_internal_source_names(tp_res.context), docs_ctx) if part.strip()
         )

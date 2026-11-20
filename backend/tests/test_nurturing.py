@@ -304,6 +304,22 @@ def test_nurturing_step2_and_step3_candidates(db_session: Session):
     for i in range(4):
         db_session.add(Job(client_id=client_s3.id, status="completed", created_at=now - timedelta(hours=5 + i)))
 
+    # Client Step 3 (trial 250 RUB exhausted after 2 jobs, balance 52 RUB < 99 RUB, last job 5h ago)
+    t_trial = str(uuid.uuid4().int)[:10]
+    client_trial_exhausted = Client(
+        telegram_id=t_trial,
+        name="Клиент Триал 250",
+        is_active=True,
+        marketing_unsubscribed=False,
+        money_balance_kopeks=5200,
+        created_at=now - timedelta(days=4),
+    )
+    db_session.add(client_trial_exhausted)
+    db_session.flush()
+    db_session.add(ClientTelegramAccount(client_id=client_trial_exhausted.id, telegram_id=t_trial, is_active=True))
+    for i in range(2):
+        db_session.add(Job(client_id=client_trial_exhausted.id, status="completed", created_at=now - timedelta(hours=5 + i)))
+
     db_session.commit()
 
     candidates = get_due_nurturing_candidates(db_session, settings, current_time=now, enforce_work_hours=False)
@@ -312,6 +328,8 @@ def test_nurturing_step2_and_step3_candidates(db_session: Session):
 
     assert client_s2.id in step2_ids
     assert client_s3.id in step3_ids
+    assert client_trial_exhausted.id in step3_ids
+    assert client_trial_exhausted.id not in step2_ids
 
 
 def test_nurturing_content_builders():
@@ -321,18 +339,22 @@ def test_nurturing_content_builders():
         assert subject
         assert "TenderLex" in html
         assert "1. Поиск поставщиков" in html
-        assert "2. Определение точного товара и аналогов" in html
+        assert "2. Подбор товара и аналогов" in html
         assert "3. Анализ документации" in html
+        assert "ПП 616/617" not in html
         assert "@tenderlex_bot" in html
         assert "unsubscribe?" in html
         assert "отписаться от рассылки" in html.lower()
         assert "\n\n\n" not in html  # no massive empty newline blocks
+        if step == "step3":
+            assert "/cabinet?topup=1" in html
 
     # Telegram message builder
     for step in ("step1", "step1_final", "step2", "step3", "step4_reengage"):
         text, buttons = build_nurturing_telegram_message(step)
         assert text
         assert "TenderLex" in text
+        assert "ПП 616/617" not in text
         # Must contain unsubscribe button in markup
         assert any(b.get("callback_data") == "nurturing_unsubscribe" for row in buttons for b in row)
 

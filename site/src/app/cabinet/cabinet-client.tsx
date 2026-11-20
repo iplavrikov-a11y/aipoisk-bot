@@ -2049,7 +2049,8 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
   const [showTopUpModal, setShowTopUpModal] = useState(false);
   const [topUpTab, setTopUpTab] = useState<"card" | "b2b">("card");
   const [selectedTopUpPackage, setSelectedTopUpPackage] = useState<DepositPackage | null>(null);
-  const [customTopUpRub, setCustomTopUpRub] = useState<number>(5000);
+  const [customTopUpRub, setCustomTopUpRub] = useState<number>(1000);
+  const pendingTopUpFromQueryRef = useRef(false);
   const [topUpCopied, setTopUpCopied] = useState(false);
   const [isPayingOnline, setIsPayingOnline] = useState(false);
   const [onlinePayError, setOnlinePayError] = useState("");
@@ -2473,8 +2474,8 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
       return;
     }
     const rawDigits = payerPhone.replace(/\D/g, "");
-    if (!rawDigits || rawDigits.length < 10) {
-      setOnlinePayError("Укажите контактный номер телефона для связи");
+    if (rawDigits.length > 0 && (rawDigits.length < 10 || rawDigits.length > 15)) {
+      setOnlinePayError("Проверьте номер телефона (10–15 цифр) или оставьте поле пустым");
       return;
     }
     const matchedPkg =
@@ -3018,6 +3019,22 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
     const verifyToken = params.get("email_verify_token");
     const resetTokenParam = params.get("reset_token");
     const authError = params.get("auth_error");
+    const topupParam = params.get("topup");
+    if (topupParam === "1") {
+      pendingTopUpFromQueryRef.current = true;
+      if (typeof window !== "undefined") {
+        try {
+          sessionStorage.setItem("tenderlex_pending_topup_open", "1");
+        } catch {}
+      }
+      params.delete("topup");
+    } else if (typeof window !== "undefined") {
+      try {
+        if (sessionStorage.getItem("tenderlex_pending_topup_open") === "1") {
+          pendingTopUpFromQueryRef.current = true;
+        }
+      } catch {}
+    }
     const modeParam = params.get("mode") || (window.location.hash === "#login" ? "login" : window.location.hash === "#register" ? "register" : null);
     if (modeParam === "login" || modeParam === "register" || modeParam === "reset") {
       setAuthMode(modeParam);
@@ -3051,11 +3068,28 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
     if (verified) {
       params.delete("email_verified");
     }
-    if (verified || verifyToken || authError || resetTokenParam) {
+    if (verified || verifyToken || authError || resetTokenParam || topupParam === "1") {
       const nextQuery = params.toString();
       window.history.replaceState(null, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`);
     }
   }, []);
+
+  useEffect(() => {
+    if (!authenticated || !pendingTopUpFromQueryRef.current) return;
+    pendingTopUpFromQueryRef.current = false;
+    if (typeof window !== "undefined") {
+      try {
+        sessionStorage.removeItem("tenderlex_pending_topup_open");
+      } catch {}
+    }
+    const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
+    const isDirect = Boolean(session?.user?.direct_payment_only || session?.payment?.direct_payment_only);
+    const starterPkg = pkgs.find((p) => p.price_rub === 1000) || pkgs[0] || null;
+    setSelectedTopUpPackage(isDirect ? null : starterPkg);
+    setCustomTopUpRub(isDirect ? 1000 : (starterPkg?.price_rub || 1000));
+    setTopUpTab("card");
+    setShowTopUpModal(true);
+  }, [authenticated, session]);
 
   useEffect(() => {
     if (session?.user?.email && !emailEditOpen) setEmailDraft(session.user.email);
@@ -4724,9 +4758,9 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
               type="button"
               onClick={() => {
                 const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
-                const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
+                const defPkg = pkgs.find((p) => p.price_rub === 1000) || pkgs[0];
                 setSelectedTopUpPackage(defPkg);
-                setCustomTopUpRub(defPkg?.price_rub || 5000);
+                setCustomTopUpRub(defPkg?.price_rub || 1000);
                 setShowTopUpModal(true);
               }}
               className="tl-balance-box"
@@ -5344,7 +5378,7 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
                       type="button"
                       onClick={() => {
                         setSelectedTopUpPackage(null);
-                        setCustomTopUpRub(3000);
+                        setCustomTopUpRub(1000);
                         setShowTopUpModal(true);
                         setShowTariffs(false);
                       }}
@@ -5448,9 +5482,9 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
                     <button
                       type="button"
                       onClick={() => {
-                        const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
+                        const defPkg = depositPkgs.find((p) => p.price_rub === 1000) || depositPkgs[0];
                         setSelectedTopUpPackage(defPkg);
-                        setCustomTopUpRub(defPkg?.price_rub || 5000);
+                        setCustomTopUpRub(defPkg?.price_rub || 1000);
                         setTopUpTab("b2b");
                         setShowTopUpModal(true);
                         setShowTariffs(false);
@@ -5464,9 +5498,9 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
                   <button
                     type="button"
                     onClick={() => {
-                      const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
+                      const defPkg = depositPkgs.find((p) => p.price_rub === 1000) || depositPkgs[0];
                       setSelectedTopUpPackage(isDirectPaymentOnlyTariffs ? null : defPkg);
-                      setCustomTopUpRub(isDirectPaymentOnlyTariffs ? 3000 : (defPkg?.price_rub || 5000));
+                      setCustomTopUpRub(isDirectPaymentOnlyTariffs ? 1000 : (defPkg?.price_rub || 1000));
                       setTopUpTab("card");
                       setShowTopUpModal(true);
                       setShowTariffs(false);
@@ -9239,9 +9273,9 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
                     type="button"
                     onClick={() => {
                       const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
-                      const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
+                      const defPkg = pkgs.find((p) => p.price_rub === 1000) || pkgs[0];
                       setSelectedTopUpPackage(defPkg);
-                      setCustomTopUpRub(defPkg?.price_rub || 5000);
+                      setCustomTopUpRub(defPkg?.price_rub || 1000);
                       closeHistoryModal();
                       setTopUpTab("b2b");
                       setShowTopUpModal(true);
@@ -9257,9 +9291,9 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
                     onClick={() => {
                       const isDirect = Boolean(session?.user?.direct_payment_only || session?.payment?.direct_payment_only);
                       const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
-                      const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
+                      const defPkg = pkgs.find((p) => p.price_rub === 1000) || pkgs[0];
                       setSelectedTopUpPackage(isDirect ? null : defPkg);
-                      setCustomTopUpRub(isDirect ? 3000 : (defPkg?.price_rub || 5000));
+                      setCustomTopUpRub(isDirect ? 1000 : (defPkg?.price_rub || 1000));
                       closeHistoryModal();
                       setTopUpTab("card");
                       setShowTopUpModal(true);
@@ -9435,9 +9469,9 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
                         onClick={() => {
                           const isDirect = Boolean(session?.user?.direct_payment_only || session?.payment?.direct_payment_only);
                           const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
-                          const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
+                          const defPkg = pkgs.find((p) => p.price_rub === 1000) || pkgs[0];
                           setSelectedTopUpPackage(isDirect ? null : defPkg);
-                          setCustomTopUpRub(isDirect ? 3000 : (defPkg?.price_rub || 5000));
+                          setCustomTopUpRub(isDirect ? 1000 : (defPkg?.price_rub || 1000));
                           closeHistoryModal();
                           setTopUpTab(isDirect ? "card" : "b2b");
                           setShowTopUpModal(true);
@@ -10576,7 +10610,8 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
         })();
         const approxTasks = Math.floor(calc.totalRub / minTaskRateRub);
         const phoneDigits = payerPhone.replace(/\D/g, "");
-        const isPhoneValid = phoneDigits.length >= 10;
+        const isPhoneValid = phoneDigits.length === 0 || (phoneDigits.length >= 10 && phoneDigits.length <= 15);
+        const isB2bPhoneValid = phoneDigits.length >= 10 && phoneDigits.length <= 15;
         const isAmountValid = customTopUpRub >= 500;
         const matchedPkg =
           selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub
@@ -10602,19 +10637,19 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
             label: item.label || kind,
             priceRub: item.price_rub,
           }));
-        const directAmountPresets = [1000, 3000, 5000, 10000];
+        const directAmountPresets = [500, 1000, 3000, 5000];
 
         const cardValidationHint = !isAmountValid
           ? "Минимальная сумма пополнения — 500 ₽"
           : !isPhoneValid
-          ? "Укажите номер телефона (10 цифр) для чека и связи"
+          ? "Проверьте номер телефона (10–15 цифр) или оставьте поле пустым"
           : "";
 
         const b2bMissingFields: string[] = [];
         if (!isAmountValid) b2bMissingFields.push("сумму от 500 ₽");
         if (!invoiceInn.trim()) b2bMissingFields.push("ИНН");
         if (!invoiceName.trim()) b2bMissingFields.push("наименование компании");
-        if (!isPhoneValid) b2bMissingFields.push("телефон");
+        if (!isB2bPhoneValid) b2bMissingFields.push("телефон для документов");
         const b2bValidationHint = b2bMissingFields.length > 0 ? `Заполните: ${b2bMissingFields.join(", ")}` : "";
 
         const renderPackageRows = () => (
@@ -10924,10 +10959,26 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
                     </div>
                     {renderPackageRows()}
 
-                    <div className="pt-1 space-y-1">
-                      <label htmlFor="custom-topup-input" className="text-[11px] font-semibold text-slate-600 block">
-                        Или введите другую сумму (от 500 ₽):
-                      </label>
+                    <div className="pt-1 space-y-1.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label htmlFor="custom-topup-input" className="text-[11px] font-semibold text-slate-600 block">
+                          Или введите другую сумму (от 500 ₽):
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedTopUpPackage(null);
+                            setCustomTopUpRub(500);
+                          }}
+                          className={`px-2 py-0.5 rounded-md text-[11px] font-bold border transition-colors cursor-pointer tl-num ${
+                            customTopUpRub === 500 && !selectedTopUpPackage
+                              ? "bg-[#f4f8ef] border-[#174b3f] text-[#103a31]"
+                              : "bg-white border-slate-200 text-slate-700 hover:border-[#b7c9af]"
+                          }`}
+                        >
+                          Разовая проверка · 500 ₽
+                        </button>
+                      </div>
                       <div className="relative">
                         <input
                           id="custom-topup-input"
@@ -10941,7 +10992,7 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
                             const match = depositPkgs.find((p) => p.price_rub === val) || null;
                             setSelectedTopUpPackage(match);
                           }}
-                          placeholder="5000"
+                          placeholder="1000"
                           className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#174b3f]/25 focus:border-[#174b3f] pr-8 tl-num"
                         />
                         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
@@ -11002,11 +11053,12 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
                     {/* Contacts */}
                     <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
                       <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
-                        Контакты для чека и поддержки
+                        Контакты для поддержки (чек придёт на email)
                       </div>
                       <div className="space-y-1">
-                        <label htmlFor="topup-phone-input" className="text-xs font-bold text-slate-700 block">
-                          Телефон <span className="text-rose-500">*</span>
+                        <label htmlFor="topup-phone-input" className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+                          <span>Телефон</span>
+                          <span className="text-[10px] font-normal text-slate-400">опционально</span>
                         </label>
                         <div className="relative">
                           <input
@@ -11346,7 +11398,7 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
                         <div className="space-y-1.5 pt-1">
                           <button
                             type="button"
-                            disabled={invoiceSubmitting || !isAmountValid || !invoiceInn.trim() || !invoiceName.trim() || !isPhoneValid}
+                            disabled={invoiceSubmitting || !isAmountValid || !invoiceInn.trim() || !invoiceName.trim() || !isB2bPhoneValid}
                             onClick={async () => {
                               if (!customTopUpRub || customTopUpRub < 500) {
                                 setInvoiceSubmitError("Минимальная сумма счёта — 500 ₽");
@@ -11360,8 +11412,9 @@ export function CabinetClient({ initialTrialBalanceRub = 250 }: { initialTrialBa
                                 setInvoiceSubmitError("Укажите наименование компании или ИП");
                                 return;
                               }
-                              if (!payerPhone.trim() || payerPhone.replace(/\D/g, "").length < 10) {
-                                setInvoiceSubmitError("Укажите контактный номер телефона для связи");
+                              const b2bPhoneDigits = payerPhone.replace(/\D/g, "");
+                              if (b2bPhoneDigits.length < 10 || b2bPhoneDigits.length > 15) {
+                                setInvoiceSubmitError("Укажите контактный телефон (10–15 цифр) для согласования и подписания документов");
                                 return;
                               }
                               setInvoiceSubmitting(true);

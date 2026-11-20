@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -18,6 +19,8 @@ from bs4 import BeautifulSoup
 
 from .config import config
 from .document_parser import sanitize_filename
+
+logger = logging.getLogger(__name__)
 
 MSK = ZoneInfo("Europe/Moscow")
 TENDERPLAN_BASE_URL = "https://tenderplan.ru"
@@ -112,6 +115,7 @@ class TenderplanFetchResult:
     service_schema_version: str = ""
     warnings: list[str] = field(default_factory=list)
     document_hints: dict = field(default_factory=dict)
+    source_origin: str = ""
 
 
 class TenderplanError(RuntimeError):
@@ -147,14 +151,17 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
         timeout = float(config.tender_source_service_timeout_seconds or 60)
     except (TypeError, ValueError):
         timeout = 60.0
+    response_status: int | None = None
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             for attempt in range(3):
+                response_status = None
                 response = client.post(
                     f"{base_url}/v1/procurements/{notice_number}/bundle",
                     params={"download": "true"},
                 )
-                if response.status_code == 503 and attempt < 2:
+                response_status = response.status_code
+                if response_status == 503 and attempt < 2:
                     headers = getattr(response, "headers", {}) or {}
                     try:
                         retry_after = float(headers.get("Retry-After", 1))
@@ -167,11 +174,17 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
             payload = response.json()
             files, file_errors = load_tender_source_service_files(client, base_url, payload.get("files") or [])
     except Exception as exc:
+        logger.warning(
+            "Procurement documents request failed: notice=%s stage=bundle status=%s error_type=%s",
+            normalize_notice_number(notice_number) or "invalid",
+            response_status,
+            type(exc).__name__,
+        )
         return TenderplanFetchResult(
             ok=False,
             status="service_failed",
             notice_number=notice_number,
-            error=f"Общий сервис источников закупок недоступен: {exc}",
+            error="Не удалось автоматически загрузить документы по закупке. Попробуйте запустить анализ позже.",
         )
 
     failed = list(payload.get("download_errors") or [])
@@ -189,6 +202,7 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
         file_error_text = f"Не получено файлов из общего сервиса: {len(file_errors)}"
         error = f"{error}; {file_error_text}" if error else file_error_text
     has_usable_payload = bool(files) or bool(str(payload.get("context") or "").strip())
+    diagnostics = payload.get("diagnostics")
     return TenderplanFetchResult(
         ok=bool(payload.get("success")) and (not file_errors or has_usable_payload),
         status=status,
@@ -201,6 +215,7 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
         service_schema_version=str(payload.get("schema_version") or ""),
         warnings=warnings,
         document_hints=payload.get("document_hints") if isinstance(payload.get("document_hints"), dict) else {},
+        source_origin="eis" if isinstance(diagnostics, dict) and diagnostics.get("source") == "eis" else "",
     )
 
 

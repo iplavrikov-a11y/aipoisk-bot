@@ -336,25 +336,8 @@ def get_due_nurturing_candidates(
                 )
                 continue
 
-            # Step 2 Check: Completed >= 1 job, < 4 completed jobs, latest completed job >= 48h ago
-            if "step2" not in existing_reminders and len(completed_jobs) in (1, 2, 3) and len(pending_or_running_jobs) == 0:
-                latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
-                job_age_hours = (now - latest_completed).total_seconds() / 3600.0
-                if 48.0 <= job_age_hours <= 240.0:
-                    results.append(
-                        NurturingCandidate(
-                            client_id=client.id,
-                            channel=channel,
-                            recipient=recipient,
-                            step="step2",
-                            name=client.name or "Пользователь",
-                            client=client,
-                        )
-                    )
-                    continue
-
-            # Step 3 Check: Completed >= 4 jobs, trial exhausted (balance < 99 RUB / 9900 kopeks)
-            if "step3" not in existing_reminders and len(completed_jobs) >= 4 and len(pending_or_running_jobs) == 0 and client.money_balance_kopeks < 9900:
+            # Step 3 Check: Completed >= 1 job and trial balance exhausted (< 99 RUB / 9900 kopeks)
+            if "step3" not in existing_reminders and len(completed_jobs) >= 1 and len(pending_or_running_jobs) == 0 and client.money_balance_kopeks < 9900:
                 latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
                 completion_age_hours = (now - latest_completed).total_seconds() / 3600.0
                 if 2.0 <= completion_age_hours <= 168.0:
@@ -364,6 +347,28 @@ def get_due_nurturing_candidates(
                             channel=channel,
                             recipient=recipient,
                             step="step3",
+                            name=client.name or "Пользователь",
+                            client=client,
+                        )
+                    )
+                    continue
+
+            # Step 2 Check: Completed >= 1 job, < 4 completed jobs, usable balance left (>= 99 RUB), latest completed job 48-240h ago
+            if (
+                "step2" not in existing_reminders
+                and len(completed_jobs) in (1, 2, 3)
+                and len(pending_or_running_jobs) == 0
+                and client.money_balance_kopeks >= 9900
+            ):
+                latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
+                job_age_hours = (now - latest_completed).total_seconds() / 3600.0
+                if 48.0 <= job_age_hours <= 240.0:
+                    results.append(
+                        NurturingCandidate(
+                            client_id=client.id,
+                            channel=channel,
+                            recipient=recipient,
+                            step="step2",
                             name=client.name or "Пользователь",
                             client=client,
                         )
@@ -455,7 +460,8 @@ def claim_nurturing_step(db: Session, client_id: str, channel: str, step: str) -
 def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: str = "https://tenderlex.ru", trial_summary: str = "") -> tuple[str, str]:
     unsub_token = generate_unsubscribe_token(client_id, email)
     unsub_link = html_lib.escape(f"{base_url}/unsubscribe?token={quote(unsub_token, safe='')}", quote=True)
-    cabinet_link = html_lib.escape(f"{base_url}/cabinet", quote=True)
+    cabinet_target = f"{base_url}/cabinet?topup=1" if step == "step3" else f"{base_url}/cabinet"
+    cabinet_link = html_lib.escape(cabinet_target, quote=True)
 
     # 3 core platform modules in strict order (matching hh-agent visual card):
     # 1. Поиск поставщиков (более 50 контактов в Excel)
@@ -470,7 +476,7 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
         '      </div>\n'
         '    </div>\n'
         '    <div style="margin-bottom: 12px;">\n'
-        '      <div style="font-weight: 700; color: #0f766e; font-size: 16px; margin-bottom: 4px;">2. Определение точного товара и аналогов</div>\n'
+        '      <div style="font-weight: 700; color: #0f766e; font-size: 16px; margin-bottom: 4px;">2. Подбор товара и аналогов</div>\n'
         '      <div style="color: #334155; font-size: 15px; line-height: 1.55;">\n'
         '        Идентифицирует заложенного заказчиком производителя по параметрам спецификации и подбирает российские аналоги из реестра Минпромторга с подтвержденными заводскими показателями. Выгрузка в Word (.docx).\n'
         '      </div>\n'
@@ -537,10 +543,10 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             '  </p>'
         )
     else:  # step3
-        subject = "TenderLex: Регулярный доступ к модулям снабжения и расчету спецификаций"
+        subject = "TenderLex: Продолжение работы и пополнение баланса"
         intro_html = (
             '  <p style="margin: 0 0 10px 0;">Здравствуйте!</p>\n'
-            f'  <p style="margin: 0 0 12px 0;">Вы завершили тестовые расчеты в <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong>. Надеемся, сервис сэкономил вам часы работы при поиске прямых заводов, подборе аналогов и анализе документации. Все модули готовы к постоянной работе:</p>'
+            f'  <p style="margin: 0 0 12px 0;">На вашем балансе в <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong> закончились средства для новых расчетов. Надеемся, сервис сэкономил вам часы работы при поиске прямых заводов, подборе аналогов и анализе документации. Все модули готовы к дальнейшей работе:</p>'
         )
         badge_text = "Выберите подходящий тариф для постоянной работы:"
         button_text = "Выбрать тариф в кабинете"
@@ -593,7 +599,7 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "• Разбирает спецификации любого формата: Word, Excel, PDF, сканы — извлекая ГОСТы и маркоразмеры;\n"
             "• За 2–3 минуты находит прямые контакты отделов сбыта заводов РФ и дилеров (email, телефоны, сайты);\n"
             "• Формирует готовый официальный Запрос КП (.docx) для оперативной отправки поставщикам;\n"
-            "• Проверяет номенклатуру по реестру Минпромторга (ГИСП, ПП 616/617).\n\n"
+            "• Проверяет номенклатуру по реестру Минпромторга (ГИСП, ПП № 1875).\n\n"
             "2️⃣ <b>Подбор товара и аналогов:</b>\n"
             "• Точный подбор моделей и российских эквивалентов по характеристикам ТЗ с выгрузкой в Word (.docx).\n\n"
             "3️⃣ <b>Анализ документации:</b>\n"
@@ -603,6 +609,7 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "📖 <i>Статья из Базы знаний:</i> <a href=\"https://tenderlex.ru/baza-znaniy/kak-naiti-postavshchika-po-tz\">Как быстро найти прямых производителей по ТЗ и ГОСТам</a>"
         )
         buttons = [
+            [{"text": "🚀 Открыть веб-кабинет", "url": f"{base_url}/cabinet"}],
             [{"text": "📖 Читать Базу знаний", "url": f"{base_url}/baza-znaniy"}],
             [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
         ]
@@ -618,6 +625,7 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "<i>Это последнее напоминание — больше не побеспокоим. Если сервис сейчас не актуален, нажмите кнопку ниже.</i>"
         )
         buttons = [
+            [{"text": "🚀 Открыть веб-кабинет", "url": f"{base_url}/cabinet"}],
             [{"text": "📖 Читать Базу знаний", "url": f"{base_url}/baza-znaniy"}],
             [{"text": "🔕 Не напоминать больше", "callback_data": "nurturing_unsubscribe"}],
         ]
@@ -652,7 +660,7 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "👋 <b>Здравствуйте! Давно не виделись — TenderLex на связи.</b>\n\n"
             "Вы ранее уже выполняли расчеты в сервисе. Если прямо сейчас у вас в работе появились новые сложные спецификации по 44-ФЗ / 223-ФЗ, горят сроки подачи или требуется срочно выйти на прямых изготовителей — сервис готов подключиться:\n\n"
             "1️⃣ <b>Поиск прямых производителей РФ и дилеров:</b>\n"
-            "Сбор контактов отделов сбыта (email, телефоны, сайты), оформление Запроса КП (.docx), сверка с реестром Минпромторга (ГИСП, ПП 616/617).\n\n"
+            "Сбор контактов отделов сбыта (email, телефоны, сайты), оформление Запроса КП (.docx), сверка с реестром Минпромторга (ГИСП, ПП № 1875).\n\n"
             "2️⃣ <b>Подбор товара и аналогов по ТЗ:</b>\n"
             "Точный подбор моделей и эквивалентов под требования заказчика с выгрузкой в Word (.docx).\n\n"
             "3️⃣ <b>Экспресс-аудит документации:</b>\n"
@@ -672,13 +680,14 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
         ]
     else:  # step3
         text = (
-            "🏁 <b>Тестовые расчеты в TenderLex выполнены!</b>\n\n"
-            "Вы использовали стартовый баланс сервиса. Надеемся, TenderLex сэкономил вам часы работы при поиске прямых заводов, подборе аналогов и анализе документации.\n\n"
+            "🏁 <b>Баланс TenderLex подошёл к концу</b>\n\n"
+            "Средства на вашем балансе использованы. Надеемся, TenderLex сэкономил вам часы работы при поиске прямых заводов, подборе аналогов и анализе документации.\n\n"
             "Чтобы продолжить регулярную работу без пауз:\n"
-            "• Пополните баланс или выберите пакет в кабинете: https://tenderlex.ru/cabinet\n"
+            f"• Пополните баланс или выберите пакет в кабинете: {base_url}/cabinet?topup=1\n"
             "• Если требуется подключение для тендерного отдела или отдела снабжения — напишите нам в ответ, оперативно выставим счет для юрлица со всеми закрывающими документами (УПД/ЭДО)."
         )
         buttons = [
+            [{"text": "💳 Пополнить баланс", "url": f"{base_url}/cabinet?topup=1"}],
             [
                 {"text": "💬 Обратная связь", "callback_data": "open_contacts"},
                 {"text": "📱 Оставить контакт", "callback_data": "prompt_share_contact"},

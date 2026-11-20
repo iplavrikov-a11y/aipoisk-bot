@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import openpyxl
 import pytest
 from fastapi.testclient import TestClient
@@ -408,6 +409,58 @@ async def test_execute_batch_backfills_missing_title_from_report(db_session: Ses
     assert len(results) == 1
     assert results[0]["status"] == "completed"
     assert results[0]["title"] == "Поставка термосов металлических"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("diagnostics", "attachment", "expected_status"),
+    [
+        ({"source": "eis"}, None, "failed"),
+        ({"source": "eis"}, b" \n", "failed"),
+        ({"source": "eis"}, b"Technical requirements for a bench. Load at least 1500 N.", "completed"),
+        ({}, None, "completed"),
+    ],
+)
+async def test_execute_batch_requires_readable_documents_for_eis_fallback(
+    diagnostics: dict, attachment: bytes | None, expected_status: str,
+):
+    from app.custom_batch_runner import CustomPromptRunResult, execute_custom_batch_items
+    from app.models import SystemSettings
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, content=attachment)
+        return httpx.Response(200, json={
+            "success": True,
+            "status": "ok",
+            "context": "Карточка закупки",
+            "diagnostics": diagnostics,
+            "files": [{"filename": "spec.txt", "url": "/v1/files/spec"}] if attachment is not None else [],
+        })
+
+    client = httpx.Client(transport=httpx.MockTransport(handle_request))
+    run_prompt = AsyncMock(return_value=CustomPromptRunResult(markdown="Отчёт по закупке", model="test", sources=[]))
+    with (
+        patch("app.tenderplan.config.tender_source_service_url", "http://127.0.0.1:8096"),
+        patch("app.tenderplan.httpx.Client", return_value=client),
+        patch("app.custom_batch_runner.run_custom_prompt_with_gemini_search", run_prompt),
+    ):
+        results = await execute_custom_batch_items(
+            SystemSettings(document_settings_json="{}"),
+            custom_prompt="Промт",
+            items=[{"notice_number": "0329300294326000004", "title": "Поставка оборудования"}],
+        )
+
+    result, = results
+    assert result["status"] == expected_status
+    if expected_status == "failed":
+        run_prompt.assert_not_awaited()
+        assert result["report_markdown"] == ""
+        assert "не удалось прочитать документы" in result["error"].lower()
+    else:
+        run_prompt.assert_awaited_once()
+        if attachment:
+            assert attachment.decode() in run_prompt.await_args.kwargs["document_context"]
 
 
 def test_write_procurement_docx_renders_clickable_hyperlinks_and_clean_bullets(tmp_path: Path):

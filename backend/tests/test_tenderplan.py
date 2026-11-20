@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
+
 import app.tenderplan as tenderplan_module
 from app.tenderplan import (
     TenderplanClient,
@@ -642,6 +644,43 @@ class TenderplanPureFunctionTests(unittest.TestCase):
         self.assertEqual(result.status, "service_failed")
         self.assertEqual(result.error, "down")
         local_fetch.assert_not_called()
+
+    def test_fetch_source_reports_http_and_transport_failures_without_internal_details(self) -> None:
+        notice_number = "32616063169"
+        base_url = "http://127.0.0.1:8096"
+        for status, cause in ((502, "HTTPStatusError"), (None, "ConnectError")):
+            with self.subTest(status=status):
+                requests = []
+
+                def handle_request(request: httpx.Request) -> httpx.Response:
+                    requests.append(request)
+                    if status is None:
+                        raise httpx.ConnectError("private connection details", request=request)
+                    return httpx.Response(status, json={"detail": "private upstream details"})
+
+                client = httpx.Client(transport=httpx.MockTransport(handle_request))
+                with (
+                    patch.object(tenderplan_module.config, "tender_source_service_url", base_url),
+                    patch("app.tenderplan.httpx.Client", return_value=client),
+                    self.assertLogs("app.tenderplan", level="WARNING") as logs,
+                ):
+                    result = fetch_tenderplan_source_sync(notice_number)
+                    self.assertEqual(
+                        result.error,
+                        "Не удалось автоматически загрузить документы по закупке. Попробуйте запустить анализ позже.",
+                    )
+
+                self.assertFalse(result.ok)
+                self.assertEqual(result.status, "service_failed")
+                self.assertEqual(result.notice_number, notice_number)
+                self.assertEqual(len(requests), 1)
+                entry = logs.output[0]
+                self.assertIn(f"notice={notice_number}", entry)
+                self.assertIn("stage=bundle", entry)
+                self.assertIn(f"status={status}", entry)
+                self.assertIn(f"error_type={cause}", entry)
+                self.assertNotIn(base_url, entry)
+                self.assertNotIn("private", entry)
 
     def test_fetch_source_uses_direct_client_only_when_shared_service_is_not_configured(self) -> None:
         direct = TenderplanFetchResult(ok=True, status="ok", notice_number="32616063169", context="direct")
