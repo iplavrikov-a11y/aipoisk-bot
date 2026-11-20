@@ -54,6 +54,18 @@ def test_shared_yandex_lock_path_matches_emailagent_and_has_shared_perms(tmp_pat
             pass
 
 
+def test_yandex_rps_defaults_and_env_overrides(monkeypatch):
+    monkeypatch.delenv("AIPOISK_YANDEX_ASYNC_RPS", raising=False)
+    monkeypatch.delenv("AIPOISK_YANDEX_SYNC_RPS", raising=False)
+    assert ys._yandex_async_min_interval() == pytest.approx(0.10, rel=1e-3)
+    assert ys._yandex_sync_min_interval() == pytest.approx(1.0 / 3.5, rel=1e-3)
+
+    monkeypatch.setenv("AIPOISK_YANDEX_ASYNC_RPS", "12")
+    monkeypatch.setenv("AIPOISK_YANDEX_SYNC_RPS", "8")
+    assert ys._yandex_async_min_interval() == pytest.approx(1.0 / 12.0, rel=1e-3)
+    assert ys._yandex_sync_min_interval() == pytest.approx(1.0 / 8.0, rel=1e-3)
+
+
 def test_progressive_429_cooldown_sequence_and_reset():
     ys.record_yandex_async_success()
     assert ys.is_yandex_async_available() is True
@@ -289,3 +301,44 @@ def test_parallel_dadata_enrichment_deduplicates_inns():
     assert all(r["supplier_city"] == "Казань" for r in accepted)
     assert accepted[0]["contact_person"] == "Директор 1655000001"
     assert accepted[1]["contact_person"] == "Директор 1655000001"
+
+
+def test_claim_yandex_async_attempt_single_probe_daytime_and_parallel_night(monkeypatch):
+    # Reset circuit breaker state
+    ys._ASYNC_RATE_LIMITED_UNTIL = 0.0
+    ys._ASYNC_PROVEN_UNTIL = 0.0
+    ys._ASYNC_CONSECUTIVE_429 = 0
+
+    # Outside 00:00-06:00 MSK when not recently proven -> only ONE caller claims probe slot
+    monkeypatch.setattr(ys, "_is_msk_deferred_window", lambda now_ts=None: False)
+    assert ys.claim_yandex_async_attempt() is True
+    assert ys.claim_yandex_async_attempt() is False
+
+    # Once async succeeds, all concurrent callers can run async within proven window
+    ys.record_yandex_async_success()
+    assert ys.claim_yandex_async_attempt() is True
+    assert ys.claim_yandex_async_attempt() is True
+
+    # Inside 00:00-06:00 MSK -> parallel allowed without proven gate
+    ys._ASYNC_PROVEN_UNTIL = 0.0
+    monkeypatch.setattr(ys, "_is_msk_deferred_window", lambda now_ts=None: True)
+    assert ys.claim_yandex_async_attempt() is True
+    assert ys.claim_yandex_async_attempt() is True
+
+    # Cleanup
+    ys.record_yandex_async_success()
+
+
+def test_extract_yandex_job_metrics_prices_sync_fallback_accurately():
+    from app.jobs import extract_yandex_job_metrics
+
+    evidence = {
+        "search": {
+            "yandex_requests_count": 10,
+            "yandex_async_requests": 2,
+            "yandex_sync_requests": 8,
+        }
+    }
+    reqs, cost = extract_yandex_job_metrics(evidence, price_per_request=0.0305)
+    assert reqs == 10
+    assert cost == pytest.approx(round(2 * 0.0305 + 8 * 0.488, 2))

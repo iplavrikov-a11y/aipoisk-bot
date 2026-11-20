@@ -449,7 +449,7 @@ async def _analyze_exact_product(
         from .validation import validate_exact_products
 
         gisp_needed = detect_minprom_registry_requirement(context) is not False
-        pos_sem = asyncio.Semaphore(2)
+        pos_sem = asyncio.Semaphore(4)
         total_sel = len(selected_positions)
 
         async def _process_selected_row(index: int, row: Dict[str, Any]) -> Dict[str, Any]:

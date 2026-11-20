@@ -24,6 +24,7 @@ _ASYNC_SUBMIT_LOCK: Optional[asyncio.Lock] = None
 _ASYNC_SUBMIT_LOOP: Optional[asyncio.AbstractEventLoop] = None
 _LAST_ASYNC_SUBMIT_TS: float = 0.0
 _ASYNC_RATE_LIMITED_UNTIL: float = 0.0
+_ASYNC_PROVEN_UNTIL: float = 0.0
 _ASYNC_CONSECUTIVE_429: int = 0
 _SYNC_SUBMIT_LOCK: Optional[asyncio.Lock] = None
 _SYNC_SUBMIT_LOOP: Optional[asyncio.AbstractEventLoop] = None
@@ -40,11 +41,39 @@ _CROSS_PROCESS_SYNC_LOCK_PATH = (
 )
 
 
+_DEFAULT_YANDEX_ASYNC_RPS = 10.0  # Safe headroom under 15 RPS folder quota (shared with peer services)
+_DEFAULT_YANDEX_SYNC_RPS = 3.5    # Safe headroom under 5 RPS folder quota (shared with peer services)
+
+
+def _yandex_async_min_interval() -> float:
+    raw = os.getenv("AIPOISK_YANDEX_ASYNC_RPS", "").strip()
+    rps = _DEFAULT_YANDEX_ASYNC_RPS
+    if raw:
+        try:
+            rps = float(raw)
+        except ValueError:
+            rps = _DEFAULT_YANDEX_ASYNC_RPS
+    rps = max(0.5, min(30.0, rps))
+    return 1.0 / rps
+
+
+def _yandex_sync_min_interval() -> float:
+    raw = os.getenv("AIPOISK_YANDEX_SYNC_RPS", "").strip()
+    rps = _DEFAULT_YANDEX_SYNC_RPS
+    if raw:
+        try:
+            rps = float(raw)
+        except ValueError:
+            rps = _DEFAULT_YANDEX_SYNC_RPS
+    rps = max(0.5, min(20.0, rps))
+    return 1.0 / rps
+
+
 def _shared_yandex_lock_path(kind: str, folder_id: str = "") -> str:
     """
     Build a cross-project lock path keyed by Yandex Cloud folder_id so separate
     services sharing one Yandex Search folder (e.g. TenderLex + EmailAgent)
-    coordinate under the same 1.0 RPS quota without tripping 429 bursts.
+    coordinate under the shared RPS quota without tripping 429 bursts.
     """
     base_dir = "/dev/shm" if os.path.isdir("/dev/shm") else "/tmp"
     fid = str(folder_id or "").strip()
@@ -59,10 +88,37 @@ def is_yandex_async_available() -> bool:
     return time.time() >= _ASYNC_RATE_LIMITED_UNTIL
 
 
+def _is_msk_deferred_window(now_ts: float | None = None) -> bool:
+    """Yandex Search API deferred searchAsync guaranteed window is 00:00–06:00 MSK (UTC+3)."""
+    ts = time.time() if now_ts is None else now_ts
+    msk_hour = int((ts + 3 * 3600) // 3600) % 24
+    return 0 <= msk_hour < 6
+
+
+def claim_yandex_async_attempt() -> bool:
+    """
+    Gate concurrent searchAsync attempts so recovery probes or daytime traffic
+    never trigger an N-way 429 stampede:
+    - During 00:00–06:00 MSK (when _ASYNC_CONSECUTIVE_429 == 0) or within 60s of a proven
+      200 OK (_ASYNC_PROVEN_UNTIL), all callers may submit in parallel.
+    - Outside 00:00–06:00 MSK when not recently proven, or after cooloff expires,
+      only ONE coroutine claims a 15s probe slot while peers go directly to sync.
+    """
+    global _ASYNC_RATE_LIMITED_UNTIL
+    now = time.time()
+    if _ASYNC_CONSECUTIVE_429 == 0 and (_is_msk_deferred_window(now) or now < _ASYNC_PROVEN_UNTIL):
+        return True
+    if now < _ASYNC_RATE_LIMITED_UNTIL:
+        return False
+    _ASYNC_RATE_LIMITED_UNTIL = now + 15.0
+    return True
+
+
 def record_yandex_async_failure_429(cooloff_s: float = 180.0) -> None:
     """Trip async circuit breaker when Yandex reports rate limit exceeded."""
-    global _ASYNC_RATE_LIMITED_UNTIL
+    global _ASYNC_RATE_LIMITED_UNTIL, _ASYNC_PROVEN_UNTIL
     _ASYNC_RATE_LIMITED_UNTIL = time.time() + cooloff_s
+    _ASYNC_PROVEN_UNTIL = 0.0
 
 
 def record_yandex_async_429_progressive() -> float:
@@ -76,9 +132,10 @@ def record_yandex_async_429_progressive() -> float:
 
 def record_yandex_async_success() -> None:
     """Reset circuit breaker on successful async submission."""
-    global _ASYNC_RATE_LIMITED_UNTIL, _ASYNC_CONSECUTIVE_429
+    global _ASYNC_RATE_LIMITED_UNTIL, _ASYNC_CONSECUTIVE_429, _ASYNC_PROVEN_UNTIL
     _ASYNC_RATE_LIMITED_UNTIL = 0.0
     _ASYNC_CONSECUTIVE_429 = 0
+    _ASYNC_PROVEN_UNTIL = time.time() + 60.0
 
 
 def _reserve_cross_process_slot(
@@ -171,8 +228,8 @@ async def _paced_async_post_counted(
         _ASYNC_SUBMIT_LOOP = loop
 
     folder_id = str((json or {}).get("folderId") or "")
-    min_interval = 1.15
-    retry_delays = [1.5, 2.5]
+    min_interval = _yandex_async_min_interval()
+    retry_delays = [0.6]
     last_exc: Optional[Exception] = None
     resp = None
     sent = 0
@@ -299,8 +356,8 @@ async def _paced_sync_post_counted(
         _SYNC_SUBMIT_LOOP = loop
 
     folder_id = str((json or {}).get("folderId") or "")
-    min_interval = 1.05
-    retry_delays = [1.2, 2.2]
+    min_interval = _yandex_sync_min_interval()
+    retry_delays = [0.6, 1.4]
     last_exc: Optional[Exception] = None
     resp = None
     sent = 0
@@ -525,7 +582,7 @@ class YandexSearchEngine:
                 page_results: list[YandexSearchResult] = []
                 async_completed = False
                 # Primary path: Asynchronous search (30.50 ₽ / 1k reqs vs 488 ₽ / 1k reqs sync)
-                if self._async_supported and is_yandex_async_available():
+                if self._async_supported and claim_yandex_async_attempt():
                     try:
                         async_resp, sent_reqs = await _paced_async_post_counted(
                             client, self.V2_ASYNC_API_URL, json=body, headers=headers
@@ -563,6 +620,7 @@ class YandexSearchEngine:
                                 "yandex_async_circuit_breaker_tripped",
                                 consecutive_429=self._consecutive_async_429,
                                 cooloff_sec=cooloff_sec,
+                                error_body=async_resp.text[:180],
                                 msg="searchAsync 429 rate-limited after retries, applying progressive cooloff and falling back to sync",
                             )
                         elif async_resp.status_code in (401, 402, 403) or "PermissionDenied" in async_resp.text:
@@ -622,12 +680,12 @@ class YandexSearchEngine:
         """Wait for v2 async operation with rate-limit protection and exponential backoff."""
         client = await self._get_client()
 
-        # Start at 0.4s to return promptly when operation completes fast, poll up to ~85s before sync fallback
+        # Start at 0.3s to return promptly (30 RPS poll quota), poll up to ~85s before sync fallback
         poll_delays = [
-            0.4, 0.7, 1.0, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0,
+            0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0,
             2.0, 2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 2.5, 2.5, 3.0,
             3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0,
-            3.0, 3.0, 3.0, 3.0
+            3.0, 3.0, 3.0, 3.0, 3.0
         ]
         consecutive_429 = 0
         for attempt in range(len(poll_delays)):

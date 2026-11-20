@@ -3173,12 +3173,14 @@ def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float =
     if not evidence.get("search") and isinstance(evidence.get("supplier_search"), dict):
         return extract_yandex_job_metrics(evidence["supplier_search"], price_per_request=price_per_request)
     req_count = 0
+    sync_count = 0
     has_explicit_count = False
     search_info = evidence.get("search")
     if isinstance(search_info, dict):
         if "yandex_requests_count" in search_info:
             has_explicit_count = True
             req_count += int(search_info["yandex_requests_count"] or 0)
+            sync_count += int(search_info.get("yandex_sync_requests") or 0)
     recovery_rounds = evidence.get("recovery_rounds", [])
     if isinstance(recovery_rounds, list):
         for r in recovery_rounds:
@@ -3187,9 +3189,11 @@ def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float =
                 if isinstance(r_search, dict) and "yandex_requests_count" in r_search:
                     has_explicit_count = True
                     req_count += int(r_search["yandex_requests_count"] or 0)
+                    sync_count += int(r_search.get("yandex_sync_requests") or 0)
                 elif "yandex_requests_count" in r:
                     has_explicit_count = True
                     req_count += int(r["yandex_requests_count"] or 0)
+                    sync_count += int(r.get("yandex_sync_requests") or 0)
     if req_count == 0 and not has_explicit_count:
         queries = evidence.get("queries", [])
         reports = search_info.get("reports", []) if isinstance(search_info, dict) else []
@@ -3200,5 +3204,9 @@ def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float =
             pages_per_q = 2.0 if added > 50 else 1.5
             req_count = int(q_len * pages_per_q)
     unit_price = float(price_per_request) if price_per_request else 0.0305
-    cost_rub = round(req_count * unit_price, 2)
+    if sync_count > 0 and unit_price < 0.1:
+        async_count = max(0, req_count - sync_count)
+        cost_rub = round(async_count * unit_price + sync_count * 0.488, 2)
+    else:
+        cost_rub = round(req_count * unit_price, 2)
     return req_count, cost_rub

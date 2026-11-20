@@ -637,25 +637,51 @@ async def build_minprom_registry_queries(
     parsed = parse_json_object(raw)
     ai_queries = [str(item).strip() for item in parsed.get("queries", []) if str(item).strip()]
     product_queries: list[str] = []
+    # Collect registry queries in cross-item priority tiers so a first item with many
+    # sub-items cannot crowd out subsequent positions before the [:32] cap.
     for item in profile.items:
         item_name = str(item.name or "").strip()
         if item_name and len(item_name) >= 3 and item_name not in product_queries:
             product_queries.append(item_name)
-        for term in item.category_terms:
-            clean_term = str(term or "").strip()
-            if clean_term and len(clean_term) >= 3 and clean_term not in product_queries:
-                product_queries.append(clean_term)
-        for alias in item.aliases:
-            clean_alias = str(alias or "").strip()
-            if clean_alias and len(clean_alias) >= 3 and clean_alias not in product_queries:
-                product_queries.append(clean_alias)
-        for sub_item in item.included_sub_items:
-            clean_sub = str(sub_item or "").strip()
-            if clean_sub and len(clean_sub) >= 3 and clean_sub not in product_queries:
-                product_queries.append(clean_sub)
+
+    def _append_round_robin(attr: str, per_item_limit: int | None = None) -> None:
+        lists: list[list[str]] = []
+        for item in profile.items:
+            raw_vals = [str(v or "").strip() for v in getattr(item, attr, ()) or ()]
+            vals = [v for v in raw_vals if len(v) >= 3]
+            if per_item_limit is not None:
+                vals = vals[:per_item_limit]
+            if vals:
+                lists.append(vals)
+        if not lists:
+            return
+        max_len = max(len(v) for v in lists)
+        for idx in range(max_len):
+            for vals in lists:
+                if idx < len(vals) and vals[idx] not in product_queries:
+                    product_queries.append(vals[idx])
+
+    _append_round_robin("category_terms")
+    _append_round_robin("aliases")
+
+    sub_item_queries: list[str] = []
+    sub_lists: list[list[str]] = []
+    per_item_sub_cap = 4 if len(profile.items) > 1 else None
+    for item in profile.items:
+        raw_subs = [str(s or "").strip() for s in item.included_sub_items if str(s or "").strip() and len(str(s or "").strip()) >= 3]
+        if per_item_sub_cap is not None:
+            raw_subs = raw_subs[:per_item_sub_cap]
+        if raw_subs:
+            sub_lists.append(raw_subs)
+    if sub_lists:
+        for idx in range(max(len(v) for v in sub_lists)):
+            for vals in sub_lists:
+                if idx < len(vals) and vals[idx] not in sub_item_queries:
+                    sub_item_queries.append(vals[idx])
+
     combined: list[str] = []
     seen: set[str] = set()
-    for q in product_queries + ai_queries + code_queries:
+    for q in product_queries + ai_queries + sub_item_queries + code_queries:
         ql = q.lower().strip()
         if ql and ql not in seen:
             seen.add(ql)
@@ -1882,6 +1908,15 @@ async def build_supplier_queries(
                             if n_city != delivery_city.lower():
                                 geo_injections.append(f'{clean_it} {n_city} поставщик опт')
                 queries = _clean_supplier_queries(geo_injections + queries)
+            if profile and len(profile.items) > 1:
+                exec_norm = {str(q).strip().lower() for q in (executed_queries or []) if str(q).strip()}
+                queries = _balance_supplier_queries_across_items(
+                    queries,
+                    profile,
+                    is_services=is_services,
+                    executed_queries=exec_norm,
+                    min_per_item=3,
+                )
             if profile and len(profile.items) > 1 and multi_item_mode == 'per_item':
                 base_cap = max(28, 12 * len(profile.items))
             elif profile and len(profile.items) > 1:
@@ -2133,7 +2168,7 @@ async def _discover_suppliers_impl(
         elif policy == SUPPLIER_POLICY_MINPROM_ONLY:
             queries = minprom_supplier_queries
         else:
-            queries = _merge_supplier_query_tracks(general_queries, minprom_supplier_queries)
+            queries = _merge_supplier_query_tracks(general_queries, minprom_supplier_queries, profile=profile)
         await _emit_progress(
             progress_callback,
             50,
@@ -2192,7 +2227,10 @@ async def _discover_suppliers_impl(
         geo_scope=geo_scope,
     )
     recovery_rounds: list[dict] = []
-    max_recovery_rounds = 0 if policy == SUPPLIER_POLICY_MINPROM_ONLY else 1
+    is_multi_item_profile = bool(profile and len(profile.items) > 1)
+    max_recovery_rounds = 0 if policy == SUPPLIER_POLICY_MINPROM_ONLY else (2 if is_multi_item_profile else 1)
+    ran_zero_item_web_recovery = False
+    ran_general_web_recovery = False
     for recovery_attempt in range(max_recovery_rounds):
         zero_items = _uncovered_profile_items(accepted, profile)
         # The client minimum is the completion guarantee, provided every distinct
@@ -2208,11 +2246,39 @@ async def _discover_suppliers_impl(
             c for c in initial_candidate_pool
             if c.domain and base_domain(c.domain) not in reviewed_domains and not is_blocked(c.domain)
         ]
+        zero_pool_candidates: list[Candidate] = []
+        if unreviewed_from_pool and zero_items and profile is not None:
+            zero_item_ids = {it.id.lower() for it in zero_items}
+            zero_only_profile = ProcurementProfile(
+                summary=profile.summary,
+                items=tuple(zero_items),
+                subject_kind=profile.subject_kind,
+                excluded_terms=profile.excluded_terms,
+            )
+            other_pool_candidates: list[Candidate] = []
+            for cand in unreviewed_from_pool:
+                cid = str(cand.procurement_item_id or "").strip().lower()
+                if cid in zero_item_ids or _match_query_item_index(
+                    f"{cand.query} {cand.title} {cand.snippet[:160]}", zero_only_profile
+                ) is not None:
+                    zero_pool_candidates.append(cand)
+                else:
+                    other_pool_candidates.append(cand)
+            if zero_pool_candidates:
+                unreviewed_from_pool = zero_pool_candidates + other_pool_candidates
         needed_gap = max(1, effective_minimum_target - len(accepted))
         if len(accepted) >= effective_minimum_target and zero_items:
             needed_gap = max(4, 3 * len(zero_items))
-        if unreviewed_from_pool and len(accepted) < effective_minimum_target:
-            fast_candidates = unreviewed_from_pool[: max(needed_gap * 3, 20)]
+        should_run_fast_path = bool(
+            unreviewed_from_pool
+            and (len(accepted) < effective_minimum_target or (zero_items and zero_pool_candidates))
+        )
+        if should_run_fast_path:
+            fast_candidates = (
+                zero_pool_candidates[: max(needed_gap * 3, 20)]
+                if (len(accepted) >= effective_minimum_target and zero_pool_candidates)
+                else unreviewed_from_pool[: max(needed_gap * 3, 20)]
+            )
             await _emit_progress(
                 progress_callback,
                 92,
@@ -2262,9 +2328,19 @@ async def _discover_suppliers_impl(
             if len(accepted) >= effective_minimum_target and not zero_items:
                 break
 
-        # If still needed after fast-path, do targeted adaptive web recovery
+        # If still needed after fast-path, do targeted adaptive web recovery.
+        # Always prioritize uncovered (zero-supplier) items FIRST, even when total
+        # accepted is still slightly below effective_minimum_target, so sparse items
+        # are never left at 0 while general recovery keeps adding to item-1.
         zero_items = _uncovered_profile_items(accepted, profile)
-        is_zero_item_targeted = bool(len(accepted) >= effective_minimum_target and zero_items and profile is not None)
+        if zero_items and profile is not None and not ran_zero_item_web_recovery:
+            is_zero_item_targeted = True
+            ran_zero_item_web_recovery = True
+        elif len(accepted) < effective_minimum_target and not ran_general_web_recovery:
+            is_zero_item_targeted = False
+            ran_general_web_recovery = True
+        else:
+            break
         if is_zero_item_targeted and profile is not None:
             zero_names = "; ".join(it.name for it in zero_items)
             recovery_profile = ProcurementProfile(
@@ -2283,7 +2359,11 @@ async def _discover_suppliers_impl(
         else:
             recovery_profile = profile
             recovery_context = context
-        needed_gap = max(4, 3 * len(zero_items)) if is_zero_item_targeted else max(1, effective_minimum_target - len(accepted))
+        if is_zero_item_targeted:
+            deficit_gap = max(0, effective_minimum_target - len(accepted))
+            needed_gap = max(6, 4 * len(zero_items), min(24, deficit_gap)) if deficit_gap > 0 else max(4, 3 * len(zero_items))
+        else:
+            needed_gap = max(1, effective_minimum_target - len(accepted))
         await _emit_progress(progress_callback, 93 + recovery_attempt, f"Расширяю поиск в сети (раунд {recovery_attempt + 1}): подтверждено {len(accepted)}")
         accepted_before_web = len(accepted)
         raw_recovery_queries = await _build_supplier_recovery_queries_with_ai(
@@ -2295,11 +2375,20 @@ async def _discover_suppliers_impl(
             [] if is_zero_item_targeted else accepted,
             needed_gap if is_zero_item_targeted else minimum_target,
         )
+        if is_zero_item_targeted and recovery_profile is not None:
+            raw_recovery_queries = _balance_supplier_queries_across_items(
+                raw_recovery_queries,
+                recovery_profile,
+                is_services=is_services,
+                executed_queries={str(q).strip().lower() for q in queries if str(q).strip()},
+                min_per_item=3,
+            )
         max_rec_queries = min(12, max(4, 4 * len(zero_items))) if is_zero_item_targeted else min(8, max(3, (needed_gap + 1) // 2))
         recovery_queries = raw_recovery_queries[:max_rec_queries]
         recovery_round = {
             "status": "empty_queries",
             "queries": recovery_queries,
+            "targeted_zero_items": [it.name for it in zero_items] if is_zero_item_targeted else [],
             "accepted_before": accepted_before_web,
             "accepted_after": len(accepted),
         }
@@ -2367,6 +2456,7 @@ async def _discover_suppliers_impl(
                 recovery_round = {
                     "status": "ok",
                     "queries": recovery_queries,
+                    "targeted_zero_items": [it.name for it in zero_items] if is_zero_item_targeted else [],
                     "candidate_count": len(recovery_candidates),
                     "accepted_before": accepted_before_web,
                     "accepted_after": len(accepted),
@@ -2378,6 +2468,7 @@ async def _discover_suppliers_impl(
                 recovery_round = {
                     "status": "error",
                     "queries": recovery_queries,
+                    "targeted_zero_items": [it.name for it in zero_items] if is_zero_item_targeted else [],
                     "accepted_before": accepted_before_web,
                     "accepted_after": len(accepted),
                     "error": _exception_summary(exc),
@@ -2402,9 +2493,21 @@ async def _discover_suppliers_impl(
         )
         if enrich_metrics.get("yandex_requests_count", 0) > 0 and isinstance(search_meta, dict):
             extra_reqs = int(enrich_metrics["yandex_requests_count"])
+            extra_sync = int(enrich_metrics.get("yandex_sync_requests") or 0)
+            extra_async = max(0, extra_reqs - extra_sync)
             search_meta["yandex_requests_count"] = int(search_meta.get("yandex_requests_count") or 0) + extra_reqs
+            search_meta["yandex_sync_requests"] = int(search_meta.get("yandex_sync_requests") or 0) + extra_sync
+            search_meta["yandex_async_requests"] = max(
+                0,
+                int(search_meta["yandex_requests_count"]) - int(search_meta["yandex_sync_requests"]),
+            )
             unit_p = float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305)
-            search_meta["yandex_cost_rub"] = round(int(search_meta["yandex_requests_count"]) * unit_p, 2)
+            total_sync = int(search_meta["yandex_sync_requests"])
+            if total_sync > 0 and unit_p < 0.1:
+                total_async = int(search_meta["yandex_async_requests"])
+                search_meta["yandex_cost_rub"] = round(total_async * unit_p + total_sync * 0.488, 2)
+            else:
+                search_meta["yandex_cost_rub"] = round(int(search_meta["yandex_requests_count"]) * unit_p, 2)
 
     # Enrich general accepted suppliers with missing region/director
     accepted = await _enrich_accepted_suppliers_with_dadata(accepted)
@@ -2640,15 +2743,23 @@ async def _enrich_unmatched_registry_suppliers(
         search_budget_remaining -= 1
         found: list[Candidate] = []
         if settings.yandex_search_folder_id and settings.yandex_search_api_key:
-            found, enrich_reqs = await _search_with_yandex(
-                settings,
-                [q],
-                max_results=6,
-                expand_queries=False,
-                max_pages_per_query=1,
-            )
+            from .exact_product.search_metrics import SearchMetrics, active_search_metrics
+
+            ymetrics = SearchMetrics()
+            ymetrics_token = active_search_metrics.set(ymetrics)
+            try:
+                found, enrich_reqs = await _search_with_yandex(
+                    settings,
+                    [q],
+                    max_results=6,
+                    expand_queries=False,
+                    max_pages_per_query=1,
+                )
+            finally:
+                active_search_metrics.reset(ymetrics_token)
             if metrics_out is not None:
                 metrics_out["yandex_requests_count"] = int(metrics_out.get("yandex_requests_count") or 0) + int(enrich_reqs or 0)
+                metrics_out["yandex_sync_requests"] = int(metrics_out.get("yandex_sync_requests") or 0) + int(ymetrics.sync_requests or 0)
         elif settings.google_search_api_key and settings.google_search_cse_id:
             found = await _search_with_google(settings, [q], max_results=6)
         else:
@@ -3645,29 +3756,264 @@ def _build_minprom_supplier_queries(
                 ]
             )
 
-    code_queries_inserted = False
-    for term in _minprom_profile_query_terms(profile)[:8]:
-        ordered_queries.extend(
-            [
-                f'"{term}" "реестр Минпромторга" производитель',
-                f'"{term}" "реестровая запись" производитель',
-                f"{term} российский производитель",
-                f'"{term}" официальный сайт',
-                f'"{term}" ГИСП производитель',
-            ]
-        )
-        if not code_queries_inserted:
-            ordered_queries.extend(_build_minprom_supplier_code_queries(profile))
-            code_queries_inserted = True
-    if not code_queries_inserted:
-        ordered_queries.extend(_build_minprom_supplier_code_queries(profile))
+    profile_terms = _minprom_profile_query_terms(profile)[: max(8, min(16, 2 * max(1, len(profile.items))))]
+    code_queries = _build_minprom_supplier_code_queries(profile)
+    templates = (
+        lambda t: f'"{t}" "реестр Минпромторга" производитель',
+        lambda t: f"{t} российский производитель",
+        lambda t: f'"{t}" официальный сайт',
+        lambda t: f'"{t}" ГИСП производитель',
+        lambda t: f'"{t}" "реестровая запись" производитель',
+    )
+    if profile_terms:
+        # Emit queries template-by-template across all terms so every position in a
+        # multi-item procurement appears in the very first queries instead of letting
+        # 5 variations of item-1 fill the head of the queue.
+        for tpl_idx, tpl in enumerate(templates):
+            for term in profile_terms:
+                ordered_queries.append(tpl(term))
+            if tpl_idx == 0 and code_queries:
+                ordered_queries.extend(code_queries)
+    elif code_queries:
+        ordered_queries.extend(code_queries)
     return _clean_supplier_queries(ordered_queries)[:limit]
 
 
-def _merge_supplier_query_tracks(general_queries: list[str], minprom_queries: list[str]) -> list[str]:
+_MULTI_ITEM_QUERY_STOPWORDS = frozenset({
+    "для", "или", "при", "под", "без", "над", "про", "через", "между", "после",
+    "купить", "цена", "оптом", "опт", "сайт", "официальный", "производитель",
+    "поставщик", "завод", "изготовитель", "дилер", "дистрибьютор", "каталог",
+    "реестр", "минпромторга", "реестровая", "запись", "гисп", "российский",
+    "россия", "компания", "подрядчик", "исполнитель", "услуги", "работы",
+    "организаций", "юридических", "коммерческое", "предложение", "поставка",
+    "закупка", "товар", "продукция", "изделие", "изделия", "комплект",
+})
+
+
+def _query_item_stems(text: str) -> set[str]:
+    tokens = re.findall(r"[a-zа-яё0-9]+", str(text or "").lower().replace("ё", "е"))
+    stems: set[str] = set()
+    for tok in tokens:
+        if len(tok) < 3 or tok in _MULTI_ITEM_QUERY_STOPWORDS:
+            continue
+        if tok.isdigit() and len(tok) < 4:
+            continue
+        if len(tok) >= 6:
+            stems.add(tok[:5])
+        elif len(tok) >= 4:
+            stems.add(tok[:4])
+        else:
+            stems.add(tok)
+    return stems
+
+
+def _match_query_item_index(query: str, profile: ProcurementProfile | None) -> int | None:
+    """Return the best-matching profile.items index for a search query, or None if generic/ambiguous."""
+    if not profile or not profile.items:
+        return None
+    q_low = str(query or "").lower().replace("ё", "е").strip()
+    if not q_low:
+        return None
+    q_stems = _query_item_stems(q_low)
+    item_stem_sets: list[set[str]] = []
+    item_phrases: list[tuple[list[str], list[str]]] = []
+    stem_doc_freq: dict[str, int] = {}
+    for item in profile.items:
+        strong_phrases = [
+            p.lower().replace("ё", "е").strip()
+            for p in (item.name, *item.aliases, *item.exact_terms)
+            if p and len(str(p).strip()) >= 3
+        ]
+        cat_phrases = [
+            p.lower().replace("ё", "е").strip()
+            for p in item.category_terms
+            if p and len(str(p).strip()) >= 4
+        ]
+        stems: set[str] = set()
+        for phrase in strong_phrases + cat_phrases:
+            stems.update(_query_item_stems(phrase))
+        item_stem_sets.append(stems)
+        item_phrases.append((strong_phrases, cat_phrases))
+        for st in stems:
+            stem_doc_freq[st] = stem_doc_freq.get(st, 0) + 1
+
+    scores: list[int] = []
+    for idx, stems in enumerate(item_stem_sets):
+        strong_phrases, cat_phrases = item_phrases[idx]
+        score = 0
+        for phrase in strong_phrases:
+            if len(phrase) >= 4 and phrase in q_low:
+                score += 6
+        for phrase in cat_phrases:
+            if phrase in q_low:
+                score += 3
+        for st in q_stems & stems:
+            score += 3 if stem_doc_freq.get(st, 0) == 1 else 1
+        scores.append(score)
+
+    best_score = max(scores, default=0)
+    if best_score < 3:
+        return None
+    best_indices = [idx for idx, sc in enumerate(scores) if sc == best_score]
+    if len(best_indices) != 1:
+        return None
+    return best_indices[0]
+
+
+def _synthesize_item_fallback_queries(item: ProcurementItem, *, is_services: bool) -> list[str]:
+    """Generate clean, high-precision commercial fallback queries for a single procurement item."""
+    clean_name = _clean_minprom_query_term(item.name) or re.sub(r"\s+", " ", str(item.name or "")).strip()
+    short_name = " ".join(clean_name.split()[:5]).strip()
+    if not short_name:
+        return []
+    clean_alias = ""
+    for alias in item.aliases:
+        cand = _clean_minprom_query_term(alias) or str(alias or "").strip()
+        if cand and cand.lower() != short_name.lower() and len(cand.split()) <= 6:
+            clean_alias = cand
+            break
+    clean_cat = ""
+    for cat in item.category_terms:
+        cand = _clean_minprom_query_term(cat) or str(cat or "").strip()
+        if cand and cand.lower() != short_name.lower() and len(cand.split()) <= 5:
+            clean_cat = cand
+            break
+    if is_services:
+        raw = [
+            f"{short_name} компания исполнитель для организаций",
+            f"{clean_alias or short_name} подрядчик коммерческое предложение",
+            f"{short_name} услуги для юридических лиц официальный сайт",
+            f"{clean_cat or short_name} сервисная компания рф",
+        ]
+    else:
+        raw = [
+            f"{short_name} производитель официальный сайт",
+            f"{clean_alias or short_name} купить поставщик рф",
+            f"{short_name} завод изготовитель каталог",
+            f"{clean_cat or short_name} оптовые поставки дилер",
+        ]
+    return _clean_supplier_queries(raw)
+
+
+def _interleave_queries_by_item(queries: list[str], profile: ProcurementProfile | None) -> list[str]:
+    """Interleave queries round-robin across all profile items so early search chunks cover every position."""
+    cleaned = _clean_supplier_queries(queries)
+    if not profile or len(profile.items) <= 1 or len(cleaned) <= 1:
+        return cleaned
+    buckets: list[list[str]] = [[] for _ in profile.items]
+    unassigned: list[str] = []
+    for q in cleaned:
+        item_idx = _match_query_item_index(q, profile)
+        if item_idx is not None:
+            buckets[item_idx].append(q)
+        else:
+            unassigned.append(q)
+    if not any(buckets):
+        return cleaned
+    interleaved: list[str] = []
+    cursors = [0] * len(buckets)
+    unassigned_cursor = 0
+    round_num = 0
+    while True:
+        progressed = False
+        for idx in range(len(buckets)):
+            cur = cursors[idx]
+            if cur < len(buckets[idx]):
+                interleaved.append(buckets[idx][cur])
+                cursors[idx] = cur + 1
+                progressed = True
+        # Weave generic/cross-item queries gently after the first full item-specific round
+        if round_num >= 1 and unassigned_cursor < len(unassigned):
+            interleaved.append(unassigned[unassigned_cursor])
+            unassigned_cursor += 1
+            progressed = True
+        round_num += 1
+        if not progressed:
+            break
+    if unassigned_cursor < len(unassigned):
+        interleaved.extend(unassigned[unassigned_cursor:])
+    return _clean_supplier_queries(interleaved)
+
+
+def _balance_supplier_queries_across_items(
+    queries: list[str],
+    profile: ProcurementProfile | None,
+    *,
+    is_services: bool = False,
+    executed_queries: set[str] | None = None,
+    min_per_item: int = 3,
+) -> list[str]:
+    """Ensure every item in a multi-item profile has dedicated queries and interleave them round-robin."""
+    cleaned = _clean_supplier_queries(queries)
+    if not profile or not profile.items:
+        return cleaned
+    exec_norm = {str(q).strip().lower() for q in (executed_queries or set()) if str(q).strip()}
+    if len(profile.items) == 1:
+        if len(cleaned) >= min_per_item:
+            return cleaned
+        existing_low = {q.lower() for q in cleaned} | exec_norm
+        additions = [
+            q for q in _synthesize_item_fallback_queries(profile.items[0], is_services=is_services)
+            if q.lower() not in existing_low
+        ]
+        return _clean_supplier_queries(cleaned + additions[: max(0, min_per_item - len(cleaned))])
+
+    counts = [0] * len(profile.items)
+    for q in cleaned:
+        idx = _match_query_item_index(q, profile)
+        if idx is not None:
+            counts[idx] += 1
+    existing_low = {q.lower() for q in cleaned} | exec_norm
+    additions: list[str] = []
+    for idx, item in enumerate(profile.items):
+        deficit = max(0, min_per_item - counts[idx])
+        if deficit <= 0:
+            continue
+        for synth in _synthesize_item_fallback_queries(item, is_services=is_services):
+            low = synth.lower()
+            if low in existing_low:
+                continue
+            existing_low.add(low)
+            additions.append(synth)
+            deficit -= 1
+            if deficit <= 0:
+                break
+    return _interleave_queries_by_item(cleaned + additions, profile)
+
+
+def _merge_supplier_query_tracks(
+    general_queries: list[str],
+    minprom_queries: list[str],
+    profile: ProcurementProfile | None = None,
+) -> list[str]:
     if not minprom_queries:
-        return general_queries
+        return _interleave_queries_by_item(general_queries, profile) if (profile and len(profile.items) > 1) else general_queries
     cap = max(60, len(general_queries) + 20)
+    if profile and len(profile.items) > 1:
+        # Interleave top registry queries with balanced general queries so early search chunks
+        # cover every procurement item rather than filling max_results with item-1 registry terms.
+        gen_balanced = _interleave_queries_by_item(general_queries, profile)
+        mp_balanced = _interleave_queries_by_item(minprom_queries, profile)
+        top_mp_budget = min(len(mp_balanced), max(4, 2 * len(profile.items)))
+        top_mp = mp_balanced[:top_mp_budget]
+        rest_mp = mp_balanced[top_mp_budget:]
+        mixed: list[str] = []
+        mp_i = 0
+        gen_i = 0
+        while mp_i < len(top_mp) or gen_i < len(gen_balanced):
+            for _ in range(len(profile.items)):
+                if gen_i < len(gen_balanced):
+                    mixed.append(gen_balanced[gen_i])
+                    gen_i += 1
+            for _ in range(len(profile.items)):
+                if mp_i < len(top_mp):
+                    mixed.append(top_mp[mp_i])
+                    mp_i += 1
+            if mp_i >= len(top_mp) and gen_i < len(gen_balanced):
+                mixed.extend(gen_balanced[gen_i:])
+                break
+        mixed.extend(rest_mp)
+        return _clean_supplier_queries(mixed)[:cap]
     prioritized = minprom_queries[:6] + general_queries + minprom_queries[6:]
     return _clean_supplier_queries(prioritized)[:cap]
 
@@ -3766,21 +4112,59 @@ def _uncovered_profile_items(accepted: list[dict], profile: ProcurementProfile |
 
 
 def _minprom_profile_query_terms(profile: ProcurementProfile) -> list[str]:
-    terms: list[str] = []
+    if len(profile.items) <= 1:
+        terms: list[str] = []
+        for item in profile.items:
+            candidates = (
+                *item.category_terms,
+                *item.aliases,
+                *item.exact_terms,
+                *item.required_terms,
+                item.name,
+            )
+            for candidate in candidates:
+                term = _clean_minprom_query_term(candidate)
+                if term and term.lower() not in [existing.lower() for existing in terms]:
+                    terms.append(term)
+        summary = _clean_minprom_query_term(profile.summary)
+        if summary and summary.lower() not in [existing.lower() for existing in terms]:
+            terms.append(summary)
+        return terms
+
+    # Multi-item profile: interleave terms round-robin across items so every position
+    # gets registry query representation before the [:8]/[:16] cap.
+    per_item_terms: list[list[str]] = []
     for item in profile.items:
-        candidates = (
-            *item.category_terms,
-            *item.aliases,
-            *item.exact_terms,
-            *item.required_terms,
-            item.name,
+        clean_name = _clean_minprom_query_term(item.name)
+        name_first = bool(clean_name and len(clean_name.split()) <= 6)
+        raw_candidates = (
+            (item.name, *item.aliases, *item.category_terms, *item.exact_terms, *item.required_terms)
+            if name_first
+            else (*item.category_terms, *item.aliases, *item.exact_terms, *item.required_terms, item.name)
         )
-        for candidate in candidates:
+        bucket: list[str] = []
+        bucket_seen: set[str] = set()
+        for candidate in raw_candidates:
             term = _clean_minprom_query_term(candidate)
-            if term and term.lower() not in [existing.lower() for existing in terms]:
-                terms.append(term)
+            if term and term.lower() not in bucket_seen:
+                bucket_seen.add(term.lower())
+                bucket.append(term)
+        if bucket:
+            per_item_terms.append(bucket)
+
+    terms = []
+    seen_low: set[str] = set()
+    if per_item_terms:
+        max_len = max(len(b) for b in per_item_terms)
+        for idx in range(max_len):
+            for bucket in per_item_terms:
+                if idx < len(bucket):
+                    t = bucket[idx]
+                    if t.lower() not in seen_low:
+                        seen_low.add(t.lower())
+                        terms.append(t)
     summary = _clean_minprom_query_term(profile.summary)
-    if summary and summary.lower() not in [existing.lower() for existing in terms]:
+    if summary and summary.lower() not in seen_low:
         terms.append(summary)
     return terms
 
@@ -5034,6 +5418,8 @@ async def discover_candidates(
     fallback_limit = min(max_results, max(0, configured_fallback_limit))
     yandex_candidate_count = 0
     yandex_total_requests = 0
+    yandex_async_requests = 0
+    yandex_sync_requests = 0
     fallback_candidates_added = 0
     fallback_used = False
 
@@ -5095,18 +5481,27 @@ async def discover_candidates(
         try:
             existing_domains = base_excluded_domains | {candidate.domain for candidate in candidates}
             if provider == "yandex":
+                from .exact_product.search_metrics import SearchMetrics, active_search_metrics
+
+                ymetrics = SearchMetrics()
+                ymetrics_token = active_search_metrics.set(ymetrics)
                 try:
-                    y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
-                except TypeError as t_err:
-                    if "geo_scope" in str(t_err):
-                        y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
-                    else:
-                        raise
+                    try:
+                        y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
+                    except TypeError as t_err:
+                        if "geo_scope" in str(t_err):
+                            y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
+                        else:
+                            raise
+                finally:
+                    active_search_metrics.reset(ymetrics_token)
                 if isinstance(y_res, tuple) and len(y_res) == 2:
                     provider_candidates, y_reqs = y_res
                 else:
                     provider_candidates, y_reqs = y_res, len(queries)
                 yandex_total_requests += y_reqs
+                yandex_async_requests += int(ymetrics.async_requests or 0)
+                yandex_sync_requests += int(ymetrics.sync_requests or 0)
             elif provider == "google":
                 provider_candidates = await _search_with_google(settings, queries, request_limit, existing_domains=existing_domains, geo_scope=geo_scope)
             elif provider == "tavily":
@@ -5140,6 +5535,14 @@ async def discover_candidates(
         if len(candidates) >= max_results:
             break
 
+    unit_p = float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305)
+    eff_sync_reqs = max(0, yandex_sync_requests)
+    eff_async_reqs = max(0, yandex_total_requests - eff_sync_reqs)
+    if eff_sync_reqs > 0 and unit_p < 0.1:
+        yandex_cost_rub = round(eff_async_reqs * unit_p + eff_sync_reqs * 0.488, 2)
+    else:
+        yandex_cost_rub = round(yandex_total_requests * unit_p, 2)
+
     return candidates[:max_results], {
         "provider_order": provider_order,
         "strategy": {
@@ -5151,7 +5554,9 @@ async def discover_candidates(
             "reserve_only": reserve_only,
         },
         "yandex_requests_count": yandex_total_requests,
-        "yandex_cost_rub": round(yandex_total_requests * float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305), 2),
+        "yandex_async_requests": eff_async_reqs,
+        "yandex_sync_requests": eff_sync_reqs,
+        "yandex_cost_rub": yandex_cost_rub,
         "reports": reports,
     }
 
@@ -5277,15 +5682,19 @@ async def _search_with_yandex(
     else:
         search_queries = [q.strip() for q in queries if str(q).strip()]
     max_pages = max_pages_per_query if max_pages_per_query is not None else _yandex_max_pages_per_query(settings)
-    semaphore = asyncio.Semaphore(3)
+    try:
+        yandex_concurrency = max(1, min(16, int(os.getenv("AIPOISK_YANDEX_SEARCH_CONCURRENCY", "8") or 8)))
+    except ValueError:
+        yandex_concurrency = 8
+    semaphore = asyncio.Semaphore(yandex_concurrency)
     requests_count = 0
 
     async def _poll_yandex_operation(client: httpx.AsyncClient, operation_id: str) -> str | None:
         poll_delays = [
-            0.5, 0.8, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0,
+            0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0,
             2.0, 2.0, 2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 2.5, 2.5,
             2.5, 2.5, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0,
-            3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0
+            3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0
         ]
         consecutive_429 = 0
         for _poll_idx in range(len(poll_delays)):
@@ -5331,14 +5740,15 @@ async def _search_with_yandex(
                 "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
             }
             # Primary: Cost-effective asynchronous search (30.50 ₽ / 1k reqs vs 488 ₽ / 1k reqs sync)
+            from .exact_product.search_metrics import record_search_request
             from .exact_product.yandex_search import (
                 _paced_async_post_counted,
                 _paced_sync_post_counted,
-                is_yandex_async_available,
+                claim_yandex_async_attempt,
                 record_yandex_async_429_progressive,
                 record_yandex_async_success,
             )
-            if async_supported and is_yandex_async_available():
+            if async_supported and claim_yandex_async_attempt():
                 try:
                     response, async_sent = await _paced_async_post_counted(
                         client,
@@ -5349,6 +5759,7 @@ async def _search_with_yandex(
                     if response.status_code == 200:
                         record_yandex_async_success()
                         requests_count += 1
+                        record_search_request(is_sync=False)
                         payload = response.json() or {}
                         operation_id = str(payload.get("id") or "")
                         if operation_id:
@@ -5368,6 +5779,12 @@ async def _search_with_yandex(
                     elif response.status_code == 429:
                         cooloff_s = record_yandex_async_429_progressive()
                         last_provider_error = f"http_429_rate_limited_{int(cooloff_s)}s"
+                        logger.warning(
+                            "Yandex async search status=429 cooloff=%ss query=%s error=%s",
+                            int(cooloff_s),
+                            query[:80],
+                            response.text[:180],
+                        )
                     elif response.status_code in (401, 402, 403) or "PermissionDenied" in response.text:
                         last_provider_error = f"http_{response.status_code}_auth_or_billing"
                         notify_yandex_search_error(response.status_code, response.text, query=query)
@@ -5390,6 +5807,7 @@ async def _search_with_yandex(
                     )
                     if response.status_code == 200:
                         requests_count += 1
+                        record_search_request(is_sync=True)
                         last_provider_error = ""
                         data = response.json()
                         raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
