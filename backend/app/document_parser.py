@@ -4,12 +4,13 @@ import csv
 import html
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from bs4 import BeautifulSoup
 
@@ -17,11 +18,11 @@ logger = logging.getLogger(__name__)
 
 
 TEXT_EXTENSIONS = {".txt", ".md", ".json", ".yaml", ".yml", ".ini", ".log"}
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"}
 ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z"}
 DEFAULT_DOCUMENT_OPTIONS = {
     "ocr_enabled": True,
-    "pdf_ocr_pages": 12,
+    "pdf_ocr_pages": 25,
     "docx_ocr_images": 20,
     "archive_max_files": 80,
     "archive_max_mb": 250,
@@ -113,14 +114,17 @@ def _natural_sort_key(s: str) -> list[int | str]:
 
 
 def sanitize_filename(value: str) -> str:
-    raw_val = clean_surrogates(str(value or "")).strip()
+    raw_val = clean_surrogates(str(value or "")).replace("\\", "/").strip()
     if not raw_val:
         return "upload"
-    p = Path(raw_val)
+    leaf = PurePosixPath(raw_val).name.strip()
+    if not leaf or leaf in {".", ".."}:
+        return "upload"
+    p = Path(leaf)
     ext = p.suffix
-    stem = p.stem if ext else raw_val
+    stem = p.stem if ext else leaf
     clean_ext = re.sub(r"[^\w.-]+", "_", ext, flags=re.UNICODE)
-    clean_stem = re.sub(r"[^\w?-??-??? ._-]+", "_", stem, flags=re.UNICODE).strip(" ._")
+    clean_stem = re.sub(r"[^\wА-Яа-яЁё()№ ._-]+", "_", stem, flags=re.UNICODE).strip(" ._")
     ext_bytes = len(clean_ext.encode("utf-8"))
     max_stem_bytes = max(10, 180 - ext_bytes)
     truncated_stem = _truncate_utf8(clean_stem, max_stem_bytes, fallback="upload")
@@ -229,7 +233,7 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
                     return text, "docx_ocr_ok"
 
                 if not cleaned:
-                    pdf_pages = int(options.get("pdf_ocr_pages") or 12)
+                    pdf_pages = max(int(options.get("pdf_ocr_pages") or 15), 15)
                     lo_pdf_ocr = _extract_office_via_pdf_ocr(file_path, pdf_pages)
                     if lo_pdf_ocr.strip():
                         return lo_pdf_ocr, "docx_pdf_ocr_ok"
@@ -262,7 +266,7 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
         if suffix == ".pdf":
             text = _extract_pdf(file_path)
             if _pdf_needs_ocr(file_path, text) and options.get("ocr_enabled"):
-                max_pages = max(int(options.get("pdf_ocr_pages") or 20), 20)
+                max_pages = max(int(options.get("pdf_ocr_pages") or 40), 40)
                 ocr_text = _extract_pdf_ocr(file_path, max_pages)
                 if ocr_text.strip():
                     return ocr_text, "pdf_ocr_ok"
@@ -283,7 +287,7 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
             text = _extract_doc(file_path)
             cleaned = _clean_text(text)
             if len(cleaned) < 80 and options.get("ocr_enabled"):
-                pdf_pages = int(options.get("pdf_ocr_pages") or 12)
+                pdf_pages = max(int(options.get("pdf_ocr_pages") or 15), 15)
                 doc_ocr = _extract_office_via_pdf_ocr(file_path, pdf_pages)
                 if doc_ocr.strip():
                     return doc_ocr, "doc_ocr_ok"
@@ -408,7 +412,11 @@ def _extract_docx_xml(path: Path) -> str:
         with zipfile.ZipFile(path) as z:
             if "word/document.xml" not in z.namelist():
                 return ""
-            xml_data = z.read("word/document.xml")
+            info = z.getinfo("word/document.xml")
+            if info.file_size > 64 * 1024 * 1024:
+                return ""
+            with z.open(info) as stream:
+                xml_data = stream.read(64 * 1024 * 1024)
         soup = BeautifulSoup(xml_data, "xml")
         body = soup.find(["w:body", "body"])
         if not body:
@@ -481,13 +489,20 @@ def _extract_xlsx(path: Path) -> str:
 
     wb = load_workbook(path, read_only=True, data_only=True)
     blocks: list[str] = []
-    for ws in wb.worksheets:
-        blocks.append(f"\n=== SHEET: {ws.title} ===")
-        for row in ws.iter_rows(values_only=True):
-            cells = ["" if value is None else str(value).strip() for value in row]
-            if any(cells):
-                blocks.append(" | ".join(cells))
-    return "\n".join(blocks)
+    try:
+        for ws in wb.worksheets:
+            blocks.append(f"\n=== SHEET: {ws.title} ===")
+            for row in ws.iter_rows(values_only=True):
+                cells = ["" if value is None else str(value).strip() for value in row]
+                # Formatting may extend an otherwise small sheet to column XFD.
+                # Keep real values and interior gaps, without serializing empty tails.
+                while cells and not cells[-1]:
+                    cells.pop()
+                if cells:
+                    blocks.append(" | ".join(cells))
+        return "\n".join(blocks)
+    finally:
+        wb.close()
 
 
 SIGNATURE_AND_STAMP_PATTERNS = (
@@ -589,9 +604,12 @@ def _extract_via_libreoffice(path: Path, target_suffix: str, reader) -> str:
     if not libreoffice:
         return ""
     with tempfile.TemporaryDirectory(prefix="aipoisk-lo-") as tmp:
+        lo_profile = Path(tmp) / "lo_profile"
+        lo_profile.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
             [
                 libreoffice,
+                f"-env:UserInstallation={lo_profile.as_uri()}",
                 "--headless",
                 "--convert-to",
                 target_suffix.lstrip("."),
@@ -612,18 +630,165 @@ def _extract_via_libreoffice(path: Path, target_suffix: str, reader) -> str:
         return reader(candidates[0])
 
 
+def _looks_like_weak_ocr(text: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(cleaned) < 60:
+        return True
+    alnum = sum(1 for ch in cleaned if ch.isalnum())
+    return (alnum / max(1, len(cleaned))) < 0.45
+
+
+def _prepare_image_bytes_for_vision(path: Path, max_side: int = 2048) -> tuple[bytes, str] | None:
+    try:
+        import io
+        from PIL import Image, ImageOps
+
+        Image.MAX_IMAGE_PIXELS = 45_000_000
+        with Image.open(path) as img:
+            normalized = ImageOps.exif_transpose(img)
+            if normalized.mode not in ("RGB", "L"):
+                normalized = normalized.convert("RGB")
+            w, h = normalized.size
+            if max(w, h) > max_side:
+                ratio = max_side / float(max(w, h))
+                normalized = normalized.resize(
+                    (max(1, int(w * ratio)), max(1, int(h * ratio))),
+                    Image.Resampling.LANCZOS,
+                )
+            buf = io.BytesIO()
+            normalized.save(buf, format="JPEG", quality=88, optimize=True)
+            return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return None
+
+
+def _extract_image_vision_fallback(path: Path) -> str:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return ""
+    prepared = _prepare_image_bytes_for_vision(path)
+    if not prepared:
+        return ""
+    img_bytes, mime_type = prepared
+    try:
+        import base64
+        import httpx
+        from .ai import custom_provider_map
+        from .db import SessionLocal
+        from .repository import get_or_create_settings
+
+        db = SessionLocal()
+        try:
+            settings = get_or_create_settings(db)
+            providers = custom_provider_map(settings)
+            gemini_prov = providers.get("gemini")
+            if not gemini_prov:
+                return ""
+            raw_base = str(gemini_prov.get("baseUrl") or "http://127.0.0.1:8318/v1").strip().rstrip("/")
+            if raw_base.endswith("/v1"):
+                raw_base = raw_base[:-3]
+            api_key = str(gemini_prov.get("apiKey") or "").strip()
+            if not api_key:
+                return ""
+            light_model = str(getattr(settings, "light_model", "") or "").strip()
+        finally:
+            db.close()
+
+        candidates = list(
+            dict.fromkeys(
+                m
+                for m in [light_model, "gemini-3.8-flash-high", "gemini-3-flash", "gemini-2.5-flash"]
+                if m and "gemini" in m.lower()
+            )
+        )
+        if not candidates:
+            candidates = ["gemini-3.8-flash-high", "gemini-3-flash"]
+
+        b64_data = base64.b64encode(img_bytes).decode("ascii")
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": (
+                                "Извлеки весь текст и таблицы с этого изображения (фото/скриншот ТЗ, спецификации или списка закупок) "
+                                "максимально точно и полно. Сохраняй без искажений все номера закупок/извещений, суммы, ГОСТы, "
+                                "артикулы и технические характеристики. Таблицы выводи построчно через разделитель ` | `. "
+                                "Без вводных фраз и комментариев."
+                            )
+                        },
+                        {"inlineData": {"mimeType": mime_type, "data": b64_data}},
+                    ],
+                }
+            ],
+            "generationConfig": {"temperature": 0.0},
+        }
+        with httpx.Client(timeout=45.0) as client:
+            for model_id in candidates[:3]:
+                resp = client.post(
+                    f"{raw_base}/v1beta/models/{model_id}:generateContent",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                )
+                if resp.status_code >= 400:
+                    continue
+                data = resp.json()
+                cands = data.get("candidates") if isinstance(data, dict) else None
+                if not isinstance(cands, list) or not cands:
+                    continue
+                parts = ((cands[0].get("content") or {}).get("parts") or [])
+                out = "\n".join(str(p.get("text") or "") for p in parts if isinstance(p, dict)).strip()
+                if out:
+                    return out
+    except Exception:
+        return ""
+    return ""
+
+
 def _extract_image_ocr(path: Path) -> str:
     tesseract = shutil.which("tesseract")
-    if not tesseract:
-        return ""
-    result = subprocess.run(
-        [tesseract, str(path), "stdout", "-l", "rus+eng"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-    return result.stdout if result.returncode == 0 else ""
+    tess_text = ""
+    if tesseract:
+        ocr_target = path
+        tmp_dir: tempfile.TemporaryDirectory[str] | None = None
+        try:
+            from PIL import Image, ImageOps
+
+            Image.MAX_IMAGE_PIXELS = 45_000_000
+            with Image.open(path) as img:
+                normalized = ImageOps.exif_transpose(img)
+                if normalized.width < 1200 and normalized.width > 0:
+                    scale = min(2.5, 1400.0 / float(normalized.width))
+                    normalized = normalized.resize(
+                        (int(normalized.width * scale), max(1, int(normalized.height * scale))),
+                        Image.Resampling.LANCZOS,
+                    )
+                gray = ImageOps.grayscale(normalized)
+                enhanced = ImageOps.autocontrast(gray, cutoff=1)
+                tmp_dir = tempfile.TemporaryDirectory(prefix="aipoisk-img-ocr-")
+                prepped = Path(tmp_dir.name) / "prepped.png"
+                enhanced.save(prepped, format="PNG")
+                ocr_target = prepped
+        except Exception:
+            ocr_target = path
+        try:
+            result = subprocess.run(
+                [tesseract, str(ocr_target), "stdout", "-l", "rus+eng"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            tess_text = result.stdout if result.returncode == 0 else ""
+        finally:
+            if tmp_dir is not None:
+                tmp_dir.cleanup()
+
+    if _looks_like_weak_ocr(tess_text):
+        vision_text = _extract_image_vision_fallback(path)
+        if len(vision_text.strip()) > len(tess_text.strip()):
+            return vision_text
+    return tess_text
 
 
 def _extract_pdf_ocr(path: Path, max_pages: int) -> str:
@@ -693,9 +858,12 @@ def _extract_office_via_pdf_ocr(path: Path, max_pages: int = 12) -> str:
     if not shutil.which("libreoffice") or not shutil.which("tesseract") or max_pages <= 0:
         return ""
     with tempfile.TemporaryDirectory(prefix="aipoisk-doc-pdf-") as tmp:
+        lo_profile = Path(tmp) / "lo_profile"
+        lo_profile.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
             [
                 "libreoffice",
+                f"-env:UserInstallation={lo_profile.as_uri()}",
                 "--headless",
                 "--convert-to",
                 "pdf",
@@ -745,47 +913,150 @@ def _extract_archive(path: Path, options: dict, depth: int) -> tuple[str, str]:
         return "", "archive_no_text"
 
 
+MAX_ARCHIVE_MEMBER_BYTES = 80 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 200 * 1024 * 1024
+
+
 def _extract_zip_members(path: Path, destination: Path, max_files: int) -> list[Path]:
     extracted: list[Path] = []
+    dest_resolved = destination.resolve()
+    total_written = 0
     with zipfile.ZipFile(path) as archive:
         for member in archive.infolist():
             if max_files and len(extracted) >= max_files:
                 break
             if member.is_dir():
                 continue
-            filename = fix_archive_filename(member.filename)
-            safe_name = sanitize_filename(Path(filename).name)
+            # Reject POSIX symlinks stored in zip external_attr (S_IFLNK == 0o120000)
+            if ((member.external_attr >> 16) & 0o170000) == 0o120000:
+                continue
+            if member.file_size > MAX_ARCHIVE_MEMBER_BYTES or (total_written + member.file_size) > MAX_ARCHIVE_TOTAL_BYTES:
+                continue
+            filename = fix_archive_filename(member.filename).replace("\\", "/")
+            raw_parts = [
+                p for p in PurePosixPath(filename).parts
+                if p not in ("", "/", ".", "..")
+            ]
+            if not raw_parts:
+                continue
+            safe_dirs = [
+                re.sub(r"[^\wА-Яа-яЁё()№ ._-]+", "_", d, flags=re.UNICODE).strip(" ._") or "dir"
+                for d in raw_parts[:-1][:6]
+            ]
+            safe_name = sanitize_filename(raw_parts[-1])
             if not safe_name:
                 continue
-            target = destination / f"{len(extracted) + 1:03d}_{safe_name}"
-            target.write_bytes(archive.read(member))
+            rel_dir = Path(*safe_dirs) if safe_dirs else Path()
+            target_dir = (destination / rel_dir).resolve()
+            if not target_dir.is_relative_to(dest_resolved):
+                continue
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = (target_dir / safe_name).resolve()
+            if not target.is_relative_to(dest_resolved):
+                continue
+            if target.exists():
+                target = (target_dir / f"{len(extracted) + 1:03d}_{safe_name}").resolve()
+            member_written = 0
+            aborted = False
+            with archive.open(member) as src, target.open("wb") as dst:
+                while True:
+                    chunk = src.read(65536)
+                    if not chunk:
+                        break
+                    member_written += len(chunk)
+                    if member_written > MAX_ARCHIVE_MEMBER_BYTES or (total_written + member_written) > MAX_ARCHIVE_TOTAL_BYTES:
+                        aborted = True
+                        break
+                    dst.write(chunk)
+            if aborted:
+                target.unlink(missing_ok=True)
+                continue
+            total_written += member_written
             extracted.append(target)
     return extracted
 
 
+def _inspect_7z_uncompressed_totals(path: Path) -> tuple[int, int] | None:
+    """Return (max_member_bytes, total_uncompressed_bytes) using 7z listing before disk extraction."""
+    seven_z = shutil.which("7z")
+    if not seven_z:
+        return None
+    try:
+        listing = subprocess.run(
+            [seven_z, "l", "-slt", "-y", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        return None
+    if listing.returncode != 0:
+        return None
+    total_size = 0
+    max_member = 0
+    in_entries = False
+    for line in (listing.stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped == "----------":
+            in_entries = True
+            continue
+        if not in_entries:
+            continue
+        if stripped.startswith("Size = "):
+            raw_num = stripped[len("Size = ") :].strip()
+            if raw_num.isdigit():
+                val = int(raw_num)
+                total_size += val
+                if val > max_member:
+                    max_member = val
+    return max_member, total_size
+
+
 def _extract_external_archive(path: Path, destination: Path, max_files: int) -> list[Path]:
+    dest_resolved = destination.resolve()
+    totals = _inspect_7z_uncompressed_totals(path)
+    if totals is not None:
+        max_member, total_uncompressed = totals
+        if max_member > MAX_ARCHIVE_MEMBER_BYTES or total_uncompressed > MAX_ARCHIVE_TOTAL_BYTES:
+            return []
     if path.suffix.lower() == ".rar" and shutil.which("unrar"):
-        command = ["unrar", "x", "-o+", str(path), str(destination)]
+        command = ["unrar", "x", "-o+", "-ol-", str(path), str(destination)]
     elif shutil.which("7z"):
-        command = ["7z", "x", f"-o{destination}", "-y", str(path)]
+        command = ["7z", "x", f"-o{destination}", "-y", "-snl-", str(path)]
     else:
         return []
     result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=180)
     if result.returncode != 0:
         return []
-    files = [item for item in destination.rglob("*") if item.is_file()]
     clean_files: list[Path] = []
-    for item in files:
+    total_bytes = 0
+    for item in destination.rglob("*"):
+        if item.is_symlink():
+            item.unlink(missing_ok=True)
+            continue
+        try:
+            resolved_item = item.resolve()
+        except Exception:
+            continue
+        if not resolved_item.is_relative_to(dest_resolved) or not resolved_item.is_file():
+            continue
+        size = resolved_item.stat().st_size
+        if size > MAX_ARCHIVE_MEMBER_BYTES or (total_bytes + size) > MAX_ARCHIVE_TOTAL_BYTES:
+            resolved_item.unlink(missing_ok=True)
+            continue
+        total_bytes += size
         raw_name = item.name
         cleaned_name = fix_archive_filename(raw_name)
         if cleaned_name != raw_name:
             safe_name = sanitize_filename(cleaned_name)
-            new_target = item.parent / safe_name
-            try:
-                item.rename(new_target)
-                item = new_target
-            except Exception:
-                pass
+            new_target = (item.parent / safe_name).resolve()
+            if new_target.is_relative_to(dest_resolved):
+                try:
+                    item.rename(new_target)
+                    item = new_target
+                except Exception:
+                    pass
         clean_files.append(item)
     return clean_files[: max_files or len(clean_files)]
 
@@ -1010,8 +1281,9 @@ def is_substantive_tz_text(text: str) -> tuple[bool, str]:
     if has_signature and len(meaningful_chars) < 25:
         return False, "В документе отсутствуют требования к товару (обнаружен только штамп электронной подписи). Загрузите файл со спецификацией или текстом ТЗ."
 
-    if len(meaningful_chars) < 10:
-        return False, "В документе недостаточно данных для подбора (содержимое пусто или менее 10 значимых символов). Загрузите файл со спецификацией."
+    alpha_chars = re.sub(r"[\s\W_\d]+", "", stripped_placeholder, flags=re.UNICODE)
+    if len(meaningful_chars) < 4 or len(alpha_chars) < 2:
+        return False, "В документе недостаточно данных для подбора (содержимое пусто или слишком короткое). Загрузите файл со спецификацией или укажите наименование товара."
 
     return True, "ok"
 
@@ -1121,6 +1393,28 @@ def extract_smart_pdf_content(
                     break
         except Exception:
             continue
+
+    combined_alnum = re.sub(r"[\s\W_]+", "", "\n".join(pages_text), flags=re.UNICODE)
+    if len(combined_alnum) < 80 and shutil.which("tesseract"):
+        try:
+            with tempfile.TemporaryDirectory(prefix="aipoisk-smartpdf-ocr-") as tmp:
+                for pno in range(min(total_pages, 6)):
+                    try:
+                        page = doc[pno]
+                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                        img_path = Path(tmp) / f"smart-page-{pno + 1}.png"
+                        pix.save(str(img_path))
+                        ocr_txt = _extract_image_ocr(img_path).strip()
+                        if ocr_txt:
+                            block = f"--- [OCR СТРАНИЦА ПАСПОРТА/КАТАЛОГА {pno + 1}] ---\n{ocr_txt}"
+                            pages_text.append(block)
+                            current_length += len(block)
+                            if current_length >= max_chars:
+                                break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
 
     doc.close()
     return "\n".join(pages_text)

@@ -98,26 +98,88 @@ export default function LegalPage() {
             </Link>
           </div>
 
-          {/* Contacts */}
-          <div className="p-8 rounded-3xl bg-white border-2 border-slate-200 space-y-6 shadow-2xs">
-            <h2 className="text-2xl font-black text-slate-900">Каналы связи и поддержка</h2>
+          {/* Contacts & Requisites Grid */}
+          <div className="grid md:grid-cols-2 gap-6 mb-12">
+            {/* Requisites Block */}
+            <div className="p-8 rounded-3xl bg-white border-2 border-slate-200 space-y-6 shadow-2xs">
+              <h2 className="text-xl font-black text-slate-900">Реквизиты оператора сервиса</h2>
+              <div className="text-xs text-slate-700 space-y-2.5">
+                <div>
+                  <span className="text-slate-400 block uppercase font-bold text-[10px]">Наименование</span>
+                  <span className="font-bold text-slate-900">Индивидуальный предприниматель Груздев Игорь Вячеславович</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <span className="text-slate-400 block uppercase font-bold text-[10px]">ИНН</span>
+                    <span className="font-mono font-bold text-slate-900">352516048881</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block uppercase font-bold text-[10px]">ОГРНИП</span>
+                    <span className="font-mono font-bold text-slate-900">323352500038991</span>
+                  </div>
+                </div>
+                <div className="pt-1">
+                  <span className="text-slate-400 block uppercase font-bold text-[10px]">Адрес регистрации</span>
+                  <span className="text-slate-700">160541, Россия, Вологодская область, Вологодский р-н, д. Тарасово, д. 3</span>
+                </div>
+                <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                  <span className="text-slate-400 block uppercase font-bold text-[10px]">Банковские реквизиты</span>
+                  <div className="text-[11px] space-y-1 text-slate-600">
+                    <div>Расчётный счёт: <b className="font-mono text-slate-900">40802810217430000342</b></div>
+                    <div>Банк: АО «АЛЬФА-БАНК»</div>
+                    <div>БИК: <b className="font-mono text-slate-900">044525593</b></div>
+                    <div>Корр. счёт: <b className="font-mono text-slate-900">30101810200000000593</b></div>
+                  </div>
+                </div>
+              </div>
+            </div>
 
-            <div className="text-xs text-slate-700 space-y-4 max-w-md">
+            {/* Contacts */}
+            <div className="p-8 rounded-3xl bg-white border-2 border-slate-200 space-y-6 shadow-2xs">
+              <h2 className="text-xl font-black text-slate-900">Каналы связи и поддержка</h2>
+
+              <div className="text-xs text-slate-700 space-y-4 max-w-md">
+                <div>
+                  <span className="text-slate-400 block uppercase font-bold text-[10px]">Поддержка в Telegram</span>
+                  <PublicSiteLink channel="telegram" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
+                </div>
+                <div>
+                  <span className="text-slate-400 block uppercase font-bold text-[10px]">Telegram-бот сервиса</span>
+                  <PublicSiteLink channel="bot" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
+                </div>
+                <div>
+                  <span className="text-slate-400 block uppercase font-bold text-[10px]">Телефон горячей линии</span>
+                  <PublicSiteLink channel="phone" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
+                </div>
+                <div>
+                  <span className="text-slate-400 block uppercase font-bold text-[10px]">Электронная почта</span>
+                  <PublicSiteLink channel="email" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Delivery, Payment & Refund Terms */}
+          <div className="p-8 rounded-3xl bg-white border-2 border-slate-200 space-y-6 shadow-2xs">
+            <h2 className="text-xl font-black text-slate-900">Порядок оплаты, получения услуг и возвратов</h2>
+            <div className="grid sm:grid-cols-3 gap-6 text-xs text-slate-600 leading-relaxed">
               <div>
-                <span className="text-slate-400 block uppercase font-bold text-[10px]">Поддержка в Telegram</span>
-                <PublicSiteLink channel="telegram" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
+                <strong className="text-slate-900 font-bold block mb-1.5 text-sm">Способ получения услуг</strong>
+                <p>
+                  Сервис TenderLex предоставляет онлайн-услуги в цифровом виде. Результаты обработки (отчёты по поставщикам, анализ закупочной документации) формируются программным комплексом моментально и доставляются в личном кабинете на сайте, в Telegram-боте и по электронной почте. Физическая доставка не требуется.
+                </p>
               </div>
               <div>
-                <span className="text-slate-400 block uppercase font-bold text-[10px]">Telegram-бот сервиса</span>
-                <PublicSiteLink channel="bot" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
+                <strong className="text-slate-900 font-bold block mb-1.5 text-sm">Способы оплаты</strong>
+                <p>
+                  Оплата тарифных планов и пополнение баланса производятся в российских рублях онлайн с помощью банковских карт (МИР, Visa, MasterCard), Системы быстрых платежей (СБП), либо по безналичному расчету по выставленному счёту для юридических лиц и индивидуальных предпринимателей.
+                </p>
               </div>
               <div>
-                <span className="text-slate-400 block uppercase font-bold text-[10px]">Телефон горячей линии</span>
-                <PublicSiteLink channel="phone" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
-              </div>
-              <div>
-                <span className="text-slate-400 block uppercase font-bold text-[10px]">Электронная почта</span>
-                <PublicSiteLink channel="email" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
+                <strong className="text-slate-900 font-bold block mb-1.5 text-sm">Условия возврата средств</strong>
+                <p>
+                  В случае технического сбоя или неоказания оплаченной услуги средства возвращаются в полном объёме на баланс личного кабинета либо по письменному заявлению пользователя на банковскую карту или расчётный счёт, с которого была произведена оплата.
+                </p>
               </div>
             </div>
           </div>

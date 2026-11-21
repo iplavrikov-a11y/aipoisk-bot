@@ -43,7 +43,7 @@ class SystemSettings(Base):
     logistics_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     trial_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     trial_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=2)
-    yandex_search_price_per_request: Mapped[float] = mapped_column(Float, default=0.04)
+    yandex_search_price_per_request: Mapped[float] = mapped_column(Float, default=0.0305)
     trial_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=2)
     trial_file_limit: Mapped[int] = mapped_column(Integer, default=10)
     trial_balance_rub: Mapped[int] = mapped_column(Integer, default=0)
@@ -87,6 +87,7 @@ class SystemSettings(Base):
     yookassa_shop_id: Mapped[str] = mapped_column(String(255), default="")
     yookassa_secret_key: Mapped[str] = mapped_column(Text, default="")
     yookassa_return_url: Mapped[str] = mapped_column(String(255), default="")
+    yookassa_send_receipt: Mapped[bool] = mapped_column(Boolean, default=False)
     price_monitoring_default_price_kopeks: Mapped[int] = mapped_column(Integer, default=5000)
     price_monitoring_max_suppliers: Mapped[int] = mapped_column(Integer, default=3)
     price_monitoring_max_positions: Mapped[int] = mapped_column(Integer, default=1000)
@@ -95,8 +96,24 @@ class SystemSettings(Base):
     price_monitoring_filter_marketplaces: Mapped[bool] = mapped_column(Boolean, default=True)
     price_monitoring_filter_foreign: Mapped[bool] = mapped_column(Boolean, default=True)
     price_monitoring_max_variation_pct: Mapped[float] = mapped_column(Float, default=33.0)
+    price_monitoring_access_mode: Mapped[str] = mapped_column(String(32), default="all")
+    batch_report_default_price_kopeks: Mapped[int] = mapped_column(Integer, default=3000)
+    batch_report_access_mode: Mapped[str] = mapped_column(String(32), default="all")
+    batch_report_max_items: Mapped[int] = mapped_column(Integer, default=30)
+    batch_report_default_prompt: Mapped[str] = mapped_column(Text, default="")
     geo_radius_search_enabled_global: Mapped[bool] = mapped_column(Boolean, default=False)
     geo_radius_surcharge_pct: Mapped[float] = mapped_column(Float, default=30.0)
+    support_telegram_group_id: Mapped[str] = mapped_column(String(64), default="")
+    support_admin_telegram_ids: Mapped[str] = mapped_column(Text, default="")
+    support_mirror_admin_replies_to_bot: Mapped[bool] = mapped_column(Boolean, default=True)
+    support_work_hours_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    support_work_hours_start: Mapped[str] = mapped_column(String(8), default="09:00")
+    support_work_hours_end: Mapped[str] = mapped_column(String(8), default="20:00")
+    support_timezone_offset: Mapped[int] = mapped_column(Integer, default=3)
+    support_quiet_night_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
+    support_ai_antispam_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    support_ai_auto_reply_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    registration_block_disposable_email: Mapped[bool] = mapped_column(Boolean, default=True)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
@@ -112,7 +129,7 @@ class SystemSettings(Base):
             "allow_partial_supplier_reports": self.allow_partial_supplier_reports,
             "logistics_enabled": self.logistics_enabled,
             "geo_radius_search_enabled_global": getattr(self, "geo_radius_search_enabled_global", False),
-            "geo_radius_surcharge_pct": getattr(self, "geo_radius_surcharge_pct", 30.0) or 30.0,
+            "geo_radius_surcharge_pct": configured_geo_surcharge_pct(self),
             "trial_enabled": self.trial_enabled,
             "trial_supplier_search_limit": self.trial_supplier_search_limit,
             "trial_procurement_report_limit": self.trial_procurement_report_limit,
@@ -155,6 +172,7 @@ class SystemSettings(Base):
             "yookassa_shop_id": self.yookassa_shop_id,
             "yookassa_secret_key_set": bool(self.yookassa_secret_key),
             "yookassa_return_url": self.yookassa_return_url,
+            "yookassa_send_receipt": bool(self.yookassa_send_receipt),
             "price_monitoring_default_price_kopeks": self.price_monitoring_default_price_kopeks,
             "price_monitoring_max_suppliers": self.price_monitoring_max_suppliers,
             "price_monitoring_max_positions": self.price_monitoring_max_positions,
@@ -163,6 +181,22 @@ class SystemSettings(Base):
             "price_monitoring_filter_marketplaces": self.price_monitoring_filter_marketplaces,
             "price_monitoring_filter_foreign": getattr(self, "price_monitoring_filter_foreign", True),
             "price_monitoring_max_variation_pct": getattr(self, "price_monitoring_max_variation_pct", 33.0),
+            "price_monitoring_access_mode": getattr(self, "price_monitoring_access_mode", "all") or "all",
+            "batch_report_default_price_kopeks": int(getattr(self, "batch_report_default_price_kopeks", 3000) or 3000),
+            "batch_report_access_mode": getattr(self, "batch_report_access_mode", "all") or "all",
+            "batch_report_max_items": int(getattr(self, "batch_report_max_items", 30) or 30),
+            "batch_report_default_prompt": str(getattr(self, "batch_report_default_prompt", "") or ""),
+            "support_telegram_group_id": getattr(self, "support_telegram_group_id", "") or "",
+            "support_admin_telegram_ids": getattr(self, "support_admin_telegram_ids", "") or "",
+            "support_mirror_admin_replies_to_bot": bool(getattr(self, "support_mirror_admin_replies_to_bot", True)),
+            "support_work_hours_enabled": bool(getattr(self, "support_work_hours_enabled", True)),
+            "support_work_hours_start": getattr(self, "support_work_hours_start", "09:00") or "09:00",
+            "support_work_hours_end": getattr(self, "support_work_hours_end", "20:00") or "20:00",
+            "support_timezone_offset": int(getattr(self, "support_timezone_offset", 3) or 3),
+            "support_quiet_night_notifications": bool(getattr(self, "support_quiet_night_notifications", True)),
+            "support_ai_antispam_enabled": bool(getattr(self, "support_ai_antispam_enabled", True)),
+            "support_ai_auto_reply_enabled": bool(getattr(self, "support_ai_auto_reply_enabled", True)),
+            "registration_block_disposable_email": bool(getattr(self, "registration_block_disposable_email", True)),
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:
@@ -178,6 +212,11 @@ class SystemSettings(Base):
             if str(item.get("apiKey") or "").strip() and str(item.get("baseUrl") or "").strip():
                 return True
         return False
+
+
+def configured_geo_surcharge_pct(settings: SystemSettings | None) -> float:
+    value = getattr(settings, "geo_radius_surcharge_pct", None)
+    return 30.0 if value is None else float(value)
 
 
 class Client(Base):
@@ -196,6 +235,10 @@ class Client(Base):
     allowed_exact_product: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_price_monitoring: Mapped[bool] = mapped_column(Boolean, default=False)
     allowed_geo_radius: Mapped[bool] = mapped_column(Boolean, default=False)
+    allowed_custom_batch_report: Mapped[bool] = mapped_column(Boolean, default=False)
+    custom_report_separate_tab: Mapped[bool] = mapped_column(Boolean, default=False)
+    custom_report_prompt: Mapped[str] = mapped_column(Text, default="")
+    direct_payment_only: Mapped[bool] = mapped_column(Boolean, default=False)
     monthly_job_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=0)
@@ -212,6 +255,7 @@ class Client(Base):
     referral_reward_granted: Mapped[bool] = mapped_column(Boolean, default=False)
     referral_code: Mapped[str] = mapped_column(String(32), default="", index=True)
     registration_ip: Mapped[str] = mapped_column(String(64), default="")
+    phone: Mapped[str] = mapped_column(String(32), default="")
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
@@ -237,7 +281,7 @@ class ClientTelegramAccount(Base):
     __tablename__ = "client_telegram_accounts"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
     telegram_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     username: Mapped[str] = mapped_column(String(255), default="")
     name: Mapped[str] = mapped_column(String(255), default="")
@@ -258,6 +302,8 @@ class WebUser(Base):
     yandex_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(Text, default="")
     name: Mapped[str] = mapped_column(String(255), default="")
+    phone: Mapped[str] = mapped_column(String(32), default="")
+    telegram_username: Mapped[str] = mapped_column(String(64), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     marketing_unsubscribed: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -268,6 +314,10 @@ class WebUser(Base):
     client: Mapped[Client] = relationship(back_populates="web_users")
     sessions: Mapped[list["WebSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     password_reset_requests: Mapped[list["WebPasswordResetRequest"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    password_reset_tokens: Mapped[list["WebPasswordResetToken"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )
@@ -294,6 +344,19 @@ class WebSession(Base):
     user: Mapped[WebUser] = relationship(back_populates="sessions")
 
 
+class SeoEntry(Base):
+    __tablename__ = "seo_entries"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("web_users.id", ondelete="CASCADE"), unique=True, nullable=True)
+    source: Mapped[str] = mapped_column(String(12))
+    landing: Mapped[str] = mapped_column(String(200))
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    registered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_task_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_result_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class WebPasswordResetRequest(Base):
     __tablename__ = "web_password_reset_requests"
 
@@ -310,6 +373,22 @@ class WebPasswordResetRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     user: Mapped[WebUser] = relationship(back_populates="password_reset_requests")
+
+
+class WebPasswordResetToken(Base):
+    __tablename__ = "web_password_reset_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("web_users.id"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    requested_ip: Mapped[str] = mapped_column(String(80), default="")
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+    user: Mapped[WebUser] = relationship(back_populates="password_reset_tokens")
 
 
 class WebEmailVerificationToken(Base):
@@ -384,7 +463,7 @@ class UserJourneyEvent(Base):
     __tablename__ = "user_journey_events"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
+    client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), nullable=True, index=True)
     channel: Mapped[str] = mapped_column(String(20), index=True)
     actor_ref: Mapped[str] = mapped_column(String(64), default="")
     event_name: Mapped[str] = mapped_column(String(80), index=True)
@@ -420,8 +499,10 @@ class Job(Base):
     supplier_search_policy: Mapped[str] = mapped_column(String(40), default="normal")
     supplier_search_run_type: Mapped[str] = mapped_column(String(40), default="initial")
     multi_item_mode: Mapped[str] = mapped_column(String(40), default="balanced")
+    position_selection_json: Mapped[str] = mapped_column(Text, default="")
     delivery_city: Mapped[str] = mapped_column(String(255), default="")
     geo_radius_km: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    geo_scope: Mapped[str] = mapped_column(String(32), default="ru")
     filter_marketplaces: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     filter_foreign: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     max_suppliers: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
@@ -538,7 +619,7 @@ class JobFile(Base):
     job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), index=True)
     original_filename: Mapped[str] = mapped_column(Text)
     stored_path: Mapped[str] = mapped_column(Text)
-    parse_status: Mapped[str] = mapped_column(String(40), default="pending")
+    parse_status: Mapped[str] = mapped_column(String(255), default="pending")
     extracted_chars: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
@@ -554,7 +635,7 @@ class JobSource(Base):
     kind: Mapped[str] = mapped_column(String(40), default="procurement_url")
     label: Mapped[str] = mapped_column(Text, default="")
     value: Mapped[str] = mapped_column(Text, default="")
-    parse_status: Mapped[str] = mapped_column(String(40), default="pending")
+    parse_status: Mapped[str] = mapped_column(String(255), default="pending")
     context_path: Mapped[str] = mapped_column(Text, default="")
     extracted_chars: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(Text, default="")
@@ -616,14 +697,25 @@ class ApiKey(Base):
     allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_exact_product: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_price_monitoring: Mapped[bool] = mapped_column(Boolean, default=False)
 
     quota_supplier_search: Mapped[int] = mapped_column(Integer, default=10)
     quota_exact_product: Mapped[int] = mapped_column(Integer, default=10)
     quota_procurement_report: Mapped[int] = mapped_column(Integer, default=10)
+    quota_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
 
     spent_supplier_search: Mapped[int] = mapped_column(Integer, default=0)
     spent_exact_product: Mapped[int] = mapped_column(Integer, default=0)
     spent_procurement_report: Mapped[int] = mapped_column(Integer, default=0)
+    spent_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Standalone keys reserve a slot before a synchronous request starts.  Keeping
+    # this separately from spent counters prevents concurrent requests from both
+    # passing the same quota check.
+    reserved_supplier_search: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_exact_product: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_procurement_report: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_price_monitoring: Mapped[int] = mapped_column(Integer, default=0)
 
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=30)
     notes: Mapped[str] = mapped_column(Text, default="")
@@ -633,6 +725,33 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     client: Mapped[Client | None] = relationship(back_populates="api_keys", foreign_keys=[client_id])
+
+
+class ApiOperation(Base):
+    """Persistent retry identity; deliberately stores no market result payload."""
+    __tablename__ = "api_operations"
+    __table_args__ = (UniqueConstraint("api_key_id", "idempotency_key", name="uq_api_operation_key"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    service: Mapped[str] = mapped_column(String(64))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="processing")
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
+    # Batch API requests retain only their own job identities, never market data.
+    job_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class ApiRateLimitEvent(Base):
+    """Durable sliding-window event used across all API worker processes."""
+    __tablename__ = "api_rate_limit_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
 
 
 class PartnerPayoutRequest(Base):
@@ -703,4 +822,232 @@ def parse_json_list(value: str) -> list[dict]:
 def parse_json_dict(value: str) -> dict:
     res = parse_json_safely(value)
     return res if isinstance(res, dict) else {}
+
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    invoice_number: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    client_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc, onupdate=now_utc)
+
+    # Financials
+    amount_rub: Mapped[int] = mapped_column(Integer, nullable=False)
+    bonus_rub: Mapped[int] = mapped_column(Integer, default=0)
+    total_credit_rub: Mapped[int] = mapped_column(Integer, default=0)
+    tariff_name: Mapped[str] = mapped_column(String(255), default="Пополнение баланса")
+    service_name: Mapped[str] = mapped_column(Text, default="Предоставление права использования сервиса TenderLex")
+
+    # Buyer Requisites
+    buyer_inn: Mapped[str] = mapped_column(String(20), default="")
+    buyer_kpp: Mapped[str] = mapped_column(String(20), default="")
+    buyer_name: Mapped[str] = mapped_column(String(255), default="")
+    buyer_address: Mapped[str] = mapped_column(Text, default="")
+    buyer_email: Mapped[str] = mapped_column(String(255), default="")
+    buyer_phone: Mapped[str] = mapped_column(String(32), default="")
+    buyer_telegram: Mapped[str] = mapped_column(String(64), default="")
+
+    # Status: issued, paid, cancelled
+    status: Mapped[str] = mapped_column(String(32), default="issued")
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    settlement_mode: Mapped[str] = mapped_column(String(32), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    proof_path: Mapped[str] = mapped_column(Text, default="")
+    proof_original_name: Mapped[str] = mapped_column(String(255), default="")
+    proof_content_type: Mapped[str] = mapped_column(String(80), default="")
+    proof_size: Mapped[int] = mapped_column(Integer, default=0)
+    proof_submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "invoice_number": self.invoice_number,
+            "client_id": self.client_id,
+            "amount_rub": self.amount_rub,
+            "bonus_rub": self.bonus_rub,
+            "total_credit_rub": self.total_credit_rub,
+            "tariff_name": self.tariff_name,
+            "service_name": self.service_name,
+            "buyer_inn": self.buyer_inn,
+            "buyer_kpp": self.buyer_kpp,
+            "buyer_name": self.buyer_name,
+            "buyer_address": self.buyer_address,
+            "buyer_email": self.buyer_email,
+            "buyer_phone": getattr(self, "buyer_phone", "") or "",
+            "buyer_telegram": getattr(self, "buyer_telegram", "") or "",
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "paid_at": self.paid_at.isoformat() if self.paid_at else None,
+            "settlement_mode": self.settlement_mode or "",
+            "proof_submitted_at": self.proof_submitted_at.isoformat() if self.proof_submitted_at else None,
+            "proof_original_name": self.proof_original_name,
+            "proof_content_type": self.proof_content_type,
+            "proof_size": self.proof_size,
+            "proof_status": "submitted" if self.proof_path else "none",
+        }
+
+
+class YooKassaPayment(Base):
+    __tablename__ = "yookassa_payments"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    payment_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("web_users.id"), nullable=True, default=None, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    amount_rub: Mapped[int] = mapped_column(Integer, nullable=False)
+    bonus_rub: Mapped[int] = mapped_column(Integer, default=0)
+    total_credit_rub: Mapped[int] = mapped_column(Integer, default=0)
+    package_name: Mapped[str] = mapped_column(String(120), default="")
+    confirmation_url: Mapped[str] = mapped_column(Text, default="")
+    payment_method_type: Mapped[str] = mapped_column(String(40), default="")
+    phone: Mapped[str] = mapped_column(String(32), default="")
+    telegram_username: Mapped[str] = mapped_column(String(64), default="")
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+    client: Mapped[Client] = relationship("Client")
+    user: Mapped[WebUser | None] = relationship("WebUser", foreign_keys=[user_id])
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "payment_id": self.payment_id,
+            "client_id": self.client_id,
+            "user_id": self.user_id,
+            "status": self.status,
+            "amount_rub": self.amount_rub,
+            "bonus_rub": self.bonus_rub,
+            "total_credit_rub": self.total_credit_rub,
+            "package_name": self.package_name,
+            "confirmation_url": self.confirmation_url,
+            "payment_method_type": self.payment_method_type,
+            "phone": getattr(self, "phone", "") or "",
+            "telegram_username": getattr(self, "telegram_username", "") or "",
+            "paid_at": self.paid_at.isoformat() if self.paid_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class JobChatMessage(Base):
+    __tablename__ = "job_chat_messages"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    guest_session_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    job_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    sender_role: Mapped[str] = mapped_column(String(20), default="admin", index=True)  # "admin" | "client"
+    channel: Mapped[str] = mapped_column(String(24), default="web")
+    message: Mapped[str] = mapped_column(Text, default="")
+    attachments_json: Mapped[str] = mapped_column(Text, default="[]")
+    is_read_by_client: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_read_by_admin: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+class SupportGuestSession(Base):
+    __tablename__ = "support_guest_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    visitor_name: Mapped[str] = mapped_column(String(120), default="Гость сайта")
+    visitor_contact: Mapped[str] = mapped_column(String(255), default="")
+    source_url: Mapped[str] = mapped_column(String(512), default="")
+    client_ip: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(24), default="open", index=True)  # "open" | "closed"
+    linked_client_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, index=True)
+
+
+class SupportDialogState(Base):
+    __tablename__ = "support_dialog_states"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    dialog_key: Mapped[str] = mapped_column(String(96), unique=True, index=True)  # client:<id> | guest:<sid>
+    client_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    guest_session_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    telegram_group_id: Mapped[str] = mapped_column(String(64), default="")
+    telegram_thread_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    topic_title: Mapped[str] = mapped_column(String(160), default="")
+    status: Mapped[str] = mapped_column(String(24), default="open", index=True)
+    last_channel: Mapped[str] = mapped_column(String(24), default="web")
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class SupportTelegramMessageMap(Base):
+    __tablename__ = "support_telegram_message_map"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tg_chat_id: Mapped[str] = mapped_column(String(64), index=True)
+    tg_message_id: Mapped[int] = mapped_column(Integer, index=True)
+    tg_thread_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    dialog_key: Mapped[str] = mapped_column(String(96), default="", index=True)
+    client_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    guest_session_id: Mapped[str] = mapped_column(String(64), default="")
+    job_id: Mapped[str] = mapped_column(String(32), default="")
+    chat_message_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    direction: Mapped[str] = mapped_column(String(32), default="admin_dm_card")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+class SupportTelegramSession(Base):
+    __tablename__ = "support_telegram_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tg_user_id: Mapped[str] = mapped_column(String(64), index=True)
+    role_scope: Mapped[str] = mapped_column(String(24), default="admin_reply", index=True)  # admin_reply | client_dm
+    dialog_key: Mapped[str] = mapped_column(String(96), default="", index=True)
+    client_id: Mapped[str] = mapped_column(String(80), default="")
+    guest_session_id: Mapped[str] = mapped_column(String(64), default="")
+    job_id: Mapped[str] = mapped_column(String(32), default="")
+    dialog_label: Mapped[str] = mapped_column(String(160), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class SupportBlockedActor(Base):
+    """Blocked support actors (guest session, IP, client account, or Telegram user)."""
+
+    __tablename__ = "support_blocked_actors"
+    __table_args__ = (
+        UniqueConstraint("actor_type", "actor_value", name="uq_support_blocked_actor_type_value"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    actor_type: Mapped[str] = mapped_column(String(24), index=True)  # guest_session | ip | client | telegram
+    actor_value: Mapped[str] = mapped_column(String(128), index=True)
+    dialog_key: Mapped[str] = mapped_column(String(128), default="", index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    blocked_by: Mapped[str] = mapped_column(String(64), default="admin")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class SecurityEvent(Base):
+    """Audit trail of blocked attacks, spam, probing, and AI-filtered messages."""
+
+    __tablename__ = "security_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    event_type: Mapped[str] = mapped_column(String(40), index=True)  # registration_attack | chat_spam | chat_probe | rate_limit | auto_blocked | ai_filtered
+    severity: Mapped[str] = mapped_column(String(16), default="medium", index=True)  # low | medium | high
+    ip_address: Mapped[str] = mapped_column(String(80), default="", index=True)
+    actor_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    user_agent: Mapped[str] = mapped_column(String(500), default="")
+    payload_preview: Mapped[str] = mapped_column(Text, default="")
+    reason: Mapped[str] = mapped_column(String(255), default="")
+    action_taken: Mapped[str] = mapped_column(String(40), default="blocked")  # blocked | silent_drop | ai_replied | logged
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+
+
 

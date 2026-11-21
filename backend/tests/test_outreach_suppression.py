@@ -145,7 +145,7 @@ async def test_marketing_send_adds_visible_signed_footer_to_relay_payload(monkey
     assert (ok, error) == (True, "")
     assert "https://tenderlex.ru/api/outreach/unsubscribe?token=signed" in payloads[0]["text"]
     assert "https://tenderlex.ru/api/outreach/unsubscribe?token=signed" in payloads[0]["html"]
-    assert "List-Unsubscribe-Post" not in payloads[0]["headers"]
+    assert payloads[0]["headers"].get("List-Unsubscribe-Post") == "List-Unsubscribe=One-Click"
 
 
 @pytest.mark.asyncio

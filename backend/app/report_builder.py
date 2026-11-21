@@ -75,6 +75,7 @@ SUPPLIER_HEADERS = [
     "Телефоны",
     "Email",
     "Комментарий",
+    "Город и расстояние",
     "Реестр Минпромторга",
 ]
 SPREADSHEETML_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -115,6 +116,10 @@ QUOTE_REQUEST_INTRO = (
     "Просим выставить счёт или направить коммерческое предложение по указанным ниже товарам. "
     "В предложении просим указать цену, срок поставки, условия оплаты, документы качества и условия доставки. "
     "Допускается и приветствуется предоставление коммерческого предложения как на весь перечень, так и на отдельные товарные позиции (попозиционная поставка)."
+)
+SERVICE_QUOTE_REQUEST_INTRO = (
+    "Просим направить коммерческое предложение на оказание указанных ниже услуг / выполнение работ. "
+    "В предложении просим указать стоимость, сроки и порядок выполнения, условия оплаты и наличие необходимых допусков/лицензий."
 )
 
 
@@ -415,8 +420,26 @@ def _populate_supplier_sheet(
         phone = clean_xml_compatible(str(row.get("phone") or "").strip())
         email = clean_xml_compatible(str(row.get("email") or "").strip())
         comment = clean_xml_compatible(_client_supplier_comment(row, is_multi_item=is_multi_item))
+        location_display = clean_xml_compatible(_format_supplier_location(row))
 
-        ws.append([company, site_display, phone, email, comment, reg_text])
+        def _safe_xlsx_val(v: object) -> str:
+            s = str(v if v is not None else "")
+            stripped = s.lstrip(" \t\r\n")
+            if stripped.startswith(("=", "+", "-", "@")):
+                if re.match(r"^\+\d", stripped) and not any(ch in stripped for ch in ("=", "|", "!")):
+                    return s
+                return "'" + s
+            return s
+
+        ws.append([
+            _safe_xlsx_val(company),
+            _safe_xlsx_val(site_display),
+            _safe_xlsx_val(phone),
+            _safe_xlsx_val(email),
+            _safe_xlsx_val(comment),
+            _safe_xlsx_val(location_display),
+            _safe_xlsx_val(reg_text),
+        ])
 
         # Col 1: Компания
         c1 = ws.cell(row=row_idx, column=1)
@@ -427,7 +450,7 @@ def _populate_supplier_sheet(
 
         # Col 2: Сайт
         c2 = ws.cell(row=row_idx, column=2)
-        if site_raw:
+        if site_raw and str(site_raw).strip().lower().startswith(("http://", "https://")):
             c2.hyperlink = site_raw
             c2.font = Font(name="Calibri", size=10, color="0284C7", underline="single")
         else:
@@ -438,6 +461,7 @@ def _populate_supplier_sheet(
 
         # Col 3: Телефоны
         c3 = ws.cell(row=row_idx, column=3)
+        c3.data_type = "s"
         c3.font = Font(name="Calibri", size=10, color="1E293B")
         c3.fill = base_bg
         c3.border = thin_border
@@ -457,14 +481,22 @@ def _populate_supplier_sheet(
         c5.border = thin_border
         c5.alignment = Alignment(wrap_text=True, vertical="top")
 
-        # Col 6: Реестр Минпромторга
+        # Col 6: Город и расстояние
         c6 = ws.cell(row=row_idx, column=6)
-        c6.font = reg_font
-        c6.fill = reg_fill
+        loc_color = "065F46" if row.get("supplier_distance_within_radius") is True else ("991B1B" if row.get("supplier_distance_within_radius") is False else "475569")
+        c6.font = Font(name="Calibri", size=10, color=loc_color)
+        c6.fill = base_bg
         c6.border = thin_border
-        c6.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+        c6.alignment = Alignment(wrap_text=True, vertical="top")
 
-        ws.row_dimensions[row_idx].height = _calc_supplier_row_h([(company, 32), (comment, 60)], min_h=24)
+        # Col 7: Реестр Минпромторга
+        c7 = ws.cell(row=row_idx, column=7)
+        c7.font = reg_font
+        c7.fill = reg_fill
+        c7.border = thin_border
+        c7.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+
+        ws.row_dimensions[row_idx].height = _calc_supplier_row_h([(company, 32), (comment, 52), (location_display, 26)], min_h=24)
 
     if is_multi_item and sections:
         ws.sheet_properties.outlinePr.summaryBelow = False
@@ -474,10 +506,14 @@ def _populate_supplier_sheet(
         for sec_idx, (sec_name, sec_rows) in enumerate(sections, start=1):
             sec_header_row = current_row
             ws.append([None] * len(SUPPLIER_HEADERS))
+            is_unassigned_sec = sec_name == UNASSIGNED_SUPPLIER_SECTION
             if sec_rows:
                 icon = "▶" if should_collapse else "▼"
                 action_tip = "нажмите [+] слева для раскрытия" if should_collapse else "нажмите [-] слева для сворачивания"
-                sec_title = f"{icon} Позиция {sec_idx}: {sec_name} (найдено поставщиков: {len(sec_rows)} · {action_tip})"
+                if is_unassigned_sec:
+                    sec_title = f"{icon} {sec_name} (найдено поставщиков: {len(sec_rows)} · {action_tip})"
+                else:
+                    sec_title = f"{icon} Позиция {sec_idx}: {sec_name} (найдено поставщиков: {len(sec_rows)} · {action_tip})"
             else:
                 sec_title = f"▷ Позиция {sec_idx}: {sec_name} (поставщиков не найдено)"
             _style_category_header_row(ws, sec_header_row, sec_title)
@@ -509,9 +545,12 @@ def _populate_supplier_sheet(
         for row_idx, row in enumerate(rows, start=data_start_row):
             _render_row(row_idx, row, is_even=(row_idx % 2 == 0))
 
-    widths = [32, 35, 22, 26, 60, 26]
+    widths = [32, 35, 22, 26, 52, 26, 24]
     for column, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(column)].width = width
+
+
+UNASSIGNED_SUPPLIER_SECTION = "Общие поставщики по закупке (без привязки к отдельной позиции)"
 
 
 def _build_item_specs(profile_items: list[dict]) -> list[dict]:
@@ -587,8 +626,6 @@ def _match_supplier_to_item_ids(r: dict, item_specs: list[dict]) -> set[str]:
             if score >= threshold:
                 matched.add(it_id)
 
-    if not matched and item_specs:
-        matched.add(item_specs[0]["id"])
     return matched
 
 
@@ -620,8 +657,13 @@ def write_supplier_xlsx(
         item_specs = _build_item_specs(profile_items)
         # Precompute row matches once per row O(M * N) instead of O(N^2 * M)
         spec_id_to_rows: dict[str, list[dict]] = {spec["id"]: [] for spec in item_specs}
+        unassigned_rows: list[dict] = []
         for r in rows:
-            for matched_id in _match_supplier_to_item_ids(r, item_specs):
+            matched_ids = _match_supplier_to_item_ids(r, item_specs)
+            if not matched_ids:
+                unassigned_rows.append(r)
+                continue
+            for matched_id in matched_ids:
                 if matched_id in spec_id_to_rows:
                     spec_id_to_rows[matched_id].append(r)
 
@@ -632,6 +674,8 @@ def write_supplier_xlsx(
             item_sections.append((it_name, matched_rows))
             if not matched_rows:
                 unmatched_item_names.append(it_name)
+        if unassigned_rows:
+            item_sections.append((UNASSIGNED_SUPPLIER_SECTION, unassigned_rows))
     elif not profile_items:
         raw_distinct: list[str] = []
         for r in rows:
@@ -656,12 +700,17 @@ def write_supplier_xlsx(
         if len(distinct_items) > 1:
             is_multi = True
             item_to_rows: dict[str, list[dict]] = {item: [] for item in distinct_items}
+            unassigned_rows = []
             for r in rows:
                 mapped = cluster_map.get(_clean_comment_text(r.get("procurement_item") or ""))
                 if mapped in item_to_rows:
                     item_to_rows[mapped].append(r)
+                else:
+                    unassigned_rows.append(r)
             for item in distinct_items:
                 item_sections.append((item, item_to_rows[item]))
+            if unassigned_rows:
+                item_sections.append((UNASSIGNED_SUPPLIER_SECTION, unassigned_rows))
 
     # Single unified sheet with collapsible row outline structure (+ / -)
     ws = wb.active
@@ -674,16 +723,20 @@ def write_supplier_xlsx(
     geo_summary = ""
     if delivery_city:
         clean_city = str(delivery_city).strip()
+        city_label = clean_city if re.match(r"^(?:г\.?|город)\s+", clean_city, re.I) else f"г. {clean_city}"
         rad_info = f"в радиусе до {geo_radius_km} км" if geo_radius_km else "по городу поставки"
-        geo_subtitle = f"Локация / доставка: г. {clean_city} ({rad_info})"
+        geo_subtitle = f"Локация / доставка: {city_label} ({rad_info})"
         within_cnt = sum(1 for r in rows if r.get("supplier_distance_within_radius") is True)
         outside_cnt = sum(1 for r in rows if r.get("supplier_distance_within_radius") is False)
-        if geo_radius_km and outside_cnt > 0:
-            geo_summary = f" Логистический фильтр: приоритет поставщиков в радиусе до {geo_radius_km} км от г. {clean_city} (в радиусе: {within_cnt}, добор по РФ: {outside_cnt})."
-        elif geo_radius_km:
-            geo_summary = f" Логистический фильтр: отбор поставщиков в радиусе до {geo_radius_km} км от г. {clean_city}."
+        unknown_cnt = sum(1 for r in rows if r.get("supplier_distance_within_radius") is None)
+        if geo_radius_km:
+            geo_summary = (
+                f" Логистический фильтр: приоритет поставщиков в радиусе до {geo_radius_km} км от {city_label} "
+                f"(в радиусе: {within_cnt}, расстояние не подтверждено: {unknown_cnt}, добор по РФ: {outside_cnt}). "
+                "Ближайшие поставщики идут первыми; варианты вне радиуса и с неизвестным расстоянием показаны отдельно."
+            )
         else:
-            geo_summary = f" Логистический фильтр: г. {clean_city}."
+            geo_summary = f" Логистический фильтр: {city_label}."
 
     if is_multi and item_sections:
         ws.title = "Сводный реестр"
@@ -788,21 +841,37 @@ def _is_registry_fallback_report(rows: list[dict]) -> bool:
     )
 
 
+def _format_supplier_location(row: dict) -> str:
+    city = str(row.get("supplier_city") or row.get("city") or "").strip()
+    if not city:
+        raw_region = str(row.get("region") or "").strip()
+        if raw_region and raw_region.lower() not in {"россия", "рф"}:
+            city = re.sub(r"^(?:г\.?|город)\s+", "", raw_region, flags=re.I).strip()
+    if city:
+        city = re.sub(r"^(?:г\.?|город)\s+", "", city, flags=re.I).strip()
+        if city:
+            city = city[0].upper() + city[1:]
+    country = str(row.get("supplier_country") or row.get("country") or "").strip()
+    dist = row.get("supplier_distance_km")
+    within = row.get("supplier_distance_within_radius")
+    country_note = f" [{country}]" if country and "россия" not in country.lower() else ""
+    if city and dist is not None:
+        note = " (вне радиуса)" if within is False else ""
+        return f"{city}{country_note} (~{dist} км){note}"
+    if city:
+        return f"{city}{country_note}"
+    if country and "россия" not in country.lower():
+        return f"[{country}]" if not country.startswith("[") else country
+    return "—"
+
+
+
 def _client_supplier_comment(row: dict, *, is_multi_item: bool = False) -> str:
     product_fit = str(row.get("product_fit") or "").strip().lower()
     item_name = _clean_comment_text(row.get("procurement_item") or "")
     product = _clean_comment_text(row.get("product") or item_name or "")
     raw_comment = _clean_comment_text(row.get("comments") or "").replace("ИИ", "Проверка").replace("AI", "Проверка")
     detail = _short_product_or_comment(product, raw_comment)
-    loc_part = ""
-    city = str(row.get("supplier_city") or row.get("city") or "").strip()
-    dist = row.get("supplier_distance_km")
-    if city and dist is not None:
-        loc_part = f"Локация: {city} (~{dist} км)."
-    elif city:
-        loc_part = f"Локация: {city}."
-    if loc_part:
-        detail = f"{detail} {loc_part}" if detail else loc_part
     if is_multi_item and item_name:
         detail = f"Позиция: {item_name} | {detail}" if detail else f"Позиция: {item_name}"
     registry_note = _supplier_registry_note(row)
@@ -840,6 +909,13 @@ def _supplier_registry_note(row: dict) -> str:
         return ""
     match = row.get("minprom_registry_match") if isinstance(row.get("minprom_registry_match"), dict) else {}
     if match.get("matched"):
+        has_phone = bool(str(row.get("phone") or "").strip())
+        has_email = bool(str(row.get("email") or "").strip())
+        if not has_phone and not has_email:
+            inn = re.sub(r"\D+", "", str(match.get("inn") or row.get("inn") or ""))
+            if inn:
+                return f"Прямая запись реестра ГИСП (ИНН {inn}); открытые телефон и email сайта не опубликованы."
+            return "Прямая запись реестра ГИСП; открытые телефон и email сайта не опубликованы."
         # Registry number is already displayed in the dedicated 'Реестр Минпромторга' column
         return ""
     status = str(row.get("minprom_registry_status") or "").strip().lower()
@@ -945,11 +1021,127 @@ def write_procurement_docx(path: str | Path, markdown: str, *, title: str) -> Pa
         title=title or "Отчёт анализа закупки",
         intro=PROCUREMENT_REPORT_DISCLAIMER,
         intro_italic=True,
+        footer_text="TenderLex · Аналитический отчёт по закупке",
     )
 
 
 def write_quote_request_docx(path: str | Path, markdown: str, *, title: str = "Запрос КП") -> Path:
     return _write_markdown_docx(path, markdown, title=title or "Запрос КП")
+
+
+def _insert_ppr_element_in_order(pPr, element) -> None:
+    """Insert w:pBdr or w:shd before spacing/ind/contextualSpacing/jc per ECMA-376."""
+    from docx.oxml.ns import qn
+
+    after_tags = {
+        qn("w:tabs"),
+        qn("w:suppressAutoHyphens"),
+        qn("w:kinsoku"),
+        qn("w:wordWrap"),
+        qn("w:overflowPunct"),
+        qn("w:topLinePunct"),
+        qn("w:autoSpaceDE"),
+        qn("w:autoSpaceDN"),
+        qn("w:bidi"),
+        qn("w:adjustRightInd"),
+        qn("w:snapToGrid"),
+        qn("w:spacing"),
+        qn("w:ind"),
+        qn("w:contextualSpacing"),
+        qn("w:mirrorIndents"),
+        qn("w:suppressOverlap"),
+        qn("w:jc"),
+        qn("w:textDirection"),
+        qn("w:textAlignment"),
+        qn("w:textboxTightWrap"),
+        qn("w:outlineLvl"),
+        qn("w:divId"),
+        qn("w:cnfStyle"),
+        qn("w:rPr"),
+        qn("w:sectPr"),
+        qn("w:pPrChange"),
+    }
+    if element.tag == qn("w:pBdr"):
+        after_tags.add(qn("w:shd"))
+    for idx, child in enumerate(pPr):
+        if child.tag in after_tags:
+            pPr.insert(idx, element)
+            return
+    pPr.append(element)
+
+
+def _apply_paragraph_box(
+    paragraph,
+    *,
+    fill_hex: str | None = None,
+    left_color: str | None = None,
+    left_sz: str = "18",
+    left_space: str = "8",
+    top_color: str | None = None,
+    top_sz: str = "4",
+    top_space: str = "4",
+    bottom_color: str | None = None,
+    bottom_sz: str = "4",
+    bottom_space: str = "4",
+    right_color: str | None = None,
+    right_sz: str = "4",
+    right_space: str = "6",
+) -> None:
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    pPr = paragraph._p.get_or_add_pPr()
+    sides: list[str] = []
+    if top_color:
+        sides.append(f'<w:top w:val="single" w:sz="{top_sz}" w:space="{top_space}" w:color="{top_color}"/>')
+    if left_color:
+        sides.append(f'<w:left w:val="single" w:sz="{left_sz}" w:space="{left_space}" w:color="{left_color}"/>')
+    if bottom_color:
+        sides.append(f'<w:bottom w:val="single" w:sz="{bottom_sz}" w:space="{bottom_space}" w:color="{bottom_color}"/>')
+    if right_color:
+        sides.append(f'<w:right w:val="single" w:sz="{right_sz}" w:space="{right_space}" w:color="{right_color}"/>')
+    if sides:
+        pBdr = parse_xml(f'<w:pBdr {nsdecls("w")}>{"".join(sides)}</w:pBdr>')
+        _insert_ppr_element_in_order(pPr, pBdr)
+    if fill_hex:
+        shd = parse_xml(f'<w:shd {nsdecls("w")} w:val="clear" w:color="auto" w:fill="{fill_hex}"/>')
+        _insert_ppr_element_in_order(pPr, shd)
+
+
+def _classify_callout_style(text: str):
+    from docx.shared import RGBColor
+
+    plain = re.sub(r"^[*_`]+", "", str(text or "").strip())
+    if re.match(r"^(ИТОГОВЫЙ ВЕРДИКТ|ВЕРДИКТ|ИТОГ|РЕКОМЕНДАЦИЯ|ВЫВОД)\s*:", plain, flags=re.I):
+        return ("ECFDF5", "047857", "A7F3D0", RGBColor(6, 78, 59))
+    if re.match(r"^(ВАЖНО|ВНИМАНИЕ|КРИТИЧН[ОЫ]|РИСК|ОСТОРОЖНО)\s*:", plain, flags=re.I):
+        return ("FFFBEB", "D97706", "FDE68A", RGBColor(120, 53, 15))
+    if re.match(r"^(ПРАВОВОЙ ВЫВОД|ЦИТАТА)\s*:", plain, flags=re.I):
+        return ("F0FDFA", "0F766E", "CCFBF1", RGBColor(15, 23, 42))
+    return None
+
+
+def _leading_indent_spaces(raw_line: str) -> int:
+    expanded = raw_line.replace("\t", "    ")
+    return len(expanded) - len(expanded.lstrip(" "))
+
+
+def _is_kv_bullet_content(content: str) -> bool:
+    return bool(
+        re.match(r"^\*\*[^*:\n]{2,65}:\*\*\s+.+$", content)
+        or re.match(r"^\*\*[^*:\n]{2,65}\*\*\s*:\s+.+$", content)
+    )
+
+
+def _peek_next_non_empty(lines: list[str], start_idx: int) -> tuple[int, str, str] | None:
+    idx = start_idx
+    while idx < len(lines):
+        raw = lines[idx]
+        stripped = raw.strip()
+        if stripped:
+            return idx, raw, stripped
+        idx += 1
+    return None
 
 
 def _write_markdown_docx(
@@ -959,36 +1151,44 @@ def _write_markdown_docx(
     title: str,
     intro: str = "",
     intro_italic: bool = False,
+    footer_text: str = "",
 ) -> Path:
     from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Inches, Pt, RGBColor
-    from docx.oxml import parse_xml
-    from docx.oxml.ns import nsdecls
 
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     doc = Document()
     for section in doc.sections:
-        section.top_margin = Inches(0.6)
-        section.bottom_margin = Inches(0.6)
+        section.top_margin = Inches(0.55)
+        section.bottom_margin = Inches(0.55)
         section.left_margin = Inches(0.65)
         section.right_margin = Inches(0.65)
         section.page_width = Inches(8.27)
         section.page_height = Inches(11.69)
+        if footer_text:
+            footer_p = section.footer.paragraphs[0]
+            footer_p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            fr = footer_p.add_run(clean_xml_compatible(footer_text))
+            fr.font.size = Pt(8)
+            fr.font.color.rgb = RGBColor(148, 163, 184)
 
     brand_emerald = RGBColor(4, 120, 87)       # #047857
     dark_emerald = RGBColor(6, 78, 59)        # #064E3B
-    teal_emerald = RGBColor(15, 118, 110)     # #0F766E
-    text_dark = RGBColor(15, 23, 42)
+    text_dark = RGBColor(15, 23, 42)          # #0F172A
+    text_muted = RGBColor(71, 85, 105)        # #475569
 
     title = clean_xml_compatible(title)
     intro = clean_xml_compatible(intro)
     markdown = clean_xml_compatible(markdown)
 
-    # Top brand header
+    # Top brand header with emerald underline accent
     h_top = doc.add_paragraph()
     h_top.paragraph_format.space_before = Pt(0)
-    h_top.paragraph_format.space_after = Pt(2)
+    h_top.paragraph_format.space_after = Pt(6)
+    h_top.paragraph_format.keep_with_next = True
+    _apply_paragraph_box(h_top, bottom_color="047857", bottom_sz="12", bottom_space="6")
     r_b = h_top.add_run("TenderLex")
     r_b.font.bold = True
     r_b.font.size = Pt(14)
@@ -1005,8 +1205,21 @@ def _write_markdown_docx(
 
     if intro:
         intro_paragraph = doc.add_paragraph()
+        intro_paragraph.paragraph_format.left_indent = Inches(0.10)
+        intro_paragraph.paragraph_format.right_indent = Inches(0.08)
+        intro_paragraph.paragraph_format.line_spacing = 1.15
         intro_paragraph.paragraph_format.space_before = Pt(2)
-        intro_paragraph.paragraph_format.space_after = Pt(6)
+        intro_paragraph.paragraph_format.space_after = Pt(10)
+        _apply_paragraph_box(
+            intro_paragraph,
+            fill_hex="F8FAFC",
+            left_color="94A3B8",
+            left_sz="18",
+            left_space="8",
+            top_color="E2E8F0",
+            bottom_color="E2E8F0",
+            right_color="E2E8F0",
+        )
         intro_run = intro_paragraph.add_run(intro)
         intro_run.italic = intro_italic
         intro_run.font.size = Pt(8.5)
@@ -1023,55 +1236,272 @@ def _write_markdown_docx(
         if _is_markdown_table_start(lines, index):
             index = _add_markdown_table(doc, lines, index)
             continue
-        if re.fullmatch(r"-{3,}", line):
-            doc.add_paragraph("")
+        if re.fullmatch(r"(?:-{3,}|\*{3,}|_{3,})", line):
+            nxt = _peek_next_non_empty(lines, index + 1)
+            if nxt is None or re.match(r"^#{1,3}\s+", nxt[2]):
+                index += 1
+                continue
+            hr_p = doc.add_paragraph()
+            hr_p.paragraph_format.space_before = Pt(3)
+            hr_p.paragraph_format.space_after = Pt(6)
+            _apply_paragraph_box(hr_p, bottom_color="E2E8F0", bottom_sz="6", bottom_space="2")
             index += 1
             continue
+
         if line.startswith("# "):
             p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(12)
-            p.paragraph_format.space_after = Pt(4)
-            r = p.add_run(line[2:])
-            r.font.bold = True
-            r.font.size = Pt(13.5)
-            r.font.color.rgb = brand_emerald
+            p.paragraph_format.keep_with_next = True
+            p.paragraph_format.left_indent = Inches(0.08)
+            p.paragraph_format.space_before = Pt(14)
+            p.paragraph_format.space_after = Pt(6)
+            _apply_paragraph_box(
+                p,
+                fill_hex="ECFDF5",
+                left_color="047857",
+                left_sz="24",
+                left_space="10",
+                bottom_color="A7F3D0",
+                bottom_sz="6",
+                bottom_space="5",
+                top_color="D1FAE5",
+                top_sz="4",
+                top_space="4",
+                right_color="D1FAE5",
+                right_sz="4",
+                right_space="6",
+            )
+            _add_markdown_runs(p, line[2:].strip(), font_size=Pt(13.5), font_color=brand_emerald, force_bold=True)
         elif line.startswith("## "):
             p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(10)
-            p.paragraph_format.space_after = Pt(3)
-            r = p.add_run(line[3:])
-            r.font.bold = True
-            r.font.size = Pt(12.5)
-            r.font.color.rgb = dark_emerald
+            p.paragraph_format.keep_with_next = True
+            p.paragraph_format.left_indent = Inches(0.08)
+            p.paragraph_format.space_before = Pt(12)
+            p.paragraph_format.space_after = Pt(5)
+            _apply_paragraph_box(
+                p,
+                fill_hex="F0FDFA",
+                left_color="0F766E",
+                left_sz="24",
+                left_space="10",
+                bottom_color="CCFBF1",
+                bottom_sz="6",
+                bottom_space="5",
+                top_color="E2E8F0",
+                top_sz="4",
+                top_space="4",
+                right_color="E2E8F0",
+                right_sz="4",
+                right_space="6",
+            )
+            _add_markdown_runs(p, line[3:].strip(), font_size=Pt(12.5), font_color=dark_emerald, force_bold=True)
         elif line.startswith("### "):
             p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(8)
-            p.paragraph_format.space_after = Pt(3)
-            r = p.add_run(line[4:])
-            r.font.bold = True
-            r.font.size = Pt(11.5)
-            r.font.color.rgb = dark_emerald
-        elif line.startswith("#### "):
-            p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(7)
-            p.paragraph_format.space_after = Pt(2)
-            r = p.add_run(line[5:])
-            r.font.bold = True
-            r.font.size = Pt(11)
-            r.font.color.rgb = dark_emerald
-        elif line.startswith(("- ", "* ", "1. ", "2. ", "3. ", "4. ", "5. ")):
+            p.paragraph_format.keep_with_next = True
+            p.paragraph_format.left_indent = Inches(0.08)
+            p.paragraph_format.space_before = Pt(12)
+            p.paragraph_format.space_after = Pt(5)
+            _apply_paragraph_box(
+                p,
+                fill_hex="F0FDFA",
+                left_color="0F766E",
+                left_sz="24",
+                left_space="10",
+                bottom_color="CCFBF1",
+                bottom_sz="4",
+                bottom_space="4",
+                top_color="E2E8F0",
+                top_sz="4",
+                top_space="4",
+                right_color="E2E8F0",
+                right_sz="4",
+                right_space="6",
+            )
+            _add_markdown_runs(p, line[4:].strip(), font_size=Pt(11.5), font_color=dark_emerald, force_bold=True)
+        elif line.startswith(("#### ", "##### ")):
+            heading_text = line.split(" ", 1)[1].strip()
+            callout = _classify_callout_style(heading_text)
+            if callout:
+                fill_hex, accent_hex, border_hex, body_rgb = callout
+                p = doc.add_paragraph()
+                p.paragraph_format.left_indent = Inches(0.10)
+                p.paragraph_format.right_indent = Inches(0.08)
+                p.paragraph_format.line_spacing = 1.2
+                p.paragraph_format.space_before = Pt(7)
+                p.paragraph_format.space_after = Pt(6)
+                _apply_paragraph_box(
+                    p,
+                    fill_hex=fill_hex,
+                    left_color=accent_hex,
+                    left_sz="24",
+                    left_space="10",
+                    top_color=border_hex,
+                    bottom_color=border_hex,
+                    right_color=border_hex,
+                    top_space="5",
+                    bottom_space="5",
+                )
+                _add_markdown_runs(p, heading_text, font_size=Pt(10.0), font_color=body_rgb)
+            else:
+                p = doc.add_paragraph()
+                p.paragraph_format.keep_with_next = True
+                p.paragraph_format.space_before = Pt(9)
+                p.paragraph_format.space_after = Pt(4)
+                _apply_paragraph_box(p, bottom_color="CBD5E1", bottom_sz="4", bottom_space="3")
+                _add_markdown_runs(p, heading_text, font_size=Pt(11), font_color=dark_emerald, force_bold=True)
+        elif line.startswith(">"):
+            quote_lines: list[str] = []
+            while index < len(lines) and lines[index].strip().startswith(">"):
+                q_text = re.sub(r"^>\s?", "", lines[index].strip())
+                if q_text:
+                    quote_lines.append(q_text)
+                index += 1
+            if quote_lines:
+                paragraph = doc.add_paragraph()
+                paragraph.paragraph_format.left_indent = Inches(0.14)
+                paragraph.paragraph_format.right_indent = Inches(0.08)
+                paragraph.paragraph_format.line_spacing = 1.18
+                paragraph.paragraph_format.space_before = Pt(4)
+                paragraph.paragraph_format.space_after = Pt(5)
+                _apply_paragraph_box(
+                    paragraph,
+                    fill_hex="F0FDFA",
+                    left_color="0F766E",
+                    left_sz="18",
+                    left_space="8",
+                    top_color="CCFBF1",
+                    bottom_color="CCFBF1",
+                    right_color="CCFBF1",
+                )
+                _add_markdown_runs(paragraph, "\n".join(quote_lines), font_size=Pt(9.5), font_color=text_dark)
+            continue
+        elif re.match(r"^(?:[-*•]\s+|\d+[.)]\s+)", line):
+            leading = _leading_indent_spaces(raw_line)
+            is_ordered = bool(re.match(r"^\d+[.)]\s+", line))
+            nxt = _peek_next_non_empty(lines, index + 1)
+            nxt_leading = _leading_indent_spaces(nxt[1]) if nxt else -1
+            nxt_is_nested_list = bool(
+                nxt
+                and nxt_leading >= leading + 2
+                and re.match(r"^(?:[-*•]\s+|\d+[.)]\s+)", nxt[2])
+            )
+            nxt_is_same_level_kv = bool(
+                nxt
+                and _leading_indent_spaces(nxt[1]) < 2
+                and re.match(r"^[-*•]\s+", nxt[2])
+                and _is_kv_bullet_content(nxt[2][2:].strip())
+            )
+            prev_raw = lines[index - 1] if index > 0 else ""
+            prev_is_same_level_kv = bool(
+                prev_raw.strip()
+                and _leading_indent_spaces(prev_raw) < 2
+                and re.match(r"^[-*•]\s+", prev_raw.strip())
+                and _is_kv_bullet_content(prev_raw.strip()[2:].strip())
+            )
+
             paragraph = doc.add_paragraph()
-            paragraph.paragraph_format.left_indent = Inches(0.15)
-            paragraph.paragraph_format.line_spacing = 1.1
-            paragraph.paragraph_format.space_before = Pt(1)
-            paragraph.paragraph_format.space_after = Pt(2)
-            _add_markdown_runs(paragraph, line, font_size=Pt(9.5), font_color=text_dark)
+            paragraph.paragraph_format.line_spacing = 1.18
+
+            if leading >= 5:
+                paragraph.paragraph_format.left_indent = Inches(0.64)
+                paragraph.paragraph_format.first_line_indent = Inches(-0.14)
+                paragraph.paragraph_format.space_before = Pt(1.5)
+                paragraph.paragraph_format.space_after = Pt(2.5)
+                _apply_paragraph_box(
+                    paragraph,
+                    left_color="CBD5E1",
+                    left_sz="8",
+                    left_space="8",
+                )
+                content = line if is_ordered else f"• {line[2:].strip()}"
+                _add_markdown_runs(paragraph, content, font_size=Pt(9.5), font_color=text_muted)
+            elif leading >= 2:
+                paragraph.paragraph_format.left_indent = Inches(0.44)
+                paragraph.paragraph_format.first_line_indent = Inches(-0.14)
+                paragraph.paragraph_format.space_before = Pt(2)
+                paragraph.paragraph_format.space_after = Pt(2.5)
+                if nxt_is_nested_list:
+                    paragraph.paragraph_format.keep_with_next = True
+                _apply_paragraph_box(
+                    paragraph,
+                    left_color="99F6E4" if is_ordered else "CBD5E1",
+                    left_sz="12",
+                    left_space="8",
+                )
+                content = line if is_ordered else f"• {line[2:].strip()}"
+                _add_markdown_runs(paragraph, content, font_size=Pt(9.5), font_color=text_dark)
+            elif is_ordered:
+                paragraph.paragraph_format.left_indent = Inches(0.22)
+                paragraph.paragraph_format.first_line_indent = Inches(-0.16)
+                paragraph.paragraph_format.space_before = Pt(6)
+                paragraph.paragraph_format.space_after = Pt(2.5 if nxt_is_nested_list else 4)
+                if nxt_is_nested_list:
+                    paragraph.paragraph_format.keep_with_next = True
+                _apply_paragraph_box(
+                    paragraph,
+                    fill_hex="F8FAFC",
+                    left_color="0F766E",
+                    left_sz="18",
+                    left_space="8",
+                    top_color="E2E8F0",
+                    right_color="E2E8F0",
+                    bottom_color=None if nxt_is_nested_list else "E2E8F0",
+                )
+                _add_markdown_runs(paragraph, line, font_size=Pt(9.5), font_color=text_dark)
+            else:
+                bullet_body = line[2:].strip()
+                is_kv = _is_kv_bullet_content(bullet_body) and not nxt_is_nested_list
+                paragraph.paragraph_format.left_indent = Inches(0.22)
+                paragraph.paragraph_format.first_line_indent = Inches(-0.13)
+                if nxt_is_nested_list:
+                    paragraph.paragraph_format.keep_with_next = True
+                    paragraph.paragraph_format.space_before = Pt(5)
+                    paragraph.paragraph_format.space_after = Pt(2.5)
+                    _apply_paragraph_box(
+                        paragraph,
+                        fill_hex="F8FAFC",
+                        left_color="0F766E",
+                        left_sz="16",
+                        left_space="8",
+                        top_color="E2E8F0",
+                        right_color="E2E8F0",
+                    )
+                elif is_kv and (nxt_is_same_level_kv or prev_is_same_level_kv):
+                    paragraph.paragraph_format.space_before = Pt(2)
+                    paragraph.paragraph_format.space_after = Pt(3.5)
+                    _apply_paragraph_box(paragraph, bottom_color="E2E8F0", bottom_sz="4", bottom_space="4")
+                else:
+                    paragraph.paragraph_format.space_before = Pt(1.5)
+                    paragraph.paragraph_format.space_after = Pt(3)
+                _add_markdown_runs(paragraph, f"• {bullet_body}", font_size=Pt(9.5), font_color=text_dark)
         else:
-            paragraph = doc.add_paragraph()
-            paragraph.paragraph_format.line_spacing = 1.1
-            paragraph.paragraph_format.space_before = Pt(1)
-            paragraph.paragraph_format.space_after = Pt(2)
-            _add_markdown_runs(paragraph, line, font_size=Pt(9.5), font_color=text_dark)
+            callout = _classify_callout_style(line)
+            if callout:
+                fill_hex, accent_hex, border_hex, body_rgb = callout
+                paragraph = doc.add_paragraph()
+                paragraph.paragraph_format.left_indent = Inches(0.10)
+                paragraph.paragraph_format.right_indent = Inches(0.08)
+                paragraph.paragraph_format.line_spacing = 1.2
+                paragraph.paragraph_format.space_before = Pt(5)
+                paragraph.paragraph_format.space_after = Pt(6)
+                _apply_paragraph_box(
+                    paragraph,
+                    fill_hex=fill_hex,
+                    left_color=accent_hex,
+                    left_sz="24",
+                    left_space="10",
+                    top_color=border_hex,
+                    bottom_color=border_hex,
+                    right_color=border_hex,
+                    top_space="5",
+                    bottom_space="5",
+                )
+                _add_markdown_runs(paragraph, line, font_size=Pt(9.5), font_color=body_rgb)
+            else:
+                paragraph = doc.add_paragraph()
+                paragraph.paragraph_format.line_spacing = 1.2
+                paragraph.paragraph_format.space_before = Pt(2)
+                paragraph.paragraph_format.space_after = Pt(4.5)
+                _add_markdown_runs(paragraph, line, font_size=Pt(9.5), font_color=text_dark)
         index += 1
     doc.save(out)
     return out
@@ -1093,12 +1523,41 @@ def _parse_table_row(line: str) -> list[str]:
     ]
 
 
+def _classify_status_cell(cell_text: str):
+    from docx.shared import RGBColor
+
+    plain = re.sub(r"[*_`]+", "", str(cell_text or "")).strip().lower()
+    if (
+        plain.startswith("условно соответствует")
+        or "условно соответствует" in plain
+        or plain.startswith("требует уточнения")
+        or plain.startswith("требует сверки")
+    ):
+        return ("FFFBEB", "F59E0B", RGBColor(146, 64, 14))
+    if (
+        plain.startswith("не соответствует")
+        or plain.startswith("отклонение")
+        or plain.startswith("не подходит")
+        or plain == "нет"
+    ):
+        return ("FEF2F2", "EF4444", RGBColor(153, 27, 27))
+    if (
+        plain == "соответствует"
+        or plain.startswith("соответствует ")
+        or plain.startswith("соответствует(")
+        or plain.startswith("подтверждено")
+        or plain == "да"
+    ):
+        return ("ECFDF5", "10B981", RGBColor(6, 95, 70))
+    return None
+
+
 def _add_markdown_table(doc, lines: list[str], index: int) -> int:
     from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import parse_xml
     from docx.oxml.ns import nsdecls
-    from docx.shared import Inches, Pt, RGBColor
+    from docx.shared import Pt, RGBColor
 
     rows: list[list[str]] = [_parse_table_row(lines[index])]
     index += 2
@@ -1137,20 +1596,32 @@ def _add_markdown_table(doc, lines: list[str], index: int) -> int:
     tblW = parse_xml(f'<w:tblW {nsdecls("w")} w:w="10037" w:type="dxa"/>')
     tblPr.append(tblW)
 
-    _apply_table_column_widths(table, _table_column_widths(rows[0], width))
+    col_widths = _table_column_widths(rows[0], width)
+    _apply_table_column_widths(table, col_widths)
 
-    # Set full grid borders
+    # Set clean modern grid borders
     borders = parse_xml(
         f'<w:tblBorders {nsdecls("w")}>'
-        f'<w:top w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
-        f'<w:bottom w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
-        f'<w:left w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
-        f'<w:right w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
-        f'<w:insideH w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
-        f'<w:insideV w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
+        f'<w:top w:val="single" w:sz="6" w:space="0" w:color="CBD5E1"/>'
+        f'<w:bottom w:val="single" w:sz="6" w:space="0" w:color="CBD5E1"/>'
+        f'<w:left w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/>'
+        f'<w:right w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/>'
+        f'<w:insideH w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/>'
+        f'<w:insideV w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/>'
         f'</w:tblBorders>'
     )
     tblPr.append(borders)
+
+    # Spacious cell padding inside all table cells
+    cell_mar = parse_xml(
+        f'<w:tblCellMar {nsdecls("w")}>'
+        f'<w:top w:w="95" w:type="dxa"/>'
+        f'<w:left w:w="120" w:type="dxa"/>'
+        f'<w:bottom w:w="95" w:type="dxa"/>'
+        f'<w:right w:w="120" w:type="dxa"/>'
+        f'</w:tblCellMar>'
+    )
+    tblPr.append(cell_mar)
 
     # Repeat header & prevent row split
     for row in table.rows[:1]:
@@ -1158,34 +1629,81 @@ def _add_markdown_table(doc, lines: list[str], index: int) -> int:
     for row in table.rows:
         row._tr.get_or_add_trPr().append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
 
+    is_two_col = width == 2
+    header_font_pt = Pt(9.0 if width <= 3 else 8.5)
+    body_font_pt = Pt(9.0 if is_two_col else (8.5 if width <= 4 else 8.0))
+    first_col_is_index = bool(col_widths and col_widths[0] <= 1000)
+
     for row_index, row in enumerate(rows):
-        fill_color = "064E3B" if row_index == 0 else ("F4FBF7" if row_index % 2 == 1 else "FFFFFF")
+        base_fill = "064E3B" if row_index == 0 else ("F8FAFC" if row_index % 2 == 1 else "FFFFFF")
         for col_index in range(width):
             cell = table.rows[row_index].cells[col_index]
             cell.text = ""
-            cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-            shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{fill_color}"/>')
-            cell._tc.get_or_add_tcPr().append(shd)
+            cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP if row_index > 0 else WD_ALIGN_VERTICAL.CENTER
 
-            paragraph = cell.paragraphs[0]
-            paragraph.paragraph_format.line_spacing = 1.05
-            paragraph.paragraph_format.space_before = Pt(2)
-            paragraph.paragraph_format.space_after = Pt(2)
-            value = _remove_okpd_codes(row[col_index] if col_index < len(row) else "")
-            _add_markdown_runs(paragraph, value)
+            raw_value = _remove_okpd_codes(row[col_index] if col_index < len(row) else "")
+            status_style = _classify_status_cell(raw_value) if row_index > 0 else None
 
             if row_index == 0:
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                for run in paragraph.runs:
-                    run.bold = True
-                    run.font.size = Pt(8)
-                    run.font.color.rgb = RGBColor(255, 255, 255)
+                fill_color = base_fill
+            elif status_style is not None:
+                fill_color = status_style[0]
+            elif is_two_col and col_index == 0:
+                fill_color = "F8FAFC"
             else:
-                for run in paragraph.runs:
-                    run.font.size = Pt(7.5)
-                    run.font.color.rgb = RGBColor(15, 23, 42)
-                if col_index == 0:
+                fill_color = base_fill
+
+            shd = parse_xml(f'<w:shd {nsdecls("w")} w:val="clear" w:color="auto" w:fill="{fill_color}"/>')
+            tcPr = cell._tc.get_or_add_tcPr()
+            # Insert shd cleanly before tcW/vAlign if already present
+            inserted = False
+            for idx_el, child in enumerate(tcPr):
+                if child.tag.endswith(("noWrap", "tcMar", "vAlign")):
+                    tcPr.insert(idx_el, shd)
+                    inserted = True
+                    break
+            if not inserted:
+                tcPr.append(shd)
+
+            paragraph = cell.paragraphs[0]
+            paragraph.paragraph_format.line_spacing = 1.15
+            paragraph.paragraph_format.space_before = Pt(1.5)
+            paragraph.paragraph_format.space_after = Pt(1.5)
+            if row_index == 0:
+                _add_markdown_runs(
+                    paragraph,
+                    raw_value,
+                    font_size=header_font_pt,
+                    font_color=RGBColor(255, 255, 255),
+                    force_bold=True,
+                )
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT if (is_two_col or col_index > 0) else WD_ALIGN_PARAGRAPH.CENTER
+            elif status_style is not None:
+                _, dot_hex, text_rgb = status_style
+                dot_rgb = RGBColor.from_string(dot_hex)
+                dot_run = paragraph.add_run("● ")
+                dot_run.bold = True
+                dot_run.font.size = body_font_pt
+                dot_run.font.color.rgb = dot_rgb
+                _add_markdown_runs(
+                    paragraph,
+                    raw_value,
+                    font_size=body_font_pt,
+                    font_color=text_rgb,
+                )
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            else:
+                _add_markdown_runs(
+                    paragraph,
+                    raw_value,
+                    font_size=body_font_pt,
+                    font_color=RGBColor(15, 23, 42),
+                    force_bold=bool(is_two_col and col_index == 0),
+                )
+                if col_index == 0 and first_col_is_index:
                     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                else:
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     doc.add_paragraph().paragraph_format.space_after = Pt(4)
     return index
@@ -1195,6 +1713,8 @@ def _table_column_widths(headers: list[str], width: int) -> list[int] | None:
     if width <= 0:
         return None
     normalized = [_normalize_table_header(header) for header in headers]
+    if width == 2:
+        return [2900, 7137]
     if len(normalized) >= 5:
         is_num = any(k in normalized[0] for k in ("№", "номер", "n", "п/п", "позиц"))
         is_name = any(k in normalized[1] for k in ("наименование", "товар", "позици", "продукци", "предмет"))
@@ -1205,6 +1725,10 @@ def _table_column_widths(headers: list[str], width: int) -> list[int] | None:
             if width >= 6 and any(k in normalized[5] for k in ("примечан", "коммент")):
                 return [520, 2100, 4700, 850, 850, 1340]
             return [520, 2300, 5600, 850, 850]
+    if width == 5 and any("статус" in h or "соответств" in h for h in normalized):
+        return [1750, 2250, 2600, 1450, 1987]
+    if width == 4 and any("статус" in h or "соответств" in h for h in normalized):
+        return [2200, 2900, 3100, 1837]
     col_w = 10037 // width
     remainder = 10037 - col_w * width
     widths = [col_w] * width
@@ -1242,29 +1766,257 @@ def _apply_table_column_widths(table, widths: list[int] | None) -> None:
                 paragraph.paragraph_format.space_after = 0
 
 
+def _append_docx_hyperlink(
+    paragraph,
+    url: str,
+    label: str,
+    *,
+    font_size=None,
+    bold: bool = False,
+    italic: bool = False,
+    link_color_hex: str = "0563C1",
+) -> None:
+    import docx.opc.constants as opc_constants
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    clean_url = str(url or "").strip()
+    clean_label = clean_xml_compatible(label or clean_url)
+    if not clean_url.startswith(("http://", "https://")):
+        run = paragraph.add_run(clean_label)
+        run.bold = bold
+        run.italic = italic
+        if font_size is not None:
+            run.font.size = font_size
+        return
+
+    part = paragraph.part
+    r_id = part.relate_to(clean_url, opc_constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), r_id)
+
+    new_run = OxmlElement("w:r")
+    r_pr = OxmlElement("w:rPr")
+
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), link_color_hex)
+    r_pr.append(color)
+
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    r_pr.append(underline)
+
+    if bold:
+        r_pr.append(OxmlElement("w:b"))
+    if italic:
+        r_pr.append(OxmlElement("w:i"))
+    if font_size is not None:
+        half_pts = str(int(round(font_size.pt * 2)))
+        sz = OxmlElement("w:sz")
+        sz.set(qn("w:val"), half_pts)
+        r_pr.append(sz)
+        sz_cs = OxmlElement("w:szCs")
+        sz_cs.set(qn("w:val"), half_pts)
+        r_pr.append(sz_cs)
+
+    new_run.append(r_pr)
+    text_el = OxmlElement("w:t")
+    text_el.set(qn("xml:space"), "preserve")
+    text_el.text = clean_label
+    new_run.append(text_el)
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+
+
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+_BARE_URL_RE = re.compile(r"https?://[^\s<>\]\"']+")
+_MD_INLINE_RE = re.compile(r"(`[^`\n]+`|(?<!\*)\*[^*\n]+\*(?!\*))")
+
+
+def _emit_plain_with_breaks(
+    paragraph,
+    text: str,
+    *,
+    font_size=None,
+    font_color=None,
+    bold: bool = False,
+    italic: bool = False,
+) -> None:
+    if not text:
+        return
+    for line_index, segment in enumerate(text.split("\n")):
+        if line_index:
+            paragraph.add_run().add_break()
+        if not segment:
+            continue
+        run = paragraph.add_run(segment)
+        run.bold = bold
+        run.italic = italic
+        if font_size is not None:
+            run.font.size = font_size
+        if font_color is not None:
+            run.font.color.rgb = font_color
+
+
+def _emit_inline_segment(
+    paragraph,
+    text: str,
+    *,
+    font_size=None,
+    font_color=None,
+    bold: bool = False,
+) -> None:
+    if not text:
+        return
+    pos = 0
+    for m in _MD_LINK_RE.finditer(text):
+        if m.start() > pos:
+            _emit_bare_urls_and_styles(
+                paragraph,
+                text[pos : m.start()],
+                font_size=font_size,
+                font_color=font_color,
+                bold=bold,
+            )
+        raw_label = re.sub(r"[*_`]+", "", m.group(1)).strip() or m.group(2)
+        _append_docx_hyperlink(
+            paragraph,
+            m.group(2),
+            raw_label,
+            font_size=font_size,
+            bold=bold,
+        )
+        pos = m.end()
+    if pos < len(text):
+        _emit_bare_urls_and_styles(
+            paragraph,
+            text[pos:],
+            font_size=font_size,
+            font_color=font_color,
+            bold=bold,
+        )
+
+
+def _emit_bare_urls_and_styles(
+    paragraph,
+    text: str,
+    *,
+    font_size=None,
+    font_color=None,
+    bold: bool = False,
+) -> None:
+    pos = 0
+    for m in _BARE_URL_RE.finditer(text):
+        if m.start() > pos:
+            _emit_italic_and_code(
+                paragraph,
+                text[pos : m.start()],
+                font_size=font_size,
+                font_color=font_color,
+                bold=bold,
+            )
+        url = m.group(0)
+        trailing = ""
+        while url and url[-1] in ".,;:!?)":
+            if url[-1] == ")" and url.count("(") >= url.count(")"):
+                break
+            trailing = url[-1] + trailing
+            url = url[:-1]
+        if url.startswith(("http://", "https://")):
+            _append_docx_hyperlink(paragraph, url, url, font_size=font_size, bold=bold)
+        if trailing:
+            _emit_plain_with_breaks(
+                paragraph, trailing, font_size=font_size, font_color=font_color, bold=bold
+            )
+        pos = m.end()
+    if pos < len(text):
+        _emit_italic_and_code(
+            paragraph,
+            text[pos:],
+            font_size=font_size,
+            font_color=font_color,
+            bold=bold,
+        )
+
+
+def _emit_italic_and_code(
+    paragraph,
+    text: str,
+    *,
+    font_size=None,
+    font_color=None,
+    bold: bool = False,
+) -> None:
+    if not text:
+        return
+    parts = _MD_INLINE_RE.split(text)
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("`") and part.endswith("`") and len(part) >= 2:
+            _emit_plain_with_breaks(
+                paragraph,
+                part[1:-1],
+                font_size=font_size,
+                font_color=font_color,
+                bold=bold,
+            )
+        elif part.startswith("*") and part.endswith("*") and len(part) >= 2:
+            _emit_plain_with_breaks(
+                paragraph,
+                part[1:-1],
+                font_size=font_size,
+                font_color=font_color,
+                bold=bold,
+                italic=True,
+            )
+        else:
+            _emit_plain_with_breaks(
+                paragraph,
+                part,
+                font_size=font_size,
+                font_color=font_color,
+                bold=bold,
+            )
+
+
 def _add_markdown_runs(
     paragraph,
     text: str,
     *,
     font_size=None,
     font_color=None,
+    force_bold: bool = False,
 ) -> None:
-    text = clean_xml_compatible(text)
-    parts = re.split(r"(\*\*[^*]+\*\*)", str(text or ""))
-    for part in parts:
-        if not part:
-            continue
-        bold = part.startswith("**") and part.endswith("**")
-        value = part[2:-2] if bold else part
-        for line_index, segment in enumerate(value.split("\n")):
-            if line_index:
-                paragraph.add_run().add_break()
-            run = paragraph.add_run(segment)
-            run.bold = bold
-            if font_size is not None:
-                run.font.size = font_size
-            if font_color is not None:
-                run.font.color.rgb = font_color
+    cleaned = clean_xml_compatible(text)
+    pos = 0
+    for m in _MD_BOLD_RE.finditer(cleaned):
+        if m.start() > pos:
+            _emit_inline_segment(
+                paragraph,
+                cleaned[pos : m.start()],
+                font_size=font_size,
+                font_color=font_color,
+                bold=force_bold,
+            )
+        _emit_inline_segment(
+            paragraph,
+            m.group(1),
+            font_size=font_size,
+            font_color=font_color,
+            bold=True,
+        )
+        pos = m.end()
+    if pos < len(cleaned):
+        _emit_inline_segment(
+            paragraph,
+            cleaned[pos:],
+            font_size=font_size,
+            font_color=font_color,
+            bold=force_bold,
+        )
 
 
 def _remove_okpd_codes(text: str) -> str:
@@ -1282,7 +2034,7 @@ def _remove_okpd_codes(text: str) -> str:
         value,
         flags=re.IGNORECASE,
     )
-    value = re.sub(r"\b\d{2}\.\d{2}\.\d{2}(?:\.\d{1,3}){0,3}\b", "", value)
+    value = re.sub(r"\b\d{2}\.\d{2}\.\d{2}\.\d{3}\b", "", value)
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r"\s+([,.;:])", r"\1", value)
     value = re.sub(r"\(\s*\)", "", value)

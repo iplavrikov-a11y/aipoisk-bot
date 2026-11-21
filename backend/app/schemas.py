@@ -40,7 +40,7 @@ class SettingsPatch(BaseModel):
     supplier_search_provider_order: str | None = None
     yandex_search_folder_id: str | None = None
     yandex_search_api_key: str | None = None
-    yandex_search_price_per_request: float | None = 0.04
+    yandex_search_price_per_request: float | None = 0.0305
     google_search_api_key: str | None = None
     google_search_cse_id: str | None = None
     prompt_settings_json: str | None = None
@@ -58,6 +58,22 @@ class SettingsPatch(BaseModel):
     yookassa_shop_id: str | None = None
     yookassa_secret_key: str | None = None
     yookassa_return_url: str | None = None
+    yookassa_send_receipt: bool | None = None
+    support_telegram_group_id: str | None = None
+    support_admin_telegram_ids: str | None = None
+    support_mirror_admin_replies_to_bot: bool | None = None
+
+
+class CreateYooKassaPaymentRequest(BaseModel):
+    amount_rub: int = Field(..., ge=100, le=500_000)
+    package_id: str | None = None
+    phone: str | None = None
+    telegram_username: str | None = None
+
+
+class YooKassaTestRequest(BaseModel):
+    shop_id: str | None = None
+    secret_key: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -67,7 +83,7 @@ class LoginRequest(BaseModel):
 
 class WebRegisterRequest(BaseModel):
     email: str
-    password: str = Field(min_length=8, max_length=256)
+    password: str = Field(min_length=10, max_length=256)
     name: str = ""
     website: str = ""
     link_token: str = Field(default="", max_length=128)
@@ -75,12 +91,25 @@ class WebRegisterRequest(BaseModel):
     personal_data_consent: bool = False
     legal_version: str = Field(default="", max_length=40)
     ref: str = Field(default="", max_length=64)
+    phone: str = Field(default="", max_length=64)
+    challenge_token: str = Field(default="", max_length=256)
+    utm_source: str = Field(default="", max_length=40)
+    utm_campaign: str = Field(default="", max_length=80)
 
 
 class WebLoginRequest(BaseModel):
     email: str
     password: str = Field(min_length=1, max_length=256)
     link_token: str = Field(default="", max_length=128)
+
+
+class SeoEntryRequest(BaseModel):
+    source: str = Field(max_length=12)
+    landing: str = Field(max_length=200)
+
+
+class SeoRecrawlRequest(BaseModel):
+    urls: list[str] = Field(default_factory=list, max_length=100)
 
 
 class WebPasswordResetRequestCreate(BaseModel):
@@ -98,6 +127,16 @@ class WebEmailChangeRequest(BaseModel):
 class WebPasswordResetComplete(BaseModel):
     password: str = Field(default="", max_length=256)
     note: str = ""
+
+
+class WebPasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+    new_password: str = Field(min_length=10, max_length=256)
+
+
+class WebPasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=10, max_length=256)
 
 
 class ClientCreate(BaseModel):
@@ -127,7 +166,12 @@ class ClientPatch(BaseModel):
     allowed_supplier_search: bool | None = None
     allowed_procurement_report: bool | None = None
     allowed_exact_product: bool | None = None
+    allowed_price_monitoring: bool | None = None
     allowed_geo_radius: bool | None = None
+    allowed_custom_batch_report: bool | None = None
+    custom_report_separate_tab: bool | None = None
+    custom_report_prompt: str | None = Field(default=None, max_length=50000)
+    direct_payment_only: bool | None = None
     monthly_job_limit: int | None = Field(default=None, ge=0)
     monthly_supplier_search_limit: int | None = Field(default=None, ge=0)
     monthly_procurement_report_limit: int | None = Field(default=None, ge=0)

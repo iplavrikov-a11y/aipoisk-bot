@@ -46,6 +46,7 @@ export type PublicSitePayload = {
   };
   trial: {
     enabled: boolean;
+    balance_rub?: number;
     supplier_search_limit: number;
     procurement_report_limit: number;
     file_limit: number;
@@ -58,6 +59,12 @@ export type PublicSitePayload = {
     procurement_report: FunctionPriceItem;
     supplier_search_extra: FunctionPriceItem;
     analysis_and_suppliers: FunctionPriceItem;
+    price_monitoring?: FunctionPriceItem;
+    custom_batch_report?: FunctionPriceItem;
+  };
+  geo_radius?: {
+    enabled: boolean;
+    surcharge_pct: number;
   };
   tariff_groups: {
     deposit?: PublicTariff[];
@@ -176,6 +183,7 @@ const fallbackData: PublicSitePayload = {
   },
   trial: {
     enabled: false,
+    balance_rub: 250,
     supplier_search_limit: 1,
     procurement_report_limit: 1,
     file_limit: 10,
@@ -185,9 +193,11 @@ const fallbackData: PublicSitePayload = {
   function_prices: {
     supplier_search: { price_kopeks: 9900, price_rub: 99 },
     exact_product: { price_kopeks: 9900, price_rub: 99 },
-    procurement_report: { price_kopeks: 9900, price_rub: 99 },
-    supplier_search_extra: { price_kopeks: 4900, price_rub: 49 },
-    analysis_and_suppliers: { price_kopeks: 19800, price_rub: 198 },
+    procurement_report: { price_kopeks: 5000, price_rub: 50 },
+    supplier_search_extra: { price_kopeks: 9900, price_rub: 99 },
+    analysis_and_suppliers: { price_kopeks: 14900, price_rub: 149 },
+    price_monitoring: { price_kopeks: 9000, price_rub: 90 },
+    custom_batch_report: { price_kopeks: 3000, price_rub: 30 },
   },
   tariff_groups: {
     deposit: defaultDepositPackages,
@@ -207,21 +217,54 @@ function apiBaseUrl() {
   ).replace(/\/+$/, "");
 }
 
-export async function getSiteData(): Promise<PublicSitePayload> {
+const SITE_DATA_TTL_MS = 30_000;
+const SITE_DATA_TIMEOUT_MS = 2_500;
+let cachedSiteData: { payload: PublicSitePayload; expiresAt: number } | null = null;
+let inflightSiteData: Promise<PublicSitePayload> | null = null;
+
+async function fetchSiteDataFromApi(): Promise<PublicSitePayload> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SITE_DATA_TIMEOUT_MS);
   try {
     const response = await fetch(`${apiBaseUrl()}/api/public/site`, {
-      next: { revalidate: 300 },
+      next: { revalidate: 60 },
       headers: {
         accept: "application/json",
       },
+      signal: controller.signal,
     });
     if (!response.ok) {
-      return fallbackData;
+      return cachedSiteData?.payload ?? fallbackData;
     }
-    return (await response.json()) as PublicSitePayload;
+    const payload = (await response.json()) as PublicSitePayload;
+    cachedSiteData = { payload, expiresAt: Date.now() + SITE_DATA_TTL_MS };
+    return payload;
   } catch {
-    return fallbackData;
+    return cachedSiteData?.payload ?? fallbackData;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+export async function getSiteData(): Promise<PublicSitePayload> {
+  const now = Date.now();
+  if (cachedSiteData && now < cachedSiteData.expiresAt) {
+    return cachedSiteData.payload;
+  }
+  if (cachedSiteData) {
+    if (!inflightSiteData) {
+      inflightSiteData = fetchSiteDataFromApi().finally(() => {
+        inflightSiteData = null;
+      });
+    }
+    return cachedSiteData.payload;
+  }
+  if (!inflightSiteData) {
+    inflightSiteData = fetchSiteDataFromApi().finally(() => {
+      inflightSiteData = null;
+    });
+  }
+  return inflightSiteData;
 }
 
 export function formatRubles(priceKopeks: number) {

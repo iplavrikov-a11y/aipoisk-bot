@@ -87,7 +87,7 @@ def unsubscribe_client(db: Session, client_id: str, reason: str = "user_request"
     record_journey_event(
         db,
         client_id,
-        channel="web" if not client.telegram_id.isdigit() else "telegram",
+        channel="telegram" if str(client.telegram_id or "").isdigit() else "web",
         event_name="marketing_unsubscribed",
         outcome="success",
         reason_code=reason[:80],
@@ -251,7 +251,7 @@ def get_due_nurturing_candidates(
             # Both channels known: prioritize where user actually works (anti-spam, no double-sending)
             if jobs:
                 latest_job = max(jobs, key=lambda j: _ensure_utc(j.created_at))
-                if latest_job.created_by_telegram_id:
+                if str(latest_job.created_by_telegram_id or "").isdigit():
                     channel = "telegram"
                     recipient = tg_recipient
                 else:
@@ -282,12 +282,18 @@ def get_due_nurturing_candidates(
             continue
 
         # Existing reminders for this client (scoped by step across all channels to prevent duplicate sending)
-        existing_reminders = {
-            r.step: r
-            for r in db.query(OnboardingReminder)
-            .filter(OnboardingReminder.client_id == client.id, OnboardingReminder.status.in_(["claimed", "sent"]))
-            .all()
-        }
+        stale_claim_cutoff = now - timedelta(hours=2)
+        existing_reminders: dict[str, OnboardingReminder] = {}
+        for r in db.query(OnboardingReminder).filter(OnboardingReminder.client_id == client.id).all():
+            if r.status == "sent":
+                existing_reminders[r.step] = r
+            elif r.status == "claimed":
+                if r.claimed_at and _ensure_utc(r.claimed_at) >= stale_claim_cutoff:
+                    existing_reminders[r.step] = r
+            elif r.status == "failed":
+                code = str(r.failure_code or "")
+                if any(tok in code for tok in ("TelegramForbiddenError", "BotBlocked", "ChatNotFound", "UserDeactivated", "#r3")):
+                    existing_reminders[r.step] = r
 
         client_created = _ensure_utc(client.created_at)
 
@@ -330,25 +336,8 @@ def get_due_nurturing_candidates(
                 )
                 continue
 
-            # Step 2 Check: Completed >= 1 job, < 4 completed jobs, latest completed job >= 48h ago
-            if "step2" not in existing_reminders and len(completed_jobs) in (1, 2, 3) and len(pending_or_running_jobs) == 0:
-                latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
-                job_age_hours = (now - latest_completed).total_seconds() / 3600.0
-                if 48.0 <= job_age_hours <= 240.0:
-                    results.append(
-                        NurturingCandidate(
-                            client_id=client.id,
-                            channel=channel,
-                            recipient=recipient,
-                            step="step2",
-                            name=client.name or "Пользователь",
-                            client=client,
-                        )
-                    )
-                    continue
-
-            # Step 3 Check: Completed >= 4 jobs, trial exhausted (balance < 99 RUB / 9900 kopeks)
-            if "step3" not in existing_reminders and len(completed_jobs) >= 4 and client.money_balance_kopeks < 9900:
+            # Step 3 Check: Completed >= 1 job and trial balance exhausted (< 99 RUB / 9900 kopeks)
+            if "step3" not in existing_reminders and len(completed_jobs) >= 1 and len(pending_or_running_jobs) == 0 and client.money_balance_kopeks < 9900:
                 latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
                 completion_age_hours = (now - latest_completed).total_seconds() / 3600.0
                 if 2.0 <= completion_age_hours <= 168.0:
@@ -358,6 +347,28 @@ def get_due_nurturing_candidates(
                             channel=channel,
                             recipient=recipient,
                             step="step3",
+                            name=client.name or "Пользователь",
+                            client=client,
+                        )
+                    )
+                    continue
+
+            # Step 2 Check: Completed >= 1 job, < 4 completed jobs, usable balance left (>= 99 RUB), latest completed job 48-240h ago
+            if (
+                "step2" not in existing_reminders
+                and len(completed_jobs) in (1, 2, 3)
+                and len(pending_or_running_jobs) == 0
+                and client.money_balance_kopeks >= 9900
+            ):
+                latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
+                job_age_hours = (now - latest_completed).total_seconds() / 3600.0
+                if 48.0 <= job_age_hours <= 240.0:
+                    results.append(
+                        NurturingCandidate(
+                            client_id=client.id,
+                            channel=channel,
+                            recipient=recipient,
+                            step="step2",
                             name=client.name or "Пользователь",
                             client=client,
                         )
@@ -389,6 +400,15 @@ def get_due_nurturing_candidates(
     return results
 
 
+def _extract_failure_retry_count(code: str | None) -> int:
+    raw = str(code or "")
+    if "#r" in raw:
+        tail = raw.rsplit("#r", 1)[-1]
+        if tail.isdigit():
+            return int(tail)
+    return 1 if raw else 0
+
+
 def claim_nurturing_step(db: Session, client_id: str, channel: str, step: str) -> OnboardingReminder | None:
     existing = (
         db.query(OnboardingReminder)
@@ -399,11 +419,21 @@ def claim_nurturing_step(db: Session, client_id: str, channel: str, step: str) -
         )
         .first()
     )
+    now_ts = now_utc()
     if existing:
-        if existing.status in ("claimed", "sent"):
+        if existing.status == "sent":
             return None
+        if existing.status == "claimed":
+            if existing.claimed_at and (_ensure_utc(now_ts) - _ensure_utc(existing.claimed_at)).total_seconds() < 7200:
+                return None
+        if existing.status == "failed":
+            code = str(existing.failure_code or "")
+            if any(tok in code for tok in ("TelegramForbiddenError", "BotBlocked", "ChatNotFound", "UserDeactivated")):
+                return None
+            if _extract_failure_retry_count(code) >= 3:
+                return None
         existing.status = "claimed"
-        existing.claimed_at = now_utc()
+        existing.claimed_at = now_ts
         db.commit()
         return existing
 
@@ -428,12 +458,10 @@ def claim_nurturing_step(db: Session, client_id: str, channel: str, step: str) -
 # =========================================================================
 
 def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: str = "https://tenderlex.ru", trial_summary: str = "") -> tuple[str, str]:
-    if email:
-        unsub_link = html_lib.escape(f"{base_url}/unsubscribe?email={quote(email)}", quote=True)
-    else:
-        unsub_token = generate_unsubscribe_token(client_id, email)
-        unsub_link = html_lib.escape(f"{base_url}/unsubscribe?token={unsub_token}", quote=True)
-    cabinet_link = html_lib.escape(f"{base_url}/cabinet", quote=True)
+    unsub_token = generate_unsubscribe_token(client_id, email)
+    unsub_link = html_lib.escape(f"{base_url}/unsubscribe?token={quote(unsub_token, safe='')}", quote=True)
+    cabinet_target = f"{base_url}/cabinet?topup=1" if step == "step3" else f"{base_url}/cabinet"
+    cabinet_link = html_lib.escape(cabinet_target, quote=True)
 
     # 3 core platform modules in strict order (matching hh-agent visual card):
     # 1. Поиск поставщиков (более 50 контактов в Excel)
@@ -448,7 +476,7 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
         '      </div>\n'
         '    </div>\n'
         '    <div style="margin-bottom: 12px;">\n'
-        '      <div style="font-weight: 700; color: #0f766e; font-size: 16px; margin-bottom: 4px;">2. Определение точного товара и аналогов</div>\n'
+        '      <div style="font-weight: 700; color: #0f766e; font-size: 16px; margin-bottom: 4px;">2. Подбор товара и аналогов</div>\n'
         '      <div style="color: #334155; font-size: 15px; line-height: 1.55;">\n'
         '        Идентифицирует заложенного заказчиком производителя по параметрам спецификации и подбирает российские аналоги из реестра Минпромторга с подтвержденными заводскими показателями. Выгрузка в Word (.docx).\n'
         '      </div>\n'
@@ -515,10 +543,10 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             '  </p>'
         )
     else:  # step3
-        subject = "TenderLex: Регулярный доступ к модулям снабжения и расчету спецификаций"
+        subject = "TenderLex: Продолжение работы и пополнение баланса"
         intro_html = (
             '  <p style="margin: 0 0 10px 0;">Здравствуйте!</p>\n'
-            f'  <p style="margin: 0 0 12px 0;">Вы завершили тестовые расчеты в <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong>. Надеемся, сервис сэкономил вам часы работы при поиске прямых заводов, подборе аналогов и анализе документации. Все модули готовы к постоянной работе:</p>'
+            f'  <p style="margin: 0 0 12px 0;">На вашем балансе в <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong> закончились средства для новых расчетов. Надеемся, сервис сэкономил вам часы работы при поиске прямых заводов, подборе аналогов и анализе документации. Все модули готовы к дальнейшей работе:</p>'
         )
         badge_text = "Выберите подходящий тариф для постоянной работы:"
         button_text = "Выбрать тариф в кабинете"
@@ -571,7 +599,7 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "• Разбирает спецификации любого формата: Word, Excel, PDF, сканы — извлекая ГОСТы и маркоразмеры;\n"
             "• За 2–3 минуты находит прямые контакты отделов сбыта заводов РФ и дилеров (email, телефоны, сайты);\n"
             "• Формирует готовый официальный Запрос КП (.docx) для оперативной отправки поставщикам;\n"
-            "• Проверяет номенклатуру по реестру Минпромторга (ГИСП, ПП 616/617).\n\n"
+            "• Проверяет номенклатуру по реестру Минпромторга (ГИСП, ПП № 1875).\n\n"
             "2️⃣ <b>Подбор товара и аналогов:</b>\n"
             "• Точный подбор моделей и российских эквивалентов по характеристикам ТЗ с выгрузкой в Word (.docx).\n\n"
             "3️⃣ <b>Анализ документации:</b>\n"
@@ -581,6 +609,7 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "📖 <i>Статья из Базы знаний:</i> <a href=\"https://tenderlex.ru/baza-znaniy/kak-naiti-postavshchika-po-tz\">Как быстро найти прямых производителей по ТЗ и ГОСТам</a>"
         )
         buttons = [
+            [{"text": "🚀 Открыть веб-кабинет", "url": f"{base_url}/cabinet"}],
             [{"text": "📖 Читать Базу знаний", "url": f"{base_url}/baza-znaniy"}],
             [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
         ]
@@ -596,6 +625,7 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "<i>Это последнее напоминание — больше не побеспокоим. Если сервис сейчас не актуален, нажмите кнопку ниже.</i>"
         )
         buttons = [
+            [{"text": "🚀 Открыть веб-кабинет", "url": f"{base_url}/cabinet"}],
             [{"text": "📖 Читать Базу знаний", "url": f"{base_url}/baza-znaniy"}],
             [{"text": "🔕 Не напоминать больше", "callback_data": "nurturing_unsubscribe"}],
         ]
@@ -609,17 +639,28 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "Расшифровка сложных характеристик, подбор эквивалентов под ТЗ заказчика с выгрузкой в Word (.docx).\n\n"
             "3️⃣ <b>Анализ документации:</b>\n"
             "Мгновенный аудит проектов контрактов по номеру закупки ЕИС — выявление штрафов выше нормы, скрытых обязательств и ловушек нацрежима.\n\n"
-            "На вашем балансе ещё есть средства — протестируйте эти сценарии на текущих расчетах!"
+            "На вашем балансе ещё есть средства — протестируйте эти сценарии на текущих расчетах!\n\n"
+            "<b>Как вам результат расчетов?</b>"
         )
         buttons = [
-            [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
+            [
+                {"text": "👍 Всё подошло", "callback_data": "nurturing_fb:good"},
+                {"text": "👎 Не то / мало заводов", "callback_data": "nurturing_fb:bad"},
+            ],
+            [
+                {"text": "💬 Поддержка / Вопрос", "callback_data": "open_contacts"},
+                {"text": "📱 Оставить телефон", "callback_data": "prompt_share_contact"},
+            ],
+            [
+                {"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"},
+            ],
         ]
     elif step == "step4_reengage":
         text = (
             "👋 <b>Здравствуйте! Давно не виделись — TenderLex на связи.</b>\n\n"
             "Вы ранее уже выполняли расчеты в сервисе. Если прямо сейчас у вас в работе появились новые сложные спецификации по 44-ФЗ / 223-ФЗ, горят сроки подачи или требуется срочно выйти на прямых изготовителей — сервис готов подключиться:\n\n"
             "1️⃣ <b>Поиск прямых производителей РФ и дилеров:</b>\n"
-            "Сбор контактов отделов сбыта (email, телефоны, сайты), оформление Запроса КП (.docx), сверка с реестром Минпромторга (ГИСП, ПП 616/617).\n\n"
+            "Сбор контактов отделов сбыта (email, телефоны, сайты), оформление Запроса КП (.docx), сверка с реестром Минпромторга (ГИСП, ПП № 1875).\n\n"
             "2️⃣ <b>Подбор товара и аналогов по ТЗ:</b>\n"
             "Точный подбор моделей и эквивалентов под требования заказчика с выгрузкой в Word (.docx).\n\n"
             "3️⃣ <b>Экспресс-аудит документации:</b>\n"
@@ -628,17 +669,29 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "Если для отдела снабжения нужны дополнительные лимиты для тестирования сложных закупок — напишите нам в ответ, поможем!"
         )
         buttons = [
-            [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
+            [
+                {"text": "🎁 Нужны ещё тесты", "callback_data": "nurturing_fb:need_credits"},
+                {"text": "💬 Помочь с ТЗ", "callback_data": "open_contacts"},
+            ],
+            [
+                {"text": "📱 Оставить контакт", "callback_data": "prompt_share_contact"},
+                {"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"},
+            ],
         ]
     else:  # step3
         text = (
-            "🏁 <b>Тестовые расчеты в TenderLex выполнены!</b>\n\n"
-            "Вы использовали стартовый баланс сервиса. Надеемся, TenderLex сэкономил вам часы работы при поиске прямых заводов, подборе аналогов и анализе документации.\n\n"
+            "🏁 <b>Баланс TenderLex подошёл к концу</b>\n\n"
+            "Средства на вашем балансе использованы. Надеемся, TenderLex сэкономил вам часы работы при поиске прямых заводов, подборе аналогов и анализе документации.\n\n"
             "Чтобы продолжить регулярную работу без пауз:\n"
-            "• Пополните баланс или выберите пакет в кабинете: https://tenderlex.ru/cabinet\n"
+            f"• Пополните баланс или выберите пакет в кабинете: {base_url}/cabinet?topup=1\n"
             "• Если требуется подключение для тендерного отдела или отдела снабжения — напишите нам в ответ, оперативно выставим счет для юрлица со всеми закрывающими документами (УПД/ЭДО)."
         )
         buttons = [
+            [{"text": "💳 Пополнить баланс", "url": f"{base_url}/cabinet?topup=1"}],
+            [
+                {"text": "💬 Обратная связь", "callback_data": "open_contacts"},
+                {"text": "📱 Оставить контакт", "callback_data": "prompt_share_contact"},
+            ],
             [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
         ]
 
@@ -701,7 +754,19 @@ async def dispatch_nurturing_candidate(db: Session, candidate: NurturingCandidat
                 failure_reason = "EmailSendFailed"
     except Exception as exc:
         logger.exception("Failed to dispatch nurturing message for client %s: %s", candidate.client_id, exc)
-        failure_reason = type(exc).__name__[:80]
+        err_name = type(exc).__name__
+        err_text_low = str(exc).lower()
+        if (
+            err_name == "TelegramForbiddenError"
+            or "bot was blocked by the user" in err_text_low
+            or "user is deactivated" in err_text_low
+            or "chat not found" in err_text_low
+        ):
+            failure_reason = "TelegramForbiddenError"
+            if candidate.client is not None:
+                candidate.client.marketing_unsubscribed = True
+        else:
+            failure_reason = err_name[:60]
         success = False
 
     if success:
@@ -718,9 +783,11 @@ async def dispatch_nurturing_candidate(db: Session, candidate: NurturingCandidat
         )
         return True
     else:
+        prev_retries = _extract_failure_retry_count(reminder.failure_code)
+        base_code = (failure_reason or "UnknownError").split("#r", 1)[0][:60]
         reminder.status = "failed"
         reminder.failed_at = now_utc()
-        reminder.failure_code = failure_reason or "UnknownError"
+        reminder.failure_code = base_code if base_code == "TelegramForbiddenError" else f"{base_code}#r{prev_retries + 1}"
         db.commit()
         return False
 

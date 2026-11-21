@@ -1,28 +1,28 @@
 import { getSiteData } from "@/lib/site-data";
 import { PublicSiteSettingsProvider } from "@/lib/public-site-settings";
 import { ChatWidget } from '@/components/chat-widget';
+import { PublicMotion } from "@/components/public-motion";
 import type { Metadata } from "next";
-import { Inter, Plus_Jakarta_Sans } from "next/font/google";
+import localFont from "next/font/local";
 import type { ReactNode } from "react";
 
 import {
   buildOrganizationJsonLd,
   buildSoftwareApplicationJsonLd,
   normalizedSiteUrl,
+  safeJsonLd,
 } from "@/lib/seo";
 
 import "./globals.css";
+import "./brand-theme.css";
+import "./public-redesign.css";
+import "@/components/public-motion.css";
 import { YandexMetrika } from "./yandex-metrika";
 
-const inter = Inter({
-  subsets: ["cyrillic", "latin"],
+const manrope = localFont({
+  src: "./fonts/Manrope.woff2",
+  weight: "200 800",
   variable: "--font-body",
-  display: "swap",
-});
-
-const plusJakartaSans = Plus_Jakarta_Sans({
-  subsets: ["latin"],
-  variable: "--font-heading",
   display: "swap",
 });
 
@@ -30,8 +30,8 @@ const siteUrl = normalizedSiteUrl();
 const defaultTitle = "TenderLex — поиск поставщиков, подбор аналогов и анализ закупок";
 const defaultDescription =
   "ИИ-поиск поставщиков по ТЗ, подбор аналогов и анализ закупок 44-ФЗ, 223-ФЗ. Кандидаты для запроса КП и рабочие отчеты с источниками для проверки.";
-const defaultOgImage = "/tenderlex-product-preview.png";
-const yandexMetrikaId = process.env.TENDERLEX_YANDEX_METRIKA_ID?.trim();
+const defaultOgImage = "/tenderlex-og-1200x630.png";
+const yandexMetrikaId = (process.env.TENDERLEX_YANDEX_METRIKA_ID || process.env.YANDEX_METRIKA_COUNTER_ID || "109753178").trim();
 const googleSiteVerification = process.env.TENDERLEX_GOOGLE_SITE_VERIFICATION?.trim();
 const yandexVerification = process.env.TENDERLEX_YANDEX_VERIFICATION?.trim();
 const verification = {
@@ -117,17 +117,17 @@ export const metadata: Metadata = {
 
 export default async function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   const data = await getSiteData();
-  const orgSchema = buildOrganizationJsonLd({ botUrl: data.bot.telegram_url });
+  const orgSchema = buildOrganizationJsonLd({ botUrl: data.bot.telegram_url, contacts: data.contacts });
   return (
-    <html lang="ru" className={`${inter.variable} ${plusJakartaSans.variable}`}>
+    <html lang="ru" className={manrope.variable}>
       <head>
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(orgSchema) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLd(orgSchema) }}
         />
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(softwareSchema) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLd(softwareSchema) }}
         />
         <script
           type="speculationrules"
@@ -138,10 +138,12 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
                   source: "list",
                   urls: [
                     "/poisk-postavshchikov-po-tz",
+                    "/podbor-tovara-i-analogov-po-tz",
+                    "/analiz-zakupochnoi-dokumentacii",
+                    "/monitoring-cen-postavshchikov-po-tz",
                     "/baza-znaniy",
                     "/otrasli",
                     "/regiony",
-                    "/analiz-zakupochnoi-dokumentacii",
                   ],
                   eagerness: "moderate",
                 },
@@ -163,7 +165,8 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
           }}
         />
       </head>
-      <body>
+      <body className="tl-theme">
+        <PublicMotion />
         <PublicSiteSettingsProvider settings={{ contacts: data.contacts, bot: data.bot }}>
         {children}
         <div className="global-legal-link">

@@ -1,5 +1,14 @@
 # TenderLex / aipoisk-bot
 
+## ⚠️ ОБЯЗАТЕЛЬНЫЙ РАБОЧИЙ ПРОТОКОЛ (ПЕРЕЗАПУСК СЛУЖБ)
+- Бэкенд работает как системная служба: `systemd: tenderlex-api.service` (uvicorn на 127.0.0.1:8088).
+- Файлы на диске НЕ подхватываются uvicorn на лету! После правок в `backend/app/`:
+  `systemctl restart tenderlex-api.service`
+  и проверка: `curl -I http://127.0.0.1:8088/<endpoint>`
+- Если браузер пишет `404 Not Found`, ЗАПРЕЩЕНО менять фронтенд. Это 100% признак того, что uvicorn не перезапущен или роут не зарегистрирован.
+- После правок в `site/`: `cd site && npm run build && systemctl restart tenderlex-site.service`.
+- Комплексный деплой: `./scripts/deploy_tenderlex_live.sh`.
+
 ## Project Context
 
 - Backend: FastAPI in `backend/app`, SQLite data under `data/`, admin API guarded by admin session/token.
@@ -25,6 +34,11 @@
 
 - **NEVER use caching for task execution, supplier searches, product checks, company verifications, market data, or AI reasoning.**
 - Every client task MUST be executed fresh in real-time. Client specifications, technical requirements, and market conditions change dynamically (companies open/close, product lines discontinue, websites change). Reusing cached results is strictly forbidden because it yields outdated information.
+
+## Customer Result Guarantee & Fallback Safety
+
+- **Customer delivery always comes first:** Every active customer job MUST receive a completed, useful result. Never disable—or recommend disabling—a working fallback path (including paid Yandex synchronous search fallback `v2/web/search` or reserve AI/search providers) if doing so creates any risk that a customer receives no answer or a failed job.
+- **Check incident & git history before proposing critical changes:** Before proposing to turn off, throttle, or replace any search/AI fallback or quota mechanism, inspect `git log` and recent failed jobs to verify whether disabling it previously caused customer-visible failures (for example, `b854770` restored Yandex sync fallback after disabling it left customers without results on 429 bursts). Cheaper/free channels may only be added **ahead of** a proven paid safety net, never by removing the last-resort fallback.
 
 ## Public Site Contract
 

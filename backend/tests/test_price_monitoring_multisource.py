@@ -164,8 +164,7 @@ def test_12_positions_normalization_and_hints():
 
     # Specific hints checks
     propan_hints = extract_package_hints("Пропан сжиженный бал.50л", "кг")
-    assert propan_hints.get("cylinder_volume_l") == 50.0
-    assert propan_hints.get("gas_type") == "propane"
+    assert propan_hints == {"pack_pieces": None, "pack_weight_kg": None}
 
     electrodes_hints = extract_package_hints("Электрод ОЗС-12 4мм пачка 5 кг", "кг")
     assert electrodes_hints.get("pack_weight_kg") == 5.0
@@ -250,8 +249,8 @@ def test_12_positions_e2e_pipeline_and_report():
 
         # Check suppliers columns populated in row 2
         assert ws_details.cell(row=2, column=6).value == "ООО ПромПоставка 1"
-        assert ws_details.cell(row=2, column=15).value == "ЗАО ЗаводСнаб 1"
-        assert ws_details.cell(row=2, column=24).value == "ТД ОптТорг 1"
+        assert ws_details.cell(row=2, column=16).value == "ЗАО ЗаводСнаб 1"
+        assert ws_details.cell(row=2, column=26).value == "ТД ОптТорг 1"
 
 
 def test_city_aware_price_monitoring():

@@ -14,18 +14,20 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: { absolute: "Поиск поставщиков по ТЗ и спецификации | TenderLex" },
+  title: { absolute: "Поиск поставщиков и производителей по ТЗ (44-ФЗ, 223-ФЗ) — TenderLex" },
   description:
-    "Поиск поставщиков по ТЗ: разберите спецификацию, соберите кандидатов для запроса КП и проверьте контакты и условия поставки.",
+    "Поиск прямых поставщиков, заводов-изготовителей и дилеров по ТЗ и спецификации: проверка ИНН и контактов отдела продаж, сверка с реестром Минпромторга (ГИСП, ПП № 1875) и готовый запрос КП.",
   keywords: [
     "поиск поставщиков по ТЗ",
-    "подбор поставщиков по спецификации",
+    "поиск поставщиков по спецификации",
+    "подбор поставщиков по ТЗ",
     "поиск производителей по ТЗ",
     "контакты отделов продаж заводов",
     "запрос коммерческого предложения",
     "производители по ГОСТ",
     "проверка ИНН поставщика",
-    "база поставщиков для тендера",
+    "реестр Минпромторга ПП 1875 поставщики",
+    "поиск поставщиков 44 фз 223 фз",
     "запрос счета по спецификации",
     "TenderLex",
   ],
@@ -35,9 +37,9 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     url: "/poisk-postavshchikov-po-tz",
-    title: "Поиск поставщиков по ТЗ и спецификации | TenderLex",
+    title: "Поиск поставщиков и производителей по ТЗ (44-ФЗ, 223-ФЗ) — TenderLex",
     description:
-      "Разбор спецификации, кандидаты на поставку и проект запроса КП. Контакты, цены и возможность поставки подтверждает поставщик.",
+      "Поиск прямых производителей и дилеров по ТЗ и спецификации: проверка ИНН и контактов сбыта, сверка с реестром Минпромторга (ГИСП, ПП № 1875) и готовый запрос КП.",
     siteName: "TenderLex",
     images: [
       {
@@ -50,9 +52,10 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Поиск поставщиков по ТЗ и спецификации | TenderLex",
+    title: "Поиск поставщиков и производителей по ТЗ (44-ФЗ, 223-ФЗ) — TenderLex",
     description:
-      "Разбор спецификации, кандидаты на поставку и проект запроса КП. Контакты, цены и возможность поставки подтверждает поставщик.",
+      "Прямые заводы и официальные дилеры по спецификации ТЗ: проверка ИНН и контактов сбыта, сверка с ГИСП и готовый проект запроса КП.",
+    images: ["/tenderlex-product-preview.png"],
   },
 };
 
@@ -80,9 +83,19 @@ const faqItems: FaqItem[] = [
       "Да. Модуль готовит проект запроса с позициями из ТЗ. Перед отправкой добавьте объём, срок, адрес поставки, требования к документам и проверьте адресата.",
   },
   {
+    question: "Можно ли ограничить поиск только поставщиками из РФ, задать радиус доставки или искать подрядчиков услуг?",
+    answer:
+      "Да. В личном кабинете TenderLex доступны три режима географии («Только Россия», «РФ и СНГ (ЕАЭС)» и «Весь мир»), опция приоритета в радиусе доставки от вашего города, а также режим поиска услуг и подрядчиков для строительных, монтажных, сервисных и иных работ. Загружать можно Word, Excel, PDF, архивы, скриншоты и фото (PNG, JPG, WEBP) или текст задачи.",
+  },
+  {
+    question: "Подходит ли поиск поставщиков для 44-ФЗ, 223-ФЗ и коммерческих закупок?",
+    answer:
+      "Да. Модуль работает с закупками по 44-ФЗ, 223-ФЗ, коммерческими запросами снабжения и строительными сметами: помогает выйти на прямых изготовителей из реестра Минпромторга (ГИСП, ПП № 1875) и официальных дилеров, чтобы быстрее собрать три и более актуальных КП.",
+  },
+  {
     question: "Где посмотреть условия и выбрать тариф?",
     answer:
-      "Актуальные условия и доступные пакеты показываются в личном кабинете перед запуском задачи. Они управляются в системе и могут меняться; страница не фиксирует цену или объём услуги.",
+      "Актуальные условия и доступные пакеты показываются в личном кабинете перед запуском задачи. При запуске сумма резервируется на балансе и списывается только после готового результата (при ошибке возвращается обратно).",
   },
 ];
 
@@ -122,11 +135,17 @@ export default async function PoiskPostavshchikovPage() {
         <SiteHeader />
 
         {/* HERO */}
-        <section className="relative pt-12 pb-20 border-b border-slate-200 bg-gradient-to-b from-teal-50/50 via-slate-50 to-white">
+        <section className="relative pt-8 pb-20 border-b border-slate-200 bg-gradient-to-b from-teal-50/50 via-slate-50 to-white">
           <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
+            <nav aria-label="Breadcrumb" className="flex items-center justify-center gap-2 text-xs text-slate-500">
+              <Link href="/" className="hover:text-teal-700 transition-colors">Главная</Link>
+              <span>/</span>
+              <span className="text-slate-800 font-medium">Поиск поставщиков по ТЗ</span>
+            </nav>
+
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-bold uppercase tracking-wider shadow-2xs">
               <Search size={14} className="text-teal-600" />
-                <span>Поиск поставщиков по спецификации</span>
+              <span>Поиск поставщиков и заводов по ТЗ</span>
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-extrabold text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
@@ -134,7 +153,7 @@ export default async function PoiskPostavshchikovPage() {
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-normal leading-relaxed">
-              Загрузите файл документации или спецификации — TenderLex выделит номенклатуру, подберет релевантных производителей и поставщиков и подготовит проект запроса КП. Полноту и актуальность контактов следует проверить перед отправкой.
+              Загрузите спецификацию, ТЗ или скриншот (Word, Excel, PDF, PNG/JPG) — TenderLex подберёт производителей, поставщиков товаров или подрядчиков услуг с учётом географии и радиуса доставки, и подготовит проект запроса КП. Полноту и актуальность контактов следует проверить перед отправкой.
             </p>
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
@@ -187,21 +206,29 @@ export default async function PoiskPostavshchikovPage() {
             <div className="mt-12 p-8 sm:p-10 rounded-3xl bg-gradient-to-br from-teal-900 to-slate-900 text-white shadow-xl flex flex-col md:flex-row items-center justify-between gap-6">
               <div className="space-y-2 max-w-xl text-left">
                 <span className="text-xs font-bold text-teal-300 uppercase tracking-wider bg-teal-400/20 px-3 py-1 rounded-full border border-teal-400/30 inline-block">
-                  Смежный сервис
+                  Смежные модули платформы
                 </span>
                 <h3 className="text-xl sm:text-2xl font-extrabold text-white">
-                  Нужно выявить скрытую модель или подобрать аналоги по ТЗ?
+                  Нужно подобрать аналоги по ТЗ или проверить проект контракта?
                 </h3>
                 <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                  Сначала сопоставьте характеристики с документами изготовителя в модуле «Подбор товара и аналогов», затем используйте проверенную спецификацию для запроса КП.
+                  В модуле «Подбор товара и аналогов» можно сверить характеристики с паспортами производителей и ГИСП, а в «Анализе документации» — заранее выявить риски контракта.
                 </p>
               </div>
-              <Link
-                href="/podbor-tovara-i-analogov-po-tz"
-                className="shrink-0 px-6 py-3.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs shadow-md transition-all hover:scale-102"
-              >
-                Подобрать аналоги по ТЗ →
-              </Link>
+              <div className="flex flex-col sm:flex-row gap-3 shrink-0">
+                <Link
+                  href="/podbor-tovara-i-analogov-po-tz"
+                  className="px-5 py-3 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs shadow-md transition-all text-center"
+                >
+                  Подбор товара и аналогов →
+                </Link>
+                <Link
+                  href="/analiz-zakupochnoi-dokumentacii"
+                  className="px-5 py-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs border border-white/25 transition-all text-center"
+                >
+                  Анализ документации
+                </Link>
+              </div>
             </div>
           </div>
         </section>
@@ -209,14 +236,14 @@ export default async function PoiskPostavshchikovPage() {
         <section className="py-16 sm:py-20 border-b border-slate-200 bg-slate-50">
           <div className="container max-w-5xl mx-auto px-4 sm:px-6">
             <div className="max-w-3xl mb-8">
-              <span className="text-xs font-bold uppercase tracking-wider text-teal-700">Учебный пример</span>
-              <h2 className="mt-3 text-2xl sm:text-3xl font-black text-slate-900">От требований к проверяемому запросу КП</h2>
-              <p className="mt-3 text-sm sm:text-base text-slate-600 leading-relaxed">Это условная структура работы, а не реальная поставка, кейс или обещание результата.</p>
+              <span className="text-xs font-bold uppercase tracking-wider text-teal-700">Пример рабочего сценария</span>
+              <h2 className="mt-3 text-2xl sm:text-3xl font-black text-slate-900">От спецификации ТЗ к проверяемому запросу КП</h2>
+              <p className="mt-3 text-sm sm:text-base text-slate-600 leading-relaxed">Типовой порядок работы отдела снабжения при сборе коммерческих предложений по номенклатуре ТЗ.</p>
             </div>
             <ol className="grid md:grid-cols-3 gap-5 list-none">
-              <li className="rounded-2xl border border-slate-200 bg-white p-6"><span className="text-xs font-bold text-teal-700">1. Входные требования</span><p className="mt-3 text-sm text-slate-700">«Кабель: марка, сечение, длина, ГОСТ или ТУ, количество, регион и срок».</p></li>
-              <li className="rounded-2xl border border-slate-200 bg-white p-6"><span className="text-xs font-bold text-teal-700">2. Рабочий результат</span><p className="mt-3 text-sm text-slate-700">Список кандидатов и проект запроса КП с характеристиками, объёмом и вопросами о комплектности.</p></li>
-              <li className="rounded-2xl border border-slate-200 bg-white p-6"><span className="text-xs font-bold text-teal-700">3. Проверка клиентом</span><p className="mt-3 text-sm text-slate-700">Сверьте роль компании, контакты, документы на товар, цену, срок и готовность отгрузки до заказа.</p></li>
+              <li className="rounded-2xl border border-slate-200 bg-white p-6"><span className="text-xs font-bold text-teal-700">1. Входные требования</span><p className="mt-3 text-sm text-slate-700">Например: «Задвижка 30с41нж Ду100 Ру16 или кабель ВВГнг-LS 3х2.5 по ГОСТ, объём, регион и срок поставки».</p></li>
+              <li className="rounded-2xl border border-slate-200 bg-white p-6"><span className="text-xs font-bold text-teal-700">2. Рабочий результат</span><p className="mt-3 text-sm text-slate-700">Структурированный пул изготовителей и дилеров с контактами отделов сбыта и проект запроса КП.</p></li>
+              <li className="rounded-2xl border border-slate-200 bg-white p-6"><span className="text-xs font-bold text-teal-700">3. Проверка перед заявкой</span><p className="mt-3 text-sm text-slate-700">Сверьте статус компании, наличие, паспорта качества и актуальную цену в ответном КП перед подачей заявки.</p></li>
             </ol>
             <div className="mt-8 flex flex-wrap gap-x-5 gap-y-3 text-sm">
               <Link className="text-teal-700 underline underline-offset-4" href="/baza-znaniy/kak-naiti-postavshchika-po-tz">Как подготовить поиск по ТЗ</Link>

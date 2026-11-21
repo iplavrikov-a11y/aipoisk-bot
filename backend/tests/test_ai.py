@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
+
 import app.ai as ai
 from app.ai import ModelSelection, model_selection_attempts
 
@@ -83,6 +85,74 @@ class AiModelFallbackTests(unittest.TestCase):
 
 
 class AiCallFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rate_limit_recovered_by_retry_is_logged_without_alert(self) -> None:
+        responses = [
+            httpx.Response(429, headers={"Retry-After": "0"}, json={"error": {"code": 429}}),
+            httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]}),
+        ]
+        with (
+            patch("httpx.AsyncClient.post", side_effect=responses) as post,
+            patch("app.admin_alerts.dispatch_telegram_admin_alert") as alert,
+            self.assertLogs("app.ai", level="INFO") as logs,
+        ):
+            result = await ai.call_llm(_settings(), "prompt", override="gemini:gemini-3.8-flash-high")
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(post.call_count, 2)
+        alert.assert_not_called()
+        self.assertIn("status=429", "\n".join(logs.output))
+
+    async def test_capacity_error_recovered_by_fallback_does_not_alert(self) -> None:
+        settings = _settings()
+        settings.light_model = "gemini-3.8-flash-high"
+        settings.ai_analysis_fallback_json = '[{"provider":"gemini","modelId":"gemini-3-flash"}]'
+        responses = [
+            httpx.Response(503, json={"error": {"code": 503, "status": "UNAVAILABLE"}}),
+            httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]}),
+        ]
+        with (
+            patch("httpx.AsyncClient.post", side_effect=responses) as post,
+            patch("app.admin_alerts.dispatch_telegram_admin_alert") as alert,
+        ):
+            result = await ai.call_llm(settings, "prompt", max_retries=0)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(
+            [call.kwargs["json"]["model"] for call in post.call_args_list],
+            ["gemini-3.8-flash-high", "gemini-3-flash"],
+        )
+        alert.assert_not_called()
+
+    async def test_provider_alert_sent_once_after_retries_and_fallback_fail(self) -> None:
+        settings = _settings()
+        settings.light_model = "gemini-3.8-flash-high"
+        settings.ai_analysis_fallback_json = '[{"provider":"gemini","modelId":"gemini-3-flash"}]'
+        models = []
+        with patch("app.admin_alerts.dispatch_telegram_admin_alert") as alert:
+            async def post(*_args, json, **_kwargs):
+                alert.assert_not_called()
+                model = json["model"]
+                models.append(model)
+                if model == "gemini-3.8-flash-high":
+                    return httpx.Response(
+                        429,
+                        headers={"Retry-After": "0"},
+                        json={"error": {"details": [{"metadata": {"quotaResetDelay": "160ms"}}]}},
+                    )
+                return httpx.Response(503, headers={"Retry-After": "0"})
+
+            with patch("httpx.AsyncClient.post", side_effect=post):
+                with self.assertRaisesRegex(RuntimeError, "HTTP 503"):
+                    await ai.call_llm(settings, "prompt", max_retries=1)
+
+        self.assertEqual(models, ["gemini-3.8-flash-high"] * 2 + ["gemini-3-flash"] * 2)
+        alert.assert_called_once()
+        message = alert.call_args.args[0]
+        self.assertIn("HTTP 503", message)
+        self.assertIn("gemini-3.8-flash-high", message)
+        self.assertIn("gemini-3-flash", message)
+        self.assertNotIn("баланс", message)
+
     async def test_post_llm_request_includes_http_error_body(self) -> None:
         original_client = ai.httpx.AsyncClient
 

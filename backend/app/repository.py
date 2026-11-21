@@ -11,8 +11,10 @@ from .billing import (
     OP_GRANT,
     access_error_for_units,
     client_uses_trial_access,
+    effective_job_unit_price_kopeks,
     effective_price_kopeks,
     grant_trial_balance,
+    money_balance_summary,
     resolve_requested_billing_kinds,
 )
 from .config import config
@@ -25,8 +27,18 @@ MODE_EXACT_PRODUCT = "exact_product"
 MODE_PRICE_MONITORING = "price_monitoring"
 DEFAULT_SUPPLIER_TARGET = 50
 MAX_SUPPLIER_TARGET = 100
+INTERNAL_JOB_MARKERS = (
+    "worker_smoke",
+    "smoke_test",
+    "smoke_check",
+    "live_smoke",
+    "live_retest",
+    "retest_internal",
+    "ai_required_smoke",
+    "[internal]",
+)
 INTERNAL_JOB_PATTERN = re.compile(
-    r"(smoke|retest|patch2?|remain|pusher|ai_required|live_|worker_smoke)",
+    r"(?:worker_smoke|smoke_test|smoke_check|live_smoke|live_retest|retest_internal|ai_required_smoke|\[internal\]|^retest$)",
     re.IGNORECASE,
 )
 PENDING_TELEGRAM_ID_PREFIX = "pending:"
@@ -172,40 +184,20 @@ def current_function_usage(db: Session, client: Client) -> tuple[int, int, int]:
 
 
 def is_internal_job_record(job: Job | object) -> bool:
-    text = " ".join(
-        str(getattr(job, attr, "") or "")
-        for attr in ("title", "message", "error")
-    ).lower()
-    return bool(INTERNAL_JOB_PATTERN.search(text))
+    for attr in ("title", "message"):
+        val = str(getattr(job, attr, "") or "").strip()
+        if val and INTERNAL_JOB_PATTERN.search(val):
+            return True
+    return False
 
 
 def commercial_jobs_query(db: Session, client: Client):
-    internal_filters = [
-        func.coalesce(Job.title, "").ilike("%smoke%"),
-        func.coalesce(Job.title, "").ilike("%retest%"),
-        func.coalesce(Job.title, "").ilike("%patch%"),
-        func.coalesce(Job.title, "").ilike("%remain%"),
-        func.coalesce(Job.title, "").ilike("%pusher%"),
-        func.coalesce(Job.title, "").ilike("%ai_required%"),
-        func.coalesce(Job.title, "").ilike("%live_%"),
-        func.coalesce(Job.title, "").ilike("%worker_smoke%"),
-        func.coalesce(Job.message, "").ilike("%smoke%"),
-        func.coalesce(Job.message, "").ilike("%retest%"),
-        func.coalesce(Job.message, "").ilike("%patch%"),
-        func.coalesce(Job.message, "").ilike("%remain%"),
-        func.coalesce(Job.message, "").ilike("%pusher%"),
-        func.coalesce(Job.message, "").ilike("%ai_required%"),
-        func.coalesce(Job.message, "").ilike("%live_%"),
-        func.coalesce(Job.message, "").ilike("%worker_smoke%"),
-        func.coalesce(Job.error, "").ilike("%smoke%"),
-        func.coalesce(Job.error, "").ilike("%retest%"),
-        func.coalesce(Job.error, "").ilike("%patch%"),
-        func.coalesce(Job.error, "").ilike("%remain%"),
-        func.coalesce(Job.error, "").ilike("%pusher%"),
-        func.coalesce(Job.error, "").ilike("%ai_required%"),
-        func.coalesce(Job.error, "").ilike("%live_%"),
-        func.coalesce(Job.error, "").ilike("%worker_smoke%"),
-    ]
+    internal_filters = []
+    for col in (Job.title, Job.message):
+        coalesced = func.coalesce(col, "")
+        for marker in INTERNAL_JOB_MARKERS:
+            internal_filters.append(coalesced.ilike(f"%{marker}%"))
+        internal_filters.append(func.lower(func.trim(coalesced)) == "retest")
     return db.query(Job).filter(Job.client_id == client.id).filter(not_(or_(*internal_filters)))
 
 
@@ -477,6 +469,7 @@ def client_access_error(
     incoming_file_count: int = 0,
     supplier_search_count: int = 1,
     supplier_search_run_type: str = "initial",
+    geo_radius_km: int | None = None,
 ) -> str:
     if not client:
         return "Доступ не подключён. Отправьте администратору ваш Telegram ID через команду /id."
@@ -484,12 +477,33 @@ def client_access_error(
         return "Доступ отключён. Свяжитесь с администратором."
     if mode not in {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS, MODE_EXACT_PRODUCT, MODE_PRICE_MONITORING}:
         return "Неизвестный режим обработки."
+    if geo_radius_km:
+        settings = get_or_create_settings(db)
+        if not (settings.geo_radius_search_enabled_global or client.allowed_geo_radius):
+            return "Приоритет доставки пока не подключён для вашего аккаунта."
     if mode == MODE_PRICE_MONITORING:
-        if not getattr(client, "allowed_price_monitoring", False):
-            return "Модуль мониторинга цен не подключён для вашего аккаунта. Обратитесь к администратору."
-        price = effective_price_kopeks(db, client, KIND_PRICE_MONITORING)
-        if int(client.money_balance_kopeks or 0) < price:
-            return f"Недостаточно средств на балансе. Для запуска мониторинга требуется минимум {round(price / 100, 2)} ₽."
+        settings = get_or_create_settings(db)
+        pm_mode = getattr(settings, "price_monitoring_access_mode", "all") or "all"
+        if pm_mode == "all":
+            pm_allowed = True
+        elif pm_mode == "disabled":
+            pm_allowed = False
+        else:
+            pm_allowed = bool(getattr(client, "allowed_price_monitoring", False))
+        if not pm_allowed:
+            return "Модуль мониторинга цен временно отключён администратором."
+        price = effective_job_unit_price_kopeks(
+            db,
+            client,
+            KIND_PRICE_MONITORING,
+            geo_radius_km=geo_radius_km,
+        )
+        available = money_balance_summary(db, client)["available_kopeks"]
+        if available < price:
+            return (
+                "Недостаточно средств на балансе. "
+                f"Доступно {round(available / 100, 2)} ₽, нужно минимум {round(price / 100, 2)} ₽."
+            )
         return ""
     supplier_units, report_units = requested_function_units(mode, supplier_search_count=supplier_search_count)
     uses_trial_access = client_uses_trial_access(db, client)

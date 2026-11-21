@@ -1,10 +1,9 @@
 import type { Metadata } from "next";
 
+import { getSiteData } from "@/lib/site-data";
 import { CabinetClient } from "./cabinet-client";
 
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
-export const fetchCache = "force-no-store";
 
 export const metadata: Metadata = {
   title: "Личный кабинет",
@@ -31,6 +30,8 @@ export const metadata: Metadata = {
   },
 };
 
-export default function CabinetPage() {
-  return <CabinetClient />;
+export default async function CabinetPage() {
+  const siteData = await getSiteData();
+  const initialTrialBalanceRub = Math.max(0, siteData.trial?.balance_rub ?? 250);
+  return <CabinetClient initialTrialBalanceRub={initialTrialBalanceRub} />;
 }

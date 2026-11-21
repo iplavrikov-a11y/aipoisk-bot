@@ -63,16 +63,18 @@ export async function ContactSection({
             </span>
 
             <div className="flex flex-wrap items-center justify-center gap-3 max-w-5xl mx-auto">
-              {/* Phone */}
-              <a
-                href={data.contacts.phone_url || `tel:${(data.contacts.phone || "+7 (921) 062-99-09").replace(/[^0-9+]/g, "")}`}
-                className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-teal-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[140px]"
-              >
-                <Phone size={16} className="text-teal-600 shrink-0" />
-                <strong className="text-sm font-bold text-slate-900 group-hover:text-teal-700">
-                  {data.contacts.phone || "+7 (921) 062-99-09"}
-                </strong>
-              </a>
+              {/* Phone (shown only when configured in admin) */}
+              {data.contacts.phone ? (
+                <a
+                  href={data.contacts.phone_url || `tel:${data.contacts.phone.replace(/[^0-9+]/g, "")}`}
+                  className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-teal-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[140px]"
+                >
+                  <Phone size={16} className="text-teal-600 shrink-0" />
+                  <strong className="text-sm font-bold text-slate-900 group-hover:text-teal-700">
+                    {data.contacts.phone}
+                  </strong>
+                </a>
+              ) : null}
 
               {/* Telegram */}
               <a

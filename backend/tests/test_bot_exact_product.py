@@ -1,7 +1,7 @@
 import pytest
 from app.bot import _tariffs_text, _cabinet_text, _exact_product_scenario_text
 from app.db import SessionLocal
-from app.models import Client, SystemSettings, TariffPackage
+from app.models import Client, ClientTelegramAccount, SystemSettings, TariffPackage, UserJourneyEvent
 from app.repository import get_or_create_settings
 
 
@@ -91,8 +91,12 @@ async def test_handle_document_in_exact_product_scenario(monkeypatch):
         PENDING_UPLOADS.pop(chat_id, None)
         db = SessionLocal()
         try:
-            db.query(Client).filter(Client.telegram_id == str(chat_id)).delete()
-            db.commit()
+            cl = db.query(Client).filter(Client.telegram_id == str(chat_id)).first()
+            if cl:
+                db.query(UserJourneyEvent).filter(UserJourneyEvent.client_id == cl.id).delete()
+                db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == cl.id).delete()
+                db.delete(cl)
+                db.commit()
         finally:
             db.close()
 

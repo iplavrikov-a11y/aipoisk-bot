@@ -86,11 +86,22 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
     (KillBot, Cloudflare, DDoS-Guard) и рендеринга SPA/динамических таблиц характеристик.
     Имеет жесткие таймауты (Karpathy guidelines: budget timeout <= 7s суммарно на ссылку).
     """
+    from ..ssrf_guard import async_is_safe_public_http_url, async_validate_public_http_url, install_playwright_ssrf_guard
+
+    if not await async_is_safe_public_http_url(url):
+        return None
+
     # 1. Быстрый легковесный обход через curl_cffi (Chrome TLS fingerprint)
     if CurlCffiAsyncSession is not None:
         try:
             async with CurlCffiAsyncSession(impersonate="chrome124", timeout=7.0) as session:
-                resp = await session.get(url)
+                resp = await session.get(url, allow_redirects=False)
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    loc = (resp.headers.get("location") or "").strip()
+                    if loc:
+                        next_u = urljoin(url, loc)
+                        if await async_is_safe_public_http_url(next_u):
+                            resp = await session.get(next_u, allow_redirects=False)
                 if resp.status_code == 200 and resp.text:
                     body_text = ""
                     if trafilatura is not None:
@@ -146,7 +157,10 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
                     locale="ru-RU",
                 )
                 page = await context.new_page()
+                await install_playwright_ssrf_guard(page)
                 await page.goto(url, wait_until="domcontentloaded", timeout=7000)
+                if not await async_is_safe_public_http_url(page.url):
+                    return None
                 await page.wait_for_timeout(300)
                 content = await page.content()
                 title = await page.title()
@@ -219,9 +233,36 @@ async def fetch_web_or_pdf_document(
             "Accept": "text/html,application/xhtml+xml,application/xml,application/pdf;q=0.9,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         }
-        response = await client.get(url, headers=headers, timeout=timeout_seconds, follow_redirects=True)
+        try:
+            from ..price_monitoring.cookie_manager import cookie_manager
+            custom_cookie = cookie_manager.get_cookie_for_url(url)
+            if custom_cookie:
+                headers["Cookie"] = custom_cookie
+        except Exception:
+            pass
+        from ..ssrf_guard import async_validate_public_http_url
+
+        current_url = url
+        response = None
+        for _hop in range(5):
+            await async_validate_public_http_url(current_url)
+            response = await client.get(
+                current_url,
+                headers=headers,
+                timeout=timeout_seconds,
+                follow_redirects=False,
+            )
+            if getattr(response, "status_code", 0) in (301, 302, 303, 307, 308):
+                loc = (getattr(response, "headers", {}) or {}).get("location", "")
+                if not loc:
+                    return None
+                current_url = urljoin(str(getattr(response, "url", current_url) or current_url), loc)
+                continue
+            break
+        if response is None:
+            return None
         if response.status_code in (403, 503, 429):
-            return await _fetch_with_browser_fallback(url, domain)
+            return await _fetch_with_browser_fallback(current_url, domain)
         if response.status_code >= 400:
             return None
 
@@ -255,6 +296,24 @@ async def fetch_web_or_pdf_document(
         # HTML-страница
         html_text = response.text or ""
         soup = BeautifulSoup(html_text, "html.parser")
+
+        # Извлечение структурированных данных Schema.org (Product, Brand, SKU) до удаления скриптов
+        schema_block = ""
+        try:
+            from ..price_monitoring.extractor import extract_schema_org_product_data
+            product_info, _ = extract_schema_org_product_data(soup)
+            if product_info:
+                parts = []
+                if product_info.get("name"):
+                    parts.append(f"Товар: {product_info['name']}")
+                if product_info.get("sku"):
+                    parts.append(f"Артикул/SKU/Модель: {product_info['sku']}")
+                if product_info.get("brand"):
+                    parts.append(f"Бренд/Производитель: {product_info['brand']}")
+                if parts:
+                    schema_block = "[СТРУКТУРИРОВАННЫЕ ДАННЫЕ ПРОИЗВОДИТЕЛЯ (SCHEMA.ORG JSON-LD)]:\n" + "\n".join(f"- {p}" for p in parts) + "\n\n"
+        except Exception:
+            pass
 
         # Поиск ссылок на технические PDF-паспорта и инструкции завода
         pdf_links = extract_pdf_links_from_html(html_text, str(response.url))
@@ -303,7 +362,7 @@ async def fetch_web_or_pdf_document(
         body_text = soup.get_text(" ", strip=True)
         body_text = re.sub(r"\s+", " ", body_text).strip()
 
-        combined_text = ""
+        combined_text = schema_block
         if spec_tables:
             combined_text += "\n[ТАБЛИЦА ТЕХНИЧЕСКИХ ХАРАКТЕРИСТИК ИЗ ДОКУМЕНТА]:\n" + "\n\n".join(spec_tables) + "\n\n"
         combined_text += body_text

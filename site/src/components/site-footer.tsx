@@ -4,7 +4,7 @@ import { TenderLexLogo } from "@/components/logo";
 
 export function SiteFooter() {
   return (
-    <footer className="bg-white text-slate-600 text-xs border-t border-slate-200">
+    <footer className="tl-site-footer bg-white text-slate-600 text-xs border-t border-slate-200">
       {/* Main navigation columns */}
       <div className="container max-w-6xl mx-auto px-4 sm:px-6 py-12 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
         {/* Brand Column */}
@@ -29,6 +29,7 @@ export function SiteFooter() {
             <li><Link href="/poisk-postavshchikov-po-tz" className="hover:text-teal-700 transition-colors font-medium">Поиск поставщиков по ТЗ</Link></li>
             <li><Link href="/podbor-tovara-i-analogov-po-tz" className="hover:text-teal-700 transition-colors font-medium">Подбор товара и аналогов</Link></li>
             <li><Link href="/analiz-zakupochnoi-dokumentacii" className="hover:text-teal-700 transition-colors font-medium">Анализ документации</Link></li>
+            <li><Link href="/monitoring-cen-postavshchikov-po-tz" className="hover:text-teal-700 transition-colors font-medium">Мониторинг цен по спецификациям</Link></li>
             <li><Link href="/api-integracii" className="hover:text-teal-700 transition-colors font-medium text-teal-800 font-semibold">B2B API и интеграции (1C, ERP)</Link></li>
             <li><Link href="/poisk-proizvoditeley-po-tz" className="hover:text-teal-700 transition-colors font-medium">Поиск заводов-производителей</Link></li>
             <li><Link href="/poisk-postavshchikov-dlya-tendera" className="hover:text-teal-700 transition-colors font-medium">Подбор поставщиков под тендер</Link></li>
@@ -44,6 +45,7 @@ export function SiteFooter() {
           <strong className="text-slate-900 font-bold text-sm block mb-3">База знаний</strong>
           <ul className="space-y-2.5">
             <li><Link href="/baza-znaniy" className="hover:text-teal-700 font-bold transition-colors">Все руководства и статьи</Link></li>
+            <li><Link href="/baza-znaniy/monitoring-cen-postavshchikov-po-specifikaciyam" className="hover:text-teal-700 transition-colors font-medium">Мониторинг цен и расчет НМЦК</Link></li>
             <li><Link href="/baza-znaniy/kak-naiti-postavshchika-po-tz" className="hover:text-teal-700 transition-colors font-medium">Как найти поставщика по ТЗ</Link></li>
             <li><Link href="/baza-znaniy/analiz-riskov-zakupki-44-fz-223-fz" className="hover:text-teal-700 transition-colors font-medium">Чек-лист рисков 44-ФЗ</Link></li>
             <li><Link href="/baza-znaniy/reestr-minpromtorga-postanovleniya-616-617" className="hover:text-teal-700 transition-colors font-medium">Национальный режим: ПП № 1875</Link></li>
@@ -122,7 +124,11 @@ export function SiteFooter() {
       <div className="border-t border-slate-200 bg-slate-50 py-6 px-4 sm:px-6 text-slate-500 text-[11px] leading-relaxed">
         <div className="container max-w-6xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
           <div className="text-slate-600">
-            <span>© {new Date().getFullYear()} TenderLex. Все права защищены. Работает по всей территории РФ.</span>
+            <span>© {new Date().getFullYear()} Сервис «ТендерЛекс» (TenderLex). Все права защищены. Базы данных размещены на территории РФ.</span>
+          </div>
+          <div className="text-slate-500 text-[11px]">
+            <span>ИП Груздев И. В. • ИНН 352516048881 • ОГРНИП 323352500038991 • </span>
+            <Link href="/legal" className="text-teal-700 hover:underline font-medium">Реквизиты и оферта</Link>
           </div>
         </div>
       </div>

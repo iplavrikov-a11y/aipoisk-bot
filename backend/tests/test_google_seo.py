@@ -1,4 +1,6 @@
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 import pytest
 
 from app.google_seo import fetch_google_analytics
@@ -60,6 +62,8 @@ def test_google_analytics_uses_closed_property_total_and_labels_query_coverage()
             return {"rows": [{"clicks": 13, "impressions": 961, "ctr": 13 / 961, "position": 24.33}]}
         if dimensions == ["query"]:
             return {"rows": [{"keys": ["visible query"], "clicks": 0, "impressions": 234, "ctr": 0, "position": 20.0}]}
+        if dimensions == ["page"]:
+            return {"rows": [{"keys": ["https://tenderlex.ru/analiz-rynka-44-fz"], "clicks": 8, "impressions": 20, "ctr": 0.4, "position": 11.7}]}
         if dimensions == ["date"]:
             return {"rows": []}
         if dimensions == ["date", "query"]:
@@ -164,6 +168,29 @@ def test_valid_empty_query_response_is_real_zero_with_available_status():
     assert data["query_sample"]["status"] == "available"
     assert data["query_sample"]["clicks"] == 0
     assert data["query_sample"]["row_count"] == 0
+
+
+def test_click_spikes_use_final_days_and_preserve_reported_clicks():
+    service = _gsc_fixture()
+    day = (datetime.now(ZoneInfo("America/Los_Angeles")).date() - timedelta(days=5)).isoformat()
+
+    def response_for(body):
+        if body["dimensions"] == []:
+            return {"rows": [{"clicks": 35, "impressions": 200, "position": 26}]}
+        if body["dimensions"] == ["date"]:
+            count = 25 if body["dataState"] == "final" else 99
+            return {"rows": [{"keys": [day], "clicks": count, "impressions": 100, "position": 25}]}
+        return {"rows": []}
+
+    query = service.searchanalytics().query
+    query.return_value.execute.side_effect = lambda: response_for(query.call_args.kwargs["body"])
+    with patch("app.google_seo.get_gsc_service", return_value=service):
+        data = fetch_google_analytics()
+
+    assert data["property_totals"]["clicks"] == 35
+    assert data["click_anomalies"]["anomaly_clicks"] == 25
+    assert data["click_anomalies"]["clicks_excluding_flagged_days"] == 10
+    assert "estimated_organic_clicks" not in data["click_anomalies"]
 
 
 def test_incomplete_property_row_is_error_not_available_with_zero_totals():

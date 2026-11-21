@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from .ai import call_llm, parse_json_object
-from .report_builder import QUOTE_REQUEST_INTRO
+from .report_builder import QUOTE_REQUEST_INTRO, SERVICE_QUOTE_REQUEST_INTRO
 
 
 QUOTE_REQUEST_TITLE = "ЗАПРОС КП"
@@ -23,6 +23,17 @@ OPTIONAL_CONDITIONS = [
     "Срок изготовления",
     "Нормативное соответствие",
     "Реестровая запись Минпромторга",
+]
+SERVICE_BASE_CONDITIONS = [
+    "Срок оказания услуг",
+    "Место оказания услуг",
+    "Условия оплаты",
+    "Лицензии / допуски",
+]
+SERVICE_OPTIONAL_CONDITIONS = [
+    "Срок получения предложений",
+    "Гарантия",
+    "Нормативное соответствие",
 ]
 
 NON_PRODUCT_PATTERNS = (
@@ -55,6 +66,7 @@ async def build_quote_request_markdown_with_ai(
     delivery_city: str = "",
 ) -> str:
     """Build supplier-facing quote request text, prioritizing AI extraction when active."""
+    subject_kind = str((procurement_profile or {}).get("subject_kind") or "goods").strip().lower()
     has_ai = getattr(settings, "has_active_ai_provider", False)
     if has_ai:
         try:
@@ -62,11 +74,16 @@ async def build_quote_request_markdown_with_ai(
                 settings,
                 source_text,
                 subject=subject,
+                subject_kind=subject_kind,
             )
             if _extract_table_from_text(ai_markdown):
-                if delivery_city and "Город поставки" in ai_markdown:
-                    # ensure delivery city is mentioned if placeholder was left
-                    ai_markdown = ai_markdown.replace(f"**Город поставки:** {MISSING_VALUE}", f"**Город поставки:** г. {delivery_city.strip()}")
+                if delivery_city:
+                    city_text = delivery_city.strip()
+                    city_formatted = city_text if re.match(r"^(?:г\.|город)\s+", city_text, re.I) else f"г. {city_text}"
+                    if f"**Город поставки:** {MISSING_VALUE}" in ai_markdown:
+                        ai_markdown = ai_markdown.replace(f"**Город поставки:** {MISSING_VALUE}", f"**Город поставки:** {city_formatted}")
+                    if f"**Место оказания услуг:** {MISSING_VALUE}" in ai_markdown:
+                        ai_markdown = ai_markdown.replace(f"**Место оказания услуг:** {MISSING_VALUE}", f"**Место оказания услуг:** {city_formatted}")
                 return ai_markdown
         except Exception:
             pass
@@ -86,16 +103,64 @@ def build_quote_request_markdown(
     procurement_profile: dict | None = None,
     delivery_city: str = "",
 ) -> str:
+    subject_kind = str((procurement_profile or {}).get("subject_kind") or "goods").strip().lower()
     title = _quote_subject(source_text, subject=subject, procurement_profile=procurement_profile)
     table = _extract_table_from_text(source_text) or _table_from_profile(procurement_profile, title)
-    conditions = _extract_conditions(source_text)
-    if delivery_city and not conditions.get("Город поставки"):
-        conditions["Город поставки"] = f"г. {delivery_city.strip()}"
-    return _compose_quote_request(title, table, conditions)
+    conditions = _extract_conditions(source_text, subject_kind=subject_kind)
+    if delivery_city:
+        city_text = delivery_city.strip()
+        city_formatted = city_text if re.match(r"^(?:г\.|город)\s+", city_text, re.I) else f"г. {city_text}"
+        place_label = "Место оказания услуг" if subject_kind == "services" else "Город поставки"
+        if not conditions.get(place_label):
+            conditions[place_label] = city_formatted
+    return _compose_quote_request(title, table, conditions, subject_kind=subject_kind)
 
 
-async def _build_quote_request_with_ai(settings: Any, source_text: str, *, subject: str = "") -> str:
-    prompt = f"""Извлеки из ТЗ данные для supplier-facing документа "Запрос КП".
+async def _build_quote_request_with_ai(
+    settings: Any,
+    source_text: str,
+    *,
+    subject: str = "",
+    subject_kind: str = "goods",
+) -> str:
+    is_services = subject_kind == "services"
+    if is_services:
+        prompt = f"""Извлеки из ТЗ данные для исходящего документа "Запрос КП" для компании-исполнителя услуг / подрядчика.
+
+Нужно сохранить требуемые услуги или работы, состав и характеристики объекта (площадь, тип помещений, периодичность, особые требования), единицы измерения, объёмы и условия оказания услуг.
+Для поля "characteristics": перечисли все ключевые параметры, требования к оказанию услуг, режимы и стандарты через маркер или точку с запятой, чтобы текст был структурированным.
+Не добавляй ОКПД2, КТРУ, внутренние комментарии анализа, ссылки на исходные файлы и служебные предупреждения.
+Не придумывай значения. Если срока, места, объёма или требований нет, используй строку "{MISSING_VALUE}".
+
+Ответ строго JSON:
+{{
+  "title": "краткое название предмета закупки",
+  "items": [
+    {{
+      "name": "наименование услуги/работы",
+      "characteristics": "• Состав работ / параметры объекта: ...\\n• Периодичность и требования: ...",
+      "unit": "единица измерения (усл. ед., кв.м, мес и т.д.)",
+      "quantity": "объём/количество"
+    }}
+  ],
+  "conditions": {{
+    "delivery_term": "срок/период оказания услуг",
+    "delivery_city": "город/адрес/место оказания услуг",
+    "payment_terms": "условия оплаты",
+    "quality_documents": "требуемые лицензии, допуски, регламенты",
+    "proposal_deadline": "срок получения предложений",
+    "warranty": "гарантийные обязательства",
+    "normative_compliance": "нормативное соответствие"
+  }}
+}}
+
+Предмет закупки: {subject or MISSING_VALUE}
+
+ТЗ/отчёт:
+{str(source_text or "")[:120000]}"""
+        system_prompt = "Ты закупочный аналитик. Готовишь точный Запрос КП для компании-исполнителя услуг без выдуманных данных."
+    else:
+        prompt = f"""Извлеки из ТЗ данные для supplier-facing документа "Запрос КП".
 
 Нужно сохранить все товарные позиции, их технические характеристики, единицы измерения, количества и важные условия поставки.
 Для поля "characteristics": перечисли все технические параметры, требования, размеры, ГОСТы, диапазоны в виде структурированного списка через точку с запятой или переносы строк (каждый параметр с новой строки или через маркер), чтобы характеристики не слипались в сплошной текст.
@@ -131,10 +196,11 @@ async def _build_quote_request_with_ai(settings: Any, source_text: str, *, subje
 
 ТЗ/отчёт:
 {str(source_text or "")[:120000]}"""
+        system_prompt = "Ты закупочный аналитик. Готовишь точный Запрос КП для поставщика без выдуманных данных."
     raw = await call_llm(
         settings,
         prompt,
-        system_prompt="Ты закупочный аналитик. Готовишь точный Запрос КП для поставщика без выдуманных данных.",
+        system_prompt=system_prompt,
         tier="primary",
         routing_key="supplier_tz_context_extraction",
         json_mode=True,
@@ -143,26 +209,37 @@ async def _build_quote_request_with_ai(settings: Any, source_text: str, *, subje
     payload = parse_json_object(raw)
     title = _clean_cell(payload.get("title")) or subject or "Техническое задание"
     table = _table_from_ai_items(payload.get("items"), fallback_title=title)
-    conditions = _conditions_from_ai_payload(payload.get("conditions"))
-    return _compose_quote_request(title, table, conditions)
+    conditions = _conditions_from_ai_payload(payload.get("conditions"), subject_kind=subject_kind)
+    return _compose_quote_request(title, table, conditions, subject_kind=subject_kind)
 
 
-def _compose_quote_request(title: str, table: str, conditions: dict[str, str]) -> str:
+def _compose_quote_request(
+    title: str,
+    table: str,
+    conditions: dict[str, str],
+    *,
+    subject_kind: str = "goods",
+) -> str:
+    is_services = subject_kind == "services"
+    base_labels = SERVICE_BASE_CONDITIONS if is_services else BASE_CONDITIONS
+    optional_labels = SERVICE_OPTIONAL_CONDITIONS if is_services else OPTIONAL_CONDITIONS
+    conditions_heading = "### Условия оказания услуг" if is_services else "### Условия поставки"
+    intro_text = SERVICE_QUOTE_REQUEST_INTRO if is_services else QUOTE_REQUEST_INTRO
     parts = [
         QUOTE_REQUEST_TITLE,
         "",
-        QUOTE_REQUEST_INTRO,
+        intro_text,
         "",
         f"**{title or 'Техническое задание'}**",
         "",
         table.strip(),
         "",
-        "### Условия поставки",
+        conditions_heading,
         "",
     ]
-    for label in BASE_CONDITIONS:
+    for label in base_labels:
         parts.append(f"- **{label}:** {_condition_value(conditions.get(label))}")
-    for label in OPTIONAL_CONDITIONS:
+    for label in optional_labels:
         value = _condition_value(conditions.get(label), require_known=True)
         if value:
             parts.append(f"- **{label}:** {value}")
@@ -355,8 +432,18 @@ def _format_table(rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
-def _extract_conditions(text: str) -> dict[str, str]:
+def _extract_conditions(text: str, *, subject_kind: str = "goods") -> dict[str, str]:
     source = _clean_classifier_text(text)
+    if subject_kind == "services":
+        return {
+            "Срок оказания услуг": _extract_condition(source, ("Срок оказания услуг", "Срок выполнения работ", "Срок исполнения", "Период оказания услуг", "Срок поставки")),
+            "Место оказания услуг": _extract_condition(source, ("Место оказания услуг", "Место выполнения работ", "Объект", "Регион поставки", "Город поставки", "Место поставки", "Адрес")),
+            "Условия оплаты": _extract_condition(source, ("Условия оплаты", "Оплата", "Порядок оплаты")),
+            "Лицензии / допуски": _extract_condition(source, ("Лицензии / допуски", "Лицензии", "Допуски", "Документы качества", "Требования к исполнителю")),
+            "Срок получения предложений": _extract_condition(source, ("Срок получения предложений", "Срок предоставления КП", "КП до")),
+            "Гарантия": _extract_condition(source, ("Гарантия", "Гарантийный срок")),
+            "Нормативное соответствие": _extract_condition(source, ("Нормативное соответствие",)),
+        }
     return {
         "Срок поставки": _extract_condition(source, ("Срок поставки", "Срок исполнения", "Срок выполнения", "Период поставки")),
         "Город поставки": _extract_condition(source, ("Город поставки", "Место поставки", "Адрес поставки")),
@@ -371,21 +458,32 @@ def _extract_conditions(text: str) -> dict[str, str]:
     }
 
 
-def _conditions_from_ai_payload(payload: Any) -> dict[str, str]:
+def _conditions_from_ai_payload(payload: Any, *, subject_kind: str = "goods") -> dict[str, str]:
     if not isinstance(payload, dict):
         return {}
-    mapping = {
-        "Срок поставки": ("delivery_term", "delivery_terms", "supply_term"),
-        "Город поставки": ("delivery_city", "delivery_place", "delivery_location"),
-        "Условия оплаты": ("payment_terms", "payment"),
-        "Документы качества": ("quality_documents", "quality_docs"),
-        "Упаковка/тара": ("packaging", "package"),
-        "Срок получения предложений": ("proposal_deadline", "kp_deadline", "quote_deadline"),
-        "Гарантия": ("warranty",),
-        "Срок изготовления": ("manufacturing_term",),
-        "Нормативное соответствие": ("normative_compliance",),
-        "Реестровая запись Минпромторга": ("minprom_registry", "gisp"),
-    }
+    if subject_kind == "services":
+        mapping = {
+            "Срок оказания услуг": ("delivery_term", "delivery_terms", "supply_term", "service_term"),
+            "Место оказания услуг": ("delivery_city", "delivery_place", "delivery_location", "service_location"),
+            "Условия оплаты": ("payment_terms", "payment"),
+            "Лицензии / допуски": ("quality_documents", "quality_docs", "licenses"),
+            "Срок получения предложений": ("proposal_deadline", "kp_deadline", "quote_deadline"),
+            "Гарантия": ("warranty",),
+            "Нормативное соответствие": ("normative_compliance",),
+        }
+    else:
+        mapping = {
+            "Срок поставки": ("delivery_term", "delivery_terms", "supply_term"),
+            "Город поставки": ("delivery_city", "delivery_place", "delivery_location"),
+            "Условия оплаты": ("payment_terms", "payment"),
+            "Документы качества": ("quality_documents", "quality_docs"),
+            "Упаковка/тара": ("packaging", "package"),
+            "Срок получения предложений": ("proposal_deadline", "kp_deadline", "quote_deadline"),
+            "Гарантия": ("warranty",),
+            "Срок изготовления": ("manufacturing_term",),
+            "Нормативное соответствие": ("normative_compliance",),
+            "Реестровая запись Минпромторга": ("minprom_registry", "gisp"),
+        }
     result: dict[str, str] = {}
     for label, keys in mapping.items():
         for key in keys:

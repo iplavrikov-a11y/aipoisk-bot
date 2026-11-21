@@ -346,7 +346,8 @@ async def verify_report(
     prompt = with_procurement_legal_baseline(
         str(report_settings.get("verification_prompt") or DEFAULT_VERIFICATION_PROMPT)
     )
-    user_prompt = f"ИСХОДНЫЕ ДОКУМЕНТЫ:\n{document_text[:250000]}\n\nОТЧЕТ:\n{report[:120000]}"
+    verify_max_chars = int(report_settings.get("analysis_max_chars") or 800000)
+    user_prompt = f"ИСХОДНЫЕ ДОКУМЕНТЫ:\n{document_text[:verify_max_chars]}\n\nОТЧЕТ:\n{report[:120000]}"
     attempts = max(1, int(report_settings.get("verification_attempts") or 2))
     last_issue = "empty_verification_response"
     for _attempt in range(attempts):
@@ -409,7 +410,6 @@ def extract_official_card_facts(document_text: str) -> dict[str, str]:
         "ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ" not in text
         and "СТРУКТУРИРОВАННЫЙ ИСТОЧНИК ЗАКУПКИ" not in text
         and "TENDERPLAN" not in text
-        and "ЕИС" not in text
     ):
         return {}
     facts: dict[str, str] = {}
@@ -513,7 +513,7 @@ def remove_okpd_codes(report: str) -> str:
         value,
         flags=re.IGNORECASE,
     )
-    value = re.sub(r"\b\d{2}\.\d{2}\.\d{2}(?:\.\d{1,3}){0,3}\b", "", value)
+    value = re.sub(r"\b\d{2}\.\d{2}\.\d{2}\.\d{3}\b", "", value)
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r"\s+([,.;:])", r"\1", value)
     value = re.sub(r"\(\s*\)", "", value)
@@ -538,7 +538,7 @@ def normalize_customer_boolean_artifacts(report: str) -> str:
     value = re.sub(r"(?i)(СМП/СОНО\s*:\s*)true\b", r"\1установлено", value)
     value = re.sub(r"(?i)\s*\(\s*(?:false|true)\s*\)", "", value)
     value = re.sub(r"(?i)(?<![A-Za-zА-Яа-я])false(?![A-Za-zА-Яа-я])", "нет", value)
-    value = re.sub(r"(?i)(?<![A-Za-zА-Яа-я])true(?![A-Za-zА-Яа-я])", "да", value)
+    value = re.sub(r"(?i)(?<![A-Za-zА-Яа-я])true(?!\s+(?:rms|tone|color|vision)\b)(?![A-Za-zА-Яа-я])", "да", value)
     return value
 
 

@@ -1,5 +1,5 @@
 import { SeoTrafficView } from './SeoTrafficView'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ErrorInfo, type ReactNode } from 'react'
 import {
   X,
   AlertTriangle,
@@ -23,6 +23,7 @@ import {
   KeyRound,
   Loader2,
   LogIn,
+  Menu,
   MemoryStick,
   Minus,
   MoreHorizontal,
@@ -42,6 +43,7 @@ import {
   Users,
   XCircle,
   Mail,
+  MessageSquare,
   MessageSquarePlus,
   Send,
   TrendingUp,
@@ -56,8 +58,11 @@ import { OutreachView } from './OutreachView'
 import { McpApiView } from './McpApiView'
 import { PriceMonitoringView } from './PriceMonitoringView'
 import { CookiesView } from './CookiesView'
+import { InvoicesView } from './InvoicesView'
+import { DialogsView } from './DialogsView'
+import { SecurityView } from './SecurityView'
 
-type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring' | 'cookies'
+type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'dialogs' | 'security' | 'billing' | 'invoices' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring' | 'cookies'
 
 type Dashboard = {
   clients: number
@@ -67,6 +72,7 @@ type Dashboard = {
   completed_jobs: number
   failed_jobs: number
   suppliers: number
+  unread_dialogs_count?: number
 }
 
 type Client = {
@@ -77,11 +83,18 @@ type Client = {
   source: 'telegram' | 'web' | string
   name: string
   username: string
+  phone?: string
   is_active: boolean
   is_trial: boolean
   allowed_supplier_search: boolean
   allowed_procurement_report: boolean
   allowed_exact_product?: boolean
+  allowed_price_monitoring?: boolean
+  allowed_geo_radius?: boolean
+  allowed_custom_batch_report?: boolean
+  custom_report_separate_tab?: boolean
+  custom_report_prompt?: string
+  direct_payment_only?: boolean
   monthly_job_limit: number
   monthly_supplier_search_limit: number
   monthly_procurement_report_limit: number
@@ -127,6 +140,7 @@ type AdminSyncCheckResponse = {
   version_key: string
   clients_count: number
   jobs_count: number
+  unread_dialogs_count?: number
   latest_client?: {
     id: string
     client_number?: number | null
@@ -190,6 +204,8 @@ type UsageEntry = {
   supplier_units: number
   procurement_report_units: number
   status: string
+  status_label?: string
+  is_minprom_empty?: boolean
   created_at: string | null
 }
 
@@ -211,6 +227,8 @@ type WebUser = {
   client_id: string
   email: string
   name: string
+  phone?: string
+  telegram_username?: string
   is_active: boolean
   is_email_verified: boolean
   created_at: string | null
@@ -224,6 +242,8 @@ type PasswordResetRequest = {
   client_name: string
   email: string
   status: string
+  status_label?: string
+  is_minprom_empty?: boolean
   admin_note: string
   requested_ip: string
   created_at: string | null
@@ -243,6 +263,19 @@ type GrantDraft = {
   debit_amount_rub?: string
 }
 
+type ExactSelection = {
+  mode?: string
+  pricing_mode?: string
+  revision: string
+  max_positions: number
+  price_kopeks: number
+  selected_ids: string[]
+  confirmed: boolean
+  items: Array<{ id: string; position_no: number; name: string; name_in_tz?: string }>
+}
+
+type MultiItemSelection = Pick<ExactSelection, 'items' | 'selected_ids' | 'confirmed'> & { mode?: string; revision?: string }
+
 type Job = {
   id: string
   job_number?: number | null
@@ -256,14 +289,21 @@ type Job = {
   created_by_telegram_id: string
   mode: string
   mode_label: string
+  is_custom_batch_report?: boolean
   supplier_search_policy: string
   supplier_search_run_type: string
   multi_item_mode?: string
+  delivery_city?: string
+  geo_radius_km?: number | null
+  geo_scope?: string
+  confirmation_expires_at?: string | null
   confirmation_kind?: string
   confirmation_outcome?: string
   offer_delivery_outcome?: string
   result_offer?: JobResultOffer | null
   status: string
+  status_label?: string
+  is_minprom_empty?: boolean
   progress: number
   message: string
   title: string
@@ -281,6 +321,8 @@ type Job = {
   admin_comment?: string
   admin_supplement_name?: string
   admin_supplement_at?: string | null
+  chat_messages_count?: number
+  unread_client_messages_count?: number
   error: string
   ai_provider?: string
   ai_provider_name?: string
@@ -296,14 +338,25 @@ type Job = {
   sources?: JobSource[]
   parent_job_id?: string
   is_admin_rerun?: boolean
+  position_selection?: ExactSelection | null
+  multi_item_selection?: MultiItemSelection | null
+  exact_product_selection?: ExactSelection | null
   admin_rerun?: JobAdminRerunInfo | null
   admin_reruns?: JobAdminRerunInfo[]
 }
 
 type JobAdminRerunInfo = {
+  mode?: string
+  confirmation_kind?: string
+  multi_item_mode?: string
+  position_selection?: ExactSelection | null
+  multi_item_selection?: MultiItemSelection | null
+  exact_product_selection?: ExactSelection | null
   id: string
   job_number?: number | null
   status: string
+  status_label?: string
+  is_minprom_empty?: boolean
   progress: number
   message: string
   verified_count?: number
@@ -431,6 +484,10 @@ type SettingsPayload = {
   yookassa_secret_key_set: boolean
   yookassa_secret_key?: string
   yookassa_return_url: string
+  yookassa_send_receipt?: boolean
+  support_telegram_group_id?: string
+  support_admin_telegram_ids?: string
+  support_mirror_admin_replies_to_bot?: boolean
   supplier_search_ui: SupplierSearchUi
 }
 
@@ -439,6 +496,7 @@ type SettingsPatchPayload = Partial<SettingsPayload> & {
   yandex_search_api_key?: string
   google_search_api_key?: string
   yookassa_secret_key?: string
+  yookassa_send_receipt?: boolean
 }
 
 type TariffPackage = {
@@ -568,6 +626,8 @@ type SupplierSearchUi = {
 
 type OpsStatus = {
   status: string
+  status_label?: string
+  is_minprom_empty?: boolean
   updated_at: string
   server: {
     disk_total_gb: number
@@ -685,11 +745,23 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   },
   jobs: {
     title: 'Задачи',
-    description: 'Последние запуски бота, статусы обработки и готовые файлы для скачивания.',
+    description: 'Задачи из Telegram, сайта и API, статусы обработки, переписка и готовые отчёты.',
+  },
+  dialogs: {
+    title: 'Диалоги с клиентами',
+    description: 'Двусторонняя переписка по задачам, ответы клиентов и отправка экспертных материалов.',
+  },
+  security: {
+    title: 'Безопасность и антиспам',
+    description: 'Мониторинг атак, попыток регистрации, блокировки IP, ночной режим Telegram и AI-фильтр.',
   },
   billing: {
     title: 'Тарифы',
     description: 'Глобальные цены услуг и тарифные пакеты для клиентского кабинета.',
+  },
+  invoices: {
+    title: 'Счета и оплаты',
+    description: 'Оплаты через ЮKassa, безналичные счета, платёжки на проверке и сводка поступлений.',
   },
   settings: {
     title: 'Настройки',
@@ -741,8 +813,12 @@ const statusLabels: Record<string, string> = {
   partial: 'частично готово',
   needs_review: 'нужна проверка',
   failed: 'ошибка',
+  resolved: 'решено',
   cancelled: 'отменено',
   awaiting_customer_confirmation: 'ожидает клиента',
+  awaiting_exact_selection: 'ожидает выбора товаров',
+  awaiting_position_selection: 'ожидает выбора позиций',
+  settling: 'сохраняется результат',
   customer_declined: 'отклонено',
   confirmation_expired: 'истёк срок',
   delivery_expired: 'срок выдачи истёк',
@@ -795,6 +871,14 @@ function formatError(err: unknown) {
   }
   if (message.includes('Too many login attempts') || message.includes('429')) {
     return 'Слишком много попыток входа. Подождите несколько минут и попробуйте снова.'
+  }
+  if (
+    message.includes('502 Bad Gateway') ||
+    message.includes('504 Gateway Time-out') ||
+    message.includes('503 Service Temporarily Unavailable') ||
+    /<html[\s>]/i.test(message)
+  ) {
+    return 'Сервер временно обновляется или перезагружается. Пожалуйста, подождите пару секунд и обновите страницу.'
   }
   return message || 'Ошибка загрузки'
 }
@@ -998,6 +1082,75 @@ function humanStatus(status: string) {
   return statusLabels[status] || status || 'неизвестно'
 }
 
+function isMinpromNotFound(job: { status?: string; message?: string; error?: string; supplier_search_policy?: string; status_label?: string; is_minprom_empty?: boolean }): boolean {
+  if (job.is_minprom_empty) return true
+  if (job.status_label === 'не найдено в Минпромторге' || job.status_label === 'нет в реестре') return true
+  if (job.status !== 'failed') return false
+  const msg = (job.message || '').toLowerCase()
+  const err = (job.error || '').toLowerCase()
+  const isRegistryPolicy = job.supplier_search_policy === 'minprom_registry_only'
+  return (
+    (isRegistryPolicy && (msg.includes('реестр') || msg.includes('минпром') || err.includes('реестр') || err.includes('минпром'))) ||
+    msg.includes('в реестре минпромторга подходящие производители не найдены') ||
+    msg.includes('по реестру подходящие поставщики не подтверждены') ||
+    (msg.includes('в реестре минпромторга') && msg.includes('не найден'))
+  )
+}
+
+function isHealthyAdminRerun(parentJob: Pick<Job, 'mode'>, rerun: JobAdminRerunInfo): boolean {
+  if (rerun.status !== 'completed' || rerun.is_minprom_empty) return false
+  if (!rerun.files || rerun.files.length === 0) return false
+  const effectiveMode = rerun.mode || parentJob.mode
+  if (effectiveMode === 'procurement_report') return true
+  return (rerun.verified_count ?? 0) > 0
+}
+
+function getLatestHealthyAdminRerun(job: Job): JobAdminRerunInfo | null {
+  const reruns = job.admin_reruns?.length ? job.admin_reruns : job.admin_rerun ? [job.admin_rerun] : []
+  return reruns.find(r => isHealthyAdminRerun(job, r)) || null
+}
+
+function isAdminErrorSolved(job: Job): boolean {
+  if (job.status !== 'failed' || isMinpromNotFound(job)) return false
+  return Boolean(job.has_admin_supplement || getLatestHealthyAdminRerun(job))
+}
+
+function truncateMiddleFilename(filename: string, maxLen = 28): string {
+  const clean = filename.trim()
+  if (clean.length <= maxLen) return clean
+  const dotIdx = clean.lastIndexOf('.')
+  if (dotIdx > 0 && clean.length - dotIdx <= 6) {
+    const ext = clean.slice(dotIdx)
+    const stemMax = Math.max(8, maxLen - ext.length - 1)
+    return `${clean.slice(0, stemMax).trimEnd()}…${ext}`
+  }
+  return `${clean.slice(0, maxLen - 1).trimEnd()}…`
+}
+
+function formatSupplementBadge(job: Pick<Job, 'has_admin_supplement' | 'admin_supplement_name' | 'admin_supplement_at' | 'admin_comment' | 'status'>): {
+  shortText: string
+  tooltip: string
+} {
+  const names = (job.admin_supplement_name || '')
+    .split(',')
+    .map(part => part.trim())
+    .filter(Boolean)
+  const verb = job.status === 'awaiting_customer_confirmation' ? 'Предложено' : 'Отправлено'
+  let shortText = `${verb}: ответ эксперта`
+  if (names.length === 1) {
+    shortText = `${verb}: ${truncateMiddleFilename(names[0], 26)}`
+  } else if (names.length > 1) {
+    shortText = `${verb} (${names.length}): ${truncateMiddleFilename(names[0], 22)} +${names.length - 1}`
+  }
+  const when = job.admin_supplement_at ? ` (${formatDate(job.admin_supplement_at)})` : ''
+  const filesInfo = names.length > 0 ? names.join(', ') : 'комментарий эксперта'
+  const commentPart = job.admin_comment ? `\nКомментарий: ${job.admin_comment}` : ''
+  return {
+    shortText,
+    tooltip: `${verb} клиенту${when}: ${filesInfo}${commentPart}`,
+  }
+}
+
 function humanMode(mode: string) {
   return modeLabels[mode] || mode || 'Задача'
 }
@@ -1162,7 +1315,7 @@ function ToastContainer({
   )
 }
 
-const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'settings', 'ai', 'mcp', 'price_monitoring', 'cookies'] as const
+const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'dialogs', 'security', 'outreach', 'billing', 'invoices', 'settings', 'ai', 'mcp', 'price_monitoring', 'cookies'] as const
 
 function getInitialView(): View {
   if (typeof window === 'undefined') return 'dashboard'
@@ -1173,6 +1326,67 @@ function getInitialView(): View {
     if (VALID_VIEWS.includes(saved)) return saved
   } catch {}
   return 'dashboard'
+}
+
+interface ErrorBoundaryProps {
+  children: ReactNode
+  sectionName?: string
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean
+  error: Error | null
+}
+
+class AdminErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('AdminErrorBoundary caught error:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 24, margin: '20px auto', maxWidth: 640, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, color: '#991b1b' }}>
+          <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Ошибка отображения раздела {this.props.sectionName ? `«${this.props.sectionName}»` : ''}</h3>
+          <p style={{ margin: '0 0 12px 0', fontSize: 13, color: '#7f1d1d' }}>
+            {this.state.error?.message || 'Произошла непредвиденная ошибка при отображении данных.'}
+          </p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="ghost small-text"
+              style={{ background: '#fff', border: '1px solid #fca5a5', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
+              onClick={() => {
+                this.setState({ hasError: false, error: null })
+              }}
+            >
+              Попробовать снова
+            </button>
+            <button
+              type="button"
+              className="ghost small-text"
+              style={{ background: '#0f766e', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
+              onClick={() => {
+                window.location.reload()
+              }}
+            >
+              Перезагрузить страницу
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
 }
 
 export function App() {
@@ -1195,12 +1409,20 @@ export function App() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [showServerModal, setShowServerModal] = useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [selectedClientForJobs, setSelectedClientForJobs] = useState<string>('')
+  const [selectedClientForDialogs, setSelectedClientForDialogs] = useState<string>('')
+  const [selectedJobForView, setSelectedJobForView] = useState<{ jobId: string; clientId?: string; jobNumber?: number | null } | null>(null)
   const loadAllRef = useRef<(force?: boolean) => Promise<void>>(() => Promise.resolve())
 
   function handleNavigateToClientJobs(clientId: string) {
     setSelectedClientForJobs(clientId)
     setView('jobs')
+  }
+
+  function handleNavigateToClientDialog(clientId: string) {
+    setSelectedClientForDialogs(clientId)
+    setView('dialogs')
   }
 
   const [toasts, setToasts] = useState<AdminToast[]>([])
@@ -1210,6 +1432,20 @@ export function App() {
   const [selectedClientIdForView, setSelectedClientIdForView] = useState<string>('')
   const lastSyncVersionKeyRef = useRef<string>('')
   const prevClientsCountRef = useRef<number>(-1)
+  const prevUnreadDialogsRef = useRef<number>(-1)
+  const activeClientMutationsRef = useRef<number>(0)
+
+  const handleClientUpdated = useCallback((updatedClient: Client) => {
+    setClients(prev => prev.map(item => (item.id === updatedClient.id ? updatedClient : item)))
+  }, [])
+
+  const handleOptimisticClientPatch = useCallback((clientId: string, patch: Partial<Client>) => {
+    setClients(prev => prev.map(item => (item.id === clientId ? { ...item, ...patch } : item)))
+  }, [])
+
+  const handleClientMutationState = useCallback((delta: 1 | -1) => {
+    activeClientMutationsRef.current = Math.max(0, activeClientMutationsRef.current + delta)
+  }, [])
 
   const addToast = useCallback((toast: Omit<AdminToast, 'id' | 'createdAt'>) => {
     const id = Math.random().toString(36).slice(2, 9)
@@ -1232,6 +1468,7 @@ export function App() {
 
   function setView(nextView: View) {
     setViewState(nextView)
+    setMobileNavOpen(false)
     try {
       localStorage.setItem('aipoisk_admin_view', nextView)
       if (window.location.hash.replace(/^#\/?/, '') !== nextView) {
@@ -1241,10 +1478,34 @@ export function App() {
   }
 
   useEffect(() => {
+    if (!mobileNavOpen) return
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false)
+    }
+    const mqDesktop = window.matchMedia('(min-width: 981px)')
+    const onDesktopMatch = (event: MediaQueryListEvent) => {
+      if (event.matches) setMobileNavOpen(false)
+    }
+    if (mqDesktop.matches) {
+      setMobileNavOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    mqDesktop.addEventListener('change', onDesktopMatch)
+    return () => {
+      document.body.style.overflow = prevOverflow
+      window.removeEventListener('keydown', onKeyDown)
+      mqDesktop.removeEventListener('change', onDesktopMatch)
+    }
+  }, [mobileNavOpen])
+
+  useEffect(() => {
     function handleHashChange() {
       const hash = window.location.hash.replace(/^#\/?/, '').trim() as View
       if (VALID_VIEWS.includes(hash)) {
         setViewState(hash)
+        setMobileNavOpen(false)
         try { localStorage.setItem('aipoisk_admin_view', hash) } catch {}
       }
     }
@@ -1261,7 +1522,7 @@ export function App() {
   }, [authenticated, view])
 
   useEffect(() => {
-    if (authenticated && view === 'clients') {
+    if (authenticated && view === 'clients' && !loading) {
       void api<Client[]>('/api/clients')
         .then(data => { if (data) setClients(data) })
         .catch(() => {})
@@ -1279,24 +1540,26 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, opsStatusData, settingsData, tariffData, passwordResetData, analyticsData] = await Promise.all([
+      const [dashboardData, clientsData, settingsData, tariffData, passwordResetData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
-        api<OpsStatus>('/api/ops/system-status'),
         api<SettingsPayload>('/api/settings'),
         api<TariffPackage[]>('/api/tariffs'),
         api<PasswordResetRequest[]>('/api/web-password-resets?status=open'),
-        api<BotAnalytics>('/api/analytics/bot?period_days=30').catch(() => null),
       ])
       setDashboard(dashboardData)
       setClients(clientsData)
-      setOpsStatus(opsStatusData)
       setSettings(settingsData)
       setTariffs(tariffData)
       setPasswordResets(passwordResetData)
-      if (analyticsData) setAnalytics(analyticsData)
 
       // Fetch background / secondary data without delaying core view rendering
+      void api<OpsStatus>('/api/ops/system-status')
+        .then(opsStatusData => { if (opsStatusData) setOpsStatus(opsStatusData) })
+        .catch(() => {})
+      void api<BotAnalytics>('/api/analytics/bot?period_days=30')
+        .then(analyticsData => { if (analyticsData) setAnalytics(analyticsData) })
+        .catch(() => {})
       void api<Job[]>('/api/jobs?include_internal=true&limit=100')
         .then(jobsData => { if (jobsData && viewRef.current !== 'jobs') setJobs(jobsData) })
         .catch(() => {})
@@ -1515,6 +1778,9 @@ export function App() {
       if (syncData) {
         lastSyncVersionKeyRef.current = syncData.version_key
         prevClientsCountRef.current = syncData.clients_count
+        if (typeof syncData.unread_dialogs_count === 'number') {
+          prevUnreadDialogsRef.current = syncData.unread_dialogs_count
+        }
       }
       if (dData) setDashboard(dData)
       setLastClientsSyncAt(Date.now())
@@ -1545,8 +1811,22 @@ export function App() {
 
           if (isFirstCheck) {
             prevClientsCountRef.current = syncData.clients_count
+            if (typeof syncData.unread_dialogs_count === 'number') {
+              prevUnreadDialogsRef.current = syncData.unread_dialogs_count
+            }
           } else if (versionChanged) {
             prevClientsCountRef.current = syncData.clients_count
+            if (typeof syncData.unread_dialogs_count === 'number') {
+              const prevUnread = prevUnreadDialogsRef.current
+              prevUnreadDialogsRef.current = syncData.unread_dialogs_count
+              if (prevUnread >= 0 && syncData.unread_dialogs_count > prevUnread && view !== 'dialogs') {
+                addToast({
+                  type: 'info',
+                  title: 'Новое обращение в чате',
+                  message: `Непрочитанных диалогов: ${syncData.unread_dialogs_count}. Откройте раздел «Диалоги» или ответьте в Telegram.`,
+                })
+              }
+            }
 
             // If a new client was registered
             if (prevCount >= 0 && syncData.clients_count > prevCount && syncData.latest_client) {
@@ -1568,7 +1848,7 @@ export function App() {
               api<Dashboard>('/api/dashboard').catch(() => null),
             ])
             if (!cancelled) {
-              if (cData) setClients(cData)
+              if (cData && activeClientMutationsRef.current === 0) setClients(cData)
               if (dData) setDashboard(dData)
             }
             setIsClientsSyncing(false)
@@ -1616,13 +1896,24 @@ export function App() {
     activeItem?.scrollIntoView({ block: 'nearest', inline: 'center' })
   }, [view])
 
+  const totalUnreadDialogs = useMemo(
+    () =>
+      typeof dashboard?.unread_dialogs_count === 'number'
+        ? dashboard.unread_dialogs_count
+        : jobs.reduce((sum, j) => sum + (j.unread_client_messages_count || 0), 0),
+    [dashboard, jobs]
+  )
+
   const nav = [
     { id: 'dashboard' as const, label: 'Сводка', icon: ShieldCheck },
     { id: 'seo' as const, label: 'SEO и Трафик', icon: Globe },
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
+    { id: 'dialogs' as const, label: 'Диалоги', icon: MessageSquare, badge: totalUnreadDialogs },
+    { id: 'security' as const, label: 'Безопасность', icon: ShieldCheck },
     { id: 'outreach' as const, label: 'Лиды и Рассылка', icon: Mail },
     { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
+    { id: 'invoices' as const, label: 'Счета и оплаты', icon: FileCheck },
     { id: 'settings' as const, label: 'Настройки', icon: SlidersHorizontal },
     { id: 'price_monitoring' as const, label: 'Мониторинг цен', icon: Coins },
     { id: 'cookies' as const, label: 'Куки площадок', icon: ShieldCheck },
@@ -1645,16 +1936,81 @@ export function App() {
     )
   }
 
+  const currentNavItem = nav.find(item => item.id === view)
+  const hasServerWarning = Boolean(
+    opsStatus?.server && (
+      opsStatus.server.cpu_percent >= 80 ||
+      opsStatus.server.ram_percent >= 85 ||
+      opsStatus.server.disk_free_gb < 10 ||
+      (opsStatus.services || []).some(s => s.warning || s.status !== 'ok')
+    )
+  )
+
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <a className="brand" href="https://tenderlex.ru/" target="_blank" rel="noreferrer">
-          <div className="brand-mark"><Search size={18} /></div>
-          <div>
-            <div className="brand-name">TenderLex</div>
-            <div className="brand-sub">tenderlex.ru</div>
-          </div>
-        </a>
+      <div className="mobile-topbar">
+        <button
+          type="button"
+          className="mobile-burger-btn"
+          onClick={() => setMobileNavOpen(v => !v)}
+          aria-label={mobileNavOpen ? 'Закрыть меню разделов' : 'Открыть меню разделов'}
+          aria-expanded={mobileNavOpen}
+          aria-controls="admin-sidebar-drawer"
+        >
+          {mobileNavOpen ? <X size={20} /> : <Menu size={20} />}
+          {totalUnreadDialogs > 0 && !mobileNavOpen && (
+            <span className="mobile-burger-dot" aria-label={`Непрочитанных диалогов: ${totalUnreadDialogs}`}>
+              {totalUnreadDialogs > 99 ? '99+' : totalUnreadDialogs}
+            </span>
+          )}
+        </button>
+
+        <div className="mobile-topbar-title">
+          <div className="mobile-topbar-brand">TenderLex</div>
+          <div className="mobile-topbar-section">{currentNavItem?.label || viewCopy[view]?.title || 'Панель'}</div>
+        </div>
+
+        <div className="mobile-topbar-actions">
+          {opsStatus && (
+            <button
+              type="button"
+              className={`mobile-status-btn ${hasServerWarning ? 'warning' : ''}`}
+              onClick={() => setShowServerModal(true)}
+              aria-label="Состояние сервера и баланс Яндекс"
+              title="Состояние сервера и баланс Яндекс"
+            >
+              <Server size={16} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {mobileNavOpen && (
+        <div
+          className="mobile-sidebar-backdrop"
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside id="admin-sidebar-drawer" className={mobileNavOpen ? 'sidebar mobile-open' : 'sidebar'}>
+        <div className="sidebar-head">
+          <a className="brand" href="https://tenderlex.ru/" target="_blank" rel="noreferrer">
+            <div className="brand-mark"><Search size={18} /></div>
+            <div>
+              <div className="brand-name">TenderLex</div>
+              <div className="brand-sub">tenderlex.ru</div>
+            </div>
+          </a>
+          <button
+            type="button"
+            className="sidebar-close-btn"
+            onClick={() => setMobileNavOpen(false)}
+            aria-label="Закрыть меню"
+          >
+            <X size={18} />
+          </button>
+        </div>
         <nav className="nav">
           {nav.map(item => {
             const Icon = item.icon
@@ -1673,10 +2029,36 @@ export function App() {
               >
                 <Icon size={17} />
                 <span>{item.label}</span>
+                {Boolean((item as any).badge) && (
+                  <span style={{
+                    marginLeft: 'auto',
+                    background: '#ef4444',
+                    color: '#fff',
+                    borderRadius: 10,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    padding: '1px 6px',
+                    lineHeight: '14px',
+                  }}>
+                    +{(item as any).badge}
+                  </span>
+                )}
               </a>
             )
           })}
         </nav>
+        <div className="sidebar-mobile-footer">
+          <button
+            type="button"
+            className="secondary full-width"
+            onClick={() => {
+              setMobileNavOpen(false)
+              void logout()
+            }}
+          >
+            Выйти из админки
+          </button>
+        </div>
       </aside>
 
       <main className="main">
@@ -1722,7 +2104,23 @@ export function App() {
           </div>
         </header>
 
-        {error && <div className="alert error"><XCircle size={18} />{error}</div>}
+        {error && (
+          <div className="alert error" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <XCircle size={18} />
+              <span>{error}</span>
+            </div>
+            <button
+              type="button"
+              className="icon-button small"
+              onClick={() => setError('')}
+              title="Закрыть уведомление"
+              style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', padding: '2px', display: 'inline-flex', alignItems: 'center' }}
+            >
+              <X size={15} />
+            </button>
+          </div>
+        )}
         {isReady && view === 'dashboard' && (
           <DashboardView
             dashboard={dashboard}
@@ -1735,32 +2133,74 @@ export function App() {
         )}
         {isReady && view === 'seo' && <SeoTrafficView />}
         {isReady && view === 'clients' && (
-          <ClientsView
-            clients={clients}
-            passwordResets={passwordResets}
-            onChange={loadAll}
-            onNavigateToClientJobs={handleNavigateToClientJobs}
-            onNavigateToMcp={() => setView('mcp')}
-            isSyncing={isClientsSyncing}
-            lastSyncAt={lastClientsSyncAt}
-            onManualSync={handleManualClientsSync}
-            recentNewClientIds={recentNewClientIds}
-            selectedClientIdFromParent={selectedClientIdForView}
-            onClearSelectedClientFromParent={() => setSelectedClientIdForView('')}
-          />
+          <AdminErrorBoundary sectionName="Клиенты">
+            <ClientsView
+              clients={clients}
+              tariffs={tariffs}
+              passwordResets={passwordResets}
+              onChange={loadAll}
+              onClientUpdated={handleClientUpdated}
+              onOptimisticClientPatch={handleOptimisticClientPatch}
+              onClientMutationState={handleClientMutationState}
+              onNavigateToClientJobs={handleNavigateToClientJobs}
+              onNavigateToClientDialog={handleNavigateToClientDialog}
+              onNavigateToMcp={() => setView('mcp')}
+              isSyncing={isClientsSyncing}
+              lastSyncAt={lastClientsSyncAt}
+              onManualSync={handleManualClientsSync}
+              recentNewClientIds={recentNewClientIds}
+              selectedClientIdFromParent={selectedClientIdForView}
+              onClearSelectedClientFromParent={() => setSelectedClientIdForView('')}
+            />
+          </AdminErrorBoundary>
         )}
         {isReady && view === 'jobs' && (
-          <JobsView
-            jobs={jobs}
-            clients={clients}
-            selectedClientId={selectedClientForJobs}
-            onClearSelectedClient={() => setSelectedClientForJobs('')}
-            onChange={loadAll}
-            loading={jobsLoading}
-          />
+          <AdminErrorBoundary sectionName="Задачи">
+            <JobsView
+              jobs={jobs}
+              clients={clients}
+              selectedClientId={selectedClientForJobs}
+              onClearSelectedClient={() => setSelectedClientForJobs('')}
+              selectedJob={selectedJobForView}
+              onClearSelectedJob={() => setSelectedJobForView(null)}
+              onNavigateToClient={handleSelectClient}
+              onNavigateToClientDialog={handleNavigateToClientDialog}
+              onChange={async jobId => {
+                if (jobId) {
+                  const updated = await api<Job>(`/api/jobs/${jobId}`)
+                  setJobs(current => current.map(job => job.id === jobId ? updated : job))
+                }
+                await loadAll()
+              }}
+              loading={jobsLoading}
+            />
+          </AdminErrorBoundary>
+        )}
+        {isReady && view === 'dialogs' && (
+          <AdminErrorBoundary sectionName="Диалоги">
+            <DialogsView
+              clients={clients}
+              initialClientId={selectedClientForDialogs}
+              onClearInitialClient={() => setSelectedClientForDialogs('')}
+              onOpenClient={handleSelectClient}
+              onOpenJob={(jobId, clientId, jobNumber) => {
+                setSelectedJobForView({ jobId, clientId, jobNumber })
+                setView('jobs')
+              }}
+              onUnreadCountChange={count => {
+                setDashboard(prev => (prev ? { ...prev, unread_dialogs_count: count } : prev))
+              }}
+            />
+          </AdminErrorBoundary>
+        )}
+        {isReady && view === 'security' && (
+          <AdminErrorBoundary sectionName="Безопасность">
+            <SecurityView />
+          </AdminErrorBoundary>
         )}
         {isReady && view === 'outreach' && <OutreachView />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
+        {isReady && view === 'invoices' && <InvoicesView onOpenClient={handleSelectClient} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} onSettingsUpdated={setSettings} />}
         {isReady && view === 'mcp' && <McpApiView clients={clients} />}
@@ -2376,11 +2816,32 @@ function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
   )
 }
 
+type ClientCardTab = 'finance' | 'pricing' | 'access' | 'vip'
+
+function clientHasCustomTariffs(client: Client): boolean {
+  return Boolean(
+    client.has_custom_tariffs ||
+    client.usage?.has_custom_tariffs ||
+    (client.usage?.effective_prices &&
+      Object.values(client.usage.effective_prices).some(p => p?.source === 'client_override'))
+  )
+}
+
+function clientCustomTariffsCount(client: Client): number {
+  if (!client.usage?.effective_prices) return 0
+  return Object.values(client.usage.effective_prices).filter(p => p?.source === 'client_override').length
+}
+
 function ClientsView({
   clients,
+  tariffs = [],
   passwordResets,
   onChange,
+  onClientUpdated,
+  onOptimisticClientPatch,
+  onClientMutationState,
   onNavigateToClientJobs,
+  onNavigateToClientDialog,
   onNavigateToMcp,
   isSyncing,
   lastSyncAt,
@@ -2390,9 +2851,14 @@ function ClientsView({
   onClearSelectedClientFromParent,
 }: {
   clients: Client[]
+  tariffs?: TariffPackage[]
   passwordResets: PasswordResetRequest[]
   onChange: () => Promise<void>
+  onClientUpdated?: (client: Client) => void
+  onOptimisticClientPatch?: (clientId: string, patch: Partial<Client>) => void
+  onClientMutationState?: (delta: 1 | -1) => void
   onNavigateToClientJobs?: (clientId: string) => void
+  onNavigateToClientDialog?: (clientId: string) => void
   onNavigateToMcp?: () => void
   isSyncing?: boolean
   lastSyncAt?: number
@@ -2401,7 +2867,6 @@ function ClientsView({
   selectedClientIdFromParent?: string
   onClearSelectedClientFromParent?: () => void
 }) {
-  const [form, setForm] = useState({ name: '', telegram_usernames: '', telegram_id: '', notes: '' })
   const [accountForms, setAccountForms] = useState<Record<string, AccountDraft>>({})
   const [accountEditForms, setAccountEditForms] = useState<Record<string, AccountDraft>>({})
   const [grantForms, setGrantForms] = useState<Record<string, GrantDraft>>({})
@@ -2409,10 +2874,32 @@ function ClientsView({
   const balanceRequestsInFlight = useRef<Record<string, boolean>>({})
   const [mergeForms, setMergeForms] = useState<Record<string, string>>({})
   const [expandedClients, setExpandedClients] = useState<Record<string, boolean>>({})
+  const [activeClientTabs, setActiveClientTabs] = useState<Record<string, ClientCardTab>>({})
   const [priceForms, setPriceForms] = useState<Record<string, string>>({})
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
+  const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({})
+  const [supplierTargetDrafts, setSupplierTargetDrafts] = useState<Record<string, string>>({})
   const [resetNotes, setResetNotes] = useState<Record<string, string>>({})
   const [temporaryPasswords, setTemporaryPasswords] = useState<Record<string, string>>({})
   const [deletingClientId, setDeletingClientId] = useState<string | null>(null)
+  const [savingFlags, setSavingFlags] = useState<Record<string, boolean>>({})
+  const [savedIndicators, setSavedIndicators] = useState<Record<string, boolean>>({})
+  const [balanceBusy, setBalanceBusy] = useState<Record<string, boolean>>({})
+
+  function flashSaved(key: string) {
+    setSavedIndicators(prev => ({ ...prev, [key]: true }))
+    window.setTimeout(() => {
+      setSavedIndicators(prev => ({ ...prev, [key]: false }))
+    }, 2200)
+  }
+
+  function getClientTab(clientId: string): ClientCardTab {
+    return activeClientTabs[clientId] || 'finance'
+  }
+
+  function setClientTab(clientId: string, tab: ClientCardTab) {
+    setActiveClientTabs(prev => ({ ...prev, [clientId]: tab }))
+  }
 
   // Pagination & Filtering state
   const [searchQuery, setSearchQuery] = useState('')
@@ -2422,10 +2909,11 @@ function ClientsView({
   useEffect(() => {
     if (selectedClientIdFromParent) {
       setSelectedClientId(selectedClientIdFromParent)
+      setExpandedClients(prev => ({ ...prev, [selectedClientIdFromParent]: true }))
       setPage(1)
     }
   }, [selectedClientIdFromParent])
-  const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg' | 'api'>('all')
+  const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg' | 'direct' | 'custom_prices' | 'vip' | 'api'>('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(() => {
     try {
@@ -2449,19 +2937,45 @@ function ClientsView({
   const recentClients = useMemo(() => clients.slice(0, 20), [clients])
   const otherClients = useMemo(() => (clients.length > 20 ? clients.slice(20) : []), [clients])
 
+  const activeDepositPackages = useMemo(
+    () =>
+      tariffs
+        .filter(t => t.kind === 'deposit' && t.is_active && t.price_kopeks > 0)
+        .sort((a, b) => a.price_kopeks - b.price_kopeks),
+    [tariffs]
+  )
+
+  function calculateDynamicBonusRub(amountRub: number): number {
+    if (!Number.isFinite(amountRub) || amountRub <= 0) return 0
+    if (activeDepositPackages.length > 0) {
+      const exact = activeDepositPackages.find(p => Math.round(kopeksToRubles(p.price_kopeks)) === Math.round(amountRub))
+      if (exact) return kopeksToRubles(exact.bonus_kopeks || 0)
+      const eligible = [...activeDepositPackages]
+        .filter(p => kopeksToRubles(p.price_kopeks) <= amountRub && (p.bonus_kopeks || 0) > 0)
+        .sort((a, b) => b.price_kopeks - a.price_kopeks)
+      if (eligible.length > 0) {
+        const tier = eligible[0]
+        const rate = (tier.bonus_kopeks || 0) / tier.price_kopeks
+        return Math.round(amountRub * rate)
+      }
+      return 0
+    }
+    return calculateBonusRub(amountRub)
+  }
+
   function formatClientOptionLabel(c: Client): string {
     const num = c.client_number ? `#${c.client_number} ` : ''
     const name = c.name || 'Без имени'
-    const email = c.web_users?.[0]?.email
-    const tg = c.username ? `@${c.username}` : (c.telegram_accounts?.[0]?.username ? `@${c.telegram_accounts[0].username}` : '')
+    const email = (c.web_users || []).find(u => !isSyntheticTelegramEmail(u.email))?.email
+    const realAcc = (c.telegram_accounts || []).find(a => !isSyntheticWebTelegramAccount(a))
+    const tg = c.username ? `@${c.username}` : (realAcc?.username ? `@${realAcc.username}` : '')
     const contact = email ? ` (${email})` : (tg ? ` (${tg})` : '')
     const tasks = c.jobs_count ?? 0
-    const tasksStr = ` · ${tasks} ${tasks === 1 ? 'зад.' : 'зад.'}`
-    return `${num}${name}${contact}${tasksStr}`
+    return `${num}${name}${contact} · ${tasks} зад.`
   }
 
   const webClientsCount = useMemo(
-    () => clients.filter(c => c.web_users && c.web_users.length > 0).length,
+    () => clients.filter(c => (c.web_users || []).some(u => !isSyntheticTelegramEmail(u.email))).length,
     [clients]
   )
   const tgClientsCount = useMemo(
@@ -2470,6 +2984,18 @@ function ClientsView({
   )
   const balanceClientsCount = useMemo(
     () => clients.filter(c => (c.usage?.money?.available_kopeks || 0) > 0).length,
+    [clients]
+  )
+  const directClientsCount = useMemo(
+    () => clients.filter(c => Boolean(c.direct_payment_only)).length,
+    [clients]
+  )
+  const customPricesClientsCount = useMemo(
+    () => clients.filter(c => clientHasCustomTariffs(c)).length,
+    [clients]
+  )
+  const vipClientsCount = useMemo(
+    () => clients.filter(c => Boolean(c.allowed_custom_batch_report)).length,
     [clients]
   )
   const apiClientsCount = useMemo(
@@ -2484,12 +3010,18 @@ function ClientsView({
         return false
       }
       if (clientFilter === 'web') {
-        if (!client.web_users || client.web_users.length === 0) return false
+        if (!(client.web_users || []).some(u => !isSyntheticTelegramEmail(u.email))) return false
       } else if (clientFilter === 'tg') {
         const realAccounts = (client.telegram_accounts || []).filter(a => !isSyntheticWebTelegramAccount(a))
         if (!realAccounts.length && !client.telegram_id) return false
       } else if (clientFilter === 'balance') {
         if (!client.usage?.money || client.usage.money.available_kopeks <= 0) return false
+      } else if (clientFilter === 'direct') {
+        if (!client.direct_payment_only) return false
+      } else if (clientFilter === 'custom_prices') {
+        if (!clientHasCustomTariffs(client)) return false
+      } else if (clientFilter === 'vip') {
+        if (!client.allowed_custom_batch_report) return false
       } else if (clientFilter === 'api') {
         if (!client.has_api_key && (!client.api_keys || client.api_keys.length === 0) && client.source !== 'api') return false
       }
@@ -2521,7 +3053,7 @@ function ClientsView({
         webUsers
       )
     })
-  }, [clients, searchQuery, clientFilter])
+  }, [clients, searchQuery, clientFilter, selectedClientId])
 
   const pageCount = Math.max(1, Math.ceil(filteredClients.length / pageSize))
   const currentPage = Math.min(page, pageCount)
@@ -2529,24 +3061,43 @@ function ClientsView({
   const shownTo = Math.min(currentPage * pageSize, filteredClients.length)
   const pagedClients = filteredClients.slice((currentPage - 1) * pageSize, currentPage * pageSize)
 
-  async function createClient() {
-    const usernames = parseTelegramUsernames(form.telegram_usernames)
-    await api('/api/clients', {
-      method: 'POST',
-      body: JSON.stringify({ ...form, telegram_usernames: usernames, username: usernames[0] || '' }),
+  async function patchClient(client: Client, patch: Partial<Client>, savedKey?: string) {
+    const busyKey = savedKey || `${client.id}:patch`
+    onOptimisticClientPatch?.(client.id, patch)
+    onClientMutationState?.(1)
+    setSavingFlags(prev => ({ ...prev, [busyKey]: true }))
+    try {
+      const updated = await api<Client>(`/api/clients/${client.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      })
+      if (updated && updated.id && onClientUpdated) {
+        onClientUpdated(updated)
+      } else {
+        await onChange()
+      }
+      if (savedKey) flashSaved(savedKey)
+    } catch (err) {
+      if (onClientUpdated) onClientUpdated(client)
+      alert(`Не удалось сохранить настройку: ${formatError(err)}`)
+    } finally {
+      setSavingFlags(prev => ({ ...prev, [busyKey]: false }))
+      onClientMutationState?.(-1)
+    }
+  }
+  async function saveClientSupplierTarget(client: Client, rawValue?: string) {
+    const raw = rawValue ?? supplierTargetDrafts[client.id] ?? (client.supplier_target_min ? String(client.supplier_target_min) : '')
+    const trimmed = String(raw).trim()
+    const parsed = trimmed === '' ? 0 : Math.floor(Number(trimmed))
+    const nextValue = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0
+    setSupplierTargetDrafts(prev => {
+      const next = { ...prev }
+      delete next[client.id]
+      return next
     })
-    setForm({ name: '', telegram_usernames: '', telegram_id: '', notes: '' })
-    await onChange()
-  }
-  async function patchClient(client: Client, patch: Partial<Client>) {
-    await api(`/api/clients/${client.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
-    await onChange()
-  }
-  function patchClientSupplierTarget(client: Client, input: HTMLInputElement) {
-    const value = Math.floor(Number(input.value))
-    const nextValue = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0
-    input.value = String(nextValue)
-    if (nextValue !== (client.supplier_target_min || 0)) void patchClient(client, { supplier_target_min: nextValue })
+    if (nextValue !== (client.supplier_target_min || 0)) {
+      await patchClient(client, { supplier_target_min: nextValue }, `${client.id}:supplier_target`)
+    }
   }
   async function deleteClient(client: Client, event?: React.MouseEvent) {
     const label = client.name || client.username || client.telegram_id || 'этого клиента'
@@ -2667,15 +3218,17 @@ function ClientsView({
       (client.usage?.effective_prices &&
         Object.values(client.usage.effective_prices).some(p => p?.source === 'client_override'))
     )
-    const bonusRub = hasCustomPrices ? 0 : calculateBonusRub(amountRub)
+    const bonusRub = hasCustomPrices ? 0 : calculateDynamicBonusRub(amountRub)
     const bonusKopeks = rublesToKopeks(bonusRub)
     const requestSlot = `${client.id}:grant`
     if (balanceRequestsInFlight.current[requestSlot]) return
     const idempotencyKey = balanceRequestIds.current[requestSlot] || crypto.randomUUID()
     balanceRequestIds.current[requestSlot] = idempotencyKey
     balanceRequestsInFlight.current[requestSlot] = true
+    setBalanceBusy(prev => ({ ...prev, [requestSlot]: true }))
+    onClientMutationState?.(1)
     try {
-      await api(`/api/clients/${client.id}/billing/grants`, {
+      const res = await api<{ client?: Client }>(`/api/clients/${client.id}/billing/grants`, {
         method: 'POST',
         body: JSON.stringify({
           kind: 'money',
@@ -2690,9 +3243,18 @@ function ClientsView({
       })
       delete balanceRequestIds.current[requestSlot]
       setGrantForms({ ...grantForms, [client.id]: { ...draft, amount_rub: '' } })
-      await onChange()
+      if (res?.client && onClientUpdated) {
+        onClientUpdated(res.client)
+      } else {
+        await onChange()
+      }
+      flashSaved(`${client.id}:balance_topup`)
+    } catch (err) {
+      alert(`Ошибка пополнения баланса: ${formatError(err)}`)
     } finally {
       delete balanceRequestsInFlight.current[requestSlot]
+      setBalanceBusy(prev => ({ ...prev, [requestSlot]: false }))
+      onClientMutationState?.(-1)
     }
   }
   async function debitClientBalance(client: Client) {
@@ -2705,8 +3267,10 @@ function ClientsView({
     const idempotencyKey = balanceRequestIds.current[requestSlot] || crypto.randomUUID()
     balanceRequestIds.current[requestSlot] = idempotencyKey
     balanceRequestsInFlight.current[requestSlot] = true
+    setBalanceBusy(prev => ({ ...prev, [requestSlot]: true }))
+    onClientMutationState?.(1)
     try {
-      await api(`/api/clients/${client.id}/billing/grants`, {
+      const res = await api<{ client?: Client }>(`/api/clients/${client.id}/billing/grants`, {
         method: 'POST',
         body: JSON.stringify({
           kind: 'money',
@@ -2720,23 +3284,77 @@ function ClientsView({
       })
       delete balanceRequestIds.current[requestSlot]
       setGrantForms({ ...grantForms, [client.id]: { ...draft, debit_amount_rub: '' } })
-      await onChange()
+      if (res?.client && onClientUpdated) {
+        onClientUpdated(res.client)
+      } else {
+        await onChange()
+      }
+      flashSaved(`${client.id}:balance_debit`)
+    } catch (err) {
+      alert(`Ошибка списания: ${formatError(err)}`)
     } finally {
       delete balanceRequestsInFlight.current[requestSlot]
+      setBalanceBusy(prev => ({ ...prev, [requestSlot]: false }))
+      onClientMutationState?.(-1)
     }
   }
   async function saveClientTariffOverride(client: Client, kind: string, fallbackKopeks: number) {
     const key = priceDraftKey(client, kind)
-    const valueRub = Number(priceForms[key] ?? kopeksToRubles(fallbackKopeks))
+    const valueRub = Number(String(priceForms[key] ?? kopeksToRubles(fallbackKopeks)).replace(',', '.'))
     if (!Number.isFinite(valueRub) || valueRub < 0) return
-    await api(`/api/clients/${client.id}/tariff-overrides/${kind}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ kind, price_kopeks: rublesToKopeks(valueRub), is_enabled: valueRub > 0, note: '' }),
-    })
-    const nextForms = { ...priceForms }
-    delete nextForms[key]
-    setPriceForms(nextForms)
-    await onChange()
+    const saveKey = `price:${key}`
+    setSavingFlags(prev => ({ ...prev, [saveKey]: true }))
+    onClientMutationState?.(1)
+    try {
+      const res = await api<{ success?: boolean; client?: Client }>(`/api/clients/${client.id}/tariff-overrides/${kind}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ kind, price_kopeks: rublesToKopeks(valueRub), is_enabled: valueRub > 0, note: '' }),
+      })
+      setPriceForms(prev => {
+        const nextForms = { ...prev }
+        delete nextForms[key]
+        return nextForms
+      })
+      if (res?.client && onClientUpdated) {
+        onClientUpdated(res.client)
+      } else {
+        await onChange()
+      }
+      flashSaved(saveKey)
+    } catch (err) {
+      alert(`Не удалось сохранить цену: ${formatError(err)}`)
+    } finally {
+      setSavingFlags(prev => ({ ...prev, [saveKey]: false }))
+      onClientMutationState?.(-1)
+    }
+  }
+  async function resetClientTariffOverride(client: Client, kind: string) {
+    const key = priceDraftKey(client, kind)
+    const saveKey = `price:${key}`
+    setSavingFlags(prev => ({ ...prev, [saveKey]: true }))
+    onClientMutationState?.(1)
+    try {
+      const res = await api<{ success?: boolean; client?: Client }>(`/api/clients/${client.id}/tariff-overrides/${kind}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ kind, price_kopeks: 0, is_enabled: false, note: '' }),
+      })
+      setPriceForms(prev => {
+        const nextForms = { ...prev }
+        delete nextForms[key]
+        return nextForms
+      })
+      if (res?.client && onClientUpdated) {
+        onClientUpdated(res.client)
+      } else {
+        await onChange()
+      }
+      flashSaved(saveKey)
+    } catch (err) {
+      alert(`Не удалось сбросить цену: ${formatError(err)}`)
+    } finally {
+      setSavingFlags(prev => ({ ...prev, [saveKey]: false }))
+      onClientMutationState?.(-1)
+    }
   }
   async function verifyWebUserEmail(client: Client, user: WebUser) {
     await api(`/api/clients/${client.id}/web-users/${user.id}/verify-email`, { method: 'POST' })
@@ -2765,8 +3383,23 @@ function ClientsView({
     setTemporaryPasswords(nextPasswords)
     await onChange()
   }
-  function patchClientNote(client: Client, value: string) {
-    if (value !== client.notes) void patchClient(client, { notes: value })
+  async function patchClientNote(client: Client, value: string) {
+    if (value === (client.notes || '')) return
+    await patchClient(client, { notes: value }, `${client.id}:note`)
+    setNoteDrafts(prev => {
+      const next = { ...prev }
+      delete next[client.id]
+      return next
+    })
+  }
+  async function patchClientPrompt(client: Client, value: string) {
+    if (value === (client.custom_report_prompt || '')) return
+    await patchClient(client, { custom_report_prompt: value }, `${client.id}:prompt`)
+    setPromptDrafts(prev => {
+      const next = { ...prev }
+      delete next[client.id]
+      return next
+    })
   }
   return (
     <section className="stack">
@@ -2796,34 +3429,6 @@ function ClientsView({
           </div>
         </div>
       )}
-      <div className="client-create-panel">
-        <div className="client-create-head">
-          <div>
-            <h2>Добавить клиента</h2>
-          </div>
-        </div>
-        <div className="client-create-grid">
-          <label className="field">
-            Название клиента
-            <input placeholder="ООО Ромашка" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
-          </label>
-          <label className="field">
-            Telegram-ники
-            <input
-              placeholder="@manager, @buyer"
-              value={form.telegram_usernames}
-              onChange={e => setForm({ ...form, telegram_usernames: e.target.value })}
-            />
-          </label>
-          <label className="field">
-            Telegram ID вручную
-            <input placeholder="Если ID известен" value={form.telegram_id} onChange={e => setForm({ ...form, telegram_id: e.target.value })} />
-          </label>
-          <button className="client-create-submit" onClick={() => void createClient()} disabled={!form.name.trim() || (!form.telegram_id.trim() && !parseTelegramUsernames(form.telegram_usernames).length)}>
-            <Plus size={16} />Добавить
-          </button>
-        </div>
-      </div>
       <div className="list-toolbar">
         <div className="list-toolbar-row">
           <div className="list-toolbar-meta">
@@ -3008,6 +3613,63 @@ function ClientsView({
             </button>
             <button
               type="button"
+              className={`ghost small-text ${clientFilter === 'direct' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'direct' ? '#059669' : 'transparent',
+                color: clientFilter === 'direct' ? '#fff' : '#047857',
+                border: '1px solid #a7f3d0',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('direct')
+                setPage(1)
+              }}
+            >
+              💎 Прямая ({directClientsCount})
+            </button>
+            <button
+              type="button"
+              className={`ghost small-text ${clientFilter === 'custom_prices' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'custom_prices' ? '#b45309' : 'transparent',
+                color: clientFilter === 'custom_prices' ? '#fff' : '#b45309',
+                border: '1px solid #fde68a',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('custom_prices')
+                setPage(1)
+              }}
+            >
+              ⭐ Спеццены ({customPricesClientsCount})
+            </button>
+            <button
+              type="button"
+              className={`ghost small-text ${clientFilter === 'vip' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'vip' ? '#4f46e5' : 'transparent',
+                color: clientFilter === 'vip' ? '#fff' : '#4338ca',
+                border: '1px solid #c7d2fe',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('vip')
+                setPage(1)
+              }}
+            >
+              ⚡ VIP ({vipClientsCount})
+            </button>
+            <button
+              type="button"
               className={`ghost small-text ${clientFilter === 'api' ? 'active' : ''}`}
               style={{
                 background: clientFilter === 'api' ? '#7e22ce' : 'transparent',
@@ -3053,6 +3715,7 @@ function ClientsView({
           const draft = accountDraft(client)
           const accounts = (client.telegram_accounts || []).filter(account => !isSyntheticWebTelegramAccount(account))
           const webUsers = client.web_users?.length ? client.web_users : []
+          const realWebUsers = webUsers.filter(user => !isSyntheticTelegramEmail(user.email))
           const expanded = Boolean(expandedClients[client.id])
           const grant = grantDraft(client)
           const grantAmountRub = Number(String(grant.amount_rub || 0).replace(',', '.'))
@@ -3061,15 +3724,31 @@ function ClientsView({
           const debitAmountValid = Number.isFinite(debitAmountRub) && debitAmountRub > 0
           const connectedCount = accounts.filter(account => !account.is_pending).length
           const pendingCount = accounts.filter(account => account.is_pending).length
+          const hasCustomPrices = clientHasCustomTariffs(client)
+          const customPricesCount = clientCustomTariffsCount(client)
+          const activeTab = getClientTab(client.id)
+          const noteValue = noteDrafts[client.id] ?? (client.notes || '')
+          const noteDirty = noteValue !== (client.notes || '')
+          const promptValue = promptDrafts[client.id] ?? (client.custom_report_prompt || '')
+          const promptDirty = promptValue !== (client.custom_report_prompt || '')
+          const supplierTargetValue = supplierTargetDrafts[client.id] ?? (client.supplier_target_min ? String(client.supplier_target_min) : '')
+          const supplierTargetDirty = supplierTargetDrafts[client.id] !== undefined && Number(supplierTargetValue || 0) !== (client.supplier_target_min || 0)
           return (
             <article className={`client-card compact ${expanded ? 'expanded' : ''} ${isNewClient ? 'is-new-client' : ''}`} key={client.id}>
-              <div className="client-card-head compact">
+              <div
+                className="client-card-head compact clickable"
+                onClick={() => setExpandedClients(prev => ({ ...prev, [client.id]: !expanded }))}
+              >
                 <div className="client-title-row compact">
                   <button
+                    type="button"
                     className="client-expand-button compact"
                     title={expanded ? 'Свернуть карточку клиента' : 'Открыть карточку клиента'}
                     aria-expanded={expanded}
-                    onClick={() => setExpandedClients({ ...expandedClients, [client.id]: !expanded })}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setExpandedClients(prev => ({ ...prev, [client.id]: !expanded }))
+                    }}
                   >
                     {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   </button>
@@ -3086,22 +3765,36 @@ function ClientsView({
                           Новый
                         </span>
                       )}
+                      {client.direct_payment_only && (
+                        <span
+                          className="client-flag-badge direct"
+                          title="ЮKassa и выставление счетов скрыты: клиент пополняет баланс напрямую через менеджера. Можно снова включить во вкладке «Финансы и оплата»."
+                        >
+                          💎 Прямая оплата
+                        </span>
+                      )}
+                      {hasCustomPrices && (
+                        <span
+                          className="client-flag-badge custom-price"
+                          title={`У клиента настроены индивидуальные цены (${customPricesCount || 'активны'})`}
+                        >
+                          ⭐ Спеццены{customPricesCount > 0 ? ` (${customPricesCount})` : ''}
+                        </span>
+                      )}
+                      {client.allowed_custom_batch_report && (
+                        <span
+                          className="client-flag-badge vip"
+                          title={client.custom_report_separate_tab
+                            ? 'VIP экспресс-оценка (отдельная вкладка, до 60 закупок)'
+                            : 'VIP экспресс-оценка (подменяет «Анализ документации», до 60 закупок)'}
+                        >
+                          ⚡ VIP
+                        </span>
+                      )}
                       {(client.has_api_key || (client.api_keys && client.api_keys.length > 0)) && (
                         <span
-                          className="badge-api-client"
-                          style={{
-                            background: '#ede9fe',
-                            color: '#6d28d9',
-                            border: '1px solid #c4b5fd',
-                            borderRadius: 4,
-                            padding: '1px 6px',
-                            fontSize: '0.72rem',
-                            fontWeight: 600,
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 3,
-                            cursor: onNavigateToMcp ? 'pointer' : 'default',
-                          }}
+                          className="client-flag-badge api"
+                          style={{ cursor: onNavigateToMcp ? 'pointer' : 'default' }}
                           title="Подключен API-доступ (TenderLex API / CRM). Нажмите для перехода в MCP & API"
                           onClick={(e) => {
                             if (onNavigateToMcp) {
@@ -3141,29 +3834,45 @@ function ClientsView({
                   >
                     Задач: {client.jobs_count ?? 0}
                   </span>
-                  {webUsers.length > 0 && <span className="pill web">Web: {webUsers.length}</span>}
+                  {realWebUsers.length > 0 && <span className="pill web">Web: {realWebUsers.length}</span>}
                   <span className="pill tg">TG: {connectedCount}</span>
                   {pendingCount > 0 && <span className="pill pending">Ожидают: {pendingCount}</span>}
                   {client.usage?.money && <span className="pill balance">{formatMoney(client.usage.money.available_kopeks)}</span>}
                 </div>
-                <div className="client-state">
+                <div className="client-state" onClick={(e) => e.stopPropagation()}>
+                  {onNavigateToClientDialog && (
+                    <button
+                      type="button"
+                      className="ghost small-text client-quick-btn"
+                      title="Открыть диалог с клиентом"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onNavigateToClientDialog(client.id)
+                      }}
+                    >
+                      <MessageSquare size={13} />
+                      <span>Диалог</span>
+                    </button>
+                  )}
+                  {onNavigateToClientJobs && (
+                    <button
+                      type="button"
+                      className="ghost small-text client-quick-btn"
+                      title={`Перейти к задачам клиента (${client.jobs_count ?? 0})`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onNavigateToClientJobs(client.id)
+                      }}
+                    >
+                      <FileText size={13} />
+                      <span>Задачи</span>
+                    </button>
+                  )}
                   <details className="client-actions-menu compact">
-                    <summary title="Действия клиента" aria-label="Действия клиента">
+                    <summary title="Дополнительные действия" aria-label="Дополнительные действия">
                       <MoreHorizontal size={15} />
                     </summary>
                     <div className="client-actions-popover">
-                      {onNavigateToClientJobs && (
-                        <button
-                          className="small-text"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onNavigateToClientJobs(client.id)
-                          }}
-                        >
-                          <FileText size={13} />
-                          Задачи клиента ({client.jobs_count ?? 0})
-                        </button>
-                      )}
                       <button
                         className="danger small-text"
                         onClick={(e) => void deleteClient(client, e)}
@@ -3177,383 +3886,721 @@ function ClientsView({
                 </div>
               </div>
 
-              {expanded && <div className="client-card-grid">
-                <div className="client-section client-telegram-section">
-                  <div className="section-head">
-                    <h3>Доступы</h3>
-                    <span>
-                      {[
-                        webUsers.length ? `Web: ${webUsers.length}` : '',
-                        accounts.length ? `Telegram: ${accounts.length}` : '',
-                        client.api_keys && client.api_keys.length ? `API: ${client.api_keys.length}` : '',
-                      ].filter(Boolean).join(' · ') || 'нет'}
-                    </span>
+              {expanded && (
+                <div className="client-card-body">
+                  <div className="client-tabs" role="tablist" aria-label="Разделы карточки клиента">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === 'finance'}
+                      className={`client-tab-btn ${activeTab === 'finance' ? 'active' : ''}`}
+                      onClick={() => setClientTab(client.id, 'finance')}
+                    >
+                      <Coins size={14} />
+                      <span>Финансы и оплата</span>
+                      {client.direct_payment_only && <span className="client-tab-dot direct" title="Только прямая оплата" />}
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === 'pricing'}
+                      className={`client-tab-btn ${activeTab === 'pricing' ? 'active' : ''}`}
+                      onClick={() => setClientTab(client.id, 'pricing')}
+                    >
+                      <SlidersHorizontal size={14} />
+                      <span>Цены и функции</span>
+                      {customPricesCount > 0 && <span className="client-tab-count">{customPricesCount}</span>}
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === 'access'}
+                      className={`client-tab-btn ${activeTab === 'access' ? 'active' : ''}`}
+                      onClick={() => setClientTab(client.id, 'access')}
+                    >
+                      <KeyRound size={14} />
+                      <span>Доступы и заметка</span>
+                      <span className="client-tab-count neutral">{realWebUsers.length + accounts.length + (client.api_keys?.length || 0)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === 'vip'}
+                      className={`client-tab-btn ${activeTab === 'vip' ? 'active' : ''}`}
+                      onClick={() => setClientTab(client.id, 'vip')}
+                    >
+                      <Crown size={14} />
+                      <span>VIP и управление</span>
+                      {client.allowed_custom_batch_report && <span className="client-tab-dot vip" title="VIP активен" />}
+                    </button>
                   </div>
-                  <div className="access-subsection">
-                    <div className="subsection-label">Web-доступ</div>
-                    {webUsers.length > 0 ? (
-                      <div className="web-user-list">
-                        {webUsers.map(user => (
-                          <div className="web-user-row" key={user.id}>
-                            <div>
-                              <strong>{user.email}</strong>
-                              <small>
-                                {[
-                                  user.name || 'web-кабинет',
-                                  user.created_at ? `рег. ${formatDate(user.created_at)}` : '',
-                                  user.is_email_verified ? 'email подтверждён' : 'email не подтверждён',
-                                  user.last_login_at ? `вход ${formatDate(user.last_login_at)}` : 'входа ещё не было',
-                                ].filter(Boolean).join(' · ')}
-                              </small>
-                            </div>
-                            <div className="web-user-actions">
-                              {!user.is_active && <StatusBadge status="disabled" />}
-                              {!user.is_email_verified && (
-                                <button className="small-text" onClick={() => void verifyWebUserEmail(client, user)}>
-                                  <CheckCircle2 size={14} />Подтвердить
-                                </button>
-                              )}
-                              <button
-                                className="icon-button small danger"
-                                title="Удалить web-кабинет"
-                                onClick={() => void deleteWebUser(client, user)}
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="inline-note">Web-кабинет не привязан.</div>
-                    )}
-                  </div>
-                  <div className="access-subsection">
-                    <div className="subsection-label">Telegram-аккаунты</div>
-                    <div className="account-edit-list">
-                      {accounts.map(account => {
-                        const edit = accountEditDraft(account)
-                        return (
-                          <div className="account-edit-row" key={account.id}>
-                            <label className="mini-field">
-                              <span>Ник</span>
-                              <input value={edit.username} placeholder="@manager" onChange={e => setAccountEditDraft(account, { username: e.target.value })} />
-                            </label>
-                            <label className="mini-field">
-                              <span>Telegram ID</span>
-                              <input value={edit.telegram_id} placeholder={account.is_pending ? 'Введите ID' : 'ID'} onChange={e => setAccountEditDraft(account, { telegram_id: e.target.value })} />
-                            </label>
-                            <label className="mini-field">
-                              <span>Имя</span>
-                              <input value={edit.name} placeholder="Имя менеджера" onChange={e => setAccountEditDraft(account, { name: e.target.value })} />
-                            </label>
-                            <div className="account-edit-actions">
-                              {account.is_pending && <StatusBadge status="account_pending" />}
-                              {!account.is_pending && !account.is_active && <StatusBadge status="disabled" />}
-                              <button className="small-text" onClick={() => void saveAccount(client, account)}>
-                                <Save size={14} />Сохранить
-                              </button>
-                              <button
-                                className="icon-button small danger"
-                                title="Удалить Telegram-аккаунт"
-                                onClick={() => void deleteAccount(client, account)}
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
-                            {account.created_at && (
-                              <div className="account-meta-line">
-                                <small>Зарегистрирован / привязан: {formatDate(account.created_at)}</small>
+
+                  {activeTab === 'finance' && (
+                    <div className="client-tab-panel client-panel-grid two-col">
+                      <div className="client-panel-col">
+                        <div className="client-subcard">
+                          <div className="client-subcard-head">
+                            <h4>Баланс и операции</h4>
+                            {client.usage?.money && (
+                              <div className="client-balance-hero">
+                                <strong>{formatMoney(client.usage.money.available_kopeks)}</strong>
+                                {client.usage.money.reserved_kopeks > 0 && (
+                                  <span className="client-balance-reserved" title="Средства удержаны под задачи в работе">
+                                    В работе: {formatMoney(client.usage.money.reserved_kopeks)}
+                                  </span>
+                                )}
                               </div>
                             )}
                           </div>
-                        )
-                      })}
-                      {!accounts.length && <div className="inline-note">Аккаунты пока не добавлены.</div>}
-                      <details className="compact-form-details account-add-details">
-                        <summary>Добавить Telegram</summary>
-                        <div className="account-add">
-                          <input placeholder="@username" value={draft.username} onChange={e => setAccountDraft(client, { username: e.target.value })} />
-                          <input placeholder="ID вручную" value={draft.telegram_id} onChange={e => setAccountDraft(client, { telegram_id: e.target.value })} />
-                          <input placeholder="Имя" value={draft.name} onChange={e => setAccountDraft(client, { name: e.target.value })} />
-                          <button className="icon-button small" title="Добавить Telegram-аккаунт" onClick={() => void createAccount(client)} disabled={!draft.telegram_id.trim() && !draft.username.trim()}><Plus size={16} /></button>
-                        </div>
-                      </details>
-                    </div>
-                  </div>
-                  <div className="access-subsection">
-                    <div className="subsection-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span>API-доступ (CRM / Интеграции)</span>
-                      {onNavigateToMcp && (
-                        <button
-                          type="button"
-                          className="small-text"
-                          style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
-                          onClick={onNavigateToMcp}
-                        >
-                          Управление в MCP & API →
-                        </button>
-                      )}
-                    </div>
-                    {client.api_keys && client.api_keys.length > 0 ? (
-                      <div className="account-edit-list">
-                        {client.api_keys.map(k => (
-                          <div className="account-edit-row" key={k.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', background: '#f8fafc', borderRadius: 6, marginBottom: 4 }}>
-                            <div>
-                              <strong style={{ fontFamily: 'monospace', fontSize: '0.84rem' }}>{k.key_prefix}...</strong>
-                              <span style={{ marginLeft: 8, fontSize: '0.82rem', color: '#475569' }}>{k.name || 'API Key'}</span>
-                              <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
-                                Всего вызовов: <strong>{k.total_spent || 0}</strong> · Списание с единого баланса клиента
+                          {(() => {
+                            const quickChips = activeDepositPackages.length > 0
+                              ? activeDepositPackages.map(pkg => {
+                                  const priceRub = Math.round(kopeksToRubles(pkg.price_kopeks))
+                                  const bonusRub = Math.round(kopeksToRubles(pkg.bonus_kopeks || 0))
+                                  const formattedPrice = `${priceRub.toLocaleString('ru-RU')} ₽`
+                                  const bonusHint = !hasCustomPrices && bonusRub > 0
+                                    ? ` (+${bonusRub >= 1000 && bonusRub % 100 === 0 ? `${(bonusRub / 1000).toFixed(bonusRub % 1000 === 0 ? 0 : 1)}k` : bonusRub})`
+                                    : ''
+                                  return { label: `${formattedPrice}${bonusHint}`, val: String(priceRub) }
+                                })
+                              : (hasCustomPrices
+                                  ? [
+                                      { label: '1 000 ₽', val: '1000' },
+                                      { label: '3 000 ₽', val: '3000' },
+                                      { label: '5 000 ₽', val: '5000' },
+                                      { label: '10 000 ₽', val: '10000' },
+                                      { label: '25 000 ₽', val: '25000' },
+                                    ]
+                                  : [
+                                      { label: '1 000 ₽', val: '1000' },
+                                      { label: '3 000 ₽ (+500)', val: '3000' },
+                                      { label: '5 000 ₽ (+1.5k)', val: '5000' },
+                                      { label: '10 000 ₽ (+4k)', val: '10000' },
+                                      { label: '25 000 ₽ (+12.5k)', val: '25000' },
+                                    ])
+
+                            const amt = Number(String(grant.amount_rub || 0).replace(',', '.'))
+                            const bonus = hasCustomPrices ? 0 : calculateDynamicBonusRub(amt)
+                            const topupBusy = Boolean(balanceBusy[`${client.id}:grant`])
+                            const debitBusy = Boolean(balanceBusy[`${client.id}:debit`])
+
+                            return (
+                              <div className="balance-adjust-panel">
+                                <div className="client-chip-row">
+                                  {quickChips.map(p => (
+                                    <button
+                                      key={p.val}
+                                      type="button"
+                                      className={`client-amount-chip ${grant.amount_rub === p.val ? 'active' : ''}`}
+                                      onClick={() => setGrantDraft(client, { amount_rub: p.val })}
+                                    >
+                                      {p.label}
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="balance-adjust-row">
+                                  <label className="mini-field">
+                                    <span>
+                                      Пополнить баланс, ₽
+                                      {savedIndicators[`${client.id}:balance_topup`] && <em className="saved-pill">Пополнено</em>}
+                                    </span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={1}
+                                      placeholder="Введите сумму"
+                                      value={grant.amount_rub}
+                                      onChange={e => setGrantDraft(client, { amount_rub: e.currentTarget.value })}
+                                      onKeyDown={e => {
+                                        if (e.key === 'Enter' && grantAmountValid && !topupBusy) void topUpClientBalance(client)
+                                      }}
+                                    />
+                                    {amt > 0 && (
+                                      hasCustomPrices ? (
+                                        <small className="balance-hint neutral">
+                                          Спецтариф: зачислится ровно {amt.toLocaleString('ru-RU')} ₽ (без бонуса)
+                                        </small>
+                                      ) : bonus > 0 ? (
+                                        <small className="balance-hint emerald">
+                                          Итого: {(amt + bonus).toLocaleString('ru-RU')} ₽ ({amt.toLocaleString('ru-RU')} ₽ + бонус {bonus.toLocaleString('ru-RU')} ₽)
+                                        </small>
+                                      ) : null
+                                    )}
+                                  </label>
+                                  <button type="button" onClick={() => void topUpClientBalance(client)} disabled={!grantAmountValid || topupBusy}>
+                                    <Plus size={15} />{topupBusy ? '...' : 'Пополнить'}
+                                  </button>
+                                </div>
+                                <div className="balance-adjust-row">
+                                  <label className="mini-field">
+                                    <span>
+                                      Списать с баланса, ₽
+                                      {savedIndicators[`${client.id}:balance_debit`] && <em className="saved-pill">Списано</em>}
+                                    </span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={1}
+                                      placeholder="Введите сумму"
+                                      value={grant.debit_amount_rub || ''}
+                                      onChange={e => setGrantDraft(client, { debit_amount_rub: e.currentTarget.value })}
+                                      onKeyDown={e => {
+                                        if (e.key === 'Enter' && debitAmountValid && !debitBusy) void debitClientBalance(client)
+                                      }}
+                                    />
+                                  </label>
+                                  <button type="button" className="danger" onClick={() => void debitClientBalance(client)} disabled={!debitAmountValid || debitBusy}>
+                                    <Minus size={15} />{debitBusy ? '...' : 'Списать'}
+                                  </button>
+                                </div>
                               </div>
+                            )
+                          })()}
+                        </div>
+
+                        <div className={`client-subcard client-payment-mode-card ${client.direct_payment_only ? 'is-direct' : ''}`}>
+                          <div className="client-subcard-head">
+                            <h4>Способ оплаты клиента</h4>
+                            {savedIndicators[`${client.id}:direct_payment`] && <span className="saved-pill">Сохранено</span>}
+                          </div>
+                          <div className="client-mode-segmented">
+                            <button
+                              type="button"
+                              className={`client-mode-opt ${!client.direct_payment_only ? 'active' : ''}`}
+                              onClick={() => {
+                                if (client.direct_payment_only) {
+                                  void patchClient(client, { direct_payment_only: false }, `${client.id}:direct_payment`)
+                                }
+                              }}
+                            >
+                              <CreditCard size={14} />
+                              <span>Официально (ЮKassa + счёт)</span>
+                            </button>
+                            <button
+                              type="button"
+                              className={`client-mode-opt direct ${client.direct_payment_only ? 'active' : ''}`}
+                              onClick={() => {
+                                if (!client.direct_payment_only) {
+                                  void patchClient(client, { direct_payment_only: true }, `${client.id}:direct_payment`)
+                                }
+                              }}
+                            >
+                              <Sparkles size={14} />
+                              <span>Только напрямую через менеджера</span>
+                            </button>
+                          </div>
+                          {client.direct_payment_only ? (
+                            <div className="client-notice emerald">
+                              ЮKassa и выставление счетов скрыты в личном кабинете и Telegram-боте — клиент видит персональный тариф и кнопку связи с менеджером. Официальную оплату можно вернуть одним кликом слева.
                             </div>
-                            <div className="account-edit-actions">
-                              {!k.is_active ? <StatusBadge status="disabled" /> : <StatusBadge status="active" />}
+                          ) : hasCustomPrices ? (
+                            <div className="client-notice amber">
+                              У клиента настроены индивидуальные цены, но ЮKassa и счета сейчас открыты. Если спецтариф действует только при прямом переводе — переключите режим справа.
+                            </div>
+                          ) : (
+                            <p className="client-helper-text">
+                              Клиент может самостоятельно оплачивать баланс через ЮKassa (карта, СБП) или выставлять счёт для юрлица.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="client-panel-col">
+                        <div className="client-subcard client-history-card">
+                          <div className="client-subcard-head">
+                            <h4>История баланса</h4>
+                            <span className="client-subcard-meta">{client.recent_billing?.length || 0} последних операций</span>
+                          </div>
+                          <div className="client-history-scroll">
+                            {client.recent_billing?.length ? (
+                              <div className="usage-history">
+                                {client.recent_billing.map(item => (
+                                  <div className="usage-history-row" key={item.id}>
+                                    <div>
+                                      <strong>{item.operation_label}: {item.kind_label}</strong>
+                                      <small>{formatDate(item.created_at)} · {item.note || item.created_by}</small>
+                                    </div>
+                                    <span>{item.amount_kopeks ? formatPrice(item.amount_kopeks) : item.units}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="client-empty-box">Операций по балансу пока нет.</div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {activeTab === 'pricing' && (
+                    <div className="client-tab-panel">
+                      {client.usage?.effective_prices && (
+                        <div className="client-subcard">
+                          <div className="client-subcard-head">
+                            <div>
+                              <h4>Индивидуальные цены</h4>
+                              <p className="client-helper-text">
+                                Комбо «Анализ + поиск» считается автоматически из суммы двух цен. Нажмите дискету для сохранения или «Сброс» для возврата к базовой цене.
+                              </p>
+                            </div>
+                            <span className={`client-status-pill ${customPricesCount > 0 ? 'emerald' : 'neutral'}`}>
+                              {customPricesCount > 0 ? `Личных цен: ${customPricesCount} из 6` : 'Стандартные цены'}
+                            </span>
+                          </div>
+
+                          <div className="client-price-grid">
+                            {(['supplier_search', 'exact_product', 'procurement_report', 'supplier_search_extra', 'price_monitoring', 'custom_batch_report'] as const).map(kind => {
+                              const price = client.usage?.effective_prices?.[kind]
+                              const fallbackKopeks = price?.price_kopeks || 0
+                              const isOverride = price?.source === 'client_override'
+                              const key = priceDraftKey(client, kind)
+                              const saveKey = `price:${key}`
+                              const isSaving = Boolean(savingFlags[saveKey])
+                              const isSaved = Boolean(savedIndicators[saveKey])
+                              const currentDraft = priceDraftValue(client, kind, fallbackKopeks)
+                              const isDirty = priceForms[key] !== undefined && Number(String(priceForms[key]).replace(',', '.')) !== kopeksToRubles(fallbackKopeks)
+                              return (
+                                <div className={`client-price-tile ${isOverride ? 'is-custom' : ''}`} key={kind}>
+                                  <div className="client-price-tile-head">
+                                    <span className="client-price-label">{priceBillingLabel(kind)}</span>
+                                    <span className={`client-price-source ${isOverride ? 'custom' : 'default'}`}>
+                                      {isSaved ? '✓ Сохранено' : isOverride ? 'Личная' : 'Стандарт'}
+                                    </span>
+                                  </div>
+                                  <div className="client-price-controls">
+                                    <div className="client-price-input-wrap">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        step={1}
+                                        value={currentDraft}
+                                        onChange={e => setPriceDraftValue(client, kind, e.currentTarget.value)}
+                                        onKeyDown={e => {
+                                          if (e.key === 'Enter') void saveClientTariffOverride(client, kind, fallbackKopeks)
+                                        }}
+                                      />
+                                      <span className="client-price-rub">₽</span>
+                                    </div>
+                                    <button
+                                      className={`icon-button small ${isDirty ? 'accent' : ''}`}
+                                      type="button"
+                                      title="Сохранить индивидуальную цену"
+                                      disabled={isSaving}
+                                      onClick={() => void saveClientTariffOverride(client, kind, fallbackKopeks)}
+                                    >
+                                      <Save size={14} />
+                                    </button>
+                                    {isOverride && (
+                                      <button
+                                        className="ghost small-text client-price-reset"
+                                        type="button"
+                                        title="Сбросить к стандартной цене"
+                                        disabled={isSaving}
+                                        onClick={() => void resetClientTariffOverride(client, kind)}
+                                      >
+                                        <RotateCw size={12} />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="client-subcard">
+                        <div className="client-subcard-head">
+                          <h4>Дополнительные функции и параметры поиска</h4>
+                        </div>
+                        <div className="client-toggles-grid">
+                          <label className={`client-toggle-card ${client.allowed_price_monitoring ? 'is-on' : ''}`}>
+                            <div className="client-toggle-info">
+                              <strong>Доступ к «Мониторингу цен»</strong>
+                              <small>Открывает клиенту модуль мониторинга цен в кабинете</small>
+                            </div>
+                            <span className="client-switch-wrap">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(client.allowed_price_monitoring)}
+                                onChange={e => void patchClient(client, { allowed_price_monitoring: e.currentTarget.checked }, `${client.id}:pm`)}
+                              />
+                              <span className="client-switch-track" />
+                            </span>
+                          </label>
+
+                          <label className={`client-toggle-card ${client.allowed_geo_radius ? 'is-on' : ''}`}>
+                            <div className="client-toggle-info">
+                              <strong>Поиск в радиусе города</strong>
+                              <small>Разрешает ограничивать поиск поставщиков вокруг выбранного города</small>
+                            </div>
+                            <span className="client-switch-wrap">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(client.allowed_geo_radius)}
+                                onChange={e => void patchClient(client, { allowed_geo_radius: e.currentTarget.checked }, `${client.id}:geo`)}
+                              />
+                              <span className="client-switch-track" />
+                            </span>
+                          </label>
+
+                          <div className="client-toggle-card supplier-target-card">
+                            <div className="client-toggle-info">
+                              <strong>
+                                Минимум поставщиков в выдаче
+                                {savedIndicators[`${client.id}:supplier_target`] && <em className="saved-pill">Сохранено</em>}
+                              </strong>
+                              <small>Пусто или 0 — использовать общее значение из настроек системы</small>
+                            </div>
+                            <div className="client-inline-save-group">
+                              <input
+                                className="supplier-target-input"
+                                type="number"
+                                min={0}
+                                max={100}
+                                step={1}
+                                placeholder="по умолчанию"
+                                value={supplierTargetValue}
+                                onChange={e => setSupplierTargetDrafts(prev => ({ ...prev, [client.id]: e.currentTarget.value }))}
+                                onBlur={() => void saveClientSupplierTarget(client)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') void saveClientSupplierTarget(client)
+                                }}
+                              />
+                              {supplierTargetDirty && (
+                                <button
+                                  type="button"
+                                  className="icon-button small accent"
+                                  title="Сохранить минимум поставщиков"
+                                  onClick={() => void saveClientSupplierTarget(client)}
+                                >
+                                  <Save size={14} />
+                                </button>
+                              )}
                             </div>
                           </div>
-                        ))}
+                        </div>
                       </div>
-                    ) : (
-                      <div className="inline-note" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span>API-ключ пока не привязан.</span>
-                        {onNavigateToMcp && (
+                    </div>
+                  )}
+
+                  {activeTab === 'access' && (
+                    <div className="client-tab-panel">
+                      <div className="client-panel-grid two-col">
+                        <div className="client-subcard">
+                          <div className="client-subcard-head">
+                            <h4>Web-доступ</h4>
+                            <span className="client-subcard-meta">{webUsers.length > 0 ? `${webUsers.length} акк.` : 'нет'}</span>
+                          </div>
+                          {webUsers.length > 0 ? (
+                            <div className="web-user-list">
+                              {webUsers.map(user => {
+                                const isSyntheticTg = isSyntheticTelegramEmail(user.email)
+                                return (
+                                  <div className="web-user-row" key={user.id}>
+                                    <div>
+                                      <strong>{isSyntheticTg ? 'Web-вход через Telegram' : user.email}</strong>
+                                      <small>
+                                        {[
+                                          user.name || 'web-кабинет',
+                                          user.created_at ? `рег. ${formatDate(user.created_at)}` : '',
+                                          !isSyntheticTg ? (user.is_email_verified ? 'email подтверждён' : 'email не подтверждён') : '',
+                                          user.last_login_at ? `вход ${formatDate(user.last_login_at)}` : 'входа ещё не было',
+                                        ].filter(Boolean).join(' · ')}
+                                      </small>
+                                    </div>
+                                    <div className="web-user-actions">
+                                      {!user.is_active && <StatusBadge status="disabled" />}
+                                      {!isSyntheticTg && !user.is_email_verified && (
+                                        <button type="button" className="small-text" onClick={() => void verifyWebUserEmail(client, user)}>
+                                          <CheckCircle2 size={14} />Подтвердить
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        className="icon-button small danger"
+                                        title="Удалить web-кабинет"
+                                        onClick={() => void deleteWebUser(client, user)}
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          ) : (
+                            <div className="client-empty-box">Web-кабинет пока не привязан.</div>
+                          )}
+                        </div>
+
+                        <div className="client-subcard">
+                          <div className="client-subcard-head">
+                            <h4>API-доступ (CRM / Интеграции)</h4>
+                            {onNavigateToMcp && (
+                              <button
+                                type="button"
+                                className="small-text client-link-btn"
+                                onClick={onNavigateToMcp}
+                              >
+                                Управление в MCP & API →
+                              </button>
+                            )}
+                          </div>
+                          {client.api_keys && client.api_keys.length > 0 ? (
+                            <div className="account-edit-list">
+                              {client.api_keys.map(k => (
+                                <div className="web-user-row" key={k.id}>
+                                  <div>
+                                    <strong style={{ fontFamily: 'monospace' }}>{k.key_prefix}... · {k.name || 'API Key'}</strong>
+                                    <small>Всего вызовов: {k.total_spent || 0} · Списание с единого баланса</small>
+                                  </div>
+                                  <div className="web-user-actions">
+                                    {!k.is_active ? <StatusBadge status="disabled" /> : <StatusBadge status="active" />}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="client-empty-box">
+                              <span>API-ключ пока не привязан.</span>
+                              {onNavigateToMcp && (
+                                <button type="button" className="small-text client-link-btn" onClick={onNavigateToMcp}>
+                                  + Создать ключ
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="client-subcard">
+                        <div className="client-subcard-head">
+                          <h4>Telegram-аккаунты</h4>
+                          <span className="client-subcard-meta">Привязано: {accounts.length}</span>
+                        </div>
+                        <div className="account-edit-list">
+                          {accounts.map(account => {
+                            const edit = accountEditDraft(account)
+                            return (
+                              <div className="account-edit-row" key={account.id}>
+                                <label className="mini-field">
+                                  <span>Ник</span>
+                                  <input value={edit.username} placeholder="@manager" onChange={e => setAccountEditDraft(account, { username: e.target.value })} />
+                                </label>
+                                <label className="mini-field">
+                                  <span>Telegram ID</span>
+                                  <input value={edit.telegram_id} placeholder={account.is_pending ? 'Введите ID' : 'ID'} onChange={e => setAccountEditDraft(account, { telegram_id: e.target.value })} />
+                                </label>
+                                <label className="mini-field">
+                                  <span>Имя</span>
+                                  <input value={edit.name} placeholder="Имя менеджера" onChange={e => setAccountEditDraft(account, { name: e.target.value })} />
+                                </label>
+                                <div className="account-edit-actions">
+                                  {account.is_pending && <StatusBadge status="account_pending" />}
+                                  {!account.is_pending && !account.is_active && <StatusBadge status="disabled" />}
+                                  <button type="button" className="small-text" onClick={() => void saveAccount(client, account)}>
+                                    <Save size={14} />Сохранить
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="icon-button small danger"
+                                    title="Удалить Telegram-аккаунт"
+                                    onClick={() => void deleteAccount(client, account)}
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                                {account.created_at && (
+                                  <div className="account-meta-line">
+                                    <small>Зарегистрирован / привязан: {formatDate(account.created_at)}</small>
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                          {!accounts.length && <div className="client-empty-box">Telegram-аккаунты пока не добавлены.</div>}
+                          <details className="compact-form-details account-add-details">
+                            <summary>Добавить Telegram-аккаунт</summary>
+                            <div className="account-add">
+                              <input placeholder="@username" value={draft.username} onChange={e => setAccountDraft(client, { username: e.target.value })} />
+                              <input placeholder="ID вручную" value={draft.telegram_id} onChange={e => setAccountDraft(client, { telegram_id: e.target.value })} />
+                              <input placeholder="Имя" value={draft.name} onChange={e => setAccountDraft(client, { name: e.target.value })} />
+                              <button type="button" className="icon-button small" title="Добавить Telegram-аккаунт" onClick={() => void createAccount(client)} disabled={!draft.telegram_id.trim() && !draft.username.trim()}><Plus size={16} /></button>
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+
+                      <div className="client-subcard">
+                        <div className="client-subcard-head">
+                          <h4>
+                            Заметка администратора
+                            {savedIndicators[`${client.id}:note`] && <em className="saved-pill">Сохранено</em>}
+                          </h4>
                           <button
                             type="button"
                             className="small-text"
-                            style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer' }}
-                            onClick={onNavigateToMcp}
+                            disabled={!noteDirty || Boolean(savingFlags[`${client.id}:note`])}
+                            onClick={() => void patchClientNote(client, noteValue)}
                           >
-                            + Создать ключ
+                            <Save size={14} />Сохранить заметку
                           </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="client-section client-balance-section">
-                  <div className="section-head">
-                    <h3>Финансы</h3>
-                  </div>
-                  {client.usage && (
-                    <div className="balance-compact-list">
-                      {client.usage.money && (
-                        <div className="balance-line">
-                          <div>
-                            <strong>Баланс</strong>
-                            {client.usage.money.reserved_kopeks > 0 && (
-                              <small title="Средства удержаны под задачи в работе">В обработке {formatMoney(client.usage.money.reserved_kopeks)}</small>
-                            )}
-                          </div>
-                          <span>{formatMoney(client.usage.money.available_kopeks)}</span>
                         </div>
-                      )}
-                    </div>
-                  )}
-                  <div className="subsection-label">Операции с балансом</div>
-                  <div className="balance-adjust-panel">
-                    {(() => {
-                      const hasCustomPrices = Boolean(
-                        client.has_custom_tariffs ||
-                        client.usage?.has_custom_tariffs ||
-                        (client.usage?.effective_prices &&
-                          Object.values(client.usage.effective_prices).some(p => p?.source === 'client_override'))
-                      )
-                      const quickChips = hasCustomPrices
-                        ? [
-                            { label: '1 000 ₽', val: '1000' },
-                            { label: '3 000 ₽', val: '3000' },
-                            { label: '5 000 ₽', val: '5000' },
-                            { label: '10 000 ₽', val: '10000' },
-                            { label: '25 000 ₽', val: '25000' },
-                          ]
-                        : [
-                            { label: '1 000 ₽', val: '1000' },
-                            { label: '3 000 ₽ (+500)', val: '3000' },
-                            { label: '5 000 ₽ (+1.5k)', val: '5000' },
-                            { label: '10 000 ₽ (+4k)', val: '10000' },
-                            { label: '25 000 ₽ (+12.5k)', val: '25000' },
-                          ]
-
-                      return (
-                        <>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
-                            {quickChips.map(p => (
-                              <button
-                                key={p.val}
-                                type="button"
-                                className="ghost small-text"
-                                style={{
-                                  padding: '2px 8px',
-                                  fontSize: 11,
-                                  background: grant.amount_rub === p.val ? '#0f766e' : '#f1f5f9',
-                                  color: grant.amount_rub === p.val ? '#fff' : '#0f766e',
-                                  fontWeight: 600,
-                                  borderRadius: 6,
-                                }}
-                                onClick={() => setGrantDraft(client, { amount_rub: p.val })}
-                              >
-                                {p.label}
-                              </button>
-                            ))}
-                          </div>
-                          <div className="balance-adjust-row">
-                            <label className="mini-field">
-                              <span>Пополнить баланс, ₽</span>
-                              <input
-                                type="number"
-                                min={0}
-                                step={1}
-                                placeholder="Сумма"
-                                value={grant.amount_rub}
-                                onChange={e => setGrantDraft(client, { amount_rub: e.currentTarget.value })}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter' && grantAmountValid) void topUpClientBalance(client)
-                                }}
-                              />
-                              {(() => {
-                                const amt = Number(String(grant.amount_rub || 0).replace(',', '.'))
-                                if (hasCustomPrices) {
-                                  if (amt > 0) {
-                                    return (
-                                      <small style={{ color: '#64748b', fontWeight: 600, display: 'block', marginTop: 2 }}>
-                                        Индивидуальный тариф: к зачислению ровно {amt.toLocaleString('ru-RU')} ₽ (без бонуса)
-                                      </small>
-                                    )
-                                  }
-                                  return null
-                                }
-                                const bonus = calculateBonusRub(amt)
-                                if (bonus > 0) {
-                                  return (
-                                    <small style={{ color: '#0f766e', fontWeight: 600, display: 'block', marginTop: 2 }}>
-                                      Итого: {(amt + bonus).toLocaleString('ru-RU')} ₽ (оплата {amt} ₽ + бонус {bonus.toLocaleString('ru-RU')} ₽)
-                                    </small>
-                                  )
-                                }
-                                return null
-                              })()}
-                            </label>
-                            <button onClick={() => void topUpClientBalance(client)} disabled={!grantAmountValid}>
-                              <Plus size={16} />Пополнить
-                            </button>
-                          </div>
-                        </>
-                      )
-                    })()}
-                    <div className="balance-adjust-row">
-                      <label className="mini-field">
-                        <span>Списать с баланса, ₽</span>
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          placeholder="Сумма"
-                          value={grant.debit_amount_rub || ''}
-                          onChange={e => setGrantDraft(client, { debit_amount_rub: e.currentTarget.value })}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter' && debitAmountValid) void debitClientBalance(client)
+                        <textarea
+                          className="client-full-textarea"
+                          rows={3}
+                          value={noteValue}
+                          placeholder="Внутренний комментарий о клиенте, договорённости по цене или оплате..."
+                          onChange={e => setNoteDrafts(prev => ({ ...prev, [client.id]: e.currentTarget.value }))}
+                          onBlur={() => {
+                            if (noteDirty) void patchClientNote(client, noteValue)
                           }}
                         />
-                      </label>
-                      <button className="danger" onClick={() => void debitClientBalance(client)} disabled={!debitAmountValid}>
-                        <Minus size={16} />Списать
-                      </button>
-                    </div>
-                  </div>
-                  <details className="client-section billing-history-details">
-                    <summary>
-                      <span>История баланса</span>
-                      <small>{client.recent_billing?.length || 0} операций</small>
-                    </summary>
-                    <div className="usage-history">
-                      {client.recent_billing?.map(item => (
-                        <div className="usage-history-row" key={item.id}>
-                          <div>
-                            <strong>{item.operation_label}: {item.kind_label}</strong>
-                            <small>{formatDate(item.created_at)} · {item.note || item.created_by}</small>
-                          </div>
-                          <span>{item.amount_kopeks ? formatPrice(item.amount_kopeks) : item.units}</span>
-                        </div>
-                      ))}
-                      {!client.recent_billing?.length && <div className="inline-note">Операций по балансу пока нет.</div>}
-                    </div>
-                  </details>
-                </div>
-
-                <div className="client-section client-settings-section">
-                  <h3>Настройки клиента</h3>
-                  <label className="mini-field">
-                    <span>Поставщиков в выдаче</span>
-                    <input
-                      className="supplier-target-input"
-                      type="number"
-                      min={0}
-                      max={100}
-                      step={1}
-                      placeholder="по умолчанию"
-                      defaultValue={client.supplier_target_min || ''}
-                      onBlur={e => patchClientSupplierTarget(client, e.currentTarget)}
-                    />
-                  </label>
-                  {client.usage?.effective_prices && (
-                    <details className="compact-form-details price-settings-details">
-                      <summary>Индивидуальные цены</summary>
-                      <div className="price-settings-panel">
-                        {(['supplier_search', 'procurement_report', 'supplier_search_extra', 'exact_product'] as const).map(kind => {
-                          const price = client.usage?.effective_prices?.[kind]
-                          const fallbackKopeks = price?.price_kopeks || 0
-                          return (
-                            <label className="mini-field" key={kind}>
-                              <span>{priceBillingLabel(kind)}, ₽</span>
-                              <div className="price-override-row">
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step={1}
-                                  value={priceDraftValue(client, kind, fallbackKopeks)}
-                                  onChange={e => setPriceDraftValue(client, kind, e.currentTarget.value)}
-                                  onKeyDown={e => {
-                                    if (e.key === 'Enter') void saveClientTariffOverride(client, kind, fallbackKopeks)
-                                  }}
-                                />
-                                <button className="icon-button small" type="button" title="Сохранить цену" onClick={() => void saveClientTariffOverride(client, kind, fallbackKopeks)}>
-                                  <Save size={14} />
-                                </button>
-                              </div>
-                            </label>
-                          )
-                        })}
                       </div>
-                    </details>
+                    </div>
+                  )}
+
+                  {activeTab === 'vip' && (
+                    <div className="client-tab-panel">
+                      <div className="client-subcard client-vip-card">
+                        <div className="client-subcard-head">
+                          <div>
+                            <h4>Персональная экспресс-оценка · VIP</h4>
+                            <p className="client-helper-text">
+                              Персональный лимит до 60 закупок за один запуск и индивидуальный промт под задачи клиента.
+                            </p>
+                          </div>
+                          <span className={`client-status-pill ${client.allowed_custom_batch_report ? 'vip' : 'neutral'}`}>
+                            {client.allowed_custom_batch_report ? '⚡ VIP активен' : 'Отключено'}
+                          </span>
+                        </div>
+
+                        <label className={`client-toggle-card ${client.allowed_custom_batch_report ? 'is-on vip' : ''}`}>
+                          <div className="client-toggle-info">
+                            <strong>Включить персональный VIP-доступ (до 60 закупок)</strong>
+                            <small>Клиент получает пакетную экспресс-оценку с расширенным лимитом и своим промтом</small>
+                          </div>
+                          <span className="client-switch-wrap">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(client.allowed_custom_batch_report)}
+                              onChange={e => void patchClient(client, { allowed_custom_batch_report: e.currentTarget.checked }, `${client.id}:vip_access`)}
+                            />
+                            <span className="client-switch-track" />
+                          </span>
+                        </label>
+
+                        {client.allowed_custom_batch_report && (
+                          <div className="client-vip-mode-block">
+                            <div className="client-vip-mode-title">
+                              Как показывать экспресс-оценку в кабинете клиента:
+                              {savedIndicators[`${client.id}:vip_tab`] && <em className="saved-pill">Сохранено</em>}
+                            </div>
+                            <div className="client-vip-mode-grid">
+                              <button
+                                type="button"
+                                className={`client-vip-mode-option ${!client.custom_report_separate_tab ? 'active' : ''}`}
+                                onClick={() => {
+                                  if (client.custom_report_separate_tab) {
+                                    void patchClient(client, { custom_report_separate_tab: false }, `${client.id}:vip_tab`)
+                                  }
+                                }}
+                              >
+                                <strong>Вместо «Анализа документации»</strong>
+                                <small>И одиночный анализ, и пакетная выгрузка работают по личному VIP-промту клиента.</small>
+                              </button>
+                              <button
+                                type="button"
+                                className={`client-vip-mode-option ${client.custom_report_separate_tab ? 'active' : ''}`}
+                                onClick={() => {
+                                  if (!client.custom_report_separate_tab) {
+                                    void patchClient(client, { custom_report_separate_tab: true }, `${client.id}:vip_tab`)
+                                  }
+                                }}
+                              >
+                                <strong>Вынести отдельной вкладкой</strong>
+                                <small>Стандартный «Анализ документации» остаётся без изменений, рядом добавляется вкладка «Экспресс-оценка».</small>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="client-prompt-block">
+                          <div className="client-subcard-head">
+                            <div>
+                              <strong>
+                                Индивидуальный промт клиента
+                                {savedIndicators[`${client.id}:prompt`] && <em className="saved-pill">Сохранено</em>}
+                              </strong>
+                              <p className="client-helper-text">
+                                Переопределяет общий шаблон экспресс-оценки. Если оставить пустым — сработает общий шаблон из раздела «Тарифы».
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              className="small-text"
+                              disabled={!promptDirty || Boolean(savingFlags[`${client.id}:prompt`])}
+                              onClick={() => void patchClientPrompt(client, promptValue)}
+                            >
+                              <Save size={14} />{savingFlags[`${client.id}:prompt`] ? 'Сохранение...' : 'Сохранить промт'}
+                            </button>
+                          </div>
+                          <textarea
+                            className="client-prompt-textarea"
+                            rows={8}
+                            value={promptValue}
+                            placeholder="Оставьте пустым, чтобы использовать общий шаблон экспресс-оценки..."
+                            onChange={e => setPromptDrafts(prev => ({ ...prev, [client.id]: e.currentTarget.value }))}
+                          />
+                        </div>
+                      </div>
+
+                      <details className="client-subcard client-danger-zone danger-zone-details">
+                        <summary>Опасная зона: объединение и удаление клиента</summary>
+                        <div className="client-danger-body">
+                          <div className="merge-client-panel">
+                            <p className="field-help">Перенесёт задачи, баланс, Telegram-аккаунты и web-кабинет выбранного клиента в эту карточку. Исходный клиент будет удалён.</p>
+                            <label className="mini-field">
+                              <span>Кого присоединить к этой карточке</span>
+                              <select
+                                value={mergeForms[client.id] || ''}
+                                onChange={event => setMergeForms({ ...mergeForms, [client.id]: event.target.value })}
+                              >
+                                <option value="">Выберите клиента</option>
+                                {clients.filter(item => item.id !== client.id).map(item => (
+                                  <option key={item.id} value={item.id}>{clientDisplayName(item)}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <button
+                              type="button"
+                              className="small-text"
+                              onClick={() => void mergeClientIntoTarget(client)}
+                              disabled={!mergeForms[client.id]}
+                            >
+                              <Users size={14} />Объединить
+                            </button>
+                          </div>
+                          <div className="client-delete-row">
+                            <span>Полное удаление карточки вместе со всеми задачами, балансом и привязками.</span>
+                            <button
+                              type="button"
+                              className="danger small-text"
+                              onClick={(e) => void deleteClient(client, e)}
+                              disabled={deletingClientId === client.id}
+                            >
+                              <Trash2 size={13} />
+                              {deletingClientId === client.id ? 'Удаление...' : 'Удалить клиента'}
+                            </button>
+                          </div>
+                        </div>
+                      </details>
+                    </div>
                   )}
                 </div>
-
-                <details className="client-section client-merge-section merge-client-details danger-zone-details">
-                  <summary>Объединение клиентов</summary>
-                  <div className="merge-client-panel">
-                    <p className="field-help">Перенесёт задачи, баланс, Telegram-аккаунты и web-кабинет выбранного клиента в эту карточку.</p>
-                    <label className="mini-field">
-                      <span>Кого присоединить</span>
-                      <select
-                        value={mergeForms[client.id] || ''}
-                        onChange={event => setMergeForms({ ...mergeForms, [client.id]: event.target.value })}
-                      >
-                        <option value="">Выберите клиента</option>
-                        {clients.filter(item => item.id !== client.id).map(item => (
-                          <option key={item.id} value={item.id}>{clientDisplayName(item)}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <button
-                      className="small-text"
-                      onClick={() => void mergeClientIntoTarget(client)}
-                      disabled={!mergeForms[client.id]}
-                    >
-                      <Users size={14} />Объединить
-                    </button>
-                  </div>
-                </details>
-              </div>}
+              )}
             </article>
           )
         })}
@@ -3588,16 +4635,8 @@ function ClientsView({
   )
 }
 
-function parseTelegramUsernames(value: string) {
-  const seen = new Set<string>()
-  return value
-    .split(/[\s,;]+/)
-    .map(item => normalizeTelegramUsername(item))
-    .filter(item => {
-      if (!item || seen.has(item)) return false
-      seen.add(item)
-      return true
-    })
+function isSyntheticTelegramEmail(email?: string | null) {
+  return /^tg_\d+(?:_\d+)?@telegram\.tenderlex\.ru$/i.test(String(email || '').trim())
 }
 
 function isSyntheticWebTelegramAccount(account: TelegramAccount) {
@@ -3605,8 +4644,15 @@ function isSyntheticWebTelegramAccount(account: TelegramAccount) {
 }
 
 function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
-  if (client.web_users?.[0]?.email) {
-    return client.web_users[0].email
+  const realWebUser = (client.web_users || []).find(u => !isSyntheticTelegramEmail(u.email))
+  if (realWebUser?.email) {
+    const email = realWebUser.email
+    const phone = client.phone || realWebUser.phone
+    const tg = realWebUser.telegram_username || (client.username ? `@${client.username}` : '')
+    const extra: string[] = []
+    if (phone) extra.push(`📞 ${phone}`)
+    if (tg) extra.push(`💬 ${tg.startsWith('@') ? tg : `@${tg}`}`)
+    return extra.length ? `${email} · ${extra.join(' · ')}` : email
   }
   const realAccounts = accounts.filter(account => !isSyntheticWebTelegramAccount(account))
   const connected = realAccounts.filter(account => !account.is_pending)
@@ -3624,7 +4670,8 @@ function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
 
   if (accountLabels.length) {
     const more = realAccounts.length > accountLabels.length ? ` +${realAccounts.length - accountLabels.length}` : ''
-    return `${accountLabels.join(', ')}${more} · подключено ${connected.length}, ожидает ${pending.length}`
+    const suffix = pending.length > 0 ? ` · подключено ${connected.length}, ожидает ${pending.length}` : ''
+    return `${accountLabels.join(', ')}${more}${suffix}`
   }
   if (client.telegram_id) {
     return client.name ? `${client.name} (ID: ${client.telegram_id})` : `Telegram ID: ${client.telegram_id}`
@@ -3634,13 +4681,17 @@ function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
 
 function humanBillingKind(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор поставщиков'
-  if (kind === 'exact_product') return 'Точный товар и аналоги'
-  return kind === 'procurement_report' ? 'Анализ документации' : 'Поставщики'
+  if (kind === 'exact_product') return 'Подбор товара и аналогов'
+  if (kind === 'price_monitoring') return 'Мониторинг цен'
+  if (kind === 'custom_batch_report') return 'Экспресс-оценка закупок'
+  return kind === 'procurement_report' ? 'Анализ документации' : 'Поиск поставщиков'
 }
 
 function priceBillingLabel(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор'
-  if (kind === 'exact_product') return 'Точный товар'
+  if (kind === 'exact_product') return 'Подбор товара'
+  if (kind === 'price_monitoring') return 'Мониторинг цен'
+  if (kind === 'custom_batch_report') return 'Экспресс-оценка'
   return kind === 'procurement_report' ? 'Анализ' : 'Поиск'
 }
 
@@ -3721,11 +4772,73 @@ function getPrimaryReport(job: Job): { file: JobResultFile; isAdmin: boolean; jo
   return null
 }
 
+const selectionWaitingStatuses = ['awaiting_exact_selection', 'awaiting_position_selection']
+const activeExpertStatuses = ['pending', 'running', 'settling', ...selectionWaitingStatuses, 'awaiting_customer_confirmation']
+
+function jobSelection(job?: Pick<Job, 'position_selection' | 'exact_product_selection' | 'multi_item_selection'> | null): ExactSelection | null {
+  if (!job) return null
+  const ps = job.position_selection
+  if (ps && Array.isArray(ps.items) && ps.items.length > 0) {
+    return {
+      ...ps,
+      items: ps.items,
+      selected_ids: Array.isArray(ps.selected_ids) ? ps.selected_ids : [],
+    }
+  }
+  const eps = job.exact_product_selection
+  if (eps && Array.isArray(eps.items) && eps.items.length > 0) {
+    return {
+      ...eps,
+      items: eps.items,
+      selected_ids: Array.isArray(eps.selected_ids) ? eps.selected_ids : [],
+    }
+  }
+  const strategy = job.multi_item_selection
+  if (!strategy || !Array.isArray(strategy.items) || strategy.items.length === 0) return null
+  const items = strategy.items.map((row, index) => ({
+    ...row,
+    id: String(row.id || `item-${index}`),
+    position_no: row.position_no || index + 1,
+    name: row.name || row.name_in_tz || `Позиция ${index + 1}`,
+  }))
+  return {
+    ...strategy,
+    items,
+    selected_ids: Array.isArray(strategy.selected_ids) ? strategy.selected_ids : [],
+    mode: 'supplier_search',
+    revision: strategy.revision || '',
+    max_positions: items.length,
+    price_kopeks: 0,
+  }
+}
+
+function needsAdminSelection(job: Pick<Job, 'status' | 'confirmation_kind' | 'position_selection' | 'exact_product_selection' | 'multi_item_selection'>) {
+  return selectionWaitingStatuses.includes(job.status) ||
+    (job.status === 'awaiting_customer_confirmation' && job.confirmation_kind === 'multi_item_strategy') ||
+    Boolean(jobSelection(job)?.items?.length && !jobSelection(job)?.confirmed)
+}
+
+function expertScope(job: Job) {
+  const selection = jobSelection(job)
+  const rows = selection?.confirmed ? `Подтверждённые позиции: ${selection.selected_ids?.length || 0}. ` : ''
+  const geoScopeLabel = job.geo_scope === 'cis' ? 'РФ и СНГ (ЕАЭС)' : job.geo_scope === 'world' ? 'Весь мир' : 'Только РФ'
+  const geography = job.delivery_city
+    ? `География: ${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''} (${geoScopeLabel}). `
+    : (job.geo_scope && job.geo_scope !== 'ru' ? `География: ${geoScopeLabel}. ` : '')
+  const strategy = ['supplier_search', 'analysis_and_suppliers'].includes(job.mode)
+    ? `Стратегия: ${job.multi_item_mode === 'per_item' ? 'попозиционный поиск' : 'сбалансированный поиск'}. ` : ''
+  return `${humanMode(job.mode)}. ${rows}${strategy}${geography}`
+}
+
 function JobsView({
   jobs,
   clients = [],
   selectedClientId = '',
   onClearSelectedClient,
+  selectedJob = null,
+  onClearSelectedJob,
+  onNavigateToClient,
+  onNavigateToClientDialog,
   onChange,
   loading = false,
 }: {
@@ -3733,12 +4846,19 @@ function JobsView({
   clients?: Client[]
   selectedClientId?: string
   onClearSelectedClient?: () => void
-  onChange: () => Promise<void>
+  selectedJob?: { jobId: string; clientId?: string; jobNumber?: number | null } | null
+  onClearSelectedJob?: () => void
+  onNavigateToClient?: (clientId: string) => void
+  onNavigateToClientDialog?: (clientId: string) => void
+  onChange: (jobId?: string) => Promise<void>
   loading?: boolean
 }) {
   const [nowTs, setNowTs] = useState(() => Date.now())
   const [showServerModal, setShowServerModal] = useState(false)
   const [supplementModalJob, setSupplementModalJob] = useState<Job | null>(null)
+  const [rerunConfirmJob, setRerunConfirmJob] = useState<Job | null>(null)
+  const [rerunSubmitting, setRerunSubmitting] = useState(false)
+  const [rerunError, setRerunError] = useState('')
   const [activeFilesDropdownJobId, setActiveFilesDropdownJobId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -3753,7 +4873,11 @@ function JobsView({
   }, [activeFilesDropdownJobId])
 
   useEffect(() => {
-    const timer = setInterval(() => setNowTs(Date.now()), 1000)
+    const timer = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) {
+        setNowTs(Date.now())
+      }
+    }, 1000)
     return () => clearInterval(timer)
   }, [])
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({})
@@ -3793,6 +4917,37 @@ function JobsView({
     }
   }, [selectedClientId])
 
+  useEffect(() => {
+    if (!selectedJob?.jobId) return
+    const target = jobs.find(j => j.id === selectedJob.jobId)
+    if (selectedJob.clientId) {
+      setClientFilter(selectedJob.clientId)
+    } else if (target?.client_id) {
+      setClientFilter(target.client_id)
+    } else {
+      setClientFilter('')
+    }
+    setStatusFilter('')
+    setModeFilter('')
+    setPolicyFilter('')
+    if (target && (target.is_internal || (target.is_admin_rerun && target.parent_job_id))) {
+      setShowInternalJobs(true)
+    }
+    if (selectedJob.jobNumber) {
+      setQuery(`#${selectedJob.jobNumber}`)
+    } else {
+      setQuery(selectedJob.jobId)
+    }
+    setPage(1)
+    setExpandedJobs(prev => ({ ...prev, [selectedJob.jobId]: true }))
+    if (!jobDetails[selectedJob.jobId]) {
+      api<JobDetail>(`/api/jobs/${selectedJob.jobId}`)
+        .then(payload => setJobDetails(current => ({ ...current, [selectedJob.jobId]: payload })))
+        .catch(err => setJobDetails(current => ({ ...current, [selectedJob.jobId]: { detail_error: formatError(err) } })))
+    }
+    onClearSelectedJob?.()
+  }, [selectedJob])
+
   const recentClientOptions = useMemo(() => {
     const jobCounts: Record<string, number> = {}
     for (const j of jobs) {
@@ -3801,11 +4956,11 @@ function JobsView({
       }
     }
     return clients.slice(0, 20).map(c => {
-      const email = c.web_users?.[0]?.email || ''
+      const email = (c.web_users || []).find(u => !isSyntheticTelegramEmail(u.email))?.email || ''
       const count = jobCounts[c.id] || c.jobs_count || 0
       const numPrefix = c.client_number ? `#${c.client_number} ` : ''
       const contactPart = email ? ` (${email})` : (c.username ? ` (@${c.username})` : '')
-      const countPart = count > 0 ? ` · ${count} ${count === 1 ? 'зад.' : 'зад.'}` : ' · 0 зад.'
+      const countPart = count > 0 ? ` · ${count} зад.` : ' · 0 зад.'
       return {
         id: c.id,
         label: `${numPrefix}${c.name || 'Без имени'}${contactPart}${countPart}`,
@@ -3822,11 +4977,11 @@ function JobsView({
       }
     }
     return clients.slice(20).map(c => {
-      const email = c.web_users?.[0]?.email || ''
+      const email = (c.web_users || []).find(u => !isSyntheticTelegramEmail(u.email))?.email || ''
       const count = jobCounts[c.id] || c.jobs_count || 0
       const numPrefix = c.client_number ? `#${c.client_number} ` : ''
       const contactPart = email ? ` (${email})` : (c.username ? ` (@${c.username})` : '')
-      const countPart = count > 0 ? ` · ${count} ${count === 1 ? 'зад.' : 'зад.'}` : ' · 0 зад.'
+      const countPart = count > 0 ? ` · ${count} зад.` : ' · 0 зад.'
       return {
         id: c.id,
         label: `${numPrefix}${c.name || 'Без имени'}${contactPart}${countPart}`,
@@ -3834,11 +4989,42 @@ function JobsView({
     })
   }, [clients, jobs])
 
+  const clientsById = useMemo(() => {
+    const map = new Map<string, Client>()
+    for (const c of clients) map.set(c.id, c)
+    return map
+  }, [clients])
+
+  const getExpressInfo = useCallback((job: Job): { isExpress: boolean; batchCount: number | null } => {
+    const titleText = `${job.title || ''} ${job.human_title || ''}`
+    const countMatch = titleText.match(/\((\d+)\s*зак\.?\)/i) || (job.message || '').match(/из\s+(\d+)\b/i)
+    const batchCount = countMatch ? Number(countMatch[1]) : null
+    if (job.is_custom_batch_report || job.mode === 'custom_batch_report') {
+      return { isExpress: true, batchCount }
+    }
+    if (job.mode === 'procurement_report') {
+      if (/экспресс-оценк/i.test(titleText) || /экспресс-оценк/i.test(job.message || '')) {
+        return { isExpress: true, batchCount }
+      }
+      const client = clientsById.get(job.client_id)
+      if (client?.allowed_custom_batch_report && !client.custom_report_separate_tab) {
+        return { isExpress: true, batchCount }
+      }
+    }
+    return { isExpress: false, batchCount: null }
+  }, [clientsById])
+
   const filteredJobs = useMemo(() => jobs
     .filter(job => showInternalJobs || (!job.is_internal && (!job.is_admin_rerun || !job.parent_job_id)))
     .filter(job => !clientFilter || job.client_id === clientFilter)
     .filter(job => !statusFilter || job.status === statusFilter)
-    .filter(job => !modeFilter || job.mode === modeFilter)
+    .filter(job => {
+      if (!modeFilter) return true
+      const express = getExpressInfo(job).isExpress
+      if (modeFilter === 'custom_batch_report') return express
+      if (modeFilter === 'procurement_report') return job.mode === 'procurement_report' && !express
+      return job.mode === modeFilter
+    })
     .filter(job => !policyFilter || (job.supplier_search_policy || 'normal') === policyFilter)
     .filter(job => {
       if (!normalizedQuery) return true
@@ -3846,6 +5032,7 @@ function JobsView({
       const resultNames = (job.result_files || []).map(f => f.filename)
       const rerunNumber = job.admin_rerun?.job_number
       return [
+        job.id,
         job.job_number ? `#${job.job_number}` : '',
         job.job_number ? String(job.job_number) : '',
         job.client_number ? `#${job.client_number}` : '',
@@ -3865,7 +5052,7 @@ function JobsView({
         ...inputNames,
         ...resultNames,
       ].some(value => String(value || '').toLowerCase().includes(normalizedQuery))
-    }), [jobs, showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery])
+    }), [jobs, showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery, getExpressInfo])
   const pageCount = Math.max(1, Math.ceil(filteredJobs.length / pageSize))
   const currentPage = Math.min(page, pageCount)
   const pageStart = (currentPage - 1) * pageSize
@@ -3877,13 +5064,19 @@ function JobsView({
     { id: 'completed', label: 'Готово' },
     { id: 'partial', label: 'Частично готово' },
     { id: 'awaiting_customer_confirmation', label: 'Ожидает клиента' },
+    { id: 'awaiting_exact_selection', label: 'Ожидает выбора товаров' },
+    { id: 'awaiting_position_selection', label: 'Ожидает выбора позиций' },
+    { id: 'confirmation_expired', label: 'Срок выбора истёк' },
     { id: 'failed', label: 'Ошибка' },
+    { id: 'resolved', label: 'Решено' },
     { id: 'cancelled', label: 'Отменено' },
   ], [])
   const modeOptions = useMemo(() => [
     { id: 'supplier_search', label: 'Поиск поставщиков' },
     { id: 'exact_product', label: 'Подбор товара и аналогов' },
+    { id: 'price_monitoring', label: 'Мониторинг цен' },
     { id: 'procurement_report', label: 'Анализ документации' },
+    { id: 'custom_batch_report', label: 'Экспресс-оценка' },
     { id: 'analysis_and_suppliers', label: 'Анализ + поиск' },
   ], [])
   const policyOptions = useMemo(() => [
@@ -3912,32 +5105,35 @@ function JobsView({
     setPage(1)
   }, [showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery])
 
-  async function adminRerun(job: Job) {
-    if (job.admin_rerun && (job.admin_rerun.status === 'pending' || job.admin_rerun.status === 'running')) {
-      alert(`По задаче #${job.job_number || job.id} уже выполняется экспертный перерасчет (${job.admin_rerun.progress}%). Дождитесь завершения.`)
-      return
-    }
-    if (job.admin_rerun && job.admin_rerun.status === 'completed') {
-      const ok = window.confirm(
-        `По задаче #${job.job_number || job.id} уже есть готовый админ-итог (${job.admin_rerun.verified_count || 0} пост.).\n\nЗапустить новый перерасчет? В карточке отобразится самый свежий результат.`
-      )
-      if (!ok) return
-    }
+  function adminRerun(job: Job) {
+    if (needsAdminSelection(job) || (job.admin_rerun && activeExpertStatuses.includes(job.admin_rerun.status))) return
+    setRerunError('')
+    setRerunConfirmJob(job)
+  }
+
+  async function confirmAdminRerun() {
+    if (!rerunConfirmJob || rerunSubmitting) return
+    const targetJob = rerunConfirmJob
+    setRerunSubmitting(true)
+    setRerunError('')
     try {
-      await api(`/api/jobs/${job.id}/admin-rerun`, { method: 'POST' })
-      await onChange()
+      await api(`/api/jobs/${targetJob.id}/admin-rerun?reparse=true`, { method: 'POST' })
+      setRerunConfirmJob(null)
+      await onChange(targetJob.id)
     } catch (err: any) {
-      alert(err.message || 'Ошибка перезапуска задачи')
+      setRerunError(formatError(err) || err?.message || 'Ошибка перезапуска задачи')
+    } finally {
+      setRerunSubmitting(false)
     }
   }
   async function resolveJob(job: Job) {
     await api(`/api/jobs/${job.id}/resolve`, { method: 'POST' })
-    await onChange()
+    await onChange(job.id)
   }
   async function cancelJob(job: Job) {
     if (!window.confirm('Отменить задачу?')) return
     await api(`/api/jobs/${job.id}/cancel`, { method: 'POST' })
-    await onChange()
+    await onChange(job.id)
   }
   async function toggleJobDetails(job: Job) {
     const nextExpanded = !expandedJobs[job.id]
@@ -3997,7 +5193,7 @@ function JobsView({
             </strong>
             {loading && (
               <span className="inline-note" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                <Loader2 size={12} className="animate-spin" />
+                <Loader2 size={12} className="spin" />
                 <span>обновление...</span>
               </span>
             )}
@@ -4017,7 +5213,6 @@ function JobsView({
             value={clientFilter}
             onChange={e => {
               setClientFilter(e.target.value)
-              if (e.target.value) setQuery('')
               setPage(1)
               if (!e.target.value && onClearSelectedClient) {
                 onClearSelectedClient()
@@ -4072,10 +5267,6 @@ function JobsView({
             value={query}
             onChange={e => {
               setQuery(e.target.value)
-              if (e.target.value) {
-                setClientFilter('')
-                if (onClearSelectedClient) onClearSelectedClient()
-              }
               setPage(1)
             }}
           />
@@ -4122,6 +5313,11 @@ function JobsView({
           const supplierRunLabel = supplierRunTypeLabel(job)
           const fallbackOffer = registryFallbackOffer(job)
           const fallbackStatusLabel = registryFallbackStatusLabel(job)
+          const selection = jobSelection(job)
+          const awaitingSelection = selectionWaitingStatuses.includes(job.status) || (job.status === 'awaiting_customer_confirmation' && job.confirmation_kind === 'multi_item_strategy')
+          const expiredSelection = job.status === 'confirmation_expired' && Boolean(selection && !selection.confirmed)
+          const reruns = job.admin_reruns?.length ? job.admin_reruns : job.admin_rerun ? [job.admin_rerun] : []
+          const expertActive = reruns.some(rerun => activeExpertStatuses.includes(rerun.status))
           const isFinished = job.status === 'completed' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled'
           const showProgress = !isFinished || (job.status === 'running' || job.status === 'pending')
           const hasResult = job.has_result || (job.result_files && job.result_files.length > 0)
@@ -4138,10 +5334,16 @@ function JobsView({
           const clientResultFiles = job.result_files || []
           const totalFileCount = inputFiles.length + inputSources.length + clientResultFiles.length + allAdminFilesCount
           const isFilesDropdownOpen = activeFilesDropdownJobId === job.id
+          const minpromNotFound = isMinpromNotFound(job)
+          const healthyRerun = getLatestHealthyAdminRerun(job)
+          const errorSolvedByAdmin = isAdminErrorSolved(job)
+          const supplementBadge = job.has_admin_supplement ? formatSupplementBadge(job) : null
+          const expressInfo = getExpressInfo(job)
+          const displayModeClass = expressInfo.isExpress ? 'custom_batch_report' : job.mode
 
           return (
           <article
-            className={`job-card compact mode-${job.mode} status-${job.status} ${job.is_internal ? 'service' : ''}`}
+            className={`job-card compact mode-${displayModeClass} status-${job.status} ${minpromNotFound ? 'minprom-not-found' : ''} ${errorSolvedByAdmin ? 'admin-resolved' : ''} ${job.is_internal ? 'service' : ''}`}
             key={job.id}
             style={{ zIndex: isFilesDropdownOpen ? 50 : undefined, position: 'relative' }}
           >
@@ -4154,7 +5356,43 @@ function JobsView({
                     </span>
                   ) : null}
                   <h2 title={job.title}>{job.human_title || humanMode(job.mode)}</h2>
-                  <StatusBadge status={job.status} />
+                  {minpromNotFound ? (
+                    <span className="status minprom-not-found" title="По спецификации в реестре Минпромторга не найдено подходящих производителей">
+                      не найдено в Минпромторге
+                    </span>
+                  ) : errorSolvedByAdmin ? (
+                    job.has_admin_supplement ? (
+                      <span
+                        className="status admin-sent"
+                        title={supplementBadge?.tooltip || 'Исходный запуск завершился сбоем; экспертный отчёт подготовлен и отправлен клиенту'}
+                      >
+                        исправлено · отправлено
+                      </span>
+                    ) : (
+                      <span
+                        className="status admin-ready"
+                        title={`Исходный запуск завершился сбоем, но экспертный перерасчёт${healthyRerun?.job_number ? ` #${healthyRerun.job_number}` : ''} готов — отправьте отчёт клиенту через «Дополнить отчёт»`}
+                      >
+                        пересчитано · готово к отправке
+                      </span>
+                    )
+                  ) : job.has_admin_supplement && job.status === 'awaiting_customer_confirmation' ? (
+                    <span
+                      className="status admin-ready"
+                      title={supplementBadge?.tooltip || 'Экспертный отчёт предложен клиенту на согласование'}
+                    >
+                      ожидает согласия · отчёт предложен
+                    </span>
+                  ) : job.has_admin_supplement && ['completed', 'partial', 'resolved'].includes(job.status) ? (
+                    <span
+                      className="status admin-sent"
+                      title={supplementBadge?.tooltip || 'Админ-отчёт отправлен клиенту'}
+                    >
+                      готово · админ-отчёт отправлен
+                    </span>
+                  ) : (
+                    <StatusBadge status={job.status} />
+                  )}
                 </div>
                 <p className="job-subline">
                   {formatDate(job.created_at)}
@@ -4173,29 +5411,52 @@ function JobsView({
                   >
                     {job.client_number ? `#${job.client_number} ` : ''}
                     {job.client_name || 'клиент не указан'}
-                    {job.client_email ? ` (${job.client_email})` : ''}
+                    {job.client_email && !isSyntheticTelegramEmail(job.client_email) ? ` (${job.client_email})` : ''}
                   </span>
+                  {job.client_id && onNavigateToClient && (
+                    <button
+                      type="button"
+                      className="job-client-open-btn"
+                      title="Открыть карточку клиента и настройки"
+                      aria-label="Открыть карточку клиента и настройки"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onNavigateToClient(job.client_id)
+                      }}
+                    >
+                      <ExternalLink size={11} />
+                    </button>
+                  )}
                   {' · '}
                   {job.created_by_label?.startsWith('API:') ? (
                     <span style={{ background: '#ede9fe', color: '#6d28d9', border: '1px solid #c4b5fd', borderRadius: 4, padding: '1px 6px', fontSize: '0.72rem', fontWeight: 600 }}>
                       🔑 {job.created_by_label}
                     </span>
                   ) : (
-                    job.created_by_label || (
+                    (job.created_by_label && !isSyntheticTelegramEmail(job.created_by_label) ? job.created_by_label : '') || (
                       String(job.created_by_telegram_id || '').startsWith('web:')
-                        ? (job.client_email ? `Веб: ${job.client_email}` : 'Веб-кабинет')
+                        ? (job.client_email && !isSyntheticTelegramEmail(job.client_email)
+                            ? `Веб: ${job.client_email}`
+                            : (job.client_username ? `@${job.client_username} (веб)` : 'Веб-кабинет'))
                         : (job.created_by_telegram_id || job.telegram_id || 'автор не указан')
                     )
                   )}
                 </p>
               </div>
               <div className="job-card-top-right">
-                {job.status !== 'completed' && <JobTimeline job={job} hasInput={hasInput} />}
+                {job.status !== 'completed' && (
+                  <JobTimeline
+                    job={job}
+                    hasInput={hasInput}
+                    adminResolved={errorSolvedByAdmin}
+                    adminSent={Boolean(job.has_admin_supplement)}
+                  />
+                )}
                 {(job.status === 'running' || job.status === 'pending') && (
                   <button className="icon-button small danger" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={13} /></button>
                 )}
-                {job.status === 'failed' && (
-                  <button className="icon-button small" style={{ color: '#059669', borderColor: '#a7f3d0', background: '#ecfdf5' }} onClick={() => void resolveJob(job)} title="Отметить решённым (устранено)"><CheckCircle2 size={13} /></button>
+                {job.status === 'failed' && !minpromNotFound && (
+                  <button className="icon-button small" style={{ color: '#059669', borderColor: '#a7f3d0', background: '#ecfdf5' }} onClick={() => void resolveJob(job)} title={errorSolvedByAdmin ? 'Закрыть исходный сбой и перевести статус в «Решено»' : 'Отметить решённым (устранено)'}><CheckCircle2 size={13} /></button>
                 )}
               </div>
             </div>
@@ -4211,8 +5472,10 @@ function JobsView({
                     Админ-доработка
                   </span>
                 )}
-                <span className={`job-module-badge mode-${job.mode}`}>
-                  {job.mode_label || humanMode(job.mode)}
+                <span className={`job-module-badge mode-${displayModeClass}`}>
+                  {expressInfo.isExpress
+                    ? `⚡ Экспресс-оценка${expressInfo.batchCount ? ` · ${expressInfo.batchCount} зак.` : ''}`
+                    : (job.mode_label || humanMode(job.mode))}
                 </span>
 
                 <div className="job-meta-details">
@@ -4236,7 +5499,7 @@ function JobsView({
                         className="meta-item"
                         title={job.multi_item_mode === 'per_item' ? 'Глубокий независимый поиск под каждую позицию спецификации' : 'Единая квота распределяется по всем позициям со вкладками в Excel'}
                       >
-                        {job.multi_item_mode === 'per_item' ? '🔍 Попозиционный' : '⚖️ Сбалансированный'}
+                        {awaitingSelection ? 'Стратегия ещё не подтверждена' : job.multi_item_mode === 'per_item' ? '🔍 Попозиционный' : '⚖️ Сбалансированный'}
                       </span>
                     </>
                   )}
@@ -4250,14 +5513,41 @@ function JobsView({
 
                   <span className="meta-sep">·</span>
                   <span className="meta-item count">
-                    {job.mode === 'procurement_report'
+                    {awaitingSelection ? 'Ожидает выбора позиций'
+                      : expiredSelection ? 'Срок выбора истёк · поиск не запущен'
+                      : !hasResult && ['pending', 'running', 'settling'].includes(job.status)
+                        ? (expressInfo.isExpress
+                          ? 'Идёт экспресс-оценка'
+                          : job.mode === 'procurement_report'
+                          ? 'Идёт анализ документации'
+                          : job.mode === 'exact_product'
+                          ? 'Идёт подбор товара'
+                          : job.mode === 'price_monitoring'
+                          ? 'Идёт мониторинг цен'
+                          : 'Поиск ещё выполняется')
+                      : expressInfo.isExpress
+                      ? (expressInfo.batchCount ? `${expressInfo.batchCount} зак. · VIP` : 'Личный VIP-промт')
+                      : job.mode === 'procurement_report'
                       ? 'Анализ ТЗ'
                       : job.mode === 'exact_product'
-                      ? `${job.verified_count || 1} тов.`
+                      ? `${job.verified_count || 0} тов.`
                       : job.mode === 'price_monitoring'
                       ? `${job.verified_count || 0} поз.`
                       : `${supplierCountLabel(job)} пост.`}
                   </span>
+
+                  {selection && Boolean(selection.items?.length) && (
+                    <span className="meta-item">
+                      Распознано: {selection.items?.length || 0} · Подтверждено: {selection.confirmed ? (selection.selected_ids?.length || 0) : 0}
+                    </span>
+                  )}
+                  {awaitingSelection && job.confirmation_expires_at && <span className="meta-item">Подтвердить до: {formatDate(job.confirmation_expires_at)}</span>}
+                  {job.delivery_city && <span className="meta-item">📍 {job.delivery_city}{job.geo_radius_km ? ` · ${job.geo_radius_km} км` : ''}</span>}
+                  {job.geo_scope && job.geo_scope !== 'ru' && (
+                    <span className="meta-item" style={{ color: '#4f46e5', fontWeight: 600 }}>
+                      {job.geo_scope === 'cis' ? 'СНГ' : 'Весь мир'}
+                    </span>
+                  )}
 
                   {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) ? (
                     <>
@@ -4282,12 +5572,17 @@ function JobsView({
                     </>
                   ) : null}
 
-                  {job.has_admin_supplement && (
+                  {supplementBadge && (
                     <>
                       <span className="meta-sep">·</span>
-                      <span className="meta-tag supplement" title={job.admin_comment || 'Дополнено администратором'}>
-                        ✨ Дополнено{job.admin_supplement_name ? `: ${job.admin_supplement_name}` : ''}
-                      </span>
+                      <button
+                        type="button"
+                        className="meta-tag supplement supplement-btn"
+                        onClick={() => setSupplementModalJob(job)}
+                        title={supplementBadge.tooltip}
+                      >
+                        📤 {supplementBadge.shortText}
+                      </button>
                     </>
                   )}
 
@@ -4526,15 +5821,63 @@ function JobsView({
                   </button>
                 ) : null}
 
+                {/* Open client dialog button */}
+                {job.client_id && onNavigateToClientDialog && (
+                  <button
+                    type="button"
+                    className="icon-button small"
+                    onClick={() => onNavigateToClientDialog(job.client_id)}
+                    title="Открыть диалог с клиентом"
+                  >
+                    <MessageSquare size={13} />
+                  </button>
+                )}
+
                 {/* Supplement button */}
                 <button
                   type="button"
-                  className={`icon-button small ${job.has_admin_supplement ? 'accent-active' : ''}`}
-                  style={job.has_admin_supplement ? { color: '#0d9488', borderColor: '#99f6e4', background: '#f0fdfa' } : undefined}
+                  className={`icon-button small ${job.unread_client_messages_count ? 'danger-badge' : job.has_admin_supplement ? 'accent-active' : ''}`}
+                  style={{
+                    position: 'relative',
+                    ...(job.unread_client_messages_count
+                      ? { color: '#dc2626', borderColor: '#fca5a5', background: '#fef2f2' }
+                      : job.has_admin_supplement
+                      ? { color: '#0d9488', borderColor: '#99f6e4', background: '#f0fdfa' }
+                      : undefined),
+                  }}
                   onClick={() => setSupplementModalJob(job)}
-                  title={job.has_admin_supplement ? 'Редактировать дополнение эксперта' : 'Дополнить отчет / отправить клиенту'}
+                  title={
+                    job.unread_client_messages_count
+                      ? `Новые сообщения от клиента (${job.unread_client_messages_count})`
+                      : job.has_admin_supplement
+                      ? 'Чат и дополнение эксперта'
+                      : 'Дополнить отчет / написать клиенту'
+                  }
                 >
                   <MessageSquarePlus size={13} />
+                  {Boolean(job.unread_client_messages_count) && (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        top: -5,
+                        right: -5,
+                        background: '#ef4444',
+                        color: '#fff',
+                        borderRadius: '50%',
+                        fontSize: 9,
+                        fontWeight: 700,
+                        width: 15,
+                        height: 15,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        lineHeight: 1,
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+                      }}
+                    >
+                      {job.unread_client_messages_count}
+                    </span>
+                  )}
                 </button>
 
                 {/* Admin Rerun button */}
@@ -4542,15 +5885,11 @@ function JobsView({
                   type="button"
                   className={`icon-button small ${job.admin_rerun?.status === 'completed' ? 'has-rerun' : ''}`}
                   style={job.admin_rerun?.status === 'completed' ? { color: '#047857', borderColor: '#a7f3d0', background: '#ecfdf5' } : undefined}
-                  disabled={job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'}
+                  disabled={needsAdminSelection(job) || expertActive}
                   onClick={() => void adminRerun(job)}
-                  title={
-                    job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'
-                      ? `Идет экспертный перерасчет (${job.admin_rerun.progress}%)...`
-                      : job.admin_rerun?.status === 'completed'
-                      ? `Повторный экспертный перерасчет (уже есть итог: ${job.admin_rerun.verified_count || 0} пост.)`
-                      : 'Экспертный перезапуск администратора'
-                  }
+                  title={expertActive ? 'Экспертная задача уже активна; продолжите её в карточке'
+                    : needsAdminSelection(job) ? 'Сначала подтвердите позиции в карточке задачи'
+                    : 'Новый экспертный поиск без списания с клиента'}
                 >
                   {job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running' ? (
                     <Loader2 size={13} className="spin" />
@@ -4560,8 +5899,40 @@ function JobsView({
                     <Play size={13} />
                   )}
                 </button>
+
+                {/* Expand details toggle */}
+                <button
+                  type="button"
+                  className={`icon-button small ${expandedJobs[job.id] ? 'accent-active' : ''}`}
+                  onClick={() => void toggleJobDetails(job)}
+                  title={expandedJobs[job.id] ? 'Скрыть подробности задачи' : 'Показать подробности задачи'}
+                  aria-expanded={Boolean(expandedJobs[job.id])}
+                >
+                  {expandedJobs[job.id] ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                </button>
               </div>
             </div>
+
+            {(awaitingSelection || expiredSelection) && selection && Boolean(selection.items?.length) && !expertActive && (
+              <AdminExactSelection key={`${job.id}:${selection.revision}`} jobId={job.id} selection={selection}
+                mode={job.mode} multiItemMode={job.multi_item_mode} reissue={expiredSelection}
+                geography={job.delivery_city ? `${job.delivery_city}${job.geo_radius_km ? `, радиус ${job.geo_radius_km} км` : ''}` : ''} onChange={() => onChange(job.id)} />
+            )}
+            {job.admin_rerun && (selectionWaitingStatuses.includes(job.admin_rerun.status) ||
+              (job.admin_rerun.status === 'awaiting_customer_confirmation' && job.admin_rerun.confirmation_kind === 'multi_item_strategy')) &&
+              Boolean(jobSelection(job.admin_rerun)?.items?.length) && (
+              <AdminExactSelection key={`${job.admin_rerun.id}:${jobSelection(job.admin_rerun)!.revision}`} jobId={job.admin_rerun.id}
+                selection={jobSelection(job.admin_rerun)!} mode={job.admin_rerun.mode || job.mode} multiItemMode={job.admin_rerun.multi_item_mode}
+                internal onChange={() => onChange(job.id)} />
+            )}
+
+            {reruns.length > 0 && <details style={{ marginTop: 8, fontSize: 12 }}>
+              <summary>Экспертные поиски: {reruns.length} · последний: {humanStatus(reruns[0].status)}</summary>
+              {reruns.slice(0, 5).map(rerun => <div key={rerun.id} style={{ marginTop: 4 }}>
+                #{rerun.job_number || rerun.id} · {humanStatus(rerun.status)} · {rerun.message || 'Нет описания'}
+              </div>)}
+              {reruns.length > 5 && <div>Ещё: {reruns.length - 5}. Готовые файлы доступны в списке отчётов.</div>}
+            </details>}
 
             {job.admin_rerun && (job.admin_rerun.status === 'pending' || job.admin_rerun.status === 'running') && (
               <div className="job-progress-compact" style={{ marginTop: 6, padding: '6px 10px', background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}>
@@ -4582,15 +5953,110 @@ function JobsView({
               </div>
             )}
 
-            {job.status === 'failed' && Boolean(job.error) && !showProgress && (
-              <div className="alert error compact">{job.error}</div>
+            {job.status === 'failed' && !showProgress && !minpromNotFound && (
+              errorSolvedByAdmin ? (
+                <div className={`admin-resolved-banner ${job.has_admin_supplement ? 'is-sent' : 'is-ready'}`}>
+                  <div className="admin-resolved-banner-main">
+                    <CheckCircle2 size={14} className="admin-resolved-icon" />
+                    <span>
+                      {job.has_admin_supplement ? (
+                        <>
+                          <strong>Проблема решена и отчёт отправлен клиенту</strong>
+                          {healthyRerun?.job_number ? ` (перерасчёт #${healthyRerun.job_number})` : ''} — исходный сбой закрыт.
+                        </>
+                      ) : (
+                        <>
+                          <strong>Админ-перерасчёт{healthyRerun?.job_number ? ` #${healthyRerun.job_number}` : ''} выполнен</strong>
+                          {typeof healthyRerun?.verified_count === 'number' && healthyRerun.verified_count > 0
+                            ? ` (${healthyRerun.verified_count} пост.)`
+                            : ''}
+                          {' '}— готово к отправке клиенту.{' '}
+                          <button
+                            type="button"
+                            className="admin-resolved-link-btn"
+                            onClick={() => setSupplementModalJob(job)}
+                          >
+                            Отправить клиенту →
+                          </button>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  {Boolean(job.error) && (
+                    <details className="admin-resolved-history">
+                      <summary>Причина исходного сбоя</summary>
+                      <div className="admin-resolved-history-text">{job.error}</div>
+                    </details>
+                  )}
+                </div>
+              ) : Boolean(job.error) ? (
+                <div className="alert error compact">{job.error}</div>
+              ) : null
             )}
+            {minpromNotFound && !showProgress && (
+              <div className="alert compact" style={{ background: '#f8fafc', borderColor: '#cbd5e1', color: '#475569', fontSize: '11.5px', padding: '5px 9px', marginTop: '6px', borderRadius: '4px' }}>
+                ℹ️ {job.message || 'В реестре Минпромторга подходящие производители не найдены'} · <em>резерв средств возвращён клиенту</em>
+              </div>
+            )}
+
+            {expandedJobs[job.id] && (() => {
+              const detail = jobDetails[job.id]
+              const isErr = detail && 'detail_error' in detail
+              const detailData = detail && !isErr ? (detail as JobDetail) : null
+              const detailFiles = detailData?.files || detailData?.input_files || job.input_files || []
+              const detailSources = detailData?.sources || job.sources || []
+              const detailSuppliers = detailData?.suppliers || []
+              return (
+                <div className="job-expanded-details">
+                  {!detail ? (
+                    <div className="inline-note" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Loader2 size={12} className="spin" />
+                      <span>Загрузка подробностей задачи...</span>
+                    </div>
+                  ) : isErr ? (
+                    <div className="inline-note" style={{ color: '#b91c1c' }}>
+                      Не удалось загрузить детали: {(detail as JobDetailError).detail_error}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="job-expanded-meta">
+                        {detailData?.ai_label && (
+                          <span><strong>Модель ИИ:</strong> {detailData.ai_label}</span>
+                        )}
+                        {detailData?.message && (
+                          <span><strong>Статус-сообщение:</strong> {detailData.message}</span>
+                        )}
+                      </div>
+                      {detailFiles.length > 0 && (
+                        <div className="job-expanded-row">
+                          <strong>Файлы ТЗ ({detailFiles.length}):</strong>{' '}
+                          {detailFiles.map(f => `${f.original_filename}${f.extracted_chars ? ` (${f.extracted_chars.toLocaleString('ru-RU')} симв.)` : ''}${f.error ? ` [ошибка: ${f.error}]` : ''}`).join(', ')}
+                        </div>
+                      )}
+                      {detailSources.length > 0 && (
+                        <div className="job-expanded-row">
+                          <strong>Источники ({detailSources.length}):</strong>{' '}
+                          {detailSources.map(s => `${s.label || s.kind}: ${s.value}`).join(' · ')}
+                        </div>
+                      )}
+                      {detailSuppliers.length > 0 && (
+                        <div className="job-expanded-row">
+                          <strong>Компании в результате ({detailSuppliers.length}):</strong>{' '}
+                          {detailSuppliers.slice(0, 6).map(s => s.company_name).filter(Boolean).join(', ')}
+                          {detailSuppliers.length > 6 ? ` и ещё ${detailSuppliers.length - 6}` : ''}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )
+            })()}
           </article>
           )
         })}
         {loading && !visibleJobs.length ? (
           <div className="empty inline-empty" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '40px 0' }}>
-            <Loader2 size={18} className="animate-spin" style={{ color: '#0f766e' }} />
+            <Loader2 size={18} className="spin" style={{ color: '#0f766e' }} />
             <span>Загрузка задач...</span>
           </div>
         ) : !visibleJobs.length ? (
@@ -4608,11 +6074,168 @@ function JobsView({
         <AdminSupplementModal
           job={supplementModalJob}
           onClose={() => setSupplementModalJob(null)}
-          onSuccess={onChange}
+          onSuccess={() => onChange(supplementModalJob.id)}
         />
+      )}
+      {rerunConfirmJob && (
+        <div
+          className="server-modal-backdrop"
+          onClick={() => {
+            if (!rerunSubmitting) {
+              setRerunConfirmJob(null)
+              setRerunError('')
+            }
+          }}
+        >
+          <div className="server-modal-card" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
+            <div className="server-modal-header">
+              <h3>ЭКСПЕРТНЫЙ ПЕРЕЗАПУСК #{rerunConfirmJob.job_number || rerunConfirmJob.id}</h3>
+              <button
+                type="button"
+                className="server-modal-close"
+                disabled={rerunSubmitting}
+                onClick={() => {
+                  setRerunConfirmJob(null)
+                  setRerunError('')
+                }}
+                title="Закрыть"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <p style={{ margin: 0, fontSize: 13, color: '#0f172a', fontWeight: 600 }}>
+                {rerunConfirmJob.human_title || rerunConfirmJob.title}
+              </p>
+              <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', fontSize: 12, color: '#334155', lineHeight: 1.5 }}>
+                <div>{expertScope(rerunConfirmJob)}</div>
+                {['exact_product', 'price_monitoring'].includes(rerunConfirmJob.mode) ? (
+                  <div style={{ marginTop: 6, color: '#0f766e' }}>
+                    Запуск с повторным распознаванием ТЗ через ИИ. Баланс клиента не списывается.
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 6, color: '#475569' }}>
+                    Запуск со свежим разбором ТЗ через ИИ. Баланс клиента не списывается. Результат не отправляется автоматически — используйте «Дополнить отчёт».
+                  </div>
+                )}
+              </div>
+              {rerunError && (
+                <div className="alert error compact" style={{ margin: 0 }}>
+                  {rerunError}
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={rerunSubmitting}
+                  onClick={() => {
+                    setRerunConfirmJob(null)
+                    setRerunError('')
+                  }}
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  disabled={rerunSubmitting}
+                  onClick={() => void confirmAdminRerun()}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                >
+                  {rerunSubmitting ? <Loader2 size={14} className="spin" /> : <Play size={14} />}
+                  <span>{rerunSubmitting ? 'Запускаем...' : 'Запустить переанализ'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   )
+}
+
+function AdminExactSelection({ jobId, selection, mode, multiItemMode, reissue = false, internal = false, geography = '', onChange }: {
+  jobId: string; selection: ExactSelection; mode?: string; multiItemMode?: string; reissue?: boolean; internal?: boolean; geography?: string; onChange: () => Promise<void>
+}) {
+  const isSupplier = ['supplier_search', 'analysis_and_suppliers'].includes(mode || selection.mode || '')
+  const initialSelected = (selection.selected_ids && selection.selected_ids.length > 0)
+    ? selection.selected_ids
+    : (isSupplier ? (selection.items || []).map(row => row.id) : (selection.selected_ids || []))
+  const [selected, setSelected] = useState<string[]>(initialSelected)
+  const [strategy, setStrategy] = useState(multiItemMode || 'balanced')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const maximum = selection.max_positions || (selection.pricing_mode === 'per_position' ? (selection.items?.length || 100) : 5)
+  const monitoring = mode === 'price_monitoring' || selection.pricing_mode === 'per_found_position'
+  const supplier = isSupplier
+  const balanced = supplier && strategy === 'balanced'
+  const effectiveIds = selected
+  const noCharge = reissue || internal
+  const billing = noCharge ? 'Экспертная задача без списания с клиента. Результат не отправляется автоматически.'
+    : supplier ? 'Продолжение исходной задачи по тарифу клиента. Попозиционный режим может потребовать дополнительный резерв за позиции.'
+    : monitoring ? `За найденную позицию: ${formatMoney(selection.price_kopeks)}. Максимальный резерв: ${formatMoney(selection.price_kopeks * selected.length)}.`
+    : selection.pricing_mode === 'per_position' ? `За выбранную позицию: ${formatMoney(selection.price_kopeks)}. Итого: ${formatMoney(selection.price_kopeks * selected.length)}.`
+    : `Стоимость исходной задачи: ${formatMoney(selection.price_kopeks)} за выбор до ${maximum} товаров.`
+  async function confirm() {
+    if (!effectiveIds.length || effectiveIds.length > maximum || busy) return
+    if (!window.confirm(`${reissue ? 'Создать новую экспертную задачу' : 'Подтвердить продолжение задачи'}?\n\nПозиций: ${effectiveIds.length}. ${supplier ? `Стратегия: ${balanced ? 'сбалансированная' : 'попозиционная'}. ` : ''}${geography ? `География: ${geography}. ` : ''}\n${billing}\n\n${selection.items.filter(row => effectiveIds.includes(row.id)).map(row => `${row.position_no}. ${row.name}`).join('\n')}`)) return
+    setBusy(true)
+    setError('')
+    try {
+      if (supplier && !reissue) {
+        const query = new URLSearchParams({ multi_item_mode: strategy, revision: selection.revision })
+        selected.forEach(id => query.append('selected_item_ids', id))
+        await api(`/api/jobs/${jobId}/choose-strategy?${query}`, { method: 'POST' })
+      } else {
+        await api(`/api/jobs/${jobId}/${reissue ? 'admin-rerun' : monitoring ? 'position-selection' : 'exact-selection'}${supplier ? `?multi_item_mode=${strategy}` : ''}`, {
+          method: 'POST', body: JSON.stringify({ revision: selection.revision, selected_item_ids: effectiveIds }),
+        })
+      }
+      await onChange()
+    } catch (err) {
+      setError(formatError(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <section aria-label={supplier ? 'Выбор позиций и стратегии поставщиков' : monitoring ? 'Выбор позиций для мониторинга' : 'Выбор товаров для подбора'} style={{ border: '1px solid #a7c9bd', borderRadius: 10, padding: 14, marginTop: 12, minWidth: 0 }}>
+    <strong>{reissue ? 'Срок подтверждения истёк. Выберите позиции для новой экспертной задачи' : supplier ? 'Подтвердите позиции и стратегию поиска поставщиков' : monitoring ? 'Выберите позиции для мониторинга цен' : selection.pricing_mode === 'per_position' ? 'Выберите позиции для подбора модели и аналогов' : `Выберите до ${maximum} товаров для подбора`}</strong>
+    <p>Выбрано: {effectiveIds.length} из {maximum}. {billing}</p>
+    {supplier && <label style={{ display: 'block', marginBottom: 10 }}>Стратегия поиска поставщиков{' '}
+      <select aria-label="Стратегия поиска поставщиков" value={strategy} disabled={busy} onChange={event => setStrategy(event.target.value)}>
+        <option value="balanced">Сбалансированный — единая квота по отмеченным позициям</option>
+        <option value="per_item">Попозиционный — независимый поиск по отмеченным позициям</option>
+      </select>
+    </label>}
+    <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, fontSize: 12 }}>
+      <button
+        type="button"
+        style={{ background: 'none', border: 'none', color: '#0d9488', fontWeight: 700, cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+        onClick={() => setSelected((selection.items || []).map(r => r.id))}
+      >
+        Выбрать все ({selection.items?.length || 0})
+      </button>
+      <span style={{ color: '#cbd5e1' }}>|</span>
+      <button
+        type="button"
+        style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+        onClick={() => setSelected([])}
+      >
+        Снять все
+      </button>
+    </div>
+    <div style={{ maxHeight: 280, overflowY: 'auto', display: 'grid', gap: 10, marginBottom: 12 }}>
+      {selection.items.map(row => <label key={row.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', overflowWrap: 'anywhere' }}>
+        <input type="checkbox" checked={effectiveIds.includes(row.id)} disabled={busy || (!selected.includes(row.id) && selected.length >= maximum)}
+          onChange={() => setSelected(current => current.includes(row.id) ? current.filter(id => id !== row.id) : [...current, row.id])} />
+        <span>{row.position_no}. {row.name}</span>
+      </label>)}
+    </div>
+    {error && <p role="alert">{error}</p>}
+    <button type="button" disabled={busy || !effectiveIds.length || effectiveIds.length > maximum} onClick={() => void confirm()}>
+      {busy ? 'Подтверждаем…' : reissue ? 'Создать экспертный поиск с выбранными позициями' : supplier ? 'Подтвердить позиции и стратегию' : monitoring ? 'Подтвердить позиции для мониторинга' : 'Подтвердить выбор товаров'}
+    </button>
+  </section>
 }
 
 function cleanItemNameForComment(rawTitle: string): string {
@@ -4639,8 +6262,12 @@ function generateDefaultComment(job: Job): string {
   return `Эксперты TenderLex провели расширенную доработку по позиции «${item}».`
 }
 
+function isZeroOfferComment(text?: string | null): boolean {
+  return Boolean(text && /стоимость\s+доплаты\s+составит\s*0(?:[.,]0+)?\s*₽/i.test(text))
+}
+
 function defaultAdminComment(job: Job): string {
-  if (job.admin_comment) return job.admin_comment
+  if (job.admin_comment && !isZeroOfferComment(job.admin_comment)) return job.admin_comment
   return generateDefaultComment(job)
 }
 
@@ -4650,8 +6277,64 @@ type SupplementCandidate = {
   label: string
   filename: string
   job_id: string
+  job_number?: number | null
+  job_status?: string
+  verified_count?: number
   is_admin_rerun: boolean
+  is_empty_result?: boolean
+  is_recommended?: boolean
   created_at?: string | null
+}
+
+type OfferPreview = {
+  client_id?: string
+  client_name?: string
+  client_balance_rub?: number
+  already_charged_rub?: number
+  requires_payment_approval?: boolean
+  prior_verified_count?: number
+  new_verified_count?: number
+  delta_units?: number
+  unit_price_rub?: number
+  charge_amount_rub?: number
+  can_afford?: boolean
+  default_offer_comment?: string
+}
+
+type SupplementBillingMode = 'offer' | 'charge_now' | 'free_bonus'
+
+function formatRubDisplay(value?: number | string | null): string {
+  const num = Number(value ?? 0)
+  if (!Number.isFinite(num)) return '0'
+  return Number.isInteger(num) ? String(num) : num.toFixed(2).replace(/\.?0+$/, '')
+}
+
+function generateSupplementCommentForMode(
+  mode: SupplementBillingMode,
+  job: Job,
+  preview: OfferPreview | null,
+): string {
+  const chargeRub = Number(preview?.charge_amount_rub ?? 0)
+  if (!preview || chargeRub <= 0) {
+    return generateDefaultComment(job)
+  }
+  const rubText = formatRubDisplay(chargeRub)
+  const newCount = preview.new_verified_count ?? 0
+  const priorCount = preview.prior_verified_count ?? 0
+  const isSupplier = job.mode === 'supplier_search' || job.mode === 'analysis_and_suppliers'
+  const item = cleanItemNameForComment(job.human_title || job.title || '')
+  const resultSummary = isSupplier ? `подобрано ${newCount} комп.` : `найдено ${newCount} поз.`
+
+  if (mode === 'offer') {
+    if (preview.default_offer_comment) return preview.default_offer_comment
+    return isSupplier
+      ? `Здравствуйте! Специалисты TenderLex провели экспертный подбор по вашей задаче: найдено ${newCount} комп. (ранее было ${priorCount}). Готовы выдать обновлённый отчёт. Стоимость доплаты составит ${rubText} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи.`
+      : `Здравствуйте! Специалисты TenderLex пересчитали спецификацию: найдено ${newCount} поз. (ранее было ${priorCount} поз.). Готовы выдать дополненный экспертный отчёт. Стоимость доплаты составит ${rubText} ₽ с баланса. Подтвердите, пожалуйста, согласие на карточке задачи.`
+  }
+  if (mode === 'charge_now') {
+    return `Здравствуйте! Специалисты TenderLex подготовили и опубликовали дополненный экспертный отчёт по задаче «${item}» (${resultSummary}). С вашего баланса списано ${rubText} ₽ — файлы уже доступны для скачивания на карточке задачи.`
+  }
+  return `Здравствуйте! Специалисты TenderLex подготовили и опубликовали для вас исправленный отчёт по задаче «${item}» (${resultSummary}) без списания средств (бонусом от платформы). Готовые файлы уже доступны на карточке задачи.`
 }
 
 function AdminSupplementModal({
@@ -4663,15 +6346,49 @@ function AdminSupplementModal({
   onClose: () => void
   onSuccess: () => Promise<void>
 }) {
+  const rawTg = String(job.created_by_telegram_id || '').trim()
+  const isWebClient = !rawTg || rawTg.startsWith('web:') || !/^-?\d+$/.test(rawTg)
   const [comment, setComment] = useState(() => defaultAdminComment(job))
+  const [commentEditedByUser, setCommentEditedByUser] = useState(false)
   const [candidates, setCandidates] = useState<SupplementCandidate[]>([])
   const [loadingCandidates, setLoadingCandidates] = useState(true)
+  const [offerPreview, setOfferPreview] = useState<OfferPreview | null>(null)
+  const [billingMode, setBillingMode] = useState<SupplementBillingMode>('offer')
+  const [offerChargeRub, setOfferChargeRub] = useState<number | ''>('')
+  const [chatMessages, setChatMessages] = useState<any[]>([])
+  const [loadingChat, setLoadingChat] = useState(true)
   const [sourceMode, setSourceMode] = useState<'job_file' | 'upload'>('job_file')
   const [selectedJobFileKinds, setSelectedJobFileKinds] = useState<string[]>([])
   const [files, setFiles] = useState<File[]>([])
-  const [notifyTelegram, setNotifyTelegram] = useState(true)
+  const [notifyTelegram, setNotifyTelegram] = useState(() => !isWebClient)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    async function loadChat() {
+      try {
+        const token = localStorage.getItem('tenderlex_admin_token') || sessionStorage.getItem('tenderlex_admin_token') || ''
+        const res = await fetch(`/api/jobs/${job.id}/chat`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (active && Array.isArray(data.messages)) {
+            setChatMessages(data.messages)
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load job chat in modal:', err)
+      } finally {
+        if (active) setLoadingChat(false)
+      }
+    }
+    loadChat()
+    return () => {
+      active = false
+    }
+  }, [job.id])
 
   useEffect(() => {
     let active = true
@@ -4683,19 +6400,45 @@ function AdminSupplementModal({
         })
         if (res.ok) {
           const data = await res.json()
-          if (active && data.candidates && Array.isArray(data.candidates)) {
+          if (data && active && data.candidates && Array.isArray(data.candidates)) {
             const list: SupplementCandidate[] = data.candidates
             setCandidates(list)
             if (list.length > 0) {
-              const rerunIds = list.filter(c => c.is_admin_rerun).map(c => c.composite_id)
-              if (rerunIds.length > 0) {
-                setSelectedJobFileKinds(rerunIds)
+              const recommendedIds = list.filter(c => c.is_recommended).map(c => c.composite_id)
+              if (recommendedIds.length > 0) {
+                setSelectedJobFileKinds(recommendedIds)
               } else {
-                setSelectedJobFileKinds(list.map(c => c.composite_id))
+                const fallbackCand =
+                  list.find(c => c.is_admin_rerun && !c.is_empty_result) ||
+                  list.find(c => !c.is_empty_result)
+                if (fallbackCand) {
+                  setSelectedJobFileKinds(
+                    list
+                      .filter(c => c.job_id === fallbackCand.job_id && !c.is_empty_result)
+                      .map(c => c.composite_id)
+                  )
+                } else {
+                  setSelectedJobFileKinds([])
+                }
               }
               setSourceMode('job_file')
             } else {
               setSourceMode('upload')
+            }
+          }
+          if (data && active && data.offer_preview) {
+            const prev = data.offer_preview as OfferPreview
+            const requiresApproval = Boolean(prev.requires_payment_approval ?? ((prev.charge_amount_rub ?? 0) > 0))
+            const initialMode: SupplementBillingMode = requiresApproval ? 'offer' : 'free_bonus'
+            setOfferPreview(prev)
+            setOfferChargeRub(prev.charge_amount_rub ?? 0)
+            setBillingMode(initialMode)
+            if (requiresApproval && (!job.admin_comment || isZeroOfferComment(job.admin_comment))) {
+              setComment(generateSupplementCommentForMode(initialMode, job, prev))
+              setCommentEditedByUser(false)
+            } else if (!requiresApproval && isZeroOfferComment(job.admin_comment)) {
+              setComment(generateDefaultComment(job))
+              setCommentEditedByUser(false)
             }
           }
         }
@@ -4710,6 +6453,14 @@ function AdminSupplementModal({
       active = false
     }
   }, [job.id])
+
+  function selectBillingMode(nextMode: SupplementBillingMode) {
+    setBillingMode(nextMode)
+    if (!commentEditedByUser || !comment.trim()) {
+      setComment(generateSupplementCommentForMode(nextMode, job, offerPreview))
+      setCommentEditedByUser(false)
+    }
+  }
 
   function toggleJobFileKind(compositeId: string) {
     setSelectedJobFileKinds(prev =>
@@ -4743,8 +6494,18 @@ function AdminSupplementModal({
         formData.append('file_kinds', selectedJobFileKinds.join(','))
         formData.append('file_kind', selectedJobFileKinds[0])
       }
+      const hasPositiveCharge = (offerPreview?.charge_amount_rub ?? 0) > 0
+      const effectiveOffer = hasPositiveCharge && billingMode === 'offer'
+      const effectiveWaive = hasPositiveCharge && billingMode === 'free_bonus'
       formData.append('comment', comment.trim())
       formData.append('notify_telegram', String(notifyTelegram))
+      formData.append('as_offer', String(effectiveOffer))
+      formData.append('waive_charge', String(effectiveWaive))
+      if (effectiveWaive) {
+        formData.append('offer_charge_rub', '0')
+      } else if (offerChargeRub !== '') {
+        formData.append('offer_charge_rub', String(offerChargeRub))
+      }
 
       const token = localStorage.getItem('tenderlex_admin_token') || sessionStorage.getItem('tenderlex_admin_token') || ''
       const res = await fetch(`/api/jobs/${job.id}/admin-supplement`, {
@@ -4769,7 +6530,7 @@ function AdminSupplementModal({
     <div className="server-modal-backdrop" onClick={onClose}>
       <div className="server-modal-card supplement-modal" style={{ maxWidth: 640 }} onClick={e => e.stopPropagation()}>
         <div className="server-modal-header">
-          <h3>ДОПОЛНИТЬ ОТЧЕТ ЭКСПЕРТОМ</h3>
+          <h3>ДОПОЛНИТЬ ОТЧЁТ: КОММЕНТАРИЙ И ФАЙЛЫ</h3>
           <button className="server-modal-close" onClick={onClose} title="Закрыть">
             <X size={16} />
           </button>
@@ -4777,16 +6538,172 @@ function AdminSupplementModal({
 
         <form onSubmit={handleSubmit} className="supplement-modal-form">
           <div className="supplement-modal-scroll-body">
+            <p style={{ fontSize: 12, margin: 0, color: '#475569' }}>
+              Прикрепите комментарий эксперта и готовые файлы. Они сразу станут доступны клиенту в его личном кабинете на сайте.
+            </p>
             <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', fontSize: 12 }}>
               <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: 2 }}>
                 {job.job_number ? `[#${job.job_number}] ` : ''}{job.human_title || job.title}
               </div>
-              <div style={{ color: '#64748b', fontSize: 11 }}>
-                Клиент: {job.client_name || 'Не указан'} {job.created_by_telegram_id ? `· TG ID: ${job.created_by_telegram_id}` : ''}
+              <div style={{ color: '#64748b', fontSize: 11, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span>Клиент: <strong>{job.client_name || 'Не указан'}</strong></span>
+                <span>·</span>
+                {isWebClient ? (
+                  <span style={{ color: '#0d9488', fontWeight: 600 }}>🌐 Личный кабинет на сайте</span>
+                ) : (
+                  <span style={{ color: '#0284c7' }}>✈️ Telegram ID: <code>{rawTg}</code></span>
+                )}
               </div>
               {job.admin_supplement_name && (
                 <div style={{ marginTop: 4, fontSize: 11, color: '#0f766e', fontWeight: 600 }}>
                   ✨ Текущий прикрепленный отчет: {job.admin_supplement_name}
+                </div>
+              )}
+            </div>
+
+            {offerPreview && (
+              (offerPreview.charge_amount_rub ?? 0) > 0 ? (
+                <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#166534', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span>💡</span>
+                      <span>Согласование и доплата за пересчитанный отчёт</span>
+                    </span>
+                    <span style={{ fontSize: 11, color: '#15803d', fontWeight: 600 }}>
+                      Баланс клиента: {offerPreview.client_balance_rub ?? 0} ₽
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: '#166534', lineHeight: 1.5, marginBottom: 8 }}>
+                    Найдено позиций: <strong>{offerPreview.new_verified_count}</strong> (ранее оплачено {offerPreview.prior_verified_count}).
+                    {offerPreview.delta_units ? ` Дополнительно: +${offerPreview.delta_units} поз. × ${offerPreview.unit_price_rub} ₽ = ` : ' '}
+                    <strong style={{ fontSize: 13, color: '#0f766e' }}>{offerPreview.charge_amount_rub} ₽</strong>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6, borderTop: '1px solid #dcfce7' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: billingMode === 'offer' ? 700 : 500, color: billingMode === 'offer' ? '#0f172a' : '#475569', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="supplement_billing_mode"
+                        checked={billingMode === 'offer'}
+                        onChange={() => selectBillingMode('offer')}
+                      />
+                      <span>Отправить клиенту как предложение на согласование (со списанием {formatRubDisplay(offerPreview.charge_amount_rub)} ₽ только после согласия)</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: billingMode === 'charge_now' ? 700 : 500, color: billingMode === 'charge_now' ? '#0f172a' : '#475569', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="supplement_billing_mode"
+                        checked={billingMode === 'charge_now'}
+                        onChange={() => selectBillingMode('charge_now')}
+                      />
+                      <span>Опубликовать сразу и списать {formatRubDisplay(offerPreview.charge_amount_rub)} ₽ без согласования</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: billingMode === 'free_bonus' ? 700 : 500, color: billingMode === 'free_bonus' ? '#0f766e' : '#475569', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="supplement_billing_mode"
+                        checked={billingMode === 'free_bonus'}
+                        onChange={() => selectBillingMode('free_bonus')}
+                      />
+                      <span>Отправить без списания — бесплатно (бонус за счёт платформы)</span>
+                    </label>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ background: '#f0fdfa', border: '1px solid #99f6e4', borderRadius: 8, padding: '10px 12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#0f766e', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span>✨</span>
+                      <span>Публикация без доплаты (0 ₽)</span>
+                    </span>
+                    <span style={{ fontSize: 11, color: '#0f766e', fontWeight: 600 }}>
+                      Баланс клиента: {offerPreview.client_balance_rub ?? 0} ₽
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: '#115e59', lineHeight: 1.5 }}>
+                    Найдено позиций: <strong>{offerPreview.new_verified_count ?? 0}</strong>{' '}
+                    (ранее оплачено {offerPreview.prior_verified_count ?? 0}
+                    {(offerPreview.already_charged_rub ?? 0) > 0 ? ` — ${offerPreview.already_charged_rub} ₽ уже списано по задаче` : ''}).
+                    {' '}Дополнительное списание не требуется — отчёт сразу откроется клиенту.
+                  </div>
+                </div>
+              )
+            )}
+
+            {/* Chat History Thread */}
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <MessageSquare size={14} color="#0d9488" />
+                  <span>История переписки по задаче ({chatMessages.length})</span>
+                </span>
+                {loadingChat && <Loader2 size={12} className="spin" color="#64748b" />}
+              </div>
+
+              {loadingChat ? (
+                <div style={{ fontSize: 11, color: '#94a3b8', padding: '6px 0' }}>Загрузка истории переписки...</div>
+              ) : chatMessages.length === 0 ? (
+                <div style={{ fontSize: 11, color: '#64748b', fontStyle: 'italic' }}>
+                  Переписка по задаче ещё не велась. Ваше сообщение будет первым в истории.
+                </div>
+              ) : (
+                <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingRight: 4 }}>
+                  {chatMessages.map((m, idx) => {
+                    const isAdmin = m.sender_role === 'admin'
+                    return (
+                      <div
+                        key={m.id || idx}
+                        style={{
+                          background: isAdmin ? '#f0fdfa' : '#fff',
+                          border: isAdmin ? '1px solid #99f6e4' : '1px solid #e2e8f0',
+                          borderRadius: 6,
+                          padding: '6px 8px',
+                          fontSize: 11.5,
+                          maxWidth: '92%',
+                          alignSelf: isAdmin ? 'flex-end' : 'flex-start',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2, fontSize: 10, color: '#64748b' }}>
+                          <strong style={{ color: isAdmin ? '#0d9488' : '#1e293b' }}>
+                            {isAdmin ? 'Вы (Эксперт)' : 'Клиент'}
+                          </strong>
+                          <span>·</span>
+                          <span>{formatDate(m.created_at)}</span>
+                        </div>
+                        <div style={{ whiteSpace: 'pre-wrap', color: '#1e293b', lineHeight: 1.4 }}>
+                          {m.message}
+                        </div>
+                        {m.attachments && m.attachments.length > 0 && (
+                          <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                            {m.attachments.map((att: any) => (
+                              <a
+                                key={att.index}
+                                href={att.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                download
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  background: isAdmin ? '#ccfbf1' : '#f1f5f9',
+                                  color: isAdmin ? '#0f766e' : '#334155',
+                                  fontSize: 10.5,
+                                  padding: '2px 6px',
+                                  borderRadius: 4,
+                                  textDecoration: 'none',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                <Download size={10} />
+                                <span>{att.name}</span>
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -4859,11 +6776,28 @@ function AdminSupplementModal({
                                     <div className="candidate-details">
                                       <div className="candidate-header-row">
                                         <strong className="candidate-name">{cand.label}</strong>
-                                        {cand.is_admin_rerun && (
-                                          <span className="candidate-badge">
-                                            👑 Доработка
+                                        {cand.job_number ? (
+                                          <span className="candidate-time">#{cand.job_number}</span>
+                                        ) : null}
+                                        {cand.is_recommended ? (
+                                          <span
+                                            className="candidate-badge"
+                                            style={{ background: '#dcfce7', color: '#166534', borderColor: '#86efac' }}
+                                          >
+                                            ✅ Последний подбор{typeof cand.verified_count === 'number' && cand.verified_count > 0 ? ` (${cand.verified_count} поз.)` : ''}
                                           </span>
-                                        )}
+                                        ) : cand.is_empty_result ? (
+                                          <span
+                                            className="candidate-badge"
+                                            style={{ background: '#fef2f2', color: '#b91c1c', borderColor: '#fecaca' }}
+                                          >
+                                            ⚠️ Пустой / {cand.job_status === 'failed' ? 'ошибка' : '0 поз.'}
+                                          </span>
+                                        ) : cand.is_admin_rerun ? (
+                                          <span className="candidate-badge">
+                                            👑 Доработка{typeof cand.verified_count === 'number' && cand.verified_count > 0 ? ` (${cand.verified_count} поз.)` : ''}
+                                          </span>
+                                        ) : null}
                                         {cand.created_at && (
                                           <span className="candidate-time">
                                             · {formatDate(cand.created_at)}
@@ -4948,7 +6882,10 @@ function AdminSupplementModal({
                   type="button"
                   className="ghost small-text"
                   style={{ fontSize: 10.5, padding: '1px 6px', height: 'auto', color: '#0d9488', border: '1px solid #99f6e4', background: '#f0fdfa', borderRadius: 4, cursor: 'pointer' }}
-                  onClick={() => setComment(generateDefaultComment(job))}
+                  onClick={() => {
+                    setCommentEditedByUser(false)
+                    setComment(generateSupplementCommentForMode(billingMode, job, offerPreview))
+                  }}
                 >
                   Восстановить автотекст
                 </button>
@@ -4956,7 +6893,10 @@ function AdminSupplementModal({
               <textarea
                 rows={3}
                 value={comment}
-                onChange={e => setComment(e.target.value)}
+                onChange={e => {
+                  setComment(e.target.value)
+                  setCommentEditedByUser(true)
+                }}
                 placeholder="Укажите комментарий эксперта..."
                 style={{ width: '100%', padding: '8px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 6, resize: 'vertical' }}
               />
@@ -4965,14 +6905,21 @@ function AdminSupplementModal({
               </small>
             </div>
 
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={notifyTelegram}
-                onChange={e => setNotifyTelegram(e.target.checked)}
-              />
-              <span>Отправить уведомление и файл в Telegram бот клиенту</span>
-            </label>
+            {isWebClient ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#0f766e', background: '#f0fdfa', border: '1px solid #99f6e4', padding: '6px 10px', borderRadius: 6 }}>
+                <span>🌐</span>
+                <span>Клиент работает через <strong>веб-кабинет</strong>. Отчёт и комментарий сразу отобразятся на карточке задачи.</span>
+              </div>
+            ) : (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={notifyTelegram}
+                  onChange={e => setNotifyTelegram(e.target.checked)}
+                />
+                <span>Продублировать уведомление и файлы в Telegram-бот клиенту</span>
+              </label>
+            )}
 
             {error && (
               <div style={{ color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', padding: '6px 10px', borderRadius: 6, fontSize: 12 }}>
@@ -4987,7 +6934,21 @@ function AdminSupplementModal({
             </button>
             <button type="submit" className="primary" disabled={loading} style={{ background: '#0d9488', borderColor: '#0d9488', fontSize: 12, padding: '6px 16px' }}>
               {loading ? <Loader2 size={13} className="spin" /> : <Send size={13} />}
-              <span>{loading ? 'Отправка...' : 'Отправить клиенту'}</span>
+              <span>
+                {loading
+                  ? 'Сохранение...'
+                  : (offerPreview?.charge_amount_rub ?? 0) > 0 && billingMode === 'offer'
+                  ? `Отправить предложение клиенту (${formatRubDisplay(offerPreview?.charge_amount_rub)} ₽)`
+                  : (offerPreview?.charge_amount_rub ?? 0) > 0 && billingMode === 'charge_now'
+                  ? `Опубликовать и списать ${formatRubDisplay(offerPreview?.charge_amount_rub)} ₽`
+                  : (offerPreview?.charge_amount_rub ?? 0) > 0 && billingMode === 'free_bonus'
+                  ? 'Опубликовать бесплатно (бонус)'
+                  : isWebClient
+                  ? 'Опубликовать в личном кабинете'
+                  : notifyTelegram
+                  ? 'Опубликовать в кабинете и отправить в Telegram'
+                  : 'Опубликовать в личном кабинете'}
+              </span>
             </button>
           </div>
         </form>
@@ -4996,24 +6957,189 @@ function AdminSupplementModal({
   )
 }
 
-function JobTimeline({ job, hasInput }: { job: Job; hasInput: boolean }) {
-  const failed = job.status === 'failed' || Boolean(job.error)
-  const completed = job.status === 'completed' || job.has_result || (job.result_files?.length || 0) > 0
+function JobTimeline({
+  job,
+  hasInput,
+  adminResolved = false,
+  adminSent = false,
+}: {
+  job: Job
+  hasInput: boolean
+  adminResolved?: boolean
+  adminSent?: boolean
+}) {
+  const minpromNotFound = isMinpromNotFound(job)
+  const isCancelled = job.status === 'cancelled'
+  const isResolvedStatus = job.status === 'resolved' || adminResolved
+  const failed = !minpromNotFound && !isResolvedStatus && !isCancelled && (job.status === 'failed' || Boolean(job.error))
+  const completed =
+    !isCancelled && (
+      job.status === 'completed' ||
+      isResolvedStatus ||
+      job.has_result ||
+      (job.result_files?.length || 0) > 0
+    )
   const steps = [
     { label: 'Создана', state: 'done' },
-    { label: 'Входные', state: hasInput ? 'done' : job.status === 'pending' ? 'current' : 'waiting' },
-    { label: 'ИИ', state: failed ? 'error' : completed || job.progress >= 70 ? 'done' : job.status === 'running' ? 'current' : 'waiting' },
-    { label: 'Результат', state: failed ? 'error' : completed ? 'done' : job.status === 'running' || job.status === 'pending' ? 'current' : 'waiting' },
+    { label: 'Входные', state: hasInput ? 'done' : job.status === 'pending' ? 'current' : isCancelled ? 'empty' : 'waiting' },
+    {
+      label: 'ИИ',
+      state: isCancelled
+        ? 'empty'
+        : isResolvedStatus
+          ? 'done'
+          : failed
+            ? 'error'
+            : completed || job.progress >= 70 || minpromNotFound
+              ? 'done'
+              : job.status === 'running'
+                ? 'current'
+                : 'waiting',
+    },
+    {
+      label: 'Результат',
+      state: isCancelled
+        ? 'empty'
+        : isResolvedStatus
+          ? (adminSent || job.status === 'resolved' ? 'done' : 'resolved')
+          : failed
+            ? 'error'
+            : minpromNotFound
+              ? 'empty'
+              : completed
+                ? 'done'
+                : 'waiting',
+    },
   ]
   return (
     <div className="job-timeline" aria-label="Этапы обработки задачи">
       {steps.map(step => (
-        <div className={`job-timeline-step ${step.state}`} key={step.label} title={`Этап: ${step.label} (${step.state})`}>
+        <div
+          className={`job-timeline-step ${step.state}`}
+          key={step.label}
+          title={`Этап: ${step.label} (${
+            isCancelled && step.state === 'empty'
+              ? 'отменено'
+              : step.state === 'empty'
+                ? 'в реестре не найдено'
+                : step.state === 'resolved'
+                  ? 'готово у админа (ожидает отправки клиенту)'
+                  : step.state
+          })`}
+        >
           <span className="timeline-dot" />
           <span className="timeline-text">{step.label}</span>
         </div>
       ))}
     </div>
+  )
+}
+
+function TariffEditableInput({
+  value,
+  type = 'text',
+  min,
+  step = 1,
+  className = '',
+  style,
+  placeholder,
+  title,
+  trim = true,
+  allowEmpty = false,
+  onCommit,
+}: {
+  value: string | number
+  type?: 'text' | 'number'
+  min?: number
+  step?: number
+  className?: string
+  style?: CSSProperties
+  placeholder?: string
+  title?: string
+  trim?: boolean
+  allowEmpty?: boolean
+  onCommit: (nextValue: string) => Promise<boolean>
+}) {
+  const stringValue = String(value ?? '')
+  const [draft, setDraft] = useState(stringValue)
+  const [saving, setSaving] = useState(false)
+  const [savedFlash, setSavedFlash] = useState(false)
+  const cancelledRef = useRef(false)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    setDraft(stringValue)
+  }, [stringValue])
+
+  async function commitDraft(rawValue: string) {
+    const normalized = trim ? rawValue.trim() : rawValue
+    if (!allowEmpty && normalized === '') {
+      setDraft(stringValue)
+      return
+    }
+    if (normalized === stringValue) {
+      setDraft(stringValue)
+      return
+    }
+    if (type === 'number') {
+      const parsed = Number(normalized)
+      if (!Number.isFinite(parsed) || (min !== undefined && parsed < min)) {
+        setDraft(stringValue)
+        return
+      }
+    }
+    setSaving(true)
+    const ok = await onCommit(normalized)
+    if (!mountedRef.current) return
+    setSaving(false)
+    if (ok) {
+      setSavedFlash(true)
+      setTimeout(() => {
+        if (mountedRef.current) setSavedFlash(false)
+      }, 1600)
+    } else {
+      setDraft(stringValue)
+    }
+  }
+
+  return (
+    <input
+      className={`${className}${savedFlash ? ' is-saved' : ''}`}
+      style={style}
+      type={type}
+      min={min}
+      step={type === 'number' ? step : undefined}
+      placeholder={placeholder}
+      title={title}
+      value={draft}
+      disabled={saving}
+      onChange={e => setDraft(e.target.value)}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          e.currentTarget.blur()
+        } else if (e.key === 'Escape') {
+          cancelledRef.current = true
+          setDraft(stringValue)
+          e.currentTarget.blur()
+        }
+      }}
+      onBlur={e => {
+        if (cancelledRef.current) {
+          cancelledRef.current = false
+          setDraft(stringValue)
+          return
+        }
+        void commitDraft(e.currentTarget.value)
+      }}
+    />
   )
 }
 
@@ -5032,6 +7158,14 @@ function BillingView({
   const [geoSurcharge, setGeoSurcharge] = useState(settings?.geo_radius_surcharge_pct ?? 30)
   const [geoSaving, setGeoSaving] = useState(false)
   const [geoSaved, setGeoSaved] = useState(false)
+  const [pmPriceRub, setPmPriceRub] = useState<number>(50)
+  const [batchPriceRub, setBatchPriceRub] = useState<number>(30)
+  const [batchAccessMode, setBatchAccessMode] = useState<'all' | 'granular' | 'disabled'>('all')
+  const [batchMaxItems, setBatchMaxItems] = useState<number>(30)
+  const [batchDefaultPrompt, setBatchDefaultPrompt] = useState<string>('')
+  const [batchBuiltinPrompt, setBatchBuiltinPrompt] = useState<string>('')
+  const [batchSaving, setBatchSaving] = useState(false)
+  const [batchSaved, setBatchSaved] = useState(false)
 
   useEffect(() => {
     if (settings) {
@@ -5040,8 +7174,49 @@ function BillingView({
     }
   }, [settings])
 
+  useEffect(() => {
+    let active = true
+    api<{ default_price_rub?: number }>('/api/price-monitoring/settings')
+      .then(data => {
+        if (active && typeof data?.default_price_rub === 'number') {
+          setPmPriceRub(Math.round(data.default_price_rub))
+        }
+      })
+      .catch(() => {})
+    api<{
+      default_price_rub?: number
+      access_mode?: string
+      max_items?: number
+      default_prompt?: string
+      builtin_default_prompt?: string
+    }>('/api/batch-report/settings')
+      .then(data => {
+        if (!active || !data) return
+        if (typeof data.default_price_rub === 'number') {
+          setBatchPriceRub(Math.round(data.default_price_rub))
+        }
+        if (data.access_mode === 'all' || data.access_mode === 'granular' || data.access_mode === 'disabled') {
+          setBatchAccessMode(data.access_mode)
+        }
+        if (typeof data.max_items === 'number') {
+          setBatchMaxItems(Math.max(1, Math.min(60, Math.round(data.max_items))))
+        }
+        if (typeof data.default_prompt === 'string') {
+          setBatchDefaultPrompt(data.default_prompt)
+        }
+        if (typeof data.builtin_default_prompt === 'string') {
+          setBatchBuiltinPrompt(data.builtin_default_prompt)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
+
   async function saveGeoSettings() {
     setGeoSaving(true)
+    setBillingError('')
     try {
       await api('/api/settings', {
         method: 'PATCH',
@@ -5053,8 +7228,84 @@ function BillingView({
       await onChange()
       setGeoSaved(true)
       setTimeout(() => setGeoSaved(false), 2500)
+    } catch (err) {
+      setBillingError(formatError(err))
     } finally {
       setGeoSaving(false)
+    }
+  }
+
+  async function savePriceMonitoringRate(nextRub: number): Promise<boolean> {
+    setBillingError('')
+    try {
+      const updated = await api<{ default_price_rub?: number }>('/api/price-monitoring/settings', {
+        method: 'POST',
+        body: JSON.stringify({ default_price_rub: Math.max(0, Math.round(nextRub)) }),
+      })
+      if (typeof updated?.default_price_rub === 'number') {
+        setPmPriceRub(Math.round(updated.default_price_rub))
+      } else {
+        setPmPriceRub(Math.max(0, Math.round(nextRub)))
+      }
+      await onChange()
+      return true
+    } catch (err) {
+      setBillingError(formatError(err))
+      return false
+    }
+  }
+
+  async function saveBatchReportRate(nextRub: number): Promise<boolean> {
+    setBillingError('')
+    try {
+      const updated = await api<{ default_price_rub?: number }>('/api/batch-report/settings', {
+        method: 'POST',
+        body: JSON.stringify({ default_price_rub: Math.max(0, Math.round(nextRub)) }),
+      })
+      if (typeof updated?.default_price_rub === 'number') {
+        setBatchPriceRub(Math.round(updated.default_price_rub))
+      } else {
+        setBatchPriceRub(Math.max(0, Math.round(nextRub)))
+      }
+      await onChange()
+      return true
+    } catch (err) {
+      setBillingError(formatError(err))
+      return false
+    }
+  }
+
+  async function saveBatchReportSettings() {
+    setBatchSaving(true)
+    setBillingError('')
+    try {
+      const updated = await api<{
+        default_price_rub?: number
+        access_mode?: string
+        max_items?: number
+        default_prompt?: string
+      }>('/api/batch-report/settings', {
+        method: 'POST',
+        body: JSON.stringify({
+          default_price_rub: Math.max(0, Math.round(batchPriceRub)),
+          access_mode: batchAccessMode,
+          max_items: Math.max(1, Math.min(60, Math.round(batchMaxItems))),
+          default_prompt: batchDefaultPrompt,
+        }),
+      })
+      if (typeof updated?.default_price_rub === 'number') setBatchPriceRub(Math.round(updated.default_price_rub))
+      if (updated?.access_mode === 'all' || updated?.access_mode === 'granular' || updated?.access_mode === 'disabled') {
+        setBatchAccessMode(updated.access_mode)
+      }
+      if (typeof updated?.max_items === 'number') setBatchMaxItems(Math.round(updated.max_items))
+      if (typeof updated?.default_prompt === 'string') setBatchDefaultPrompt(updated.default_prompt)
+      await onChange()
+      setBatchSaved(true)
+      setTimeout(() => setBatchSaved(false), 2500)
+    } catch (err) {
+      setBillingError(formatError(err))
+    } finally {
+      setBatchSaving(false)
     }
   }
 
@@ -5082,13 +7333,15 @@ function BillingView({
     }
   }
 
-  async function patchTariff(item: TariffPackage, patch: Partial<TariffPackage>) {
+  async function patchTariff(item: TariffPackage, patch: Partial<TariffPackage>): Promise<boolean> {
     setBillingError('')
     try {
       await api(`/api/tariffs/${item.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
       await onChange()
+      return true
     } catch (err) {
       setBillingError(formatError(err))
+      return false
     }
   }
 
@@ -5115,11 +7368,24 @@ function BillingView({
     })
 
   // Filter to core 1-unit services unless expanded
-  const displayedServiceTariffs = showAllServices
-    ? allServiceTariffs
-    : allServiceTariffs.filter(t => t.units === 1)
+  const singleUnitServices = allServiceTariffs.filter(t => t.units === 1)
+  const displayedServiceTariffs = showAllServices ? allServiceTariffs : singleUnitServices
 
-  const basePriceExample = 99
+  // Live single-unit reference rates for derived combo & discount badges
+  const baseRateByKind: Record<string, number> = {}
+  for (const svc of allServiceTariffs) {
+    if (svc.units === 1 && svc.is_active && !(svc.kind in baseRateByKind)) {
+      baseRateByKind[svc.kind] = kopeksToRubles(svc.price_kopeks)
+    }
+  }
+  const searchBaseRub = baseRateByKind.supplier_search ?? 99
+  const reportBaseRub = baseRateByKind.procurement_report ?? 99
+  const comboBaseRub = searchBaseRub + reportBaseRub
+
+  const startDepositPkg = depositTariffs.find(d => d.is_active && d.units > 0 && (d.bonus_kopeks || 0) === 0)
+  const depositBaseTaskCost = startDepositPkg ? kopeksToRubles(startDepositPkg.price_kopeks) / startDepositPkg.units : 100
+
+  const basePriceExample = searchBaseRub
   const surchargeExample = Math.round(basePriceExample * (1 + (geoSurcharge || 0) / 100))
 
   return (
@@ -5168,13 +7434,13 @@ function BillingView({
               type="number"
               min={0}
               max={500}
-              step={5}
+              step={1}
               value={geoSurcharge}
               onChange={e => setGeoSurcharge(Number(e.target.value))}
             />
             <span>%</span>
             <span className="tariff-rate-example">
-              (пример: 99 ₽ → <strong>{surchargeExample} ₽</strong>)
+              (пример: {basePriceExample} ₽ → <strong>{surchargeExample} ₽</strong>)
             </span>
           </div>
         </div>
@@ -5261,49 +7527,39 @@ function BillingView({
                 const bonusRub = kopeksToRubles(item.bonus_kopeks || 0)
                 const totalRub = payRub + bonusRub
                 const costPerTask = item.units > 0 ? payRub / item.units : 0
-                // Discount relative to 100 ₽ base rate
-                const discountPct = costPerTask > 0 && costPerTask < 100
-                  ? Math.round(((100 - costPerTask) / 100) * 100)
+                const discountPct = depositBaseTaskCost > 0 && costPerTask > 0 && costPerTask < depositBaseTaskCost
+                  ? Math.round(((depositBaseTaskCost - costPerTask) / depositBaseTaskCost) * 100)
                   : 0
 
                 return (
                   <tr key={item.id} className={item.is_active ? '' : 'muted-row'}>
                     <td>
-                      <input
+                      <TariffEditableInput
                         className="t-input text"
                         style={{ fontWeight: 600 }}
-                        defaultValue={item.name}
+                        value={item.name}
                         placeholder="Название"
-                        onBlur={e => {
-                          const val = e.currentTarget.value.trim()
-                          if (val && val !== item.name) void patchTariff(item, { name: val })
-                        }}
+                        onCommit={val => patchTariff(item, { name: val })}
                       />
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input number"
                         type="number"
                         min={0}
-                        step={100}
-                        defaultValue={payRub}
-                        onBlur={e => {
-                          const val = Number(e.currentTarget.value)
-                          if (!isNaN(val) && val !== payRub) void patchTariff(item, { price_kopeks: rublesToKopeks(val) })
-                        }}
+                        step={1}
+                        value={payRub}
+                        onCommit={val => patchTariff(item, { price_kopeks: rublesToKopeks(Number(val)) })}
                       />
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input number"
                         type="number"
                         min={0}
-                        step={100}
-                        defaultValue={bonusRub}
-                        onBlur={e => {
-                          const val = Number(e.currentTarget.value)
-                          if (!isNaN(val) && val !== bonusRub) void patchTariff(item, { bonus_kopeks: rublesToKopeks(val) })
-                        }}
+                        step={1}
+                        value={bonusRub}
+                        onCommit={val => patchTariff(item, { bonus_kopeks: rublesToKopeks(Number(val)) })}
                       />
                     </td>
                     <td>
@@ -5321,32 +7577,28 @@ function BillingView({
                         </span>
                         {discountPct > 0 ? (
                           <span className="task-cost-badge">-{discountPct}%</span>
-                        ) : costPerTask === 100 ? (
+                        ) : Math.abs(costPerTask - depositBaseTaskCost) < 0.01 ? (
                           <span className="task-cost-badge base">база</span>
                         ) : null}
                       </div>
                     </td>
                     <td style={{ textAlign: 'center' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input number-center"
                         type="number"
                         min={1}
-                        defaultValue={item.units}
-                        onBlur={e => {
-                          const val = Number(e.currentTarget.value)
-                          if (!isNaN(val) && val > 0 && val !== item.units) void patchTariff(item, { units: val })
-                        }}
+                        step={1}
+                        value={item.units}
+                        onCommit={val => patchTariff(item, { units: Number(val) })}
                       />
                     </td>
                     <td style={{ textAlign: 'center' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input badge-text"
-                        defaultValue={item.badge || ''}
+                        value={item.badge || ''}
                         placeholder="—"
-                        onBlur={e => {
-                          const val = e.currentTarget.value.trim()
-                          if (val !== (item.badge || '')) void patchTariff(item, { badge: val })
-                        }}
+                        allowEmpty
+                        onCommit={val => patchTariff(item, { badge: val })}
                       />
                     </td>
                     <td style={{ textAlign: 'center' }}>
@@ -5389,7 +7641,7 @@ function BillingView({
               className={`tariff-seg-btn ${!showAllServices ? 'active' : ''}`}
               onClick={() => setShowAllServices(false)}
             >
-              4 основные услуги (1 задача)
+              Основные услуги ({singleUnitServices.length + 1})
             </button>
             <button
               className={`tariff-seg-btn ${showAllServices ? 'active' : ''}`}
@@ -5432,8 +7684,8 @@ function BillingView({
                 const mod = getModuleInfo(item.kind)
                 const payRub = kopeksToRubles(item.price_kopeks)
                 const costPerTask = item.units > 0 ? payRub / item.units : 0
-                const baseUnitRate = item.kind === 'supplier_search_extra' ? 49 : 99
-                const bulkDiscountPct = item.units > 1 && costPerTask < baseUnitRate
+                const baseUnitRate = baseRateByKind[item.kind] ?? (item.kind === 'supplier_search_extra' ? 49 : 99)
+                const bulkDiscountPct = item.units > 1 && baseUnitRate > 0 && costPerTask < baseUnitRate
                   ? Math.round(((baseUnitRate - costPerTask) / baseUnitRate) * 100)
                   : 0
 
@@ -5443,39 +7695,32 @@ function BillingView({
                       <span className={`module-pill-tag ${mod.cls}`}>{mod.label}</span>
                     </td>
                     <td>
-                      <input
+                      <TariffEditableInput
                         className="t-input text"
-                        defaultValue={item.name}
-                        onBlur={e => {
-                          const val = e.currentTarget.value.trim()
-                          if (val && val !== item.name) void patchTariff(item, { name: val })
-                        }}
+                        value={item.name}
+                        placeholder="Описание тарифа"
+                        onCommit={val => patchTariff(item, { name: val })}
                       />
                     </td>
                     <td style={{ textAlign: 'center' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input number-center"
                         type="number"
                         min={1}
-                        defaultValue={item.units}
-                        onBlur={e => {
-                          const val = Number(e.currentTarget.value)
-                          if (!isNaN(val) && val > 0 && val !== item.units) void patchTariff(item, { units: val })
-                        }}
+                        step={1}
+                        value={item.units}
+                        onCommit={val => patchTariff(item, { units: Number(val) })}
                       />
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      <input
+                      <TariffEditableInput
                         className="t-input number"
                         type="number"
                         min={0}
-                        step={10}
+                        step={1}
                         style={{ fontWeight: 600 }}
-                        defaultValue={payRub}
-                        onBlur={e => {
-                          const val = Number(e.currentTarget.value)
-                          if (!isNaN(val) && val !== payRub) void patchTariff(item, { price_kopeks: rublesToKopeks(val) })
-                        }}
+                        value={payRub}
+                        onCommit={val => patchTariff(item, { price_kopeks: rublesToKopeks(Number(val)) })}
                       />
                     </td>
                     <td>
@@ -5511,8 +7756,154 @@ function BillingView({
                   </tr>
                 )
               })}
+              <tr>
+                <td>
+                  <span className="module-pill-tag price_monitoring">5. Мониторинг цен</span>
+                </td>
+                <td>
+                  <span className="tariff-static-desc">1 найденная позиция по спецификации</span>
+                </td>
+                <td style={{ textAlign: 'center' }}>
+                  <span style={{ fontWeight: 600, color: '#475569' }}>1</span>
+                </td>
+                <td style={{ textAlign: 'right' }}>
+                  <TariffEditableInput
+                    className="t-input number"
+                    type="number"
+                    min={0}
+                    step={1}
+                    style={{ fontWeight: 600 }}
+                    value={pmPriceRub}
+                    onCommit={val => savePriceMonitoringRate(Number(val))}
+                  />
+                </td>
+                <td>
+                  <div className="task-cost-wrap">
+                    <span className="task-cost-price">{pmPriceRub} ₽ / поз.</span>
+                    <span className="task-cost-badge base">по факту</span>
+                  </div>
+                </td>
+                <td style={{ textAlign: 'center' }}>
+                  <span className="sync-note" title="Доступ настраивается в разделе Мониторинг цен или в карточке клиента">—</span>
+                </td>
+                <td></td>
+              </tr>
+              <tr>
+                <td>
+                  <span className="module-pill-tag price_monitoring">6. Экспресс-оценка</span>
+                </td>
+                <td>
+                  <span className="tariff-static-desc">1 закупка (подбор товара, поставщики, маржа)</span>
+                </td>
+                <td style={{ textAlign: 'center' }}>
+                  <span style={{ fontWeight: 600, color: '#475569' }}>1</span>
+                </td>
+                <td style={{ textAlign: 'right' }}>
+                  <TariffEditableInput
+                    className="t-input number"
+                    type="number"
+                    min={0}
+                    step={1}
+                    style={{ fontWeight: 600 }}
+                    value={batchPriceRub}
+                    onCommit={val => saveBatchReportRate(Number(val))}
+                  />
+                </td>
+                <td>
+                  <div className="task-cost-wrap">
+                    <span className="task-cost-price">{batchPriceRub} ₽ / зак.</span>
+                    <span className="task-cost-badge base">по факту</span>
+                  </div>
+                </td>
+                <td style={{ textAlign: 'center' }}>
+                  <span className="sync-note">
+                    {batchAccessMode === 'all' ? 'Всем' : batchAccessMode === 'granular' ? 'Выборочно' : 'Выкл'}
+                  </span>
+                </td>
+                <td></td>
+              </tr>
             </tbody>
           </table>
+        </div>
+        <div className="tariff-summary-footer">
+          Комбо «Анализ + поиск» рассчитывается автоматически: {searchBaseRub} ₽ + {reportBaseRub} ₽ = <strong>{comboBaseRub} ₽</strong>
+        </div>
+      </div>
+
+      <div className="surface-card" style={{ padding: '18px 20px', marginTop: 18 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Экспресс-оценка закупок — доступ, лимит и общий шаблон</h3>
+            <p className="field-help" style={{ margin: '4px 0 0' }}>
+              Общий инструмент для клиентов (от 1 закупки или выгрузка Excel). Личный промпт в карточке клиента всегда имеет приоритет над общим шаблоном.
+            </p>
+          </div>
+          {batchSaved && <span style={{ fontSize: 12, fontWeight: 600, color: '#059669' }}>Сохранено</span>}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
+          <label className="mini-field">
+            <span>Кому доступен инструмент</span>
+            <select
+              value={batchAccessMode}
+              onChange={e => setBatchAccessMode(e.target.value as 'all' | 'granular' | 'disabled')}
+            >
+              <option value="all">Всем клиентам</option>
+              <option value="granular">Только выбранным (в карточке клиента)</option>
+              <option value="disabled">Отключено для всех</option>
+            </select>
+          </label>
+          <label className="mini-field">
+            <span>Лимит закупок за 1 запуск (обычные клиенты)</span>
+            <input
+              type="number"
+              min={1}
+              max={60}
+              value={batchMaxItems}
+              onChange={e => setBatchMaxItems(Math.max(1, Math.min(60, Number(e.target.value) || 1)))}
+            />
+          </label>
+          <label className="mini-field">
+            <span>Базовая цена за 1 закупку, ₽</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={batchPriceRub}
+              onChange={e => setBatchPriceRub(Math.max(0, Number(e.target.value) || 0))}
+            />
+          </label>
+        </div>
+        <label className="mini-field" style={{ marginBottom: 10 }}>
+          <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <span>Общий шаблон инструкции для ИИ (оставьте пустым для встроенного шаблона)</span>
+            {batchBuiltinPrompt && (
+              <button
+                type="button"
+                className="secondary-button small"
+                onClick={() => setBatchDefaultPrompt(batchBuiltinPrompt)}
+              >
+                Подставить встроенный шаблон
+              </button>
+            )}
+          </span>
+          <textarea
+            rows={7}
+            value={batchDefaultPrompt}
+            onChange={e => setBatchDefaultPrompt(e.target.value)}
+            placeholder="Если оставить пустым — используется встроенный шаблон экспресс-оценки (5 блоков: резюме, товар со ссылкой, поставщики, логистика, маржа + заметка о перепроверке)."
+            style={{ width: '100%', fontSize: 12, fontFamily: 'monospace', resize: 'vertical' }}
+          />
+        </label>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={batchSaving}
+            onClick={() => void saveBatchReportSettings()}
+          >
+            <Save size={14} />
+            <span>{batchSaving ? 'Сохраняю...' : 'Сохранить настройки экспресс-оценки'}</span>
+          </button>
         </div>
       </div>
     </section>
@@ -5532,19 +7923,31 @@ function SettingsView({
   const [adapterKey, setAdapterKey] = useState('')
   const [yandexKey, setYandexKey] = useState('')
   const [googleKey, setGoogleKey] = useState('')
+  const [yookassaSecretKey, setYookassaSecretKey] = useState('')
+  const [testingYookassa, setTestingYookassa] = useState(false)
+  const [yookassaTestResult, setYookassaTestResult] = useState('')
+  const [testingSupportGroup, setTestingSupportGroup] = useState(false)
+  const [supportGroupTestResult, setSupportGroupTestResult] = useState<{ ok?: boolean; text: string } | null>(null)
   const searchUi = draft.supplier_search_ui
   useEffect(() => setDraft(settings), [settings])
   useEffect(() => {
-    void api<{ supplier_search_adapter_api_key?: string; yandex_search_api_key?: string; google_search_api_key?: string }>('/api/settings/keys')
+    void api<{
+      supplier_search_adapter_api_key?: string
+      yandex_search_api_key?: string
+      google_search_api_key?: string
+      yookassa_secret_key?: string
+    }>('/api/settings/keys')
       .then(data => {
         setAdapterKey(data.supplier_search_adapter_api_key || '')
         setYandexKey(data.yandex_search_api_key || '')
         setGoogleKey(data.google_search_api_key || '')
+        setYookassaSecretKey(data.yookassa_secret_key || '')
       })
       .catch(() => {
         setAdapterKey('')
         setYandexKey('')
         setGoogleKey('')
+        setYookassaSecretKey('')
       })
   }, [])
   async function save() {
@@ -5553,6 +7956,7 @@ function SettingsView({
       supplier_search_adapter_api_key: adapterKey,
       yandex_search_api_key: yandexKey,
       google_search_api_key: googleKey,
+      yookassa_secret_key: yookassaSecretKey || undefined,
       supplier_search_provider_order: draft.supplier_search_provider_order || 'yandex',
     }
     await api('/api/settings', {
@@ -5575,6 +7979,149 @@ function SettingsView({
         </div>
         <p className="field-help">Telegram — основной контакт. MAX-кнопка работает только по ссылке.</p>
         <TextArea className="payment-textarea" label="Инструкция для пополнения" value={draft.payment_instructions} onChange={value => setDraft({ ...draft, payment_instructions: value })} />
+      </div>
+      <div className="form-panel full">
+        <h2>Telegram-поддержка и синхронизация чатов (Варианты A и B)</h2>
+        <div className="settings-grid compact-grid">
+          <TextField
+            label="ID группы поддержки Telegram (Вариант B, супергруппа с темами)"
+            value={draft.support_telegram_group_id || ''}
+            placeholder="-1001234567890"
+            onChange={value => setDraft({ ...draft, support_telegram_group_id: value })}
+          />
+          <TextField
+            label="Дополнительные Telegram ID админов (через запятую)"
+            value={draft.support_admin_telegram_ids || ''}
+            placeholder="123456789, 987654321"
+            onChange={value => setDraft({ ...draft, support_admin_telegram_ids: value })}
+          />
+        </div>
+        <div style={{ marginTop: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.9rem', flexWrap: 'wrap' }}>
+          <label className="switch-row" style={{ margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={draft.support_mirror_admin_replies_to_bot !== false}
+              onChange={e => setDraft({ ...draft, support_mirror_admin_replies_to_bot: e.target.checked })}
+            />
+            Синхронизировать ответы между админ-панелью, личным ботом (Вариант A) и темой в группе (Вариант B)
+          </label>
+          <button
+            type="button"
+            className="secondary-btn"
+            style={{ padding: '0.4rem 0.8rem', fontSize: '12px' }}
+            onClick={async () => {
+              setTestingSupportGroup(true)
+              setSupportGroupTestResult(null)
+              try {
+                const res = await api<{ ok: boolean; message?: string; error?: string }>('/api/admin/support/test-group', {
+                  method: 'POST',
+                  body: JSON.stringify({ group_id: draft.support_telegram_group_id || '' }),
+                })
+                setSupportGroupTestResult({
+                  ok: res.ok,
+                  text: res.ok ? (res.message || 'Группа подключена успешно!') : (res.error || 'Не удалось проверить группу'),
+                })
+              } catch (err: any) {
+                setSupportGroupTestResult({ ok: false, text: formatError(err) })
+              } finally {
+                setTestingSupportGroup(false)
+              }
+            }}
+            disabled={testingSupportGroup}
+          >
+            {testingSupportGroup ? 'Проверка группы...' : 'Проверить группу в Telegram'}
+          </button>
+        </div>
+        {supportGroupTestResult && (
+          <p
+            style={{
+              marginTop: '0.5rem',
+              fontSize: '12px',
+              fontWeight: 600,
+              color: supportGroupTestResult.ok ? '#059669' : '#dc2626',
+            }}
+          >
+            {supportGroupTestResult.text}
+          </p>
+        )}
+        <p className="field-help" style={{ marginTop: '0.5rem' }}>
+          <strong>Вариант A (ЛС бота)</strong> работает сразу для владельца и указанных Telegram ID админов: кнопка <strong>«💬 Диалоги с клиентами»</strong> появляется прямо в главном меню бота (только у админов), также можно отвечать через Reply на сообщение клиента или кнопку «Ответить этому клиенту».
+          <strong>Вариант B</strong> нужен только на будущее (если диалогов станет много): создайте одну закрытую группу, включите «Темы» (Topics), добавьте бота админом с правом «Управление темами», отправьте в группе <code>/support_setup</code>, вставьте ID (<code>-100...</code>) выше и сохраните — темы бот будет создавать сам автоматически при обращениях.
+        </p>
+      </div>
+      <div className="form-panel full">
+        <h2>Приём онлайн-платежей (ЮKassa)</h2>
+        <div className="settings-grid compact-grid">
+          <label className="field">
+            <span>Провайдер платежей</span>
+            <select
+              value={draft.payment_provider || 'manual'}
+              onChange={e => setDraft({ ...draft, payment_provider: e.target.value })}
+            >
+              <option value="manual">Только ручной перевод (Telegram)</option>
+              <option value="yookassa">ЮKassa (Банковские карты, СБП, SberPay)</option>
+            </select>
+          </label>
+          <TextField
+            label="Shop ID ЮKassa"
+            value={draft.yookassa_shop_id || ''}
+            onChange={value => setDraft({ ...draft, yookassa_shop_id: value })}
+          />
+          <SecretField
+            label={`Секретный ключ API${draft.yookassa_secret_key_set ? ' (задан)' : ''}`}
+            value={yookassaSecretKey}
+            onChange={setYookassaSecretKey}
+          />
+          <TextField
+            label="URL возврата после оплаты"
+            value={draft.yookassa_return_url || ''}
+            onChange={value => setDraft({ ...draft, yookassa_return_url: value })}
+          />
+        </div>
+        <div style={{ marginTop: '0.75rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+          <label className="switch-row" style={{ margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={draft.yookassa_send_receipt || false}
+              onChange={e => setDraft({ ...draft, yookassa_send_receipt: e.target.checked })}
+            />
+            Передавать состав чека 54-ФЗ в ЮKassa (если подключена облачная касса/Чеки от ЮKassa)
+          </label>
+          <button
+            type="button"
+            className="secondary-btn"
+            style={{ padding: '0.4rem 0.8rem', fontSize: '12px' }}
+            onClick={async () => {
+              setTestingYookassa(true)
+              setYookassaTestResult('')
+              try {
+                const res = await api<{ success: boolean; message: string }>('/api/admin/yookassa/test', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    shop_id: draft.yookassa_shop_id,
+                    secret_key: yookassaSecretKey || undefined,
+                  }),
+                })
+                setYookassaTestResult(res.message)
+              } catch (err: any) {
+                setYookassaTestResult(err.message || 'Ошибка проверки')
+              } finally {
+                setTestingYookassa(false)
+              }
+            }}
+            disabled={testingYookassa}
+          >
+            {testingYookassa ? 'Проверка...' : 'Проверить подключение'}
+          </button>
+          {yookassaTestResult && (
+            <span style={{ fontSize: '12px', fontWeight: 600, color: yookassaTestResult.includes('успешно') ? '#059669' : '#dc2626' }}>
+              {yookassaTestResult}
+            </span>
+          )}
+        </div>
+        <p className="field-help" style={{ marginTop: '0.5rem' }}>
+          Webhook URL для ЮKassa: <code style={{ userSelect: 'all', fontWeight: 600 }}>https://tenderlex.ru/api/payments/yookassa/webhook</code>
+        </p>
       </div>
       <div className="form-panel">
         <h2>Бот и хранение</h2>
@@ -6350,8 +8897,8 @@ function ModelSelect({
   )
 }
 
-function TextField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return <label className="field"><span>{label}</span><input value={value || ''} onChange={e => onChange(e.target.value)} /></label>
+function TextField({ label, value, placeholder, onChange }: { label: string; value: string; placeholder?: string; onChange: (value: string) => void }) {
+  return <label className="field"><span>{label}</span><input value={value || ''} placeholder={placeholder} onChange={e => onChange(e.target.value)} /></label>
 }
 
 function SecretField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {

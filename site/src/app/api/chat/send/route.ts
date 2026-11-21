@@ -1,132 +1,57 @@
 import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
-
-const BOT_TOKEN = process.env.AIPOISK_BOT_TOKEN || "";
-const OWNER_ID = process.env.AIPOISK_OWNER_TELEGRAM_ID || "";
-const DATA_FILE = "/root/projects/tenderlex/data/chat_sessions.json";
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function loadSessions(): Record<string, any> {
-  try {
-    const dir = path.dirname(DATA_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    if (!fs.existsSync(DATA_FILE)) {
-      fs.writeFileSync(DATA_FILE, "{}", "utf8");
-      return {};
-    }
-    const raw = fs.readFileSync(DATA_FILE, "utf8").trim();
-    if (!raw) return {};
-    return JSON.parse(raw);
-  } catch (err) {
-    console.error("Error loading chat sessions:", err);
-    return {};
-  }
-}
-
-function saveSessions(data: Record<string, any>) {
-  try {
-    const dir = path.dirname(DATA_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const tmpFile = `${DATA_FILE}.tmp.${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), "utf8");
-    fs.renameSync(tmpFile, DATA_FILE);
-  } catch (err) {
-    console.error("Error saving chat sessions:", err);
-  }
-}
+import { extractVisitorIp, getInternalApiBaseUrl, isValidGuestSessionId } from "@/lib/guest-chat-proxy";
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { sessionId, text, preset, contact } = body;
+    const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
+    const text = typeof body?.text === "string" ? body.text : "";
+    const preset = typeof body?.preset === "string" ? body.preset : "";
+    const contact = typeof body?.contact === "string" ? body.contact : "";
+    const sourceUrl = req.headers.get("referer") || "";
 
-    if (!sessionId || (!text && !preset)) {
-      return NextResponse.json({ error: "Session ID and text are required" }, { status: 400 });
+    if (!isValidGuestSessionId(sessionId) || (!text.trim() && !preset.trim())) {
+      return NextResponse.json({ error: "Valid sessionId and message text are required" }, { status: 400 });
     }
 
-    const data = loadSessions();
-
-    if (!data[sessionId]) {
-      data[sessionId] = {
+    const visitorIp = extractVisitorIp(req.headers);
+    const forwardedFor = visitorIp || req.headers.get("x-forwarded-for") || "";
+    const realIp = visitorIp || req.headers.get("x-real-ip") || "";
+    const userAgent = req.headers.get("user-agent") || "";
+    const cookieHeader = req.headers.get("cookie") || "";
+    const upstream = await fetch(`${getInternalApiBaseUrl()}/api/public/guest-chat/send`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": userAgent,
+        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+        ...(forwardedFor ? { "X-Forwarded-For": forwardedFor } : {}),
+        ...(realIp ? { "X-Real-IP": realIp } : {}),
+      },
+      body: JSON.stringify({
         sessionId,
-        created: new Date().toISOString(),
-        messages: [],
-        contact: contact || null,
-      };
+        text,
+        preset,
+        contact,
+        sourceUrl,
+      }),
+      cache: "no-store",
+    });
+
+    const data = await upstream.json().catch(() => ({ error: "Backend error" }));
+    const res = NextResponse.json(data, { status: upstream.ok ? 200 : upstream.status });
+    const setCookies =
+      typeof upstream.headers.getSetCookie === "function"
+        ? upstream.headers.getSetCookie()
+        : upstream.headers.get("set-cookie")
+        ? [upstream.headers.get("set-cookie") as string]
+        : [];
+    for (const cookie of setCookies) {
+      res.headers.append("Set-Cookie", cookie);
     }
-
-    if (contact) {
-      data[sessionId].contact = contact;
-    }
-
-    const newMessage = {
-      id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
-      sender: "user",
-      text: text || preset,
-      preset: preset || null,
-      timestamp: new Date().toISOString(),
-    };
-
-    data[sessionId].messages.push(newMessage);
-    data[sessionId].updated = new Date().toISOString();
-
-    saveSessions(data);
-
-    if (BOT_TOKEN && OWNER_ID) {
-      const tgLines = [
-        "📩 <b>Новое обращение с сайта TenderLex!</b>",
-        "",
-        `👤 <b>Сессия:</b> <code>${escapeHtml(sessionId)}</code>`,
-      ];
-      if (preset) tgLines.push(`📌 <b>Категория:</b> ${escapeHtml(preset)}`);
-      tgLines.push(`💬 <b>Сообщение:</b> ${escapeHtml(text || preset)}`);
-      if (contact) tgLines.push(`📞 <b>Контакт:</b> ${escapeHtml(contact)}`);
-      tgLines.push("");
-      tgLines.push("💡 <b>Как ответить клиенту:</b>");
-      tgLines.push("1️⃣ Просто ответьте (<b>Reply 💬</b>) на это сообщение в Telegram");
-      tgLines.push("2️⃣ Или нажмите кнопку «💬 Ответить на сайт» ниже");
-
-      const telegramText = tgLines.join("\n");
-
-      const replyMarkup = {
-        inline_keyboard: [
-          [
-            { text: "💬 Ответить на сайт", callback_data: `reply:${sessionId}` },
-          ],
-          [
-            { text: "✅ Завершить диалог", callback_data: `close:${sessionId}` },
-          ],
-        ],
-      };
-
-      try {
-        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: OWNER_ID,
-            text: telegramText,
-            parse_mode: "HTML",
-            reply_markup: replyMarkup,
-          }),
-        });
-      } catch (tgErr) {
-        console.error("Telegram notification error:", tgErr);
-      }
-    }
-
-    return NextResponse.json({ success: true, message: newMessage });
-  } catch (err: any) {
-    console.error("Chat API Error:", err);
+    return res;
+  } catch (err) {
+    console.error("Guest chat send proxy error:", err);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

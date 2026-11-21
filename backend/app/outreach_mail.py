@@ -319,8 +319,13 @@ async def send_single_email(
     is_marketing: bool = False,
 ) -> tuple[bool, str]:
     """Sends email via Relay VPS or direct SMTP with anti-spam deliverability headers."""
-    from_name = settings.from_name or "TenderLex"
-    from_email = settings.from_email or "info@tenderlex.ru"
+    to_email = re.sub(r"[\r\n\x00]+", "", str(to_email or "")).strip()
+    subject = re.sub(r"[\r\n\x00]+", " ", str(subject or "")).strip()
+    from_name = re.sub(r"[\r\n\x00]+", " ", str(settings.from_name or "TenderLex")).strip()
+    from_email = re.sub(r"[\r\n\x00]+", "", str(settings.from_email or "info@tenderlex.ru")).strip()
+    reply_to_clean = re.sub(r"[\r\n\x00]+", "", str(settings.reply_to or from_email)).strip()
+    if not to_email or "@" not in to_email:
+        return False, "invalid_recipient"
     if is_marketing:
         try:
             shared_reason = get_shared_suppression_reason(to_email)
@@ -330,6 +335,15 @@ async def send_single_email(
         if shared_reason:
             return False, f"suppressed:{shared_reason}"
         body_text, body_html = _with_marketing_unsubscribe_footer(to_email, body_text, body_html)
+
+    unsub_header = _list_unsubscribe_header(to_email, from_email)
+    extra_headers = {
+        "List-Unsubscribe": unsub_header,
+        "Precedence": "bulk",
+        "X-Auto-Response-Suppress": "OOF, AutoReply",
+    }
+    if "<https://" in unsub_header or "<http://" in unsub_header:
+        extra_headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
     # 1. Relay VPS (Russian Post Relay on VPS 79.133.182.215)
     relay_url = (settings.relay_url or "").strip()
@@ -342,12 +356,8 @@ async def send_single_email(
             "text": body_text,
             "from_name": from_name,
             "from_email": from_email,
-            "reply_to": settings.reply_to or from_email,
-            "headers": {
-                "List-Unsubscribe": _list_unsubscribe_header(to_email, from_email),
-                "Precedence": "bulk",
-                "X-Auto-Response-Suppress": "OOF, AutoReply",
-            },
+            "reply_to": reply_to_clean,
+            "headers": extra_headers,
             "attachments": [],
         }
         try:
@@ -378,22 +388,28 @@ async def send_single_email(
             pass
 
     # 2. SMTP via threadpool with RFC anti-spam deliverability headers
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = formataddr((from_name, from_email))
-    msg["To"] = normalized_to
-    if settings.reply_to:
-        msg["Reply-To"] = settings.reply_to
-    msg["List-Unsubscribe"] = _list_unsubscribe_header(normalized_to, from_email)
-    msg["Precedence"] = "bulk"
-    msg["X-Auto-Response-Suppress"] = "OOF, AutoReply"
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = formataddr((from_name, from_email))
+        msg["To"] = normalized_to
+        if reply_to_clean:
+            msg["Reply-To"] = reply_to_clean
+        unsub_smtp = _list_unsubscribe_header(normalized_to, from_email)
+        msg["List-Unsubscribe"] = unsub_smtp
+        if "<https://" in unsub_smtp or "<http://" in unsub_smtp:
+            msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+        msg["Precedence"] = "bulk"
+        msg["X-Auto-Response-Suppress"] = "OOF, AutoReply"
 
-    if body_text:
-        msg.set_content(body_text)
-    if body_html:
-        msg.add_alternative(body_html, subtype="html")
-    elif not body_text:
-        msg.set_content("Здравствуйте!")
+        if body_text:
+            msg.set_content(body_text)
+        if body_html:
+            msg.add_alternative(body_html, subtype="html")
+        elif not body_text:
+            msg.set_content("Здравствуйте!")
+    except Exception as build_err:
+        return False, f"MIME build error: {build_err}"
 
     return await asyncio.to_thread(_send_smtp_sync, msg, settings, normalized_to)
 
@@ -487,6 +503,19 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
             if not c or c.status in ["paused", "stopped"]:
                 return
             current_settings = db.query(OutreachSettings).filter(OutreachSettings.id == 1).first() or OutreachSettings(id=1)
+            daily_limit = int(getattr(current_settings, "daily_limit", 0) or 0)
+            if daily_limit > 0:
+                day_start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+                sent_today = (
+                    db.query(OutreachLead.id)
+                    .filter(OutreachLead.last_sent_at >= day_start)
+                    .count()
+                )
+                if sent_today >= daily_limit:
+                    c.status = "paused"
+                    c.error_message = f"Достигнут дневной лимит рассылки ({daily_limit} писем/сутки). Нажмите «Продолжить» завтра."
+                    db.commit()
+                    return
             db_lead = db.query(OutreachLead).filter(OutreachLead.id == lead_item["id"]).first()
             if not db_lead or db_lead.status in ["bounced", "invalid", "irrelevant", "unsubscribed"] or not db_lead.mx_valid:
                 logger.info(f"Skipping lead {lead_item.get('email')}: status={getattr(db_lead, 'status', 'missing')}")
@@ -541,14 +570,18 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
         text_body = render_template_text(body_text_template, mock_lead)
         html_body = render_template_text(body_html_template, mock_lead) if body_html_template else ""
 
-        success, err = await send_single_email(
-            to_email=lead_item["email"],
-            subject=subj,
-            body_text=text_body,
-            body_html=html_body,
-            settings=current_settings,
-            is_marketing=True,
-        )
+        try:
+            success, err = await send_single_email(
+                to_email=lead_item["email"],
+                subject=subj,
+                body_text=text_body,
+                body_html=html_body,
+                settings=current_settings,
+                is_marketing=True,
+            )
+        except Exception as send_exc:
+            logger.warning("Campaign send exception for %s: %s", lead_item.get("email"), send_exc)
+            success, err = False, f"Send exception: {send_exc}"
 
         with session_factory() as db:
             db_lead = db.query(OutreachLead).filter(OutreachLead.id == lead_item["id"]).first()
@@ -1254,10 +1287,12 @@ def expunge_imap_sender(settings: OutreachSettings, sender_email: str, sender_do
 
         deleted_count = 0
         search_queries = []
-        if sender_email:
-            search_queries.append(f'(FROM "{sender_email}")')
-        if sender_domain:
-            search_queries.append(f'(FROM "@{sender_domain}")')
+        clean_sender = re.sub(r'["\\\r\n()\x00-\x1f]+', "", str(sender_email or "")).strip()[:120]
+        clean_domain = re.sub(r'["\\\r\n()\x00-\x1f]+', "", str(sender_domain or "")).strip()[:120]
+        if clean_sender and clean_sender.isascii():
+            search_queries.append(f'(FROM "{clean_sender}")')
+        if clean_domain and clean_domain.isascii():
+            search_queries.append(f'(FROM "@{clean_domain}")')
 
         for q in search_queries:
             t, data = client.search(None, q)

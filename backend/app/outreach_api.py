@@ -206,7 +206,7 @@ def get_outreach_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
 def _normalize_task_cost(task: OutreachSearchTask, db: Session) -> None:
     """Ensures task costs strictly track real Yandex Search API cost."""
     sys_s = db.query(SystemSettings).filter(SystemSettings.id == 1).first()
-    price = float(getattr(sys_s, "yandex_search_price_per_request", 0.04) or 0.04)
+    price = float(getattr(sys_s, "yandex_search_price_per_request", 0.0305) or 0.0305)
     reqs = task.yandex_requests or 0
     if reqs == 0 and (task.scanned_sites > 0 or task.queries_count > 0 or task.collected_count > 0):
         reqs = max(
@@ -916,8 +916,10 @@ async def resume_campaign(campaign_id: str, db: Session = Depends(get_db)) -> di
         raise HTTPException(status_code=404, detail="Рассылка не найдена")
     c.status = "running"
     db.commit()
-    task = asyncio.create_task(run_campaign_worker(campaign_id, SessionLocal))
-    ACTIVE_CAMPAIGN_TASKS[campaign_id] = task
+    existing_task = ACTIVE_CAMPAIGN_TASKS.get(campaign_id)
+    if not existing_task or existing_task.done():
+        task = asyncio.create_task(run_campaign_worker(campaign_id, SessionLocal))
+        ACTIVE_CAMPAIGN_TASKS[campaign_id] = task
     return {"ok": True, "status": "running"}
 
 
@@ -1348,12 +1350,13 @@ def purge_inbox_spam(db: Session = Depends(get_db)) -> dict[str, Any]:
             client.select("INBOX")
             rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
             for r in rules:
-                val = r.get("value", "").strip()
-                if val:
+                raw_val = str(r.get("value", "") or "").strip()
+                val = re.sub(r'["\\\r\n()\x00-\x1f]+', "", raw_val)[:120]
+                if val and val.isascii():
                     rtype = r.get("type")
                     query = f'(FROM "{val}")' if rtype in ("domain", "sender") else f'(TEXT "{val}")'
                     t, d = client.search(None, query)
-                    if d and d[0]:
+                    if t == "OK" and d and d[0]:
                         for mid in d[0].split():
                             client.store(mid, "+FLAGS", "\\Deleted")
             client.expunge()
@@ -1393,8 +1396,9 @@ def block_inbox_sender(message_id: str, db: Session = Depends(get_db)) -> dict[s
     sender_email = (msg.sender_email or "").strip().lower()
     sender_domain = sender_email.split("@")[-1] if "@" in sender_email else ""
     generic_domains = {
-        "gmail.com", "yandex.ru", "mail.ru", "bk.ru", "inbox.ru", "list.ru",
-        "rambler.ru", "ya.ru", "internet.ru", "outlook.com", "hotmail.com",
+        "gmail.com", "googlemail.com", "yandex.ru", "yandex.com", "mail.ru",
+        "bk.ru", "inbox.ru", "list.ru", "rambler.ru", "ya.ru", "internet.ru",
+        "outlook.com", "hotmail.com", "live.com", "icloud.com", "me.com", "yahoo.com",
     }
 
     added_rules = []
@@ -1424,10 +1428,15 @@ def block_inbox_sender(message_id: str, db: Session = Depends(get_db)) -> dict[s
             ld.status = "spam"
             ld.mx_valid = False
 
-    deleted_q = db.query(OutreachIncomingEmail).filter(
-        (OutreachIncomingEmail.sender_email == sender_email) |
-        (OutreachIncomingEmail.sender_email.ilike(f"%@{sender_domain}"))
-    )
+    if domain_to_expunge:
+        deleted_q = db.query(OutreachIncomingEmail).filter(
+            (func.lower(OutreachIncomingEmail.sender_email) == sender_email)
+            | (OutreachIncomingEmail.sender_email.ilike(f"%@{domain_to_expunge}"))
+        )
+    else:
+        deleted_q = db.query(OutreachIncomingEmail).filter(
+            func.lower(OutreachIncomingEmail.sender_email) == sender_email
+        )
     deleted_count = deleted_q.count()
     for m in deleted_q.all():
         db.delete(m)

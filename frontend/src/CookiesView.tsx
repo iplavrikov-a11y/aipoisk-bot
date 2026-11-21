@@ -400,7 +400,7 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
           ))}
         </div>
 
-        <div style={{ position: 'relative', width: '260px' }}>
+        <div style={{ position: 'relative', width: '100%', maxWidth: '260px' }}>
           <Search size={14} style={{ position: 'absolute', left: '10px', top: '10px', color: '#94a3b8' }} />
           <input
             type="text"

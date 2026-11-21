@@ -285,28 +285,27 @@ def test_process_exact_product_worker():
         db.add_all([client, job, settings])
         db.commit()
 
-        mock_llm_response = json.dumps({
-            "total_positions": 1,
-            "summary": "Тест",
-            "positions": [
-                {
-                    "name_in_tz": "Диск 128",
-                    "identified_brand": "ПК Профмаркет",
-                    "identified_model": "Диск 128х550",
-                    "manufacturer": "ООО ПК Профмаркет",
-                    "confidence": 0.95,
-                    "reasoning": "ТУ",
-                    "specs_breakdown": [],
-                    "alternative_brands": []
-                }
-            ]
-        })
-
-        with patch("app.exact_product.call_llm", AsyncMock(return_value=mock_llm_response)), \
+        from app.exact_product import ExactProductReport, ExactProductPosition
+        from app.position_selection import confirm_exact_product_selection, read_selection
+        rows = [{"position_no": 9, "name": "Диск 128", "requirements": []}]
+        report = ExactProductReport(procurement_title="Диск 128", total_positions=1, summary="Результат",
+            positions=[ExactProductPosition(position_no=9, name_in_tz="Диск 128", identified_brand="ПК Профмаркет",
+                identified_model="Диск 128х550", manufacturer="ООО ПК Профмаркет", confidence=0.95,
+                reasoning="По источнику", source_url="https://example.invalid/item", status="found")])
+        with patch("app.jobs.prepare_exact_product_positions", AsyncMock(return_value=rows)), \
              patch("app.jobs.job_dir", return_value=Path(tmpdir)):
             _process_exact_product(db, job, settings, "Тестовое ТЗ")
+            assert job.status == "awaiting_exact_selection"
+            selection = read_selection(job)
+            confirm_exact_product_selection(db, job, selection["revision"], [selection["items"][0]["id"]])
+            job.status = "running"
+            db.commit()
+            with patch("app.jobs.analyze_exact_product", AsyncMock(return_value=report)) as matching:
+                _process_exact_product(db, job, settings, "Тестовое ТЗ")
+                assert matching.call_args.kwargs["selected_positions"][0]["position_no"] == 9
             assert job.status == "completed"
             assert job.progress == 100
+            assert Path(job.result_path).suffix == ".docx"
             assert Path(job.result_path).exists()
             assert Path(job.evidence_path).exists()
 

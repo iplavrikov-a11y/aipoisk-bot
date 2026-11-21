@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from docx import Document
@@ -91,7 +92,7 @@ def _add_docx_hyperlink(paragraph, url: str, text: str, color_hex="0284C7", unde
     """Adds an interactive OpenXML hyperlink into a Word paragraph."""
     text = clean_xml_compatible(text)
     clean_url = clean_xml_compatible(url).strip()
-    if not clean_url:
+    if not clean_url or not clean_url.lower().startswith(("http://", "https://")):
         return paragraph.add_run(text)
     try:
         from docx.opc.constants import RELATIONSHIP_TYPE
@@ -121,6 +122,104 @@ def _add_docx_hyperlink(paragraph, url: str, text: str, color_hex="0284C7", unde
     except Exception as exc:
         logger.debug("add_docx_hyperlink_error: %s", exc)
         return paragraph.add_run(text)
+
+
+def _clean_display_comment(
+    raw_comment: Any,
+    status: str,
+    default_source: str = "",
+) -> str:
+    """
+    Очищает примечание в таблице характеристик от шаблонного шума:
+    убирает двойные точки, технические приставки [ИСТОЧНИК #1], файловые слаги и повторы требований ТЗ.
+    """
+    s = str(raw_comment or "").strip()
+    while s.endswith(".."):
+        s = s[:-1]
+    if s.endswith("."):
+        s = s[:-1]
+
+    s = re.sub(r"^Подтверждено\s+(документом производителя|источниками?)[^:]*:\s*", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^\[ИСТОЧНИК\s*#?\d+\]:?\s*", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^(Подтверждено\s+документацией|Подтверждено\s+первоисточником):?\s*", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Значение\s+соответствует\s+требовани[юя]\s*[^.;]*[.;]?\s*", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"^Фактическое\s+значение\s+полностью\s+соответствует[^.;]*[.;]?\s*", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"^Фактическое\s+значение\s+соответствует[^.;]*[.;]?\s*", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"^\d+[\s\w]*соответствует\s+диапазону\s+ТЗ[^.;]*[.;]?\s*", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"документ[ыа]_[а-яa-z0-9_]+", "Документация закупки", s)
+    s = s.strip()
+
+    if status == "mismatch":
+        s = re.sub(r"^Отклонение\s+от\s+ТЗ:?\s*", "", s, flags=re.IGNORECASE).strip()
+        s = re.sub(r"^Отклонение:?\s*", "", s, flags=re.IGNORECASE).strip()
+        if not s or s.lower() in ("отклонение", "не соответствует", "не подходит"):
+            return "Отклонение от требований ТЗ"
+        return f"Отклонение: {s}"
+
+    if status == "clarify":
+        if s and len(s) >= 8 and "в открытой документации" not in s.lower():
+            return s
+        return "В открытой документации не указано (требуется заводской паспорт)"
+
+    is_noise = (
+        not s
+        or len(s) < 4
+        or any(
+            w in s.lower()
+            for w in (
+                "соответствует тз",
+                "фактическое значение",
+                "документом производителя",
+                "источник #",
+            )
+        )
+    )
+    if is_noise:
+        return default_source or "Паспорт изделия / Каталог производителя"
+
+    return s
+
+
+def _format_thesis_reasoning(pos: Any) -> str:
+    """Формирует лаконичное тезисное обоснование без дублирования и технических слагов."""
+    raw_r = str(getattr(pos, "reasoning", "") or "").strip()
+    raw_r = re.sub(r"\(документ[ыа]_[^)]+\)", "", raw_r).strip()
+    raw_r = re.sub(r"документ[ыа]_[а-яa-z0-9_]+", "документация закупки", raw_r).strip()
+    if "уточнить технические характеристики" in raw_r.lower():
+        return raw_r
+
+    specs = list(getattr(pos, "specs_breakdown", None) or [])
+    if not specs:
+        return raw_r or "Товар подобран по техническим характеристикам ТЗ."
+
+    mismatches: list[str] = []
+    clarifies: list[str] = []
+    matches = 0
+    for s in specs:
+        st = str(getattr(s, "status", "") or "").lower()
+        p_name = str(getattr(s, "param_name", "") or "").strip() or "Параметр"
+        if st == "mismatch":
+            mismatches.append(p_name)
+        elif st == "clarify":
+            clarifies.append(p_name)
+        else:
+            matches += 1
+
+    total = len(specs)
+    pct = int(round((matches / total) * 100)) if total else 0
+    parts: list[str] = []
+    if not mismatches and not clarifies:
+        parts.append(f"Полное соответствие: подтверждены все {matches} из {total} характеристик ТЗ (100%) по паспортам и каталогам производителя.")
+    elif mismatches:
+        m_list = ", ".join(mismatches[:4])
+        parts.append(f"Подтверждено {matches} из {total} параметров ({pct}%). Выявлены отклонения от ТЗ: {m_list}.")
+        if clarifies:
+            parts.append(f"Требуют подтверждения заводским паспортом: {', '.join(clarifies[:3])}.")
+    else:
+        c_list = ", ".join(clarifies[:4])
+        parts.append(f"Подтверждено {matches} из {total} параметров ({pct}%). Требуют подтверждения заводским паспортом: {c_list}.")
+
+    return " ".join(parts)
 
 
 def write_exact_product_docx(
@@ -255,6 +354,9 @@ def write_exact_product_docx(
         cells[0].text = str(pos.position_no or pos_idx)
         cells[1].text = pos.name_in_tz
         cells[2].text = f"{pos.identified_brand} {pos.identified_model}".strip()
+        if getattr(pos, "status", "found") != "found":
+            label = {"not_found": "Подходящая модель не найдена", "needs_clarification": "Требуется уточнение характеристик", "error": "Ошибка обработки"}.get(pos.status, "Требуется проверка")
+            cells[2].text = f"{cells[2].text}\n{label}".strip()
         cells[3].text = pos.manufacturer
         gisp_cell_text = "Не в реестре"
         if pos.gisp_match and pos.gisp_match.registry_number:
@@ -320,6 +422,11 @@ def write_exact_product_docx(
     sec2_run.font.color.rgb = BRAND_EMERALD
 
     for pos in report.positions:
+        if getattr(pos, "status", "found") != "found" and not pos.identified_model:
+            doc.add_heading(f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}", level=2)
+            doc.add_paragraph({"not_found": "Подходящая модель в этом поиске не найдена.", "needs_clarification": "Для подбора необходимо уточнить характеристики.", "error": "Обработка позиции не завершена."}.get(pos.status, "Требуется проверка."))
+            doc.add_paragraph(pos.error or pos.reasoning)
+            continue
         pos_banner = doc.add_table(rows=1, cols=1)
         pos_banner.alignment = WD_TABLE_ALIGNMENT.CENTER
         pos_banner.autofit = False
@@ -341,6 +448,8 @@ def write_exact_product_docx(
             if pos.gisp_match.conclusion_number:
                 gisp_str += f" (Заключение № {pos.gisp_match.conclusion_number})"
         status_prefix = "" if conf_pct >= 60 else f"ВНИМАНИЕ — ОТКЛОНЕНИЕ ОТ ТЗ ({conf_pct}%): "
+        if getattr(pos, "status", "found") != "found":
+            status_prefix = "ТРЕБУЕТСЯ УТОЧНЕНИЕ ХАРАКТЕРИСТИК: "
         brun = bp.add_run(
             f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}\n"
             f"{status_prefix}Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_str}"
@@ -365,7 +474,8 @@ def write_exact_product_docx(
 
         _set_table_full_grid_borders(pos_banner, banner_bg)
 
-        if pos.reasoning:
+        thesis_reasoning = _format_thesis_reasoning(pos)
+        if thesis_reasoning:
             rsn_p = doc.add_paragraph()
             rsn_p.paragraph_format.space_before = Pt(3)
             rsn_p.paragraph_format.space_after = Pt(3)
@@ -377,7 +487,7 @@ def write_exact_product_docx(
             r_lbl.font.size = Pt(8.5)
             r_lbl.font.color.rgb = lbl_color
 
-            r_val = rsn_p.add_run(pos.reasoning)
+            r_val = rsn_p.add_run(thesis_reasoning)
             r_val.font.size = Pt(8.5)
             r_val.font.color.rgb = TEXT_MUTED
 
@@ -434,7 +544,12 @@ def write_exact_product_docx(
                     else "Отклонение"
                 )
                 cells[4].text = status_text
-                cells[5].text = spec.comment
+                default_src = ""
+                if spec.source_url:
+                    default_src = urlparse(spec.source_url).netloc or ""
+                elif pos.source_url:
+                    default_src = urlparse(pos.source_url).netloc or ""
+                cells[5].text = _clean_display_comment(spec.comment, spec.status, default_source=default_src)
 
                 fill_color = ZEBRA_MINT if s_idx % 2 == 1 else "FFFFFF"
 
@@ -512,7 +627,11 @@ def write_exact_product_docx(
                 cells[0].text = str(a_idx)
                 cells[1].text = f"{alt.brand} {alt.model}"
                 cells[2].text = alt.manufacturer
-                cells[3].text = "РФ (Реестр)"
+                cells[3].text = (
+                    f"ГИСП № {alt.gisp_match.registry_number}"
+                    if (alt.gisp_match and alt.gisp_match.registry_number)
+                    else "Требует проверки"
+                )
                 cells[4].text = f"{int(alt.confidence * 100)}%"
                 cells[5].text = alt.notes or "Взаимозаменяемый аналог по ГОСТ/ТУ"
 
@@ -557,7 +676,7 @@ def write_exact_product_docx(
                 gisp_alt_tag = (
                     f"ГИСП № {alt.gisp_match.registry_number}"
                     if (alt.gisp_match and alt.gisp_match.registry_number)
-                    else "ГИСП: Реестр РФ"
+                    else "Страна/реестр: требует проверки"
                 )
                 r_a_hdr = alt_form2_p.add_run(
                     f"Показатели аналога №{a_idx} для первой части заявки — "

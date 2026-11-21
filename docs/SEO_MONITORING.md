@@ -51,3 +51,18 @@ daily 08:00 Europe/Moscow timer:
 ```bash
 sudo systemctl enable --now tenderlex-seo-monitor.timer
 ```
+
+## Current provider status (2026-10-20)
+
+- **Google Search Console:** available via the read-only service account for `sc-domain:tenderlex.ru`; sitemap is accepted without errors. Use GSC as the live source for queries, pages and CTR.
+- **Yandex Webmaster:** the OAuth token is valid, but `api.webmaster.yandex.net` is unreachable from the VPS (IPv4 timeout; the VPS has no IPv6 route). Cached SQI/indexed-page values are stale — do not treat them as current. Resolve with IPv6 or an approved egress before re-enabling freshness claims.
+- **Yandex Wordstat:** the old API host no longer serves the API (404 / certificate mismatch). Do not present cached demand as measured; use a manual Wordstat export if needed.
+- **Yandex Metrika:** available and consent-gated; counter IDs come from `TENDERLEX_YANDEX_METRIKA_ID` or `YANDEX_METRIKA_COUNTER_ID`. The SDK is intentionally absent until the visitor allows analytics.
+- The monitor can still fail when Webmaster is unreachable. Treat `collection_complete=false` as a provider/network signal, not as proof that the site is broken.
+- IndexNow is configured separately and may be used manually for changed URLs; it does not replace Webmaster query data.
+
+## Update on 14 November 2026 (Moscow)
+
+- Webmaster APIs respond, but their newest index-history observation was 7 October, and the sitemap report still showed 8 October and 91 URLs at the time of verification. The Moscow gateway recorded verified Yandex crawler requests to the sitemap and commercial pages in November. Monitor the provider dates and the gateway separately.
+- The dashboard retains the most recent successful Metрика report for each component and labels it with its original period when the next request fails. Measurements resumed on 8 November. The first full Moscow day under explicit analytics consent is 15 November. Mixed measurement periods are excluded from comparisons.
+- Notify search engines about changed URLs by passing `--changed-url` once per address to `scripts/reindex_all_search_engines.py`. Add `--submit-sitemap` only when the sitemap itself needs to be sent to Search Console. Successful submissions record an acceptance response. Check index status separately.

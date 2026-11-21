@@ -9,7 +9,6 @@ import json
 import argparse
 import urllib.request
 import urllib.error
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 # Load env variables from root .env if present
@@ -35,7 +34,6 @@ load_env()
 WEBMASTER_TOKEN = os.environ.get("YANDEX_WEBMASTER_TOKEN", "")
 METRIKA_TOKEN = os.environ.get("YANDEX_METRIKA_TOKEN", "")
 METRIKA_COUNTER_ID = os.environ.get("YANDEX_METRIKA_COUNTER_ID", "109753178")
-SITEMAP_URL = "https://tenderlex.ru/sitemap.xml"
 HOST_ID = "https:tenderlex.ru:443"
 
 def http_json(url, headers=None, data=None, method="GET"):
@@ -59,62 +57,6 @@ def get_webmaster_user_id():
     if "user_id" in res:
         return res["user_id"]
     raise RuntimeError(f"Failed to get Webmaster user_id: {res}")
-
-def get_sitemap_urls():
-    req = urllib.request.Request(SITEMAP_URL, headers={"User-Agent": "TenderLex-SEO-Bot/1.0"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        content = resp.read()
-    root = ET.fromstring(content)
-    ns = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    return [loc.text.strip() for loc in root.findall(".//ns:loc", ns) if loc.text]
-
-def run_recrawl():
-    print("==================================================")
-    print("🚀 YANDEX WEBMASTER: SUBMITTING SITEMAP TO RECRAWL")
-    print("==================================================")
-    user_id = get_webmaster_user_id()
-    urls = get_sitemap_urls()
-    print(f"[*] Found {len(urls)} URLs in {SITEMAP_URL}")
-    
-    headers = {
-        "Authorization": f"OAuth {WEBMASTER_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    
-    # Check current quota
-    quota_res = http_json(
-        f"https://api.webmaster.yandex.net/v4/user/{user_id}/hosts/{HOST_ID}/recrawl/quota",
-        headers={"Authorization": f"OAuth {WEBMASTER_TOKEN}"}
-    )
-    daily_quota = quota_res.get("daily_quota", 150)
-    quota_rem = quota_res.get("quota_remainder", 150)
-    print(f"[*] Daily quota: {daily_quota}, Remainder: {quota_rem}")
-    
-    success_count = 0
-    skipped_count = 0
-    failed_count = 0
-    
-    for idx, u in enumerate(urls, 1):
-        if quota_rem <= 0:
-            print(f"[!] Quota exhausted at URL {idx}/{len(urls)}")
-            break
-        
-        endpoint = f"https://api.webmaster.yandex.net/v4/user/{user_id}/hosts/{HOST_ID}/recrawl/queue"
-        res = http_json(endpoint, headers=headers, data={"url": u}, method="POST")
-        
-        if "task_id" in res:
-            success_count += 1
-            quota_rem = res.get("quota_remainder", quota_rem - 1)
-            print(f"  [{idx:02d}/{len(urls):02d}] ✅ Queued: {u}")
-        elif "error" in res and "ALREADY_IN_QUEUE" in str(res.get("details", "")):
-            skipped_count += 1
-            print(f"  [{idx:02d}/{len(urls):02d}] ⏭️  Already in queue: {u}")
-        else:
-            failed_count += 1
-            print(f"  [{idx:02d}/{len(urls):02d}] ❌ Failed: {u} -> {res}")
-            
-    print(f"\n[+] Recrawl submission finished! Successfully queued: {success_count}, Already in queue: {skipped_count}, Failed: {failed_count}")
-    print(f"[+] Remaining quota: {quota_rem}")
 
 def get_webmaster_summary():
     user_id = get_webmaster_user_id()
@@ -223,14 +165,23 @@ def run_report():
 
 def main():
     parser = argparse.ArgumentParser(description="TenderLex Yandex SEO & Analytics Manager")
-    parser.add_argument("--recrawl", action="store_true", help="Submit all sitemap URLs to Yandex Webmaster priority recrawl")
+    parser.add_argument("--recrawl", action="store_true", help="Queue explicitly changed public URLs")
+    parser.add_argument("--changed-url", action="append", default=[], metavar="URL")
     parser.add_argument("--report", action="store_true", help="Display combined SEO + Metrika report")
     parser.add_argument("--json", action="store_true", help="Output raw data in JSON format")
     
     args = parser.parse_args()
     
     if args.recrawl:
-        run_recrawl()
+        if not args.changed_url:
+            parser.error("--recrawl requires at least one --changed-url")
+        sys.path.insert(0, str(ROOT_DIR / "backend"))
+        from app.yandex_seo import submit_sitemap_recrawl
+        response = submit_sitemap_recrawl(args.changed_url)
+        print(json.dumps(response, indent=2, ensure_ascii=False))
+        return 0 if response.get("ok") else 1
+    elif args.changed_url:
+        parser.error("--changed-url requires --recrawl")
     elif args.json:
         wm = get_webmaster_summary()
         m = get_metrika_summary()
@@ -239,4 +190,4 @@ def main():
         run_report()
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

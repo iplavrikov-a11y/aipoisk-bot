@@ -200,6 +200,7 @@ class ReportBuilderTests(unittest.TestCase):
                 "Телефоны",
                 "Email",
                 "Комментарий",
+                "Город и расстояние",
                 "Реестр Минпромторга",
             ],
         )
@@ -436,7 +437,8 @@ class ReportBuilderTests(unittest.TestCase):
             ws = wb["Поставщики"]
             headers = [cell.value for cell in ws[5]]
             comment = ws["E6"].value
-            registry_cell = ws["F6"].value
+            location_cell = ws["F6"].value
+            registry_cell = ws["G6"].value
             wb.close()
 
         self.assertEqual(
@@ -447,11 +449,13 @@ class ReportBuilderTests(unittest.TestCase):
                 "Телефоны",
                 "Email",
                 "Комментарий",
+                "Город и расстояние",
                 "Реестр Минпромторга",
             ],
         )
         self.assertNotIn("Реестр ГИСП Минпромторга", comment)
         self.assertEqual(comment, "Точное соответствие: Насос центробежный.")
+        self.assertEqual(location_cell, "—")
         self.assertIn("РПП-123", registry_cell)
 
     def test_supplier_xlsx_hides_internal_target_when_overfilled(self) -> None:

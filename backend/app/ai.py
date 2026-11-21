@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
+import logging
 import os
 import random
 import re
@@ -14,8 +16,11 @@ from typing import Any, Callable
 
 import httpx
 
-from .models import SystemSettings, parse_json_dict, parse_json_list
+from .admin_alerts import AI_PROVIDER_ERROR_REASONS, notify_ai_provider_error
 from .document_parser import clean_surrogates
+from .models import SystemSettings, parse_json_dict, parse_json_list
+
+logger = logging.getLogger(__name__)
 
 AI_ROUTING_FALLBACK_PRIMARY = "__primary__"
 AI_ROUTING_FALLBACK_LIGHT = "__light__"
@@ -445,7 +450,7 @@ def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
 
 
 def _llm_concurrency_limit() -> int:
-    return _env_int("AIPOISK_LLM_MAX_CONCURRENCY", 3, minimum=1, maximum=32)
+    return _env_int("AIPOISK_LLM_MAX_CONCURRENCY", 8, minimum=1, maximum=32)
 
 
 def _max_model_attempts() -> int:
@@ -530,6 +535,7 @@ def _safe_error_text(exc: Exception) -> str:
 
 
 _process_llm_limiter = _ProcessLLMLimiter()
+_llm_limiter_held_var: contextvars.ContextVar[bool] = contextvars.ContextVar("_llm_limiter_held", default=False)
 
 
 async def _sleep_before_retry(delay: float, deadline_monotonic: float | None) -> None:
@@ -590,7 +596,9 @@ async def _post_llm_request(
             if request_metadata is not None:
                 request_metadata["request_attempts"] = int(request_metadata["request_attempts"]) + 1
                 request_metadata["retry_count"] = attempt
-            await _process_llm_limiter.acquire(timeout=limiter_timeout_seconds)
+            already_held = _llm_limiter_held_var.get()
+            if not already_held:
+                await _process_llm_limiter.acquire(timeout=limiter_timeout_seconds)
             try:
                 try:
                     response = await client.post(selection.base_url, headers=headers, json=payload)
@@ -598,7 +606,8 @@ async def _post_llm_request(
                 except httpx.HTTPError as exc:
                     transport_error = exc
             finally:
-                _process_llm_limiter.release()
+                if not already_held:
+                    _process_llm_limiter.release()
 
             if transport_error is not None:
                 last_error = LLMError(
@@ -618,6 +627,11 @@ async def _post_llm_request(
             if response.status_code >= 400:
                 detail = response.text.strip()[:500]
                 retriable = response.status_code in _RETRIABLE_STATUS
+                if response.status_code in AI_PROVIDER_ERROR_REASONS:
+                    logger.warning(
+                        "AI request rejected: provider=%s model=%s status=%s attempt=%d",
+                        selection.provider_id, selection.model, response.status_code, attempt + 1,
+                    )
                 last_error = LLMError(
                     f"{selection.provider_name}:{selection.model} HTTP {response.status_code}: "
                     f"{detail or response.reason_phrase}",
@@ -715,6 +729,7 @@ async def call_llm(
     request_attempt_limit = _max_request_attempts()
     request_budget = _RequestAttemptBudget(request_attempt_limit)
     last_error: Exception | None = None
+    last_provider_failure: tuple[ModelSelection, int] | None = None
     attempted_models: list[str] = []
     trace: list[dict[str, Any]] = []
     for index, selection in enumerate(attempts):
@@ -733,22 +748,37 @@ async def call_llm(
             "fallback_used": index > 0,
         }
         try:
-            selection_timeout = max(0.001, min(float(timeout_seconds), remaining))
-            result = await asyncio.wait_for(
-                _post_llm_request(
-                    selection,
-                    messages,
-                    json_mode=json_mode,
-                    timeout_seconds=selection_timeout,
-                    temperature=temperature,
-                    attempt_budget=request_budget,
-                    request_metadata=request_metadata,
-                    deadline_monotonic=deadline,
-                    max_retries=max_retries,
-                    limiter_timeout_seconds=limiter_timeout_seconds,
-                ),
-                timeout=selection_timeout,
+            acquire_timeout = (
+                limiter_timeout_seconds
+                if limiter_timeout_seconds is not None
+                else max(0.001, deadline - time.monotonic())
             )
+            await _process_llm_limiter.acquire(timeout=acquire_timeout)
+            token = _llm_limiter_held_var.set(True)
+            try:
+                post_remaining = deadline - time.monotonic()
+                if post_remaining <= 0:
+                    raise TimeoutError("LLM overall deadline exceeded")
+                selection_timeout = max(0.001, min(float(timeout_seconds), post_remaining))
+                started = time.monotonic()
+                result = await asyncio.wait_for(
+                    _post_llm_request(
+                        selection,
+                        messages,
+                        json_mode=json_mode,
+                        timeout_seconds=selection_timeout,
+                        temperature=temperature,
+                        attempt_budget=request_budget,
+                        request_metadata=request_metadata,
+                        deadline_monotonic=deadline,
+                        max_retries=max_retries,
+                        limiter_timeout_seconds=limiter_timeout_seconds,
+                    ),
+                    timeout=selection_timeout,
+                )
+            finally:
+                _llm_limiter_held_var.reset(token)
+                _process_llm_limiter.release()
             phase = "validation"
             if response_validator is not None:
                 response_validator(result)
@@ -777,6 +807,8 @@ async def call_llm(
                 )
             return result
         except Exception as exc:
+            if type(exc).__name__ == "EmptyProcurementProfileError":
+                raise
             last_error = exc
             if isinstance(exc, TimeoutError):
                 status = "timeout"
@@ -797,6 +829,9 @@ async def call_llm(
             )
             if isinstance(exc, LLMError) and exc.status is not None:
                 trace_item["http_status"] = exc.status
+            provider_status = request_metadata.get("last_status")
+            if phase == "request" and provider_status in AI_PROVIDER_ERROR_REASONS:
+                last_provider_failure = (selection, provider_status)
             trace.append(trace_item)
             if metadata is not None:
                 metadata.update(
@@ -824,6 +859,17 @@ async def call_llm(
         )
     if last_error is None:
         raise RuntimeError("AI model selection failed")
+    if last_provider_failure is not None:
+        failed_selection, status_code = last_provider_failure
+        try:
+            notify_ai_provider_error(
+                provider=failed_selection.provider_name or failed_selection.provider_id,
+                model=failed_selection.model,
+                status_code=status_code,
+                attempted_models=attempted_models,
+            )
+        except Exception:
+            logger.exception("Could not dispatch the AI provider alert")
     raise RuntimeError(
         f"{_safe_error_text(last_error)}; tried models: {', '.join(attempted_models)}"
     ) from last_error

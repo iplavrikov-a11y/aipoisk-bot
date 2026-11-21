@@ -9,6 +9,7 @@ from .llm_bridge import call_llm
 from .minprom import (
     find_minprom_gisp_match as _find_minprom_sync,
     find_minprom_registry_matches_ai as _find_minprom_ai,
+    is_gisp_product_compatible_ai,
 )
 
 logger = logging.getLogger(__name__)
@@ -182,22 +183,135 @@ def find_minprom_registry_matches(
     max_entries: int = 5,
 ) -> list[dict[str, Any]]:
     """Синхронный поиск в реестре Минпромторга (ГИСП)."""
-    return _find_minprom_sync(
+    match = _find_minprom_sync(
         brand=brand,
         manufacturer=manufacturer,
         model=model,
         name_in_tz=name_in_tz,
-        okpd2=okpd2,
-        max_entries=max_entries,
     )
+    if not match:
+        return []
+    return [{
+        "registry_number": match.registry_number,
+        "manufacturer": match.manufacturer,
+        "product": match.product,
+        "inn": match.inn,
+        "conclusion_number": match.conclusion_number,
+        "valid_until": match.valid_until,
+        "source_url": match.source_url,
+    }][:max(1, int(max_entries or 5))]
+
+
+async def filter_minprom_candidates_ai(
+    candidates: list[dict[str, Any]],
+    name_in_tz: str,
+    brand: str = "",
+    model: str = "",
+    settings: Any = None,
+) -> list[dict[str, Any]]:
+    """
+    Пакетная семантическая фильтрация кандидатов из реестра Минпромторга (ГИСП)
+    за один быстрый вызов ИИ (без кеширования между клиентскими задачами).
+    """
+    if not candidates or not name_in_tz:
+        return candidates
+
+    clean_tz = name_in_tz.strip()
+    m_lower = (model or "").strip().lower()
+    direct_matches: list[dict[str, Any]] = []
+    to_eval_indices: list[int] = []
+
+    for idx, c in enumerate(candidates):
+        prod = str(c.get("product") or "").strip()
+        if not prod:
+            continue
+        if m_lower and len(m_lower) >= 3 and m_lower in prod.lower():
+            direct_matches.append(c)
+            continue
+        to_eval_indices.append(idx)
+
+    if not to_eval_indices:
+        return direct_matches
+
+    batch_to_eval = to_eval_indices[:10]
+    cand_lines: list[str] = []
+    for line_num, idx in enumerate(batch_to_eval, start=1):
+        c = candidates[idx]
+        p_name = str(c.get("product") or "").strip()
+        p_mfg = str(c.get("manufacturer") or "").strip()
+        cand_lines.append(f"{line_num}. Товар: «{p_name}» | Производитель: «{p_mfg}»")
+
+    prompt = f"""Ты — старший эксперт по товарной классификации промышленной продукции.
+Задача: сопоставить позицию закупки из Технического задания (ТЗ) со списком товаров из официального Реестра Минпромторга РФ (ГИСП).
+
+Позиция в ТЗ закупки: «{clean_tz}»
+{f'Указанный бренд/модель: «{brand}» «{model}»' if (brand or model) else ''}
+
+Кандидаты из Реестра Минпромторга:
+{chr(10).join(cand_lines)}
+
+ПРАВИЛО СЕМАНТИЧЕСКОГО СООТВЕТСТВИЯ:
+- Кандидат ПОДХОДИТ, если он относится к тому же функциональному виду, типу или назначению продукции.
+- Кандидат НЕ ПОДХОДИТ, если это товар другого назначения из другой сферы или случайный омоним.
+
+Верни строго JSON со списком номеров подходящих товаров:
+{{"compatible_indexes": [1, 2]}}
+Если ни один кандидат не подходит, верни:
+{{"compatible_indexes": []}}"""
+
+    filtered_results = list(direct_matches)
+    try:
+        raw = await call_llm(
+            prompt=prompt,
+            system_prompt="Ты эксперт по классификации промышленной продукции. Отвечай строго валидным JSON.",
+            model_tier="light",
+            routing_key="procurement_brand_detection",
+            json_mode=True,
+            timeout_seconds=15.0,
+        )
+        cleaned = str(raw or "").strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        data = json.loads(cleaned.strip())
+        compat_set: set[int] = set()
+        if isinstance(data, dict):
+            compat_indexes = data.get("compatible_indexes") or []
+            if isinstance(compat_indexes, list):
+                compat_set = {int(x) for x in compat_indexes if str(x).isdigit()}
+        elif isinstance(data, list):
+            compat_set = {int(x) for x in data if str(x).isdigit()}
+
+        for line_num, idx in enumerate(batch_to_eval, start=1):
+            if line_num in compat_set:
+                c = candidates[idx]
+                if c not in filtered_results:
+                    filtered_results.append(c)
+        return filtered_results
+    except Exception as exc:
+        logger.debug("filter_minprom_candidates_ai_failed: %s", exc)
+        # Fallback на поэлементную проверку при сбое пакетного вызова
+        for idx in batch_to_eval:
+            c = candidates[idx]
+            prod = str(c.get("product") or "").strip()
+            if prod and await is_gisp_product_compatible_ai(settings, prod, clean_tz, brand, model):
+                if c not in filtered_results:
+                    filtered_results.append(c)
+        return filtered_results
 
 
 async def enrich_positions_with_minprom_registry_ai(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Асинхронное обогащение выявленных позиций записями ГИСП.
+    Асинхронное обогащение выявленных позиций и их аналогов записями ГИСП (пакетная ИИ-фильтрация).
     """
     if not positions:
         return []
+
+    from .llm_bridge import get_settings
+    settings = get_settings()
 
     for pos in positions:
         if not isinstance(pos, dict):
@@ -213,11 +327,18 @@ async def enrich_positions_with_minprom_registry_ai(positions: list[dict[str, An
             manufacturer=manuf,
             model=model,
             name_in_tz=name_tz,
-            max_entries=3,
+            max_entries=5,
+            settings=settings,
         )
 
-        valid_matches = raw_matches[:3]
-        pos["minprom_matches"] = valid_matches
+        valid_matches = await filter_minprom_candidates_ai(
+            raw_matches[:5],
+            name_in_tz=name_tz,
+            brand=brand,
+            model=model,
+            settings=settings,
+        )
+        pos["minprom_matches"] = valid_matches[:3]
 
         if existing_reg:
             pos["minprom_registry_number"] = existing_reg
@@ -233,6 +354,47 @@ async def enrich_positions_with_minprom_registry_ai(positions: list[dict[str, An
             pos["minprom_product"] = best.get("product", "")
             pos["minprom_conclusion_number"] = best.get("conclusion_number", "")
             pos["minprom_source_url"] = best.get("source_url") or "https://gisp.gov.ru/pp719v2/pub/prod/"
+
+        # Также подтягиваем ГИСП для взаимозаменяемых аналогов (если еще не заполнено)
+        for alt in (pos.get("alternative_brands") or [])[:4]:
+            if not isinstance(alt, dict) or alt.get("minprom_registry_number") or alt.get("gisp_match"):
+                continue
+            alt_b = str(alt.get("brand") or "").strip()
+            alt_mfr = str(alt.get("manufacturer") or alt_b).strip()
+            alt_m = str(alt.get("model") or "").strip()
+            if not (alt_b or alt_mfr):
+                continue
+            alt_raw = await find_minprom_registry_matches_ai(
+                brand=alt_b,
+                manufacturer=alt_mfr,
+                model=alt_m,
+                name_in_tz=name_tz,
+                max_entries=3,
+                settings=settings,
+            )
+            if not alt_raw:
+                continue
+            alt_valid = await filter_minprom_candidates_ai(
+                alt_raw[:3],
+                name_in_tz=name_tz,
+                brand=alt_b,
+                model=alt_m,
+                settings=settings,
+            )
+            if alt_valid:
+                best_alt = alt_valid[0]
+                alt["minprom_registry_number"] = best_alt.get("registry_number", "")
+                alt["minprom_manufacturer"] = best_alt.get("manufacturer", "")
+                alt["minprom_product"] = best_alt.get("product", "")
+                alt["gisp_match"] = {
+                    "registry_number": best_alt.get("registry_number", ""),
+                    "manufacturer": best_alt.get("manufacturer", ""),
+                    "product": best_alt.get("product", ""),
+                    "inn": best_alt.get("inn", ""),
+                    "conclusion_number": best_alt.get("conclusion_number", ""),
+                    "valid_until": best_alt.get("valid_until", ""),
+                    "source_url": best_alt.get("source_url") or "https://gisp.gov.ru/pp719v2/pub/prod/",
+                }
 
     return positions
 

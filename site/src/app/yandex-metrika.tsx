@@ -4,36 +4,90 @@ import Script from "next/script";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { ANALYTICS_CONSENT_KEY, configureAnalytics, safeAnalyticsUrl, trackGoal } from "@/lib/analytics";
+import { clearSeoLanding, recordSeoLanding, rememberSeoEntry } from "@/lib/seo-funnel";
 
 type Consent = "unknown" | "granted" | "denied";
+const legacyConsentKey = "tenderlex_analytics_consent";
 
 export function YandexMetrika({ counterId }: { counterId?: string }) {
   const pathname = usePathname();
   const [consent, setConsent] = useState<Consent>("unknown");
+  const [hydrated, setHydrated] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const initialized = useRef(false);
+  const pendingSdk = useRef<Window["ym"]>(undefined);
+  const pendingUtm = useRef<{ source: string; campaign: string } | null>(null);
   const lastPage = useRef("");
   const allowed = Boolean(counterId && /^\d+$/.test(counterId) && pathname && !/^\/api(?:\/|$)/.test(pathname));
+  const analyticsActive = hydrated && allowed && consent !== "denied";
 
   useEffect(() => {
+    rememberSeoEntry();
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const utmSource = (params.get("utm_source") || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 40);
+      const utmCampaign = (params.get("utm_campaign") || "").trim().replace(/[^a-zA-Z0-9_.:-]/g, "").slice(0, 80);
+      if (utmSource) {
+        pendingUtm.current = { source: utmSource, campaign: utmCampaign };
+      }
+    } catch {
+      /* URL search params may be unavailable in restricted contexts. */
+    }
     try {
       const stored = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
-      setConsent(stored === "granted" || stored === "denied" ? stored : "unknown");
-    } catch { setConsent("unknown"); }
+      if (stored === "granted" || stored === "denied") {
+        setConsent(stored);
+      } else if (window.localStorage.getItem(legacyConsentKey) === "denied") {
+        setConsent("denied");
+      }
+    } catch {
+      setConsent("unknown");
+    }
+    setHydrated(true);
+
     function sync(event: StorageEvent) {
-      if (event.key !== ANALYTICS_CONSENT_KEY) return;
+      if (event.key !== ANALYTICS_CONSENT_KEY && event.key !== null) return;
       const next = event.newValue === "granted" || event.newValue === "denied" ? event.newValue : "unknown";
-      configureAnalytics(counterId, next === "granted");
+      configureAnalytics(counterId, next !== "denied");
       setConsent(next);
+      if (next === "denied") {
+        clearSeoLanding();
+        try {
+          window.sessionStorage.removeItem("tenderlex_utm_source");
+          window.sessionStorage.removeItem("tenderlex_utm_campaign");
+        } catch {}
+      }
     }
     window.addEventListener("storage", sync);
     return () => window.removeEventListener("storage", sync);
   }, [counterId]);
 
   useEffect(() => {
-    const enabled = allowed && consent === "granted";
+    if (analyticsActive) {
+      recordSeoLanding();
+      if (pendingUtm.current?.source) {
+        try {
+          window.sessionStorage.setItem("tenderlex_utm_source", pendingUtm.current.source);
+          if (pendingUtm.current.campaign) {
+            window.sessionStorage.setItem("tenderlex_utm_campaign", pendingUtm.current.campaign);
+          }
+        } catch {}
+      }
+    } else if (consent === "denied") {
+      try {
+        window.sessionStorage.removeItem("tenderlex_utm_source");
+        window.sessionStorage.removeItem("tenderlex_utm_campaign");
+      } catch {}
+    }
+  }, [analyticsActive, consent]);
+
+  useEffect(() => {
+    const enabled = analyticsActive;
     configureAnalytics(counterId, enabled);
     if (!enabled || !counterId) {
-      if (initialized.current && window.ym && counterId) {
+      if (pendingSdk.current && window.ym === pendingSdk.current) {
+        pendingSdk.current.a = [];
+      } else if (initialized.current && window.ym && counterId) {
         try { window.ym(Number(counterId), "destruct"); } catch { /* SDK may be blocked. */ }
       }
       initialized.current = false;
@@ -41,9 +95,16 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
       return;
     }
     if (!window.ym) {
-      const stub: NonNullable<Window["ym"]> = (...args: unknown[]) => { (stub.a ??= []).push(args); };
+      // tag.js replays only genuine `arguments` objects from the queue (official
+      // snippet form). An arrow function with rest args pushes plain arrays,
+      // which tag.js ignores: no counter is created and no hits are sent.
+      const stub = function () {
+        // eslint-disable-next-line prefer-rest-params
+        (stub.a = stub.a || []).push(arguments as unknown as unknown[]);
+      } as unknown as NonNullable<Window["ym"]>;
       stub.l = Date.now();
       window.ym = stub;
+      pendingSdk.current = stub;
     }
     try {
       if (!initialized.current) {
@@ -77,26 +138,33 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
     }
     document.addEventListener("click", click);
     return () => document.removeEventListener("click", click);
-  }, [allowed, consent, counterId, pathname]);
+  }, [analyticsActive, counterId, pathname]);
 
   if (!allowed || !counterId) return null;
   function choose(next: Exclude<Consent, "unknown">) {
     try { window.localStorage.setItem(ANALYTICS_CONSENT_KEY, next); } catch { /* Choice remains valid for this page. */ }
-    configureAnalytics(counterId, next === "granted");
+    configureAnalytics(counterId, next !== "denied");
+    if (next === "denied") clearSeoLanding();
     setConsent(next);
+    setSettingsOpen(false);
   }
 
+  const isCabinetRoute = Boolean(pathname?.startsWith("/cabinet"));
+
   return <>
-    {consent === "unknown" ? (
-      <aside className="cookie-consent" aria-label="Настройки аналитики">
-        <p>TenderLex использует необходимые данные для работы сайта. С вашего разрешения Яндекс Метрика учитывает посещения и действия, чтобы улучшать сервис. <a href="/privacy#cookies">Подробнее</a></p>
+    {consent === "unknown" || settingsOpen ? (
+      <aside
+        className={`cookie-consent${isCabinetRoute ? " cookie-consent--cabinet" : ""}`}
+        aria-label="Уведомление о cookie и аналитике"
+      >
+        <p>Мы используем cookie и Яндекс Метрику для работы и улучшения сайта. Продолжая пользоваться сайтом, вы соглашаетесь с условиями (<a href="/privacy#cookies">Подробнее</a>).</p>
         <div>
-          <button type="button" className="cookie-secondary" onClick={() => choose("denied")}>Только необходимые</button>
-          <button type="button" className="cookie-primary" onClick={() => choose("granted")}>Разрешить аналитику</button>
+          <button type="button" className="cookie-secondary" onClick={() => choose("denied")}>Отключить аналитику</button>
+          <button type="button" className="cookie-primary" onClick={() => choose("granted")}>Хорошо</button>
         </div>
       </aside>
     ) : null}
-    {consent === "granted" ? <Script id="tenderlex-metrika-sdk" src="https://mc.yandex.ru/metrika/tag.js" strategy="afterInteractive" /> : null}
-    {consent !== "unknown" ? <button type="button" className="cookie-settings" onClick={() => { configureAnalytics(counterId, false); setConsent("unknown"); }}>Настройки аналитики</button> : null}
+    {analyticsActive ? <Script id="tenderlex-metrika-sdk" src={`https://mc.yandex.ru/metrika/tag.js?id=${counterId}`} strategy="afterInteractive" /> : null}
+    {consent !== "unknown" && !settingsOpen ? <button type="button" className="cookie-settings" onClick={() => setSettingsOpen(true)}>Настройки аналитики</button> : null}
   </>;
 }

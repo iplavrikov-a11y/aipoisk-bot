@@ -8,7 +8,7 @@ import {
 import { RegionalPageLayout } from "@/components/regional-page-layout";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков и заводов по ТЗ в Екатеринбурге и на Урале",
+  title: "Поставщики и заводы по ТЗ в Екатеринбурге",
   description:
     "Подбор металлургических комбинатов, трубных заводов, производителей запорной арматуры и кабеля на Урале под технические задания.",
   keywords: [
@@ -23,7 +23,7 @@ export const metadata: Metadata = {
     type: "website",
     url: "/regiony/ekaterinburg",
     title: "Поиск заводов и поставщиков на Урале | TenderLex",
-    description: "Автоматизированный подбор контрагентов под спецификации закупки в Уральском федеральном округе.",
+    description: "Поиск потенциальных поставщиков по спецификациям закупки в Уральском федеральном округе.",
     siteName: "TenderLex",
     images: ["/tenderlex-product-preview.png"],
   },

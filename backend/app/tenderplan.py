@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -18,6 +19,8 @@ from bs4 import BeautifulSoup
 
 from .config import config
 from .document_parser import sanitize_filename
+
+logger = logging.getLogger(__name__)
 
 MSK = ZoneInfo("Europe/Moscow")
 TENDERPLAN_BASE_URL = "https://tenderplan.ru"
@@ -112,6 +115,7 @@ class TenderplanFetchResult:
     service_schema_version: str = ""
     warnings: list[str] = field(default_factory=list)
     document_hints: dict = field(default_factory=dict)
+    source_origin: str = ""
 
 
 class TenderplanError(RuntimeError):
@@ -147,14 +151,17 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
         timeout = float(config.tender_source_service_timeout_seconds or 60)
     except (TypeError, ValueError):
         timeout = 60.0
+    response_status: int | None = None
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             for attempt in range(3):
+                response_status = None
                 response = client.post(
                     f"{base_url}/v1/procurements/{notice_number}/bundle",
                     params={"download": "true"},
                 )
-                if response.status_code == 503 and attempt < 2:
+                response_status = response.status_code
+                if response_status == 503 and attempt < 2:
                     headers = getattr(response, "headers", {}) or {}
                     try:
                         retry_after = float(headers.get("Retry-After", 1))
@@ -167,11 +174,17 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
             payload = response.json()
             files, file_errors = load_tender_source_service_files(client, base_url, payload.get("files") or [])
     except Exception as exc:
+        logger.warning(
+            "Procurement documents request failed: notice=%s stage=bundle status=%s error_type=%s",
+            normalize_notice_number(notice_number) or "invalid",
+            response_status,
+            type(exc).__name__,
+        )
         return TenderplanFetchResult(
             ok=False,
             status="service_failed",
             notice_number=notice_number,
-            error=f"Общий сервис источников закупок недоступен: {exc}",
+            error="Не удалось автоматически загрузить документы по закупке. Попробуйте запустить анализ позже.",
         )
 
     failed = list(payload.get("download_errors") or [])
@@ -188,8 +201,10 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
     if file_errors:
         file_error_text = f"Не получено файлов из общего сервиса: {len(file_errors)}"
         error = f"{error}; {file_error_text}" if error else file_error_text
+    has_usable_payload = bool(files) or bool(str(payload.get("context") or "").strip())
+    diagnostics = payload.get("diagnostics")
     return TenderplanFetchResult(
-        ok=bool(payload.get("success")) and not file_errors,
+        ok=bool(payload.get("success")) and (not file_errors or has_usable_payload),
         status=status,
         context=context,
         notice_number=str(payload.get("notice_number") or notice_number),
@@ -200,6 +215,7 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
         service_schema_version=str(payload.get("schema_version") or ""),
         warnings=warnings,
         document_hints=payload.get("document_hints") if isinstance(payload.get("document_hints"), dict) else {},
+        source_origin="eis" if isinstance(diagnostics, dict) and diagnostics.get("source") == "eis" else "",
     )
 
 
@@ -370,17 +386,17 @@ class TenderplanClient:
         except httpx.HTTPError as exc:
             if default is not None:
                 return default
-            raise TenderplanError(f"Запрос к источнику закупок не выполнен: {path}: {exc}") from exc
+            raise TenderplanError(f"Запрос к источнику закупок временно недоступен ({type(exc).__name__})") from exc
         if response.status_code >= 400:
             if default is not None:
                 return default
-            raise TenderplanError(f"Запрос к источнику закупок не выполнен: {path}: HTTP {response.status_code}")
+            raise TenderplanError(f"Запрос к источнику закупок не выполнен: HTTP {response.status_code}")
         try:
             return response.json()
         except ValueError as exc:
             if default is not None:
                 return default
-            raise TenderplanError(f"Источник закупок вернул некорректный JSON: {path}") from exc
+            raise TenderplanError("Источник закупок вернул некорректный ответ") from exc
 
     def tool_dictionary(self, name: str, *, force: bool = False) -> tuple[dict[str, str], str]:
         path, fallback = TENDERPLAN_TOOL_DICTIONARIES[name]
@@ -392,10 +408,10 @@ class TenderplanClient:
         api_labels = parse_tool_dictionary(payload)
         if api_labels:
             labels = {**fallback, **api_labels}
-            source = f"Tenderplan {path}"
+            source = "официальный справочник закупок"
         else:
             labels = dict(fallback)
-            source = "локальный fallback справочника Tenderplan"
+            source = "локальный справочник закупок"
         self._tool_dictionary_cache[name] = (now, labels, source)
         return labels, source
 
@@ -1057,7 +1073,7 @@ def download_tenderplan_attachments(
 
 
 def resolve_223_filestore_fallbacks(tender_href: str, attachments: list[TenderplanAttachment]) -> dict[str, str]:
-    if "notice223" not in str(tender_href or ""):
+    if "notice223" not in str(tender_href or "") or not is_allowed_download_url(tender_href):
         return {}
     old_downloads = [
         item
@@ -1227,6 +1243,10 @@ def filename_with_suffix(stem: str, suffix: str, *, max_bytes: int = 180) -> str
 
 
 def run_curl_download(url: str, output: Path) -> tuple[str, str]:
+    from .ssrf_guard import is_safe_public_http_url
+
+    if not is_allowed_download_url(url) or not is_safe_public_http_url(url):
+        return "000", "blocked_url"
     args = curl_base_args(output=output, referer="https://zakupki.gov.ru/")
     args.append(url)
     attempts = curl_retry_attempts()
@@ -1248,6 +1268,10 @@ def run_curl_download(url: str, output: Path) -> tuple[str, str]:
 
 
 def run_curl_fetch_text(url: str, *, referer: str = "https://zakupki.gov.ru/") -> tuple[str, str]:
+    from .ssrf_guard import is_safe_public_http_url
+
+    if not is_allowed_download_url(url) or not is_safe_public_http_url(url):
+        return "000", "blocked_url"
     with tempfile.TemporaryDirectory(prefix="aipoisk-eis-html-") as tmp:
         output = Path(tmp) / "page.html"
         args = curl_base_args(output=output, referer=referer)
@@ -1282,6 +1306,12 @@ def curl_base_args(*, output: Path, referer: str) -> list[str]:
     args = [
         "curl",
         "-L",
+        "--proto",
+        "=https,http",
+        "--proto-redir",
+        "=https,http",
+        "--max-redirs",
+        "5",
         "--max-time",
         str(max(5, int(config.tenderplan_download_timeout_seconds or 30))),
         "--connect-timeout",

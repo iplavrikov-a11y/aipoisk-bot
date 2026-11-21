@@ -1,31 +1,42 @@
 import { NextResponse } from "next/server";
-import fs from "fs";
-
-const DATA_FILE = "/root/projects/tenderlex/data/chat_sessions.json";
+import { extractVisitorIp, getInternalApiBaseUrl, isValidGuestSessionId } from "@/lib/guest-chat-proxy";
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const sessionId = searchParams.get("sessionId");
+    const sessionId = (searchParams.get("sessionId") || "").trim();
 
-    if (!sessionId) {
-      return NextResponse.json({ error: "sessionId required" }, { status: 400 });
+    if (!isValidGuestSessionId(sessionId)) {
+      return NextResponse.json({ error: "Invalid sessionId" }, { status: 400 });
     }
 
-    if (!fs.existsSync(DATA_FILE)) {
-      return NextResponse.json({ messages: [] });
+    const visitorIp = extractVisitorIp(req.headers);
+    const forwardedFor = visitorIp || req.headers.get("x-forwarded-for") || "";
+    const realIp = visitorIp || req.headers.get("x-real-ip") || "";
+    const userAgent = req.headers.get("user-agent") || "";
+    const cookieHeader = req.headers.get("cookie") || "";
+    const upstream = await fetch(
+      `${getInternalApiBaseUrl()}/api/public/guest-chat/messages?sessionId=${encodeURIComponent(sessionId)}`,
+      {
+        cache: "no-store",
+        signal: AbortSignal.timeout(4000),
+        headers: {
+          "User-Agent": userAgent,
+          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+          ...(forwardedFor ? { "X-Forwarded-For": forwardedFor } : {}),
+          ...(realIp ? { "X-Real-IP": realIp } : {}),
+        },
+      }
+    );
+    if (!upstream.ok && upstream.status >= 500) {
+      return NextResponse.json({ messages: [], transient: true }, { status: 200 });
     }
-
-    let data: Record<string, any> = {};
-    try {
-      data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8") || "{}");
-    } catch {
-      data = {};
+    const data = await upstream.json().catch(() => ({ messages: [] }));
+    if (!upstream.ok) {
+      return NextResponse.json(data, { status: upstream.status });
     }
-
-    const session = data[sessionId] || { messages: [] };
-    return NextResponse.json({ messages: session.messages || [], contact: session.contact || null });
-  } catch (err) {
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(data);
+  } catch {
+    return NextResponse.json({ messages: [], transient: true }, { status: 200 });
   }
 }

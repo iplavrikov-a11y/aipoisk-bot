@@ -13,6 +13,7 @@ from __future__ import annotations
 """
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -128,13 +129,11 @@ EXACT_PRODUCT_DEEP_PROMPT = """Ты — ведущий эксперт по го�
    - В поле "manufacturer" и "brand" указывай ТОЛЬКО РЕАЛЬНОЕ ПРОИЗВОДСТВЕННОЕ ПРЕДПРИЯТИЕ (юридическое лицо: завод, фабрику, комбинат, НПО, компанию-правообладателя). КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО указывать названия интернет-магазинов, дилеров, торговых посредников, маркетплейсов или названия стран ("Россия", "Китай" — это страна происхождения для нацрежима, а не завод!). Если конкретный завод в открытых источниках не указан, пиши "Завод-изготовитель не указан в открытых источниках".
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО указывать отраслевые буквенно-цифровые индексы типов оборудования или технические сокращения типа изделия в качестве бренда или завода-производителя! Если в документах указано только условное обозначение модели/серии, а юридическое лицо завода не названо — указывай компанию-правообладателя сайта каталога, либо оставляй поле пустым "", но НЕ дублируй техническое сокращение типа изделия!
    - Для аналогов (alternative_brands): указывай ТОЛЬКО реально существующие уникальные серийные модели. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО дублировать одну и ту же модель под синонимичными вариантами названий! КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдумывать модели или копировать в них фразы из ТЗ заказчика ('не менее...', 'от... до...'). Построчно заполни реальные известные характеристики аналога. Если точный параметр в открытых источниках неизвестен — ставь статус "clarify" ("В открытой документации не указано").
-7. ЛИМИТИРОВАНИЕ И ПРИОРИТИЗАЦИЯ ПОЗИЦИЙ (СТРОГО ДО 5 ОСНОВНЫХ ПОЗИЦИЙ):
-   - В итоговом массиве "positions" сформируй ДО 5 ГЛАВНЫХ ТЕХНОЛОГИЧЕСКИХ ПОЗИЦИЙ ТОВАРА/ОБОРУДОВАНИЯ (сложное промышленное оборудование, основные агрегаты, материалы, измерительные приборы, кабели, запорная арматура, готовые изделия).
-   - СТРОГО ИСКЛЮЧАЙ:
-     1) Строительно-монтажные, демонтажные, пусконаладочные работы, доставку и любые сервисные услуги;
-     2) Мелкий крепеж и метизы (болты, гайки, шайбы, саморезы, дюбели, шурупы, винты, шпильки, заклепки, анкеры, хомуты, стяжки, скобы, шплинты);
-     3) Мелкие дешевые общехозяйственные расходники и сопутствующие копеечные мелочи (изолента, скотч, ветошь, салфетки, мешки для мусора, перчатки, батарейки, маркеры, канцелярия, мелкие стандартные прокладки).
-   - Если в спецификации перечислено более 5 позиций — отбери ТОП-5 самых технологически сложных, наукоемких и капиталоемких товаров, для которых критически важно определить конкретную модель и характеристики Формы 2. Мелкие сопутствующие расходники и крепеж пропускай — они стандартные и интуитивно понятные.
+7. СОХРАНЕНИЕ ПОЗИЦИЙ:
+   - Каждая строка спецификации является самостоятельной позицией. Не исключай,
+     не понижай в приоритете и не объединяй строки по предполагаемому типу товара.
+   - Если лимит применяет вызывающий сервис, он передаёт выбранные строки отдельно;
+     сохраняй исходный порядок и идентичность строк.
 
 Спецификация ТЗ и проверенные документы из открытых источников:
 {context}
@@ -357,7 +356,7 @@ AUTO_FILL_RECOMMENDATIONS_PROMPT = """Ты — старший инженер-т�
 ]
 """
 
-MAX_EXACT_POSITIONS_PER_JOB = 5
+MAX_EXACT_POSITIONS_PER_JOB = 100
 
 
 def auto_rotate_clean_analogs(positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -514,29 +513,307 @@ def auto_rotate_clean_analogs(positions: List[Dict[str, Any]]) -> List[Dict[str,
     return positions
 
 
+_RU_TO_LAT_MAP = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+_CYR_HOMOGLYPH_MAP = str.maketrans({
+    "а": "a", "в": "b", "с": "c", "е": "e", "н": "h", "к": "k",
+    "м": "m", "о": "o", "р": "p", "т": "t", "х": "x", "у": "y",
+})
+
+
+def _translit_ru_to_lat(text: str) -> str:
+    if not text:
+        return ""
+    out: List[str] = []
+    for ch in str(text).lower():
+        out.append(_RU_TO_LAT_MAP.get(ch, ch))
+    return "".join(out)
+
+
+def _normalize_brand_identity(name: str) -> str:
+    """Нормализует бренд/завод в латиницу без пробелов и знаков ('Армед' == 'Armed')."""
+    if not name:
+        return ""
+    lat = _translit_ru_to_lat(name)
+    return re.sub(r"[^a-z0-9]", "", lat)
+
+
+def _normalize_sku_identity(model: str) -> str:
+    """Нормализует конкретный артикул/шифр модели для защиты от дублей под разными брендами."""
+    if not model:
+        return ""
+    low = str(model).lower().translate(_CYR_HOMOGLYPH_MAP)
+    lat = _translit_ru_to_lat(low)
+    compact = re.sub(r"[^a-z0-9]", "", lat)
+    if len(compact) >= 4 and any(ch.isdigit() for ch in compact):
+        return compact
+    return ""
+
+
+def _has_gauge_conflict(tz_text: str, candidate_text: str) -> bool:
+    """Отсекает несовместимый медицинский/инженерный калибр (например, 21G vs 24G)."""
+    if not tz_text or not candidate_text:
+        return False
+    tz_gauges = set(re.findall(r"(?<!\d)(\d{1,2})\s*[gG]\b", str(tz_text)))
+    cand_gauges = set(re.findall(r"(?<!\d)(\d{1,2})\s*[gG]\b", str(candidate_text)))
+    if tz_gauges and cand_gauges and not (tz_gauges & cand_gauges):
+        return True
+    return False
+
+
+def _is_foreign_trader(name: str) -> bool:
+    """True if brand/manufacturer appears to be a foreign trader or Chinese exporter."""
+    if not name:
+        return False
+    low = str(name).lower()
+    hallmarks = (
+        "zhejiang", "shenzhen", "guangdong", "jiangsu", "ningbo", "wenzhou",
+        "hangzhou", "qingdao", "shandong", "shanghai", "co., ltd", "co.,ltd",
+        "trade co", "trading co", "alibaba", "aliexpress", "made-in-china",
+        "three-v", "three v", "chongqing", "fujian", "tianjin", "dongguan",
+    )
+    return any(h in low for h in hallmarks)
+
+
+def _is_russian_or_domestic(name: str) -> bool:
+    """True if name clearly indicates Russian / domestic Cyrillic manufacturer."""
+    if not name:
+        return False
+    clean = re.sub(
+        r"^(ооо|зао|пао|ао|нпо|нпп|завод|комбинат|фабрика)\s*",
+        "",
+        str(name),
+        flags=re.IGNORECASE,
+    ).strip()
+    cyrillic_chars = len(re.findall(r"[а-яА-ЯёЁ]", clean))
+    return cyrillic_chars >= 3
+
+
+def _clean_quoted_part(s: str) -> str:
+    s = s.strip()
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        s = s[1:-1].strip()
+    elif (
+        s.startswith("«")
+        and s.endswith("»")
+        and s.count("«") == 1
+        and s.count("»") == 1
+        and not re.search(r"\b(ооо|зао|пао|ао)\b", s, re.I)
+    ):
+        s = s[1:-1].strip()
+    return s
+
+
+def _split_glued_string(val: str) -> List[str]:
+    """Splits string if it contains multiple items separated by comma, slash, semicolon, or 'или'/'or'."""
+    if not val:
+        return []
+    s = str(val).strip()
+    s_protected = re.sub(r"(?i)\bco\.,\s*ltd\b", "Co. Ltd", s)
+    parts = re.split(r"\s+(?:/)\s+|\s*(?:;|\||\bили\b|\bor\b)\s*", s_protected)
+    if len(parts) == 1 and "," in s_protected:
+        comma_tokens: List[str] = []
+        buf: List[str] = []
+        depth = 0
+        n = len(s_protected)
+        for idx, ch in enumerate(s_protected):
+            if ch in "([«":
+                depth += 1
+                buf.append(ch)
+            elif ch in ")]»":
+                depth = max(0, depth - 1)
+                buf.append(ch)
+            elif ch == "," and depth == 0:
+                prev_is_digit = idx > 0 and s_protected[idx - 1].isdigit()
+                next_is_digit = (idx + 1) < n and s_protected[idx + 1].isdigit()
+                if prev_is_digit and next_is_digit:
+                    buf.append(ch)
+                else:
+                    comma_tokens.append("".join(buf).strip())
+                    buf = []
+            else:
+                buf.append(ch)
+        if buf:
+            comma_tokens.append("".join(buf).strip())
+        raw_parts = [p for p in comma_tokens if p]
+        if len(raw_parts) > 1:
+            address_words = (
+                "г.", "город", "обл.", "область", "ул.", "улица",
+                "д.", "дом", "корп.", "стр.", "россия", "рф",
+            )
+            valid = True
+            for p in raw_parts[1:]:
+                p_low = p.lower()
+                if any(p_low.startswith(aw) or f" {aw}" in p_low for aw in address_words):
+                    valid = False
+                    break
+            if valid:
+                parts = raw_parts
+    return [_clean_quoted_part(p) for p in parts if p.strip()]
+
+
+def sanitize_glued_brands_and_models(pos: Dict[str, Any]) -> None:
+    """
+    Гарантирует, что в identified_brand / identified_model / manufacturer находится
+    СТРОГО ОДИН завод, бренд и модель; склеенные через запятую/слэш варианты
+    переносятся в alternative_brands (с приоритетом отечественных производителей).
+    """
+    if not isinstance(pos, dict):
+        return
+
+    raw_brand = str(pos.get("identified_brand") or pos.get("brand") or "").strip()
+    raw_model = str(pos.get("identified_model") or pos.get("model") or "").strip()
+    raw_mfr = str(pos.get("manufacturer") or "").strip()
+
+    brands = _split_glued_string(raw_brand)
+    models = _split_glued_string(raw_model)
+    mfrs = _split_glued_string(raw_mfr)
+
+    if len(brands) > 1:
+        rus_idx = -1
+        for idx_b, b in enumerate(brands):
+            if _is_russian_or_domestic(b) and not _is_foreign_trader(b):
+                rus_idx = idx_b
+                break
+        if rus_idx > 0 and _is_foreign_trader(brands[0]):
+            brands.insert(0, brands.pop(rus_idx))
+            if len(mfrs) > rus_idx:
+                mfrs.insert(0, mfrs.pop(rus_idx))
+            if len(models) > rus_idx:
+                models.insert(0, models.pop(rus_idx))
+
+        primary_b = brands[0]
+        pos["identified_brand"] = primary_b
+        pos["brand"] = primary_b
+        pos["manufacturer"] = mfrs[0] if mfrs else primary_b
+        if models:
+            pos["identified_model"] = models[0]
+            pos["model"] = models[0]
+
+        alts = pos.setdefault("alternative_brands", [])
+        existing_alt_names = {
+            _normalize_brand_identity(str(a.get("brand") or ""))
+            for a in alts
+            if isinstance(a, dict)
+        }
+        existing_alt_names.add(_normalize_brand_identity(primary_b))
+
+        for i, extra_b in enumerate(brands[1:], start=1):
+            extra_b_norm = _normalize_brand_identity(extra_b)
+            if extra_b_norm and extra_b_norm not in existing_alt_names:
+                extra_m = models[i] if i < len(models) else (models[0] if models else raw_model)
+                extra_mfr = mfrs[i] if i < len(mfrs) else extra_b
+                alts.append({
+                    "brand": extra_b,
+                    "model": extra_m,
+                    "manufacturer": extra_mfr,
+                    "confidence": round(float(pos.get("confidence") or 0.85) * 0.95, 2),
+                    "notes": f"Взаимозаменяемый аналог по ТЗ: {extra_b} {extra_m}",
+                    "source_url": pos.get("source_url") or "",
+                    "specs_breakdown": copy.deepcopy(pos.get("specs_breakdown") or []),
+                })
+                existing_alt_names.add(extra_b_norm)
+    elif brands:
+        pos["identified_brand"] = brands[0]
+        pos["brand"] = brands[0]
+
+    if len(models) > 1:
+        pos["identified_model"] = models[0]
+        pos["model"] = models[0]
+        alts = pos.setdefault("alternative_brands", [])
+        existing_alt_models = {
+            str(a.get("model") or "").strip().lower() for a in alts if isinstance(a, dict)
+        }
+        existing_alt_models.add(models[0].lower())
+        for extra_m in models[1:]:
+            if extra_m.lower() not in existing_alt_models:
+                cur_b = pos.get("identified_brand") or ""
+                alts.append({
+                    "brand": cur_b,
+                    "model": extra_m,
+                    "manufacturer": pos.get("manufacturer") or cur_b,
+                    "confidence": round(float(pos.get("confidence") or 0.85) * 0.95, 2),
+                    "notes": f"Взаимозаменяемый типоразмер / модель: {cur_b} {extra_m}",
+                    "source_url": pos.get("source_url") or "",
+                    "specs_breakdown": copy.deepcopy(pos.get("specs_breakdown") or []),
+                })
+                existing_alt_models.add(extra_m.lower())
+    elif models:
+        pos["identified_model"] = models[0]
+        pos["model"] = models[0]
+
+    if mfrs:
+        pos["manufacturer"] = mfrs[0]
+
+    cleaned_alts = []
+    for a in pos.get("alternative_brands") or []:
+        if not isinstance(a, dict):
+            continue
+        ab_list = _split_glued_string(str(a.get("brand") or ""))
+        am_list = _split_glued_string(str(a.get("model") or ""))
+        amfr_list = _split_glued_string(str(a.get("manufacturer") or ""))
+        if len(ab_list) > 1:
+            for j, sub_b in enumerate(ab_list):
+                sub_m = am_list[j] if j < len(am_list) else (am_list[0] if am_list else a.get("model") or "")
+                sub_mfr = amfr_list[j] if j < len(amfr_list) else sub_b
+                cleaned_alts.append({
+                    **a,
+                    "brand": sub_b,
+                    "model": sub_m,
+                    "manufacturer": sub_mfr,
+                })
+        else:
+            if ab_list:
+                a["brand"] = ab_list[0]
+            if am_list:
+                a["model"] = am_list[0]
+            if amfr_list:
+                a["manufacturer"] = amfr_list[0]
+            cleaned_alts.append(a)
+    pos["alternative_brands"] = cleaned_alts
+
+
 def drop_nonconforming_analogs(pos_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Фильтрует нерелевантные или мусорные аналоги, сохраняя реальные промышленные эквиваленты
-    с расчетом процента соответствия и отображением отличий по характеристикам.
+    Фильтрует нерелевантные или мусорные аналоги:
+    - расщепляет склеенные бренды/модели;
+    - блокирует дубли победителя (включая транслитерацию Кириллица<->Латиница: Армед == Armed);
+    - дедуплицирует одинаковые артикулы/шифры под разными брендами;
+    - отсекает аналоги с подтверждёнными отклонениями (mismatch) или конфликтом калибра/размерности.
     """
     from .matcher import _resolve_real_maker_and_model, _is_clean_maker_or_brand, _clean_org_name
+    from ..price_monitoring.cleaner import check_engineering_spec_conflict
 
     for pos in pos_list:
         if not isinstance(pos, dict):
             continue
+        sanitize_glued_brands_and_models(pos)
         alts = pos.get("alternative_brands") or []
         if not alts:
             continue
         clean_alts = []
+        tz_name = str(pos.get("name_in_tz") or "").strip()
         winner_brand = str(pos.get("identified_brand") or pos.get("brand") or "").strip().lower()
         winner_mfr = str(pos.get("manufacturer") or "").strip().lower()
+        winner_model = str(pos.get("identified_model") or pos.get("model") or "").strip()
         winner_m_keys = {
             winner_brand,
             _clean_org_name(winner_brand).lower(),
             winner_mfr,
             _clean_org_name(winner_mfr).lower(),
         } - {""}
-        seen_keys = set()
+        winner_lat_keys = {
+            _normalize_brand_identity(k) for k in winner_m_keys
+        } - {""}
+        winner_sku = _normalize_sku_identity(winner_model)
+        seen_keys: Set[str] = set()
+        seen_skus: Set[str] = {winner_sku} if winner_sku else set()
         for alt in alts:
             if not isinstance(alt, dict):
                 continue
@@ -557,13 +834,26 @@ def drop_nonconforming_analogs(pos_list: List[Dict[str, Any]]) -> List[Dict[str,
                 res_mfr.lower() if res_mfr else "",
                 _clean_org_name(res_mfr).lower() if res_mfr else "",
             } - {""}
-            if any(k in winner_m_keys for k in alt_m_keys):
+            alt_lat_keys = {
+                _normalize_brand_identity(k) for k in alt_m_keys
+            } - {""}
+            if any(k in winner_m_keys for k in alt_m_keys) or any(k in winner_lat_keys for k in alt_lat_keys):
                 continue
 
-            alt_key = f"{res_b.lower()} {res_m.lower()}"
+            alt_sku = _normalize_sku_identity(res_m)
+            if alt_sku and any(
+                alt_sku == s
+                or (len(alt_sku) >= 8 and len(s) >= 8 and (alt_sku in s or s in alt_sku))
+                for s in seen_skus
+            ):
+                continue
+
+            alt_key = f"{_normalize_brand_identity(res_b)} {_normalize_sku_identity(res_m) or res_m.lower()}"
             if alt_key in seen_keys:
                 continue
             seen_keys.add(alt_key)
+            if alt_sku:
+                seen_skus.add(alt_sku)
 
             alt["brand"] = res_b
             alt["manufacturer"] = res_mfr or res_b
@@ -593,14 +883,250 @@ def drop_nonconforming_analogs(pos_list: List[Dict[str, Any]]) -> List[Dict[str,
                         s_comm = s_comm.replace(sh, "каталог производителя")
                     s["comment"] = s_comm
 
+            # Строго отсекаем аналоги с любым подтверждённым отклонением от ТЗ (mismatch)
             mismatches = sum(1 for s in specs if isinstance(s, dict) and str(s.get("status")) == "mismatch")
-            matches = sum(1 for s in specs if isinstance(s, dict) and str(s.get("status")) == "match")
-            # Отсекаем только критически несовместимые товары (нет подтвержденных совпадений или сплошной брак)
-            if specs and matches == 0 and mismatches > 0:
+            if mismatches > 0:
                 continue
+
+            # Отсекаем явный конфликт калибра/ключевой размерности (например 21G vs 24G, Ду25 vs Ду50)
+            alt_text = f"{res_b} {res_m} {alt.get('notes') or ''} " + " ".join(
+                str(s.get("product_fact") or "") for s in specs if isinstance(s, dict)
+            )
+            tz_specs_text = " ".join(
+                str(s.get("tz_requirement") or "")
+                for s in (pos.get("specs_breakdown") or [])
+                if isinstance(s, dict)
+            )
+            tz_gauge_ctx = f"{tz_name} {tz_specs_text}".strip()
+            if tz_gauge_ctx and _has_gauge_conflict(tz_gauge_ctx, alt_text):
+                continue
+            if tz_name:
+                eng_conflict, _ = check_engineering_spec_conflict(tz_name, alt_text)
+                if eng_conflict:
+                    continue
+
             clean_alts.append(alt)
         pos["alternative_brands"] = clean_alts
     return sanitize_shops_from_positions(pos_list)
+
+
+def _is_assembly_instruction_pdf(url: str) -> bool:
+    """Определяет PDF-инструкции по сборке, которые хуже основной карточки товара."""
+    low = str(url or "").lower()
+    if not low.endswith(".pdf"):
+        return False
+    return any(
+        marker in low
+        for marker in ("инс-", "ins-", "sbork", "сборк", "assembly", "manual_install")
+    )
+
+
+async def sanitize_and_verify_all_position_urls(
+    positions: List[Dict[str, Any]],
+    *,
+    force_http: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Физически проверяет по HTTP ссылки в позициях (source_url, alternative_brands, specs_breakdown):
+    1. Исключает битые 404/410/soft-404, блоги/статьи, архивные/снятые с производства страницы.
+    2. При ссылке на каталог/листинг автоматически проваливается в карточку товара.
+    3. Понижает PDF-инструкции по сборке, если среди verified_documents есть валидная карточка товара.
+    """
+    if not positions:
+        return positions
+    if os.getenv("PYTEST_CURRENT_TEST") and not force_http:
+        return positions
+
+    import httpx
+    from ..price_monitoring.extractor import (
+        DISCONTINUED_PATTERN,
+        find_exact_product_card_in_html,
+        is_deep_product_url,
+        is_listing_url,
+        is_reference_price_url,
+        is_soft_404,
+    )
+    from ..ssrf_guard import async_is_safe_public_http_url
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    bad_path_markers = (
+        "/biznes-idei/", "/blog/", "/news/", "/stati/", "/articles/",
+        "/about/", "/contact", "/vacancy", "/politika",
+    )
+    url_results: Dict[str, Tuple[bool, str]] = {}
+
+    async def _verify_one(
+        client: httpx.AsyncClient,
+        raw_url: str,
+        keywords: Optional[List[str]] = None,
+    ) -> Tuple[bool, str]:
+        u = str(raw_url or "").strip()
+        if not u or not u.startswith(("http://", "https://")):
+            return False, ""
+        if u in url_results:
+            return url_results[u]
+        low = u.lower()
+        if any(b in low for b in bad_path_markers) or is_reference_price_url(u):
+            url_results[u] = (False, "")
+            return False, ""
+        try:
+            if not await async_is_safe_public_http_url(u):
+                url_results[u] = (False, "")
+                return False, ""
+            if low.endswith(".pdf"):
+                res = await client.head(u, follow_redirects=True, headers=headers)
+                if res.status_code in (400, 403, 405):
+                    res = await client.get(u, follow_redirects=True, headers=headers)
+                ok = res.status_code in (200, 301, 302, 307, 308)
+                final_u = str(res.url) if ok else ""
+                url_results[u] = (ok, final_u)
+                return ok, final_u
+
+            res = await client.get(u, follow_redirects=True, headers=headers)
+            if res.status_code in (404, 410, 500, 502, 503):
+                url_results[u] = (False, "")
+                return False, ""
+            if res.status_code != 200:
+                ok = res.status_code in (301, 302, 307, 308)
+                url_results[u] = (ok, str(res.url) if ok else "")
+                return url_results[u]
+
+            final_u = str(res.url)
+            if any(b in final_u.lower() for b in bad_path_markers):
+                url_results[u] = (False, "")
+                return False, ""
+            body_head = res.text[:25000] if getattr(res, "text", None) else ""
+            if is_soft_404(body_head[:15000]) or DISCONTINUED_PATTERN.search(body_head):
+                url_results[u] = (False, "")
+                return False, ""
+
+            if is_listing_url(final_u) or (keywords and not is_deep_product_url(final_u)):
+                exact_card = find_exact_product_card_in_html(res.text or "", final_u, keywords=keywords)
+                if exact_card and exact_card != final_u and await async_is_safe_public_http_url(exact_card):
+                    try:
+                        c_chk = await client.head(exact_card, follow_redirects=True, headers=headers)
+                        if c_chk.status_code in (200, 301, 302, 307, 308):
+                            final_u = str(c_chk.url)
+                    except Exception:
+                        final_u = exact_card
+                elif is_listing_url(final_u):
+                    url_results[u] = (False, "")
+                    return False, ""
+
+            url_results[u] = (True, final_u)
+            return True, final_u
+        except Exception:
+            # На сетевом таймауте не ломаем уже валидированный URL
+            url_results[u] = (True, u)
+            return True, u
+
+    sem = asyncio.Semaphore(5)
+
+    async def _bounded_verify(client: httpx.AsyncClient, u: str, kws: Optional[List[str]] = None):
+        async with sem:
+            return await _verify_one(client, u, kws)
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(6.0, connect=3.0),
+            follow_redirects=True,
+        ) as client:
+            for pos in positions:
+                if not isinstance(pos, dict):
+                    continue
+                kws = [
+                    str(pos.get("identified_brand") or ""),
+                    str(pos.get("identified_model") or ""),
+                    str(pos.get("name_in_tz") or "")[:40],
+                ]
+                kws = [k.strip() for k in kws if len(k.strip()) >= 2]
+
+                # 1. Предпочитаем не-инструкцию, если source_url — PDF сборки и есть карточка среди verified_documents
+                main_u = str(pos.get("source_url") or "").strip()
+                fallback_urls = [
+                    str(d.get("url") or "").strip()
+                    for d in (pos.get("verified_documents") or [])
+                    if isinstance(d, dict) and str(d.get("url") or "").startswith(("http://", "https://"))
+                ]
+                if main_u and _is_assembly_instruction_pdf(main_u):
+                    non_ins = [u for u in fallback_urls if not _is_assembly_instruction_pdf(u)]
+                    if non_ins:
+                        main_u = non_ins[0]
+                        pos["source_url"] = main_u
+
+                if main_u:
+                    ok, verified_u = await _bounded_verify(client, main_u, kws)
+                    if ok:
+                        pos["source_url"] = verified_u
+                    else:
+                        replacement = ""
+                        for cand_u in fallback_urls:
+                            if cand_u == main_u:
+                                continue
+                            c_ok, c_ver = await _bounded_verify(client, cand_u, kws)
+                            if c_ok and c_ver:
+                                replacement = c_ver
+                                break
+                        pos["source_url"] = replacement
+
+                # 1.5 Проверяем datasheet_url (если мёртвая/soft-404 — очищаем)
+                ds_u = str(pos.get("datasheet_url") or "").strip()
+                if ds_u:
+                    ds_ok, ds_ver = await _bounded_verify(client, ds_u, kws)
+                    pos["datasheet_url"] = ds_ver if ds_ok else ""
+
+                # 2. Проверяем source_url у аналогов параллельно
+                alts = [a for a in (pos.get("alternative_brands") or []) if isinstance(a, dict) and a.get("source_url")]
+                if alts:
+                    alt_checks = await asyncio.gather(
+                        *(
+                            _bounded_verify(
+                                client,
+                                str(a.get("source_url") or ""),
+                                [str(a.get("brand") or ""), str(a.get("model") or "")],
+                            )
+                            for a in alts
+                        ),
+                        return_exceptions=True,
+                    )
+                    for a, res in zip(alts, alt_checks):
+                        if isinstance(res, tuple):
+                            ok, ver_u = res
+                            a["source_url"] = ver_u if ok else ""
+
+                # 3. Обновляем source_url в specs_breakdown (не делая лишних запросов, используем результаты текущей проверки)
+                for s in pos.get("specs_breakdown") or []:
+                    if not isinstance(s, dict):
+                        continue
+                    su = str(s.get("source_url") or "").strip()
+                    if su and su in url_results:
+                        ok, ver_u = url_results[su]
+                        s["source_url"] = ver_u if ok else (pos.get("source_url") or "")
+
+                # 4. Убираем подтверждённо мёртвые URL из web_sources и verified_documents
+                if isinstance(pos.get("web_sources"), list):
+                    pos["web_sources"] = [
+                        (url_results[str(w).strip()][1] if str(w).strip() in url_results else w)
+                        for w in pos["web_sources"]
+                        if not (str(w).strip() in url_results and not url_results[str(w).strip()][0])
+                    ]
+                if isinstance(pos.get("verified_documents"), list):
+                    pos["verified_documents"] = [
+                        d for d in pos["verified_documents"]
+                        if not (
+                            isinstance(d, dict)
+                            and str(d.get("url") or "").strip() in url_results
+                            and not url_results[str(d.get("url") or "").strip()][0]
+                        )
+                    ]
+    except Exception as exc:
+        logger.debug("sanitize_and_verify_all_position_urls_failed", error=str(exc))
+
+    return positions
 
 
 def sanitize_shops_from_positions(positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -991,47 +1517,6 @@ def _deduplicate_alts_deep(alts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(seen.values())
 
 
-async def is_minor_or_service_item_ai(name: str, context: str = "") -> bool:
-    """
-    Интеллектуальная семантическая проверка через ИИ (light tier):
-    определяет, является ли позиция мелким очевидным расходником, стандартным крепежом,
-    дешевой вспомогательной мелочью или услугой, для которой НЕ требуется глубокий подбор завода/модели.
-    Работает универсально для любых отраслей без списков регулярных выражений.
-    """
-    if not name or len(name.strip()) < 2:
-        return True
-
-    prompt = f"""Ты — ведущий эксперт по государственным закупкам (44-ФЗ/223-ФЗ) и товарной номенклатуре.
-Определи, требуется ли для следующей позиции спецификации профессиональный подбор точной промышленной марки/модели и завода-изготовителя для заявки, либо это мелкий стандартный расходник, дешевый крепеж, сопутствующая мелочь или сервисная услуга:
-
-Позиция: "{name}"
-{f'Контекст закупки: {context[:300]}' if context else ''}
-
-Критерии:
-- is_minor_or_service = true: если это мелкий крепеж/метизы (болты, гайки, винты, саморезы, дюбели), стандартные общехозяйственные расходники (изолента, перчатки, салфетки, мешки, батарейки, скотч), сопутствующая копеечная мелочь или услуги/работы (монтаж, доставка, ТО), характеристики которых стандартны, интуитивно понятны и не требуют подбора промышленного завода.
-- is_minor_or_service = false: если это основное промышленное оборудование, станок, прибор, агрегат, сложный узел, специализированный материал, кабель, запорная арматура, готовое техническое изделие, для которого необходимо выявить конкретную модель и характеристики производителя.
-
-Ответь СТРОГО в формате JSON:
-{{"is_minor_or_service": true}} или {{"is_minor_or_service": false}}"""
-
-    try:
-        raw = await call_llm(
-            prompt=prompt,
-            system_prompt="Ты эксперт по классификации номенклатуры в госзакупках. Отвечай только валидным JSON.",
-            model_tier="light",
-            routing_key="procurement_brand_detection",
-            json_mode=True,
-            timeout_seconds=15.0,
-        )
-        parsed = _parse_json_safely(raw)
-        if isinstance(parsed, dict) and "is_minor_or_service" in parsed:
-            return bool(parsed["is_minor_or_service"])
-    except Exception as exc:
-        logger.debug("is_minor_or_service_item_ai_failed", error=str(exc))
-
-    return False
-
-
 def is_service_or_fastener(name: str) -> bool:
     """Синхронная обертка для обратной совместимости."""
     return False
@@ -1281,7 +1766,7 @@ async def fetch_batch_web_documents(urls: List[str], max_docs: int = 6) -> List[
 
     # Берем кандидатов с запасом (+4), чтобы сбой 1-2 сайтов не уменьшал итоговый пул документов
     fetch_targets = valid_urls[: max_docs + 4]
-    async with httpx.AsyncClient(timeout=14.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.5), follow_redirects=True) as client:
         tasks = [fetch_web_or_pdf_document(client, u) for u in fetch_targets]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -2115,7 +2600,7 @@ async def resolve_clarify_parameters(
                     except Exception as b_err:
                         logger.debug("resolve_clarify_batch_sub_failed", error=str(b_err))
 
-    cost_per_req = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
+    cost_per_req = float(getattr(settings, "yandex_search_price_per_request", 0.0305) or 0.0305)
     cost = round(total_search_queries * cost_per_req, 4)
     return ResolveResult(resolved_count, cost)
 
@@ -2165,39 +2650,8 @@ async def resolve_standards_parameters(
             if a_specs:
                 all_spec_holders.append((alt, a_specs))
 
-    # 1. Быстрое сопоставление климатики (ГОСТ 15150-69) и защиты оболочки (ГОСТ 14254-2015) без регулярных выражений
-    context_low = context.lower()
-    climate_tag = ""
-    for c_tag in ("ухл1", "ухл2", "ухл3", "ухл4", "хл1", "хл2", "т1", "т2", "ом1", "в5"):
-        if c_tag in context_low:
-            climate_tag = c_tag.upper()
-            break
-
-    ip_tag = ""
-    for tag in ("ip68", "ip67", "ip66", "ip65", "ip55", "ip54", "ip44", "ip20", "ipx4", "ipx1"):
-        if tag in context_low:
-            ip_tag = tag.upper()
-            break
-
-    for holder, specs in all_spec_holders:
-        for s in specs:
-            if _item_val(s, "status") != "clarify":
-                continue
-            p_name = str(_item_val(s, "param_name") or "").lower()
-            tz_r = str(_item_val(s, "tz_requirement") or "").lower()
-
-            if climate_tag and ("климат" in p_name or "15150" in tz_r or "ухл" in tz_r):
-                _item_set(s, "product_fact", f"{climate_tag} (ГОСТ 15150-69)")
-                _item_set(s, "status", "match")
-                _item_set(s, "comment", f"Климатическое исполнение {climate_tag} подтверждено стандартом ГОСТ 15150-69")
-                resolved_count += 1
-            elif ip_tag and ("защит" in p_name or "оболочк" in p_name or "ip" in tz_r):
-                _item_set(s, "product_fact", f"{ip_tag} (ГОСТ 14254-2015)")
-                _item_set(s, "status", "match")
-                _item_set(s, "comment", f"Степень защиты оболочки {ip_tag} подтверждена ГОСТ 14254-2015")
-                resolved_count += 1
-
-    # Анализ по стандартам из ТЗ (ГОСТ/ТУ/СТО) выполняется нейросетью без подмены регексами (Правило 14)
+    # Анализ по стандартам из ТЗ (ГОСТ/ТУ/СТО) выполняется нейросетью строго по тексту реальных стандартов и паспортов,
+    # без переноса требований климатики/IP заказчика в характеристики непроверенного товара.
     standards = extract_standards_from_text(context)
     for pos in positions:
         pos_text = f"{_item_val(pos, 'identified_brand', '')} {_item_val(pos, 'identified_model', '')} {_item_val(pos, 'reasoning', '')} {_item_val(pos, 'name_in_tz', '')}"
@@ -2465,7 +2919,7 @@ async def detect_exact_products_deep(
     Глубокий инженерный поиск точного товара и аналогов с выходом в интернет,
     табличным парсингом PDF-паспортов и строгой проверкой заземления (TenderLex-паритет).
     """
-    if not report_text or len(report_text.strip()) < 30:
+    if not report_text or len(report_text.strip()) < 3:
         return []
 
     if progress_callback:
@@ -2514,7 +2968,7 @@ async def detect_exact_products_deep(
         if positions and cf_docs:
             existing_urls = {d.get("url") for d in cf_docs if d.get("url")}
             try:
-                await resolve_clarify_parameters(positions, existing_urls, cf_docs)
+                await resolve_clarify_parameters(positions, existing_urls, cf_docs, max_sub_queries=0)
             except Exception as res_err:
                 logger.debug("resolve_clarify_in_cf_failed", error=str(res_err))
 
@@ -2998,17 +3452,8 @@ async def detect_exact_products_deep(
         except Exception as t_err:
             logger.warning("targeted_model_search_failed", error=str(t_err))
 
-    # 5.1 Интеллектуальная семантическая фильтрация через ИИ: отсекаем мелкие расходники, крепеж и услуги
-    filtered_positions = []
-    for p in positions:
-        name_val = str(p.get("name_in_tz") or "").strip()
-        is_minor = await is_minor_or_service_item_ai(name_val, clean_spec[:300])
-        if not is_minor:
-            filtered_positions.append(p)
-
-    if filtered_positions:
-        positions = filtered_positions
-
+    # 5.1 The service chooses rows explicitly. Do not silently remove or
+    # reprioritize a source row from its name/category before its limit applies.
     # 5.2 Лимитирование ключевых позиций: максимум MAX_EXACT_POSITIONS_PER_JOB (до 5 позиций)
     total_tz_count = len(positions)
     for p in positions:
@@ -3062,9 +3507,9 @@ async def detect_exact_products_deep(
             else:
                 alt["confidence"] = round(min(0.95, real_conf), 2)
 
-    # 8. Автодобор параметров под ТЗ для Формы 2 (подготовка конкретных номиналов для заявки)
+    # 8. Автодобор параметров под ТЗ (подготовка конкретных номиналов для заявки)
     if progress_callback:
-        await progress_callback(88, "Автоподбор параметров для Формы 2...")
+        await progress_callback(88, "Автоподбор параметров для таблицы характеристик...")
     await auto_fill_ai_recommendations(positions)
 
     # 8.1 Финальная сверка и пересчет соответствия по всем позициям
@@ -3103,6 +3548,9 @@ async def detect_exact_products_deep(
     # согласованность статусов (без ИИ) — единый контур правды для Формы 2
     from .validation import validate_exact_products
     enriched = validate_exact_products(enriched, verified_docs, has_doc_text=True)
+
+    # 11. Проверка и очистка ссылок первоисточников (исключение 404/soft-404/листингов/инструкций сборки)
+    enriched = await sanitize_and_verify_all_position_urls(enriched)
 
     if progress_callback:
         await progress_callback(100, f"Готово: выявлено {len(enriched)} позиций с паспортами и аналогами")

@@ -20,19 +20,24 @@ const escapeHtml = (val: string): string =>
     .replace(/'/g, '&#39;');
 
 const normalizeHref = (href: string): string => {
-  const trimmed = href.trim();
+  const trimmed = (href || '').replace(/[\u0000-\u001F\u007F]/g, '').trim();
+  if (!trimmed) return '#';
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   if (/^mailto:/i.test(trimmed)) return trimmed;
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(trimmed)) return `mailto:${trimmed}`;
+  if (/^tel:/i.test(trimmed)) return trimmed;
+  if (/^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/i.test(trimmed)) return `mailto:${trimmed}`;
   if (/^www\./i.test(trimmed)) return `https://${trimmed}`;
-  return trimmed;
+  return '#';
 };
 
 const sanitizeHtml = (rawHtml: string): string => {
   return (rawHtml || '')
     .replace(/<base\b[^>]*>/gi, '')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<meta\b[^>]*http-equiv\s*=\s*(['"]?)refresh\1[^>]*>/gi, '')
+    .replace(/<(?:iframe|object|embed|applet|form|svg)\b[^>]*>[\s\S]*?<\/(?:iframe|object|embed|applet|form|svg)>/gi, '')
+    .replace(/<(?:iframe|object|embed|applet|form|meta)\b[^>]*>/gi, '')
+    .replace(/\s+on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\s+(?:src|xlink:href)\s*=\s*(['"])\s*(?:javascript:|vbscript:|data:(?!image\/))[\s\S]*?\1/gi, ' src="about:blank"')
     .replace(/<a\b([^>]*?)href=(['"])(.*?)\2([^>]*)>/gi, (_m, before, quote, href, after) => {
       const normalized = normalizeHref(href);
       const attrs = `${before || ''}href=${quote}${normalized}${quote}${after || ''}`;
@@ -60,6 +65,7 @@ const buildEmailSrcDoc = (bodyHtml?: string, bodyText?: string): string => {
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src https: http: data:; font-src data:;" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       html, body {
@@ -355,7 +361,7 @@ const EmailBodyFrameComponent: React.FC<EmailBodyFrameProps> = ({
         ref={iframeRef}
         title="Email Body"
         srcDoc={srcDoc}
-        sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+        sandbox="allow-popups allow-same-origin"
         style={{
           width: '100%',
           height: `${height}px`,

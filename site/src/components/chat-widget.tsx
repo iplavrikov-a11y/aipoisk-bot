@@ -1,6 +1,7 @@
 'use client';
 
 import { PublicSiteLink } from "@/components/public-site-link";
+import { usePathname } from 'next/navigation';
 
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -16,14 +17,36 @@ import {
   Minimize2,
   User,
   Bot,
+  Download,
+  Paperclip,
+  Tag,
 } from 'lucide-react';
 
-interface Message {
+export interface ChatAttachment {
+  index: number;
+  name: string;
+  label: string;
+  size: number;
+  url: string;
+  customer_url?: string;
+}
+
+export interface Message {
   id: string;
   sender: 'user' | 'admin' | 'system';
   text: string;
   preset?: string | null;
   timestamp: string;
+  job_id?: string;
+  job_number?: number | null;
+  job_title?: string;
+  attachments?: ChatAttachment[];
+}
+
+export interface ActiveJobContext {
+  jobId: string;
+  jobNumber?: number | null;
+  jobTitle?: string;
 }
 
 const PRESETS = [
@@ -33,57 +56,241 @@ const PRESETS = [
   { id: 'admin', label: '💬 Связаться с администратором', text: 'Здравствуйте! Хочу проконсультироваться с администратором TenderLex.' },
 ];
 
+const CABINET_TOPIC_PROMPTS = [
+  { id: 'task', label: 'Вопрос по задаче', draft: 'Здравствуйте! Нужна помощь по задаче: ' },
+  { id: 'billing', label: 'Оплата и счёт', draft: 'Здравствуйте! Есть вопрос по пополнению или счёту: ' },
+  { id: 'tz', label: 'Помощь с ТЗ', draft: 'Здравствуйте! Подскажите, как лучше загрузить ТЗ: ' },
+  { id: 'api', label: 'Интеграция API', draft: 'Здравствуйте! Вопрос по API и подключению: ' },
+];
+
 export function ChatWidget() {
-
-
+  const pathname = usePathname();
+  const isCabinetPage = Boolean(pathname?.startsWith('/cabinet'));
   const [isOpen, setIsOpen] = useState(false);
   const [isPillDismissed, setIsPillDismissed] = useState(false);
+  const [isCustomerMode, setIsCustomerMode] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [customerName, setCustomerName] = useState('');
   const [sessionId, setSessionId] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([]);
+  const [activeJobContext, setActiveJobContext] = useState<ActiveJobContext | null>(null);
   const [inputText, setInputText] = useState('');
   const [contactInput, setContactInput] = useState('');
+  const [contactConsent, setContactConsent] = useState(false);
+  const [contactError, setContactError] = useState('');
   const [savedContact, setSavedContact] = useState('');
   const [showContactModal, setShowContactModal] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState('');
+  const [isBlocked, setIsBlocked] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [workHours, setWorkHours] = useState<{ is_open: boolean; notice?: string } | null>(null);
+  const [hasGuestInteraction, setHasGuestInteraction] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageFeedRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
+  const messagesRef = useRef<Message[]>([]);
+  const isOpenRef = useRef(false);
+  const pollControllerRef = useRef<AbortController | null>(null);
+  const pendingMessageIdsRef = useRef(new Map<string, Pick<Message, 'text' | 'preset'>>());
+  const shouldScrollToEndRef = useRef(false);
+  const customerCsrfRef = useRef('');
 
-  // Open via custom event (e.g. from header 'Чат' button)
-  useEffect(() => {
-    const handleOpen = () => {
-      setIsOpen(true);
-      setIsPillDismissed(false);
-    };
-    window.addEventListener("open_tenderlex_chat", handleOpen);
-    (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat = handleOpen;
-    return () => {
-      window.removeEventListener("open_tenderlex_chat", handleOpen);
-    };
-  }, []);
-
-  // 1. Initialize session & storage
-  useEffect(() => {
-    let sid = localStorage.getItem('tenderlex_chat_session_id');
-    if (!sid) {
-      sid = 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
-      localStorage.setItem('tenderlex_chat_session_id', sid);
-    }
-    setSessionId(sid);
-
-    const savedCont = localStorage.getItem('tenderlex_chat_contact') || '';
-    setSavedContact(savedCont);
-
-    const savedMsgs = localStorage.getItem('tenderlex_chat_history');
-    if (savedMsgs) {
+  function persistMessages(updated: Message[]) {
+    if (!isCustomerMode) {
       try {
-        setMessages(JSON.parse(savedMsgs));
+        localStorage.setItem('tenderlex_chat_history', JSON.stringify(updated));
+      } catch {}
+    }
+  }
+
+  function replaceMessages(updated: Message[]) {
+    if (updated === messagesRef.current) return false;
+    messagesRef.current = updated;
+    persistMessages(updated);
+    setMessages(updated);
+    return true;
+  }
+
+  function isMessage(value: unknown): value is Message {
+    if (!value || typeof value !== 'object') return false;
+    const message = value as Partial<Message>;
+    return (
+      typeof message.id === 'string' &&
+      typeof message.text === 'string' &&
+      typeof message.timestamp === 'string' &&
+      (message.sender === 'user' || message.sender === 'admin' || message.sender === 'system')
+    );
+  }
+
+  function isNearMessageFeedEnd() {
+    const feed = messageFeedRef.current;
+    return !feed || feed.scrollHeight - feed.scrollTop - feed.clientHeight < 48;
+  }
+
+  function mergeRemoteMessages(remoteMessages: Message[]) {
+    const shouldScroll = isOpenRef.current && isNearMessageFeedEnd();
+    const previous = messagesRef.current;
+    const currentIds = new Set(previous.map((message) => message.id));
+    const reconciledPendingIds: string[] = [];
+    let updated = previous;
+    let addedCount = 0;
+
+    for (const remoteMessage of remoteMessages) {
+      if (!isMessage(remoteMessage) || currentIds.has(remoteMessage.id)) continue;
+
+      const pendingEntry =
+        remoteMessage.sender === 'user'
+          ? updated.find(
+              (message) =>
+                pendingMessageIdsRef.current.has(message.id) &&
+                message.sender === 'user' &&
+                message.text === remoteMessage.text
+            )
+          : undefined;
+
+      if (pendingEntry) {
+        reconciledPendingIds.push(pendingEntry.id);
+        updated = updated.map((message) => (message.id === pendingEntry.id ? remoteMessage : message));
+      } else {
+        updated = [...updated, remoteMessage];
+        addedCount += 1;
+      }
+      currentIds.add(remoteMessage.id);
+    }
+
+    if (!replaceMessages(updated)) return;
+    for (const pendingId of reconciledPendingIds) pendingMessageIdsRef.current.delete(pendingId);
+    if (addedCount > 0 && !isOpenRef.current) {
+      setUnreadCount((count) => count + addedCount);
+    }
+    if (shouldScroll && isOpenRef.current) {
+      shouldScrollToEndRef.current = true;
+    }
+  }
+
+  function openChat() {
+    isOpenRef.current = true;
+    shouldScrollToEndRef.current = true;
+    setIsOpen(true);
+    setHasGuestInteraction(true);
+    setIsPillDismissed(false);
+    if (isCustomerMode && unreadCount > 0) {
+      fetch('/api/customer/chat/read', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: customerCsrfRef.current ? { 'x-csrf-token': customerCsrfRef.current } : undefined,
+      }).catch(() => {});
+      setUnreadCount(0);
+    }
+  }
+
+  function closeChat() {
+    isOpenRef.current = false;
+    setIsOpen(false);
+  }
+
+  // Open via custom event (e.g. from header 'Чат' button or task card)
+  useEffect(() => {
+    const handleOpen = (e?: any) => {
+      const detail = e?.detail;
+      if (detail?.jobId) {
+        setActiveJobContext({
+          jobId: detail.jobId,
+          jobNumber: detail.jobNumber,
+          jobTitle: detail.jobTitle,
+        });
+      }
+      openChat();
+    };
+    window.addEventListener('open_tenderlex_chat', handleOpen);
+    (window as unknown as { openTenderlexChat?: (detail?: any) => void }).openTenderlexChat = handleOpen;
+    return () => {
+      window.removeEventListener('open_tenderlex_chat', handleOpen);
+    };
+  }, [isCustomerMode, unreadCount]);
+
+  // 1. Initialize session & check if authenticated customer
+  useEffect(() => {
+    let disposed = false;
+
+    async function checkAuthAndInit() {
+      try {
+        const res = await fetch('/api/customer/chat/messages', { credentials: 'same-origin' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.authenticated && !disposed) {
+            if (typeof data.csrf_token === 'string') {
+              customerCsrfRef.current = data.csrf_token;
+            }
+            setIsCustomerMode(true);
+            setCustomerName(data.client?.name || '');
+            if (data.client?.phone || data.client?.email) {
+              setSavedContact(data.client.phone || data.client.email || '');
+            }
+            if (Array.isArray(data.messages)) {
+              const mapped: Message[] = data.messages.map((m: any) => ({
+                id: m.id,
+                sender: m.sender_role === 'client' ? 'user' : 'admin',
+                text: m.message,
+                timestamp: m.created_at || new Date().toISOString(),
+                job_id: m.job_id,
+                job_number: m.job_number,
+                job_title: m.job_title,
+                attachments: m.attachments,
+              }));
+              replaceMessages(mapped);
+              if (data.unread_admin_count) {
+                setUnreadCount(data.unread_admin_count);
+              }
+            }
+            setAuthChecked(true);
+            return;
+          }
+        }
       } catch {
+        // Fallback to guest mode
+      }
+
+      if (disposed) return;
+      setAuthChecked(true);
+      // Guest Mode initialization
+      let sid = localStorage.getItem('tenderlex_chat_session_id');
+      if (!sid || sid.toLowerCase().startsWith('tg_')) {
+        sid = 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
+        localStorage.setItem('tenderlex_chat_session_id', sid);
+      }
+      setSessionId(sid);
+
+      const savedCont = localStorage.getItem('tenderlex_chat_contact') || '';
+      setSavedContact(savedCont);
+
+      const savedMsgs = localStorage.getItem('tenderlex_chat_history');
+      if (savedMsgs) {
+        try {
+          const restoredMessages = JSON.parse(savedMsgs);
+          if (Array.isArray(restoredMessages)) {
+            replaceMessages(restoredMessages);
+            if (restoredMessages.some((m: any) => m && m.sender === 'user')) {
+              setHasGuestInteraction(true);
+            }
+          } else {
+            initWelcomeMessage();
+          }
+        } catch {
+          initWelcomeMessage();
+        }
+      } else {
         initWelcomeMessage();
       }
-    } else {
-      initWelcomeMessage();
     }
+
+    checkAuthAndInit();
+
+    return () => {
+      disposed = true;
+    };
   }, []);
 
   function initWelcomeMessage() {
@@ -93,69 +300,121 @@ export function ChatWidget() {
       text: '👋 Здравствуйте! На связи команда TenderLex. Какая задача по закупкам или поиску поставщиков перед вами стоит?',
       timestamp: new Date().toISOString(),
     };
-    setMessages([welcomeMsg]);
-    try {
-      localStorage.setItem('tenderlex_chat_history', JSON.stringify([welcomeMsg]));
-    } catch {}
+    replaceMessages([welcomeMsg]);
   }
 
-  // 2. Auto-scroll to bottom
   useEffect(() => {
+    isOpenRef.current = isOpen;
     if (isOpen) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       setUnreadCount(0);
+      if (isCustomerMode) {
+        fetch('/api/customer/chat/read', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: customerCsrfRef.current ? { 'x-csrf-token': customerCsrfRef.current } : undefined,
+        }).catch(() => {});
+      }
+    }
+  }, [isOpen, isCustomerMode]);
+
+  useEffect(() => {
+    if (isOpen && shouldScrollToEndRef.current) {
+      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      messagesEndRef.current?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth' });
+      shouldScrollToEndRef.current = false;
     }
   }, [messages, isOpen]);
 
   // 3. Polling for admin responses
   useEffect(() => {
-    if (!sessionId) return;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
 
-    const pollInterval = isOpen ? 4000 : 25000;
-    const interval = setInterval(async () => {
+    const poll = async () => {
+      if (pollControllerRef.current) return;
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (!isCustomerMode && !isOpenRef.current && !hasGuestInteraction) return;
+      const controller = new AbortController();
+      pollControllerRef.current = controller;
       try {
-        const res = await fetch(`/api/chat/messages?sessionId=${sessionId}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.messages && Array.isArray(data.messages)) {
-            // Check if new admin message arrived
-            setMessages((prev) => {
-              const currentIds = new Set(prev.map((m) => m.id));
-              const currentTexts = new Set(prev.map((m) => `${m.sender}:${(m.text || "").trim()}`));
-              const newMsgs = data.messages.filter(
-                (m: Message) => !currentIds.has(m.id) && !currentTexts.has(`${m.sender}:${(m.text || "").trim()}`)
-              );
-
-              if (newMsgs.length > 0) {
-                const updated = [...prev, ...newMsgs];
-                try {
-                  localStorage.setItem('tenderlex_chat_history', JSON.stringify(updated));
-                } catch {}
-
-                if (!isOpen) {
-                  setUnreadCount((c) => c + newMsgs.length);
-                }
-                return updated;
+        if (isCustomerMode) {
+          const res = await fetch('/api/customer/chat/messages', {
+            signal: controller.signal,
+            credentials: 'same-origin',
+          });
+          if (res.status === 401 && !disposed) {
+            setIsCustomerMode(false);
+            return;
+          }
+          if (res.ok) {
+            const data = await res.json();
+            if (!disposed && typeof data.csrf_token === 'string') {
+              customerCsrfRef.current = data.csrf_token;
+            }
+            if (!disposed && Array.isArray(data.messages)) {
+              const mapped: Message[] = data.messages.map((m: any) => ({
+                id: m.id,
+                sender: m.sender_role === 'client' ? 'user' : 'admin',
+                text: m.message,
+                timestamp: m.created_at || new Date().toISOString(),
+                job_id: m.job_id,
+                job_number: m.job_number,
+                job_title: m.job_title,
+                attachments: m.attachments,
+              }));
+              mergeRemoteMessages(mapped);
+            }
+          }
+        } else if (sessionId) {
+          const res = await fetch(`/api/chat/messages?sessionId=${sessionId}`, { signal: controller.signal });
+          if (res.ok) {
+            const data = await res.json();
+            if (!disposed && !data.transient) {
+              setIsBlocked(data.status === 'blocked' || Boolean(data.is_blocked));
+              if (data.work_hours && typeof data.work_hours.is_open === 'boolean') {
+                setWorkHours(data.work_hours);
               }
-              return prev;
-            });
+            }
+            if (!disposed && Array.isArray(data.messages)) {
+              mergeRemoteMessages(data.messages);
+            }
           }
         }
-      } catch (e) {
+      } catch {
         // Silent poll error
+      } finally {
+        if (pollControllerRef.current === controller) {
+          pollControllerRef.current = null;
+        }
       }
-    }, pollInterval);
+    };
 
-    return () => clearInterval(interval);
-  }, [sessionId, isOpen]);
+    const scheduleNextPoll = () => {
+      if (disposed) return;
+      timeout = setTimeout(async () => {
+        await poll();
+        scheduleNextPoll();
+      }, isOpenRef.current ? 4000 : 25000);
+    };
+
+    void poll();
+    scheduleNextPoll();
+
+    return () => {
+      disposed = true;
+      if (timeout) clearTimeout(timeout);
+      if (pollControllerRef.current) pollControllerRef.current.abort();
+    };
+  }, [sessionId, isCustomerMode, hasGuestInteraction]);
 
   // 4. Send Message Handler
   async function handleSend(textToSend?: string, presetLabel?: string) {
     const msgText = (textToSend || inputText).trim();
-    if (!msgText || isSending) return;
+    if (!msgText || isSending || isBlocked) return;
 
     setIsSending(true);
     setSendError('');
+    setHasGuestInteraction(true);
 
     const userMsg: Message = {
       id: 'user_' + Date.now(),
@@ -163,33 +422,86 @@ export function ChatWidget() {
       text: msgText,
       preset: presetLabel || null,
       timestamp: new Date().toISOString(),
+      job_id: activeJobContext?.jobId,
+      job_number: activeJobContext?.jobNumber,
+      job_title: activeJobContext?.jobTitle,
     };
 
-    const newHistory = [...messages, userMsg];
-    setMessages(newHistory);
+    pendingMessageIdsRef.current.set(userMsg.id, { text: userMsg.text, preset: userMsg.preset });
+    shouldScrollToEndRef.current = true;
+    replaceMessages([...messagesRef.current, userMsg]);
     setInputText('');
 
     try {
-      localStorage.setItem('tenderlex_chat_history', JSON.stringify(newHistory));
-    } catch {}
-
-    try {
-      const response = await fetch('/api/chat/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId,
-          text: msgText,
-          preset: presetLabel || null,
-          contact: savedContact || contactInput || null,
-        }),
-      });
-      if (!response.ok) throw new Error('Message delivery failed');
-    } catch (err) {
-      setSendError('Сообщение не отправлено. Повторите отправку или свяжитесь с нами через контакты на сайте.');
+      if (isCustomerMode) {
+        const formData = new FormData();
+        formData.append('message', msgText);
+        if (activeJobContext?.jobId) {
+          formData.append('job_id', activeJobContext.jobId);
+        }
+        const response = await fetch('/api/customer/chat', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: customerCsrfRef.current ? { 'x-csrf-token': customerCsrfRef.current } : undefined,
+          body: formData,
+        });
+        if (!response.ok) {
+          const errData = await response.json().catch(() => null);
+          if (response.status === 403) {
+            setIsBlocked(true);
+          }
+          if (response.status === 401) {
+            throw new Error('Сессия в кабинете истекла — обновите страницу, чтобы продолжить диалог.');
+          }
+          throw new Error(errData?.detail || errData?.error || 'Message delivery failed');
+        }
+        const data = await response.json().catch(() => null);
+        if (Array.isArray(data?.messages)) {
+          const mapped: Message[] = data.messages.map((m: any) => ({
+            id: m.id,
+            sender: m.sender_role === 'client' ? 'user' : 'admin',
+            text: m.message,
+            timestamp: m.created_at || new Date().toISOString(),
+            job_id: m.job_id,
+            job_number: m.job_number,
+            job_title: m.job_title,
+            attachments: m.attachments,
+          }));
+          mergeRemoteMessages(mapped);
+        }
+      } else {
+        const response = await fetch('/api/chat/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId,
+            text: msgText,
+            preset: presetLabel || null,
+            contact: savedContact || contactInput || null,
+          }),
+        });
+        if (!response.ok) {
+          const errData = await response.json().catch(() => null);
+          if (response.status === 403) {
+            setIsBlocked(true);
+          }
+          throw new Error(errData?.detail || errData?.error || 'Message delivery failed');
+        }
+        const data = await response.json().catch(() => null);
+        if (data?.work_hours && typeof data.work_hours.is_open === 'boolean') {
+          setWorkHours(data.work_hours);
+        }
+        if (isMessage(data?.message)) mergeRemoteMessages([data.message]);
+        if (isMessage(data?.ai_reply)) mergeRemoteMessages([data.ai_reply]);
+      }
+    } catch (err: any) {
+      const msg = err?.message && err.message !== 'Message delivery failed'
+        ? String(err.message)
+        : 'Сообщение не отправлено. Повторите отправку или свяжитесь с нами через контакты на сайте.';
+      setSendError(msg);
       setInputText(msgText);
-      setMessages(previous => previous.filter(message => message.id !== userMsg.id));
-      try { localStorage.setItem('tenderlex_chat_history', JSON.stringify(messages)); } catch {}
+      pendingMessageIdsRef.current.delete(userMsg.id);
+      replaceMessages(messagesRef.current.filter((message) => message.id !== userMsg.id));
     } finally {
       setIsSending(false);
     }
@@ -197,34 +509,66 @@ export function ChatWidget() {
 
   // 5. Save contact handler
   function saveContactInfo() {
-    if (contactInput.trim()) {
-      setSavedContact(contactInput.trim());
-      localStorage.setItem('tenderlex_chat_contact', contactInput.trim());
-      setShowContactModal(false);
-      // Notify admin about contact update
-      handleSend(`[Контакт сохранен]: ${contactInput.trim()}`);
+    if (!contactConsent) {
+      setContactError('Для сохранения контакта необходимо согласие на обработку персональных данных.');
+      return;
     }
+    const val = contactInput.trim();
+    if (!val) return;
+    const lower = val.toLowerCase();
+    const digits = val.replace(/\D+/g, '');
+    const hasEmail = val.includes('@') && val.split('@').pop()?.includes('.');
+    const hasTg = (val.startsWith('@') && val.length >= 4) || lower.includes('t.me/');
+    const hasPhone = digits.length >= 7 && new Set(digits.split('')).size > 2;
+    if (
+      ['admin', 'test', 'user', 'root', 'x', '123', 'qwerty'].includes(lower) ||
+      (!hasEmail && !hasTg && !hasPhone)
+    ) {
+      setContactError('Укажите реальный телефон (от 7 цифр), email или @username в Telegram.');
+      return;
+    }
+    setContactError('');
+    setSendError('');
+    setSavedContact(val);
+    localStorage.setItem('tenderlex_chat_contact', val);
+    setShowContactModal(false);
+    handleSend(`[Контакт сохранен]: ${val}`);
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    (window as unknown as { __tenderlexChatUnread?: number }).__tenderlexChatUnread = unreadCount;
+    window.dispatchEvent(new CustomEvent('tenderlex_chat_unread', { detail: { count: unreadCount } }));
+  }, [unreadCount]);
+
+  // Inside authenticated /cabinet (and while checking session on /cabinet),
+  // chat opens from the sidebar & task cards so no floating bottom-right pill overlaps buttons.
+  const hideFloatingPill = isCabinetPage && (!authChecked || isCustomerMode);
+  if (hideFloatingPill && !isOpen) {
+    return null;
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 font-sans">
+    <div className="fixed bottom-3 right-3 sm:bottom-4 sm:right-4 z-50 font-sans">
       {/* Floating Action Button (Compact Dismissible Pill) */}
-      {!isOpen && !isPillDismissed && (
+      {!isOpen && !isPillDismissed && !hideFloatingPill && (
         <div className="relative group flex items-center bg-gradient-to-r from-teal-700 via-teal-800 to-slate-900 text-white pl-2.5 pr-1 py-1 rounded-full shadow-lg hover:shadow-teal-900/30 hover:scale-[1.02] transition-all duration-200 border border-teal-400/30">
           <button
             type="button"
-            onClick={() => setIsOpen(true)}
+            onClick={openChat}
             className="flex items-center gap-1.5 cursor-pointer text-left py-0.5"
-            aria-label="Чат с поддержкой TenderLex"
+            aria-label="Чат со специалистом TenderLex"
           >
             <div className="relative flex items-center justify-center w-5 h-5 rounded-full bg-white/20 text-white shrink-0">
               <MessageSquare className="w-3 h-3" />
-              <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full animate-ping" />
+              {unreadCount > 0 ? (
+                <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full motion-safe:animate-ping" />
+              ) : null}
               <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full border border-teal-800" />
             </div>
 
             <span className="font-bold text-[11px] text-white pr-0.5">
-              Чат
+              {isCustomerMode ? 'Диалог со специалистом' : 'Чат'}
             </span>
 
             {unreadCount > 0 && (
@@ -251,22 +595,22 @@ export function ChatWidget() {
 
       {/* Chat Window Modal */}
       {isOpen && (
-        <div className="w-[360px] sm:w-[400px] h-[540px] max-h-[85vh] bg-white rounded-3xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-200">
+        <div className="w-[calc(100vw-24px)] max-w-[380px] sm:w-[410px] sm:max-w-[410px] h-[550px] max-h-[82dvh] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-200">
           {/* Header */}
-          <div className="bg-gradient-to-r from-slate-900 via-teal-950 to-teal-900 text-white px-4 py-3.5 flex items-center justify-between border-b border-teal-800/40">
+          <div className="bg-[#174b3f] text-white px-4 py-3.5 flex items-center justify-between border-b border-[#103a31]">
             <div className="flex items-center gap-3">
-              <div className="relative w-10 h-10 rounded-2xl bg-teal-600/30 border border-teal-400/30 flex items-center justify-center shrink-0 overflow-hidden">
+              <div className="relative w-10 h-10 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center shrink-0 overflow-hidden">
                 <img src="/tenderlex-logo.png" alt="TenderLex" className="w-8 h-8 object-contain" />
-                <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-400 rounded-full ring-2 ring-slate-900" />
+                <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-400 rounded-full ring-2 ring-[#174b3f]" />
               </div>
               <div className="flex flex-col">
                 <h3 className="font-extrabold text-sm text-white flex items-center gap-1.5">
-                  Поддержка TenderLex
+                  {isCustomerMode ? 'Специалист TenderLex' : 'Поддержка TenderLex'}
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
                 </h3>
                 <span className="text-[11px] text-teal-200/90 font-medium flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
-                  Администратор онлайн
+                  {isCustomerMode ? 'Поддержка и эксперты · Онлайн' : 'Специалисты онлайн'}
                 </span>
               </div>
             </div>
@@ -283,7 +627,7 @@ export function ChatWidget() {
               </PublicSiteLink>
               <button
                 type="button"
-                onClick={() => setIsOpen(false)}
+                onClick={closeChat}
                 title="Закрыть чат"
                 aria-label="Закрыть чат"
                 className="text-slate-300 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
@@ -294,32 +638,99 @@ export function ChatWidget() {
           </div>
 
           {/* Quick Presets Bar */}
-          <div className="bg-slate-50 border-b border-slate-200/80 p-2.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-            {PRESETS.map((p) => (
+          {!isCustomerMode ? (
+            <div className="bg-slate-50 border-b border-slate-200/80 p-2.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+              {PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => handleSend(p.text, p.label)}
+                  className="shrink-0 bg-white hover:bg-teal-50 text-slate-700 hover:text-teal-800 border border-slate-200 hover:border-teal-300 font-bold text-[11px] px-2.5 py-1.5 rounded-xl transition-all shadow-2xs"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          ) : messages.length === 0 && !activeJobContext ? (
+            <div className="bg-[#f8faf6] border-b border-[#e5e9e2] px-3 py-2 space-y-1.5">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                Быстрый выбор темы
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {CABINET_TOPIC_PROMPTS.map((topic) => (
+                  <button
+                    key={topic.id}
+                    type="button"
+                    onClick={() => {
+                      setInputText(topic.draft);
+                      chatInputRef.current?.focus();
+                    }}
+                    className="bg-white hover:bg-[#f4f8ef] text-[#174b3f] border border-[#cde0be] font-semibold text-[11px] px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                  >
+                    {topic.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {/* Night / Off-hours Notice */}
+          {!isCustomerMode && workHours && !workHours.is_open && workHours.notice && (
+            <div className="bg-amber-50 border-b border-amber-200/80 px-3.5 py-2 text-[11px] leading-snug text-amber-900">
+              {workHours.notice}
+            </div>
+          )}
+
+          {/* Active Job Context Tag Banner */}
+          {activeJobContext && (
+            <div className="bg-[#f2f5ee] border-b border-[#dfe5dc] px-3.5 py-1.5 flex items-center justify-between text-xs text-[#103a31]">
+              <div className="flex items-center gap-1.5 truncate">
+                <Tag className="w-3 h-3 shrink-0 text-[#174b3f]" aria-hidden="true" />
+                <span className="font-bold text-[#174b3f] shrink-0">
+                  Задача {activeJobContext.jobNumber ? `#${activeJobContext.jobNumber}` : ''}:
+                </span>
+                <span className="truncate text-slate-600">{activeJobContext.jobTitle || 'Вопрос по задаче'}</span>
+              </div>
               <button
-                key={p.id}
-                onClick={() => handleSend(p.text, p.label)}
-                className="shrink-0 bg-white hover:bg-teal-50 text-slate-700 hover:text-teal-800 border border-slate-200 hover:border-teal-300 font-bold text-[11px] px-2.5 py-1.5 rounded-xl transition-all shadow-2xs"
+                type="button"
+                onClick={() => setActiveJobContext(null)}
+                className="ml-2 p-0.5 text-[#174b3f] hover:text-[#103a31] hover:bg-[#e7efe0] rounded cursor-pointer shrink-0 transition-colors"
+                title="Сбросить привязку к задаче"
+                aria-label="Сбросить привязку к задаче"
               >
-                {p.label}
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
-            ))}
-          </div>
+            </div>
+          )}
 
           {/* Messages Feed */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-slate-50/50">
+          <div ref={messageFeedRef} className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-slate-50/50">
+            {isCustomerMode && messages.length === 0 ? (
+              <div className="p-3.5 rounded-2xl bg-white border border-slate-200/90 text-xs text-slate-700 leading-relaxed shadow-2xs space-y-1">
+                <div className="font-bold text-slate-900">
+                  Здравствуйте{customerName ? `, ${customerName}` : ''}!
+                </div>
+                <p className="text-slate-600">
+                  Напишите ваш вопрос или выберите тему выше — специалист TenderLex поможет с закупкой, расчётом или оплатой.
+                </p>
+              </div>
+            ) : null}
             {messages.map((m) => {
               const isAdmin = m.sender === 'admin';
               return (
-                <div
-                  key={m.id}
-                  className={`flex flex-col ${isAdmin ? 'items-start' : 'items-end'}`}
-                >
+                <div key={m.id} className={`flex flex-col ${isAdmin ? 'items-start' : 'items-end'}`}>
+                  {/* Task context badge if message is tied to a specific job */}
+                  {m.job_id && (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-[#174b3f] bg-[#e7efe0] font-semibold px-2 py-0.5 rounded-md mb-1 max-w-[85%] truncate">
+                      <Tag className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
+                      <span className="truncate">Задача #{m.job_number || m.job_id.slice(0, 4)}: {m.job_title}</span>
+                    </span>
+                  )}
+
                   <div
-                    className={`max-w-[85%] p-3 rounded-2xl text-xs leading-relaxed ${
+                    className={`max-w-[88%] p-3 rounded-2xl text-xs leading-relaxed ${
                       isAdmin
                         ? 'bg-white text-slate-800 border border-slate-200/90 shadow-2xs rounded-tl-xs'
-                        : 'bg-teal-700 text-white shadow-sm rounded-tr-xs'
+                        : 'bg-[#174b3f] text-white shadow-sm rounded-tr-xs'
                     }`}
                   >
                     {m.preset && (
@@ -328,9 +739,32 @@ export function ChatWidget() {
                       </span>
                     )}
                     <p className="whitespace-pre-wrap">{m.text}</p>
+
+                    {/* Attachments */}
+                    {m.attachments && m.attachments.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-slate-100/60 flex flex-wrap gap-1.5">
+                        {m.attachments.map((att) => (
+                          <a
+                            key={att.index}
+                            href={att.customer_url || att.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            download
+                            className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                              isAdmin
+                                ? 'bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200'
+                                : 'bg-teal-800 hover:bg-teal-900 text-white border border-teal-600'
+                            }`}
+                          >
+                            <Download size={11} />
+                            <span>{att.name}</span>
+                          </a>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <span className="text-[10px] text-slate-400 mt-1 px-1">
-                    {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {new Date(m.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
                   </span>
                 </div>
               );
@@ -338,54 +772,97 @@ export function ChatWidget() {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Contact Banner */}
-          {!savedContact ? (
-            <div className="bg-amber-50 border-t border-amber-200/80 px-3.5 py-2 flex items-center justify-between text-xs text-amber-900">
-              <span className="text-[11px] font-medium">Оставьте контакт для ответа в Telegram / E-mail</span>
-              <button
-                onClick={() => setShowContactModal(true)}
-                className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] px-2 py-1 rounded-lg transition-colors shadow-2xs"
-              >
-                Указать
-              </button>
-            </div>
-          ) : (
-            <div className="bg-teal-50 border-t border-teal-200/80 px-3.5 py-1.5 flex items-center justify-between text-[11px] text-teal-900">
-              <span className="truncate">Контакт: <strong className="font-bold">{savedContact}</strong></span>
-              <button
-                onClick={() => setShowContactModal(true)}
-                className="text-teal-700 underline hover:text-teal-900 text-[10px]"
-              >
-                изменить
-              </button>
-            </div>
+          {/* Contact Banner (only for guest mode) */}
+          {!isCustomerMode && (
+            <>
+              {!savedContact ? (
+                <div className="bg-amber-50 border-t border-amber-200/80 px-3.5 py-2 flex items-center justify-between text-xs text-amber-900">
+                  <span className="text-[11px] font-medium">Оставьте контакт для ответа в Telegram / E-mail</span>
+                  <button
+                    onClick={() => setShowContactModal(true)}
+                    className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] px-2 py-1 rounded-lg transition-colors shadow-2xs cursor-pointer"
+                  >
+                    Указать
+                  </button>
+                </div>
+              ) : (
+                <div className="bg-teal-50 border-t border-teal-200/80 px-3.5 py-1.5 flex items-center justify-between text-[11px] text-teal-900">
+                  <span className="truncate">
+                    Контакт: <strong className="font-bold">{savedContact}</strong>
+                  </span>
+                  <button
+                    onClick={() => setShowContactModal(true)}
+                    className="text-teal-700 underline hover:text-teal-900 text-[10px] cursor-pointer"
+                  >
+                    изменить
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           {/* Contact Input Modal Overlay */}
           {showContactModal && (
             <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-20">
-              <div className="bg-white rounded-2xl p-4 w-full max-w-[320px] shadow-2xl border border-slate-200">
+              <div className="bg-white rounded-2xl p-4 w-full max-w-[330px] shadow-2xl border border-slate-200">
                 <h4 className="font-extrabold text-sm text-slate-900 mb-1">Оставайтесь на связи</h4>
                 <p className="text-xs text-slate-500 mb-3">
-                  Укажите ваш телефон, email или логин Telegram, чтобы администратор смог ответить вам при закрытии вкладки.
+                  Укажите ваш телефон, email или логин Telegram, чтобы специалист смог ответить вам при закрытии вкладки.
                 </p>
                 <input
                   type="text"
                   placeholder="+7 (999) 000-00-00 или @username"
                   value={contactInput}
-                  onChange={(e) => setContactInput(e.target.value)}
-                  className="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs mb-3 focus:outline-none focus:border-teal-600"
+                  onChange={(e) => {
+                    setContactInput(e.target.value);
+                    if (contactError) setContactError('');
+                  }}
+                  className="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs mb-2.5 focus:outline-none focus:border-teal-600"
                 />
+                <label className="flex items-start gap-2 text-[11px] leading-snug text-slate-600 mb-3 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={contactConsent}
+                    onChange={(e) => {
+                      setContactConsent(e.target.checked);
+                      if (contactError) setContactError('');
+                    }}
+                    className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 text-teal-700 focus:ring-teal-600 shrink-0"
+                    required
+                  />
+                  <span>
+                    Даю{' '}
+                    <a href="/personal-data" target="_blank" rel="noreferrer" className="text-teal-700 underline font-semibold hover:text-teal-900">
+                      согласие на обработку персональных данных
+                    </a>{' '}
+                    в соответствии с{' '}
+                    <a href="/privacy" target="_blank" rel="noreferrer" className="text-teal-700 underline font-semibold hover:text-teal-900">
+                      Политикой конфиденциальности
+                    </a>
+                    .
+                  </span>
+                </label>
+                {contactError ? (
+                  <p role="alert" className="text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5 mb-2.5">
+                    {contactError}
+                  </p>
+                ) : null}
                 <div className="flex items-center justify-end gap-2">
                   <button
-                    onClick={() => setShowContactModal(false)}
-                    className="px-3 py-1.5 text-xs text-slate-600 hover:text-slate-900 font-bold"
+                    type="button"
+                    onClick={() => {
+                      setContactError('');
+                      setShowContactModal(false);
+                    }}
+                    className="px-3 py-1.5 text-xs text-slate-600 hover:text-slate-900 font-bold cursor-pointer"
                   >
                     Отмена
                   </button>
                   <button
+                    type="button"
+                    disabled={!contactConsent}
                     onClick={saveContactInfo}
-                    className="bg-teal-700 hover:bg-teal-800 text-white font-extrabold text-xs px-3 py-1.5 rounded-xl shadow-xs"
+                    className="bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white font-extrabold text-xs px-3 py-1.5 rounded-xl shadow-xs cursor-pointer"
                   >
                     Сохранить
                   </button>
@@ -394,7 +871,14 @@ export function ChatWidget() {
             </div>
           )}
 
-          {sendError ? <p role="alert" className="px-3 py-2 text-xs text-rose-700 bg-rose-50">{sendError}</p> : null}
+          {isBlocked ? (
+            <p role="alert" className="px-3 py-2 text-xs text-rose-700 bg-rose-50 border-t border-rose-200">
+              Отправка сообщений ограничена администратором.
+            </p>
+          ) : sendError ? (
+            <p role="alert" className="px-3 py-2 text-xs text-rose-700 bg-rose-50">{sendError}</p>
+          ) : null}
+
           {/* Footer Input Form */}
           <form
             onSubmit={(e) => {
@@ -404,21 +888,42 @@ export function ChatWidget() {
             className="p-2.5 bg-white border-t border-slate-200 flex items-center gap-2"
           >
             <input
+              ref={chatInputRef}
               type="text"
-              placeholder="Напишите сообщение администратору..."
+              disabled={isBlocked}
+              placeholder={
+                isBlocked
+                  ? 'Отправка сообщений ограничена'
+                  : activeJobContext
+                    ? `Сообщение по задаче #${activeJobContext.jobNumber || ''}...`
+                    : 'Напишите сообщение специалисту...'
+              }
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              className="flex-1 bg-slate-100 focus:bg-white text-slate-900 placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-transparent focus:border-teal-500 focus:outline-none transition-all"
+              className="flex-1 bg-slate-100 focus:bg-white disabled:opacity-60 text-slate-900 placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-transparent focus:border-[#174b3f] focus:outline-none transition-all"
             />
             <button
               type="submit"
-              disabled={!inputText.trim() || isSending}
-              className="bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white p-2.5 rounded-xl transition-all shadow-xs shrink-0"
+              disabled={isBlocked || !inputText.trim() || isSending}
+              className="bg-[#174b3f] hover:bg-[#103a31] disabled:opacity-50 text-white p-2.5 rounded-xl transition-all shadow-xs shrink-0 cursor-pointer"
               aria-label="Отправить сообщение"
             >
               <Send className="w-4 h-4" />
             </button>
           </form>
+          {!isCustomerMode && (
+            <p className="px-3 pb-2 pt-0 bg-white text-[10px] leading-tight text-slate-400 text-center">
+              Отправляя контакт и сообщение, вы даёте{' '}
+              <a href="/personal-data" target="_blank" rel="noreferrer" className="underline hover:text-teal-700">
+                согласие на обработку персональных данных
+              </a>{' '}
+              в соответствии с{' '}
+              <a href="/privacy" target="_blank" rel="noreferrer" className="underline hover:text-teal-700">
+                Политикой конфиденциальности
+              </a>
+              .
+            </p>
+          )}
         </div>
       )}
     </div>

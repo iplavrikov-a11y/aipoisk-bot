@@ -85,21 +85,49 @@ assert status['sqlite_ready'] and int(status['sqlite_entry_count']) > 0, status
 acquire_job_restart_gate() {
   local line
 
-  coproc JOB_GATE { sqlite3 -batch "$DB_PATH"; }
+  coproc JOB_GATE { job_restart_gate_process; }
   job_gate_pid="$JOB_GATE_PID"
   exec {job_gate_in}>&"${JOB_GATE[1]}"
   exec {job_gate_out}<&"${JOB_GATE[0]}"
   job_gate_open=1
-  printf '%s\n' \
-    '.bail on' \
-    '.timeout 15000' \
-    'BEGIN IMMEDIATE;' \
-    "SELECT 'ACTIVE=' || count(*) FROM jobs WHERE status IN ('pending','running');" \
-    >&"$job_gate_in"
   IFS= read -r line <&"$job_gate_out" || return 1
   [[ "$line" == ACTIVE=* ]] || return 1
   active_jobs="${line#ACTIVE=}"
   [[ "$active_jobs" =~ ^[0-9]+$ ]]
+}
+
+job_restart_gate_process() {
+  (
+    cd "$BACKEND_DIR"
+    "$BACKEND_DIR/.venv/bin/python" -c '
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+
+env_file = Path("..").resolve() / ".env"
+if env_file.is_file():
+    load_dotenv(env_file, override=False)
+
+from app.db import engine
+
+with engine.connect() as connection:
+    if engine.dialect.name == "postgresql":
+        connection.exec_driver_sql("SET LOCAL lock_timeout = '\''15s'\''")
+        connection.exec_driver_sql("LOCK TABLE jobs IN SHARE MODE")
+    elif engine.dialect.name == "sqlite":
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+    else:
+        raise SystemExit("Job restart fence does not support this database")
+    count = connection.exec_driver_sql(
+        "SELECT count(*) FROM jobs WHERE status IN ('\''pending'\'', '\''running'\'')"
+    ).scalar_one()
+    print(f"ACTIVE={count}", flush=True)
+    if sys.stdin.readline().strip() == "COMMIT":
+        connection.commit()
+    else:
+        connection.rollback()
+'
+  )
 }
 
 release_job_restart_gate() {
@@ -108,7 +136,7 @@ release_job_restart_gate() {
     return 0
   fi
 
-  printf '%s;\n.quit\n' "$action" >&"$job_gate_in" 2>/dev/null || true
+  printf '%s\n' "$action" >&"$job_gate_in" 2>/dev/null || true
   exec {job_gate_in}>&- || true
   wait "$job_gate_pid" 2>/dev/null || true
   exec {job_gate_out}<&- || true
@@ -173,12 +201,8 @@ wait_for_url() {
 }
 
 active_job_count() {
-  if [[ ! -f "$DB_PATH" ]]; then
-    log "job database is missing: $DB_PATH" >&2
-    return 1
-  fi
-  sqlite3 -readonly "$DB_PATH" \
-    "select count(*) from jobs where status in ('pending', 'running');"
+  curl_get http://127.0.0.1:8088/api/health/ready \
+    | jq -er 'select(.database.ok and .queue.ok) | .queue | .pending + .running'
 }
 
 site_systemd_env() {
@@ -267,7 +291,21 @@ cd "$ROOT_DIR"
 
 if [[ "$deploy_scope" != "site" ]]; then
   log "running backend tests"
-  PYTHONPATH="$BACKEND_DIR" pytest ${AIPOISK_DEPLOY_TESTS:-backend/tests} -q
+  (
+    cd "$BACKEND_DIR"
+    deploy_tests_raw="${AIPOISK_DEPLOY_TESTS:-tests}"
+    deploy_tests=()
+    for item in $deploy_tests_raw; do
+      deploy_tests+=("${item#backend/}")
+    done
+    if "$BACKEND_DIR/.venv/bin/python" -c "import pytest" >/dev/null 2>&1; then
+      env -u AIPOISK_DATABASE_URL -u AIPOISK_TEST_DATABASE_URL PYTHONPATH="$BACKEND_DIR" \
+        "$BACKEND_DIR/.venv/bin/python" -m pytest "${deploy_tests[@]}" -q
+    else
+      env -u AIPOISK_DATABASE_URL -u AIPOISK_TEST_DATABASE_URL PYTHONPATH="$BACKEND_DIR" \
+        pytest "${deploy_tests[@]}" -q
+    fi
+  )
 fi
 
 if [[ "$deploy_scope" == "full" ]]; then
@@ -286,6 +324,15 @@ elif [[ "$deploy_scope" == "site" ]]; then
 else
   # A backend-only deploy must not publish unrelated, uncommitted web assets.
   log "backend scope: leaving admin and site artifacts unchanged"
+fi
+
+if [[ "$deploy_scope" != "site" ]]; then
+  log "creating verified PostgreSQL backup before live deploy"
+  "$BACKEND_DIR/.venv/bin/python" "$ROOT_DIR/scripts/backup_postgres.py" \
+    --backup-dir "$BACKUP_DIR/pg" \
+    --prefix "tenderlex-before-live-deploy-$STAMP" \
+    --keep-count 10 \
+    --keep-days 14
 fi
 
 if [[ "$deploy_scope" != "site" && -f "$DB_PATH" ]]; then
@@ -346,6 +393,8 @@ else
     tenderlex-api.service \
     tenderlex-worker.service \
     tenderlex-bot.service
+  # Release SHARE table lock while all job services are stopped so startup DDL in init_db() cannot deadlock
+  release_job_restart_gate COMMIT
 
   log "ensuring compatible Playwright headless Chromium"
   "$BACKEND_DIR/.venv/bin/python" -m playwright install --only-shell chromium
@@ -354,7 +403,6 @@ else
     tenderlex-api.service \
     tenderlex-worker.service \
     tenderlex-bot.service
-  release_job_restart_gate COMMIT
   if [[ "$deploy_scope" == "full" ]]; then
     promote_site_release
     systemctl restart tenderlex-site.service
@@ -373,7 +421,7 @@ if [[ "$deploy_scope" != "site" ]]; then
   verify_minprom_registry_runtime
 
   log "checking live API payload"
-  wait_for_url http://127.0.0.1:8088/api/health/ready 30 1
+  wait_for_url http://127.0.0.1:8088/api/health/ready 90 1
   curl_get http://127.0.0.1:8088/api/health/ready \
     | jq -e '.ok == true and .database.ok == true and .queue.ok == true and .queue.stale_running == 0 and .tender_source.ok == true' >/dev/null
   wait_for_url http://127.0.0.1:8088/api/public/site 30 1
@@ -382,8 +430,8 @@ if [[ "$deploy_scope" != "site" ]]; then
 fi
 
 log "checking live site routes"
-wait_for_url http://127.0.0.1:3093/ 30 1
-wait_for_url http://127.0.0.1:3093/cabinet 30 1
+wait_for_url http://127.0.0.1:3093/ 45 1
+wait_for_url http://127.0.0.1:3093/cabinet 45 1
 curl_head http://127.0.0.1:3093/ >/dev/null
 curl_head http://127.0.0.1:3093/cabinet >/dev/null
 

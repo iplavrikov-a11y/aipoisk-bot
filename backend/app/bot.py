@@ -3,12 +3,15 @@ import os
 import sys
 import time
 import json
+import io
 import re
 import asyncio
 import urllib.parse
 
 import logging
 import shutil
+import tempfile
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
@@ -20,6 +23,8 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, ForceReply, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, MenuButtonDefault, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .account_linking import (
     TELEGRAM_TO_WEB,
@@ -33,12 +38,18 @@ from .billing import (
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CONFIRMATION_EXPIRED,
     STATUS_CUSTOMER_DECLINED,
+    KIND_CUSTOM_BATCH_REPORT,
     KIND_EXACT_PRODUCT,
+    KIND_PRICE_MONITORING,
     KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH,
     KIND_SUPPLIER_SEARCH_EXTRA,
     BillingError,
+    calculate_deposit_bonus_kopeks,
+    cancel_price_monitoring_job,
+    cancel_exact_product_job,
     charge_job_reservation,
+    client_has_custom_tariffs,
     client_uses_trial_access,
     client_service_balance_summary,
     effective_price_kopeks,
@@ -46,12 +57,20 @@ from .billing import (
     expire_stale_confirmations,
     grant_money_balance,
     job_has_unsettled_reservation,
+    list_deposit_packages,
     list_tariffs,
     release_job_reservation,
     reserve_job_units,
     tariff_to_dict,
 )
 from .config import config
+from .position_selection import (
+    AWAITING_EXACT_SELECTION,
+    AWAITING_POSITION_SELECTION,
+    confirm_position_selection,
+    read_selection,
+    toggle_exact_draft_position,
+)
 from .db import SessionLocal, init_db
 from .document_parser import sanitize_filename
 from .jobs import (
@@ -70,6 +89,7 @@ from .jobs import (
     job_dir,
     package_job_output_files,
     package_job_output_items,
+    sanitize_customer_error,
     update_dobor_context_dict,
 )
 from .main import create_additional_supplier_search_for_client, create_supplier_search_from_exact_product, job_can_find_more_suppliers
@@ -84,8 +104,42 @@ from .legal import (
     TERMS_URL,
     record_legal_acceptance,
 )
-from .models import BillingTransaction, Client, Job, now_utc
-from .procurement_sources import source_label, source_payloads_from_text
+from .models import (
+    BillingTransaction,
+    Client,
+    Invoice,
+    Job,
+    JobChatMessage,
+    SupportDialogState,
+    SupportGuestSession,
+    SystemSettings,
+    TariffPackage,
+    YooKassaPayment,
+    now_utc,
+)
+from .dadata_client import enrich_company_by_inn
+from .invoice_service import (
+    SELLER_ACCOUNT,
+    SELLER_BANK_BIK,
+    SELLER_BANK_CORR,
+    SELLER_BANK_NAME,
+    SELLER_INN,
+    SELLER_NAME,
+    format_date_ru,
+    generate_invoice_pdf,
+    generate_invoice_xlsx,
+    next_invoice_number,
+    notify_admin_telegram as notify_admin_invoice_telegram,
+)
+from .yookassa_service import (
+    YooKassaError,
+    create_yookassa_payment,
+    fetch_yookassa_payment,
+    notify_admin_payment_attempt,
+    notify_admin_payment_success,
+    notify_admin_payment_canceled,
+)
+from .procurement_sources import NOTICE_NUMBER_RE, URL_RE, source_label, source_payloads_from_text
 from .repository import client_access_error, get_client_by_telegram_id, get_or_create_settings, get_or_create_trial_client_by_telegram_id, seed_owner_client, supplier_target_for_client
 from .result_offers import (
     CONFIRMATION_KIND_REGISTRY_FALLBACK,
@@ -101,16 +155,49 @@ from .result_offers import (
     fail_job_result_offer_delivery,
     result_offer_to_dict,
 )
+from .support_chat import (
+    DEFAULT_ADMIN_SESSION_TTL_HOURS,
+    DEFAULT_CLIENT_SESSION_TTL_HOURS,
+    clear_active_tg_session,
+    close_support_dialog,
+    deliver_admin_reply,
+    deliver_client_telegram_message,
+    get_active_tg_session,
+    get_configured_support_group_id,
+    get_dialog_profile,
+    get_or_create_guest_session,
+    is_admin_telegram_user,
+    is_support_group_chat,
+    is_telegram_user_blocked,
+    list_recent_dialogs_for_bot,
+    lookup_tg_reply_target,
+    lookup_topic_dialog,
+    save_attachment_bytes,
+    set_active_tg_session,
+    test_support_group_connection,
+    unread_dialogs_count_for_admin,
+    validate_guest_session_id,
+)
 
 router = Router(name="private_customer_bot")
+support_group_router = Router(name="support_group_forum")
 group_safety_router = Router(name="group_safety")
 router.message.filter(F.chat.type == ChatType.PRIVATE)
 router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
+support_group_router.message.filter(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
+support_group_router.callback_query.filter(F.message.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
 group_safety_router.message.filter(F.chat.type != ChatType.PRIVATE)
 group_safety_router.callback_query.filter(F.message.chat.type != ChatType.PRIVATE)
 logger = logging.getLogger(__name__)
 PENDING_MODES: dict[int, str] = {}
 PENDING_SUPPLIER_POLICIES: dict[int, str] = {}
+PENDING_GEO: dict[int, tuple[str, int | None]] = {}
+PENDING_GEO_INPUT: set[int] = set()
+PENDING_CUSTOM_TOPUP: set[int] = set()
+PENDING_B2B_CUSTOM_AMOUNT: set[int] = set()
+PENDING_B2B_INN: dict[int, dict] = {}
+PENDING_B2B_NAME: dict[int, dict] = {}
+PENDING_INVOICE_PROOF: dict[int, str] = {}
 SCENARIO_SUPPLIERS = "supplier_search"
 SCENARIO_REPORT = "report"
 SCENARIO_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
@@ -161,14 +248,17 @@ INDIVIDUAL_TERMS_NOTE = (
     "Возможен индивидуальный подход: стоимость поиска, анализа и добора можно настроить под вашу задачу."
 )
 BOT_PAYMENT_INSTRUCTIONS = (
-    "🧾 Чтобы пополнить баланс:\n"
-    "1. Выберите подходящий пакет пополнения или произвольную сумму.\n"
-    "2. Напишите владельцу сервиса в Telegram (кнопка ниже).\n"
-    "3. После перевода на карту или по реквизитам баланс с бонусом будет зачислен моментально."
+    "🧾 <b>Способы оплаты и пополнения баланса:</b>\n"
+    "1. <b>Онлайн через ЮKassa:</b> банковские карты (МИР, Visa, Mastercard), СБП, SberPay, Mir Pay — моментальное зачисление с бонусом.\n"
+    "2. <b>По безналичному расчёту:</b> автоматическое выставление счёта на оплату для юридических лиц и ИП с печатью и УПД по ЭДО."
 )
 OWNER_ALERT_STATUSES = {"failed", "needs_review"}
 OWNER_ALERTED_KEYS: set[tuple[str, str]] = set()
-BOT_TERMINAL_JOB_STATUSES = set(TERMINAL_JOB_STATUSES) | {"delivery_expired"}
+BOT_TERMINAL_JOB_STATUSES = set(TERMINAL_JOB_STATUSES) | {
+    "delivery_expired",
+    AWAITING_EXACT_SELECTION,
+    AWAITING_POSITION_SELECTION,
+}
 
 
 @dataclass
@@ -178,6 +268,9 @@ class PendingBatch:
     files: list[tuple[str, bytes]]
     sources: list[dict] = field(default_factory=list)
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL
+    delivery_city: str = ""
+    geo_radius_km: int | None = None
+    updated_at: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -204,8 +297,8 @@ JOB_DELIVERY_LOCKS: dict[str, asyncio.Lock] = {}
 DELIVERED_JOB_IDS: set[str] = set()
 BATCH_RUNNING_CHATS: set[int] = set()
 BOT_CANCEL_NOTIFIED_JOBS: set[str] = set()
-TEXT_TZ_MIN_CHARS = 50
-TEXT_TZ_MIN_WORDS = 6
+TEXT_TZ_MIN_CHARS = 4
+TEXT_TZ_MIN_WORDS = 1
 TELEGRAM_CAPTION_LIMIT = 1024
 ALLOWED_DOCUMENT_EXTENSIONS = {
     ".docx", ".doc", ".pdf", ".xlsx", ".xls", ".rtf", ".odt",
@@ -260,16 +353,85 @@ def _scenario_job_mode(scenario: str) -> str:
     return MODE_SUPPLIER_SEARCH
 
 
+MAX_PENDING_BOT_STATE_ENTRIES = 2048
+PENDING_UPLOAD_TTL_SECONDS = 6 * 3600
+
+
+def _prune_pending_bot_maps(*, now_mono: float | None = None) -> None:
+    now_ts = time.monotonic() if now_mono is None else now_mono
+    stale_upload_chats = [
+        cid
+        for cid, batch in list(PENDING_UPLOADS.items())
+        if cid not in BATCH_RUNNING_CHATS and (now_ts - float(getattr(batch, "updated_at", now_ts))) > PENDING_UPLOAD_TTL_SECONDS
+    ]
+    for cid in stale_upload_chats:
+        PENDING_UPLOADS.pop(cid, None)
+    while len(PENDING_UPLOADS) > MAX_PENDING_BOT_STATE_ENTRIES:
+        oldest_cid = next((cid for cid in PENDING_UPLOADS if cid not in BATCH_RUNNING_CHATS), None)
+        if oldest_cid is None:
+            break
+        PENDING_UPLOADS.pop(oldest_cid, None)
+
+    for state_dict in (
+        PENDING_MODES,
+        PENDING_SUPPLIER_POLICIES,
+        PENDING_GEO,
+        PENDING_B2B_INN,
+        PENDING_B2B_NAME,
+        PENDING_INVOICE_PROOF,
+    ):
+        while len(state_dict) > MAX_PENDING_BOT_STATE_ENTRIES:
+            state_dict.pop(next(iter(state_dict)), None)
+
+    for state_set in (
+        PENDING_GEO_INPUT,
+        PENDING_CUSTOM_TOPUP,
+        PENDING_B2B_CUSTOM_AMOUNT,
+        DELIVERED_JOB_IDS,
+        BOT_CANCEL_NOTIFIED_JOBS,
+    ):
+        if len(state_set) > MAX_PENDING_BOT_STATE_ENTRIES:
+            excess = len(state_set) - (MAX_PENDING_BOT_STATE_ENTRIES // 2)
+            for item in list(state_set)[:excess]:
+                state_set.discard(item)
+
+    for lock_map in (CHAT_UPLOAD_LOCKS, JOB_DELIVERY_LOCKS):
+        if len(lock_map) > MAX_PENDING_BOT_STATE_ENTRIES:
+            for key, lock in list(lock_map.items()):
+                if not lock.locked():
+                    lock_map.pop(key, None)
+                if len(lock_map) <= (MAX_PENDING_BOT_STATE_ENTRIES // 2):
+                    break
+
+
 def _clear_pending_state(chat_id: int) -> bool:
-    had_state = any(chat_id in state for state in (PENDING_UPLOADS, PENDING_MODES, PENDING_SUPPLIER_POLICIES))
+    _prune_pending_bot_maps()
+    had_state = (
+        any(chat_id in state for state in (PENDING_UPLOADS, PENDING_MODES, PENDING_SUPPLIER_POLICIES, PENDING_GEO, PENDING_B2B_INN, PENDING_B2B_NAME, PENDING_INVOICE_PROOF))
+        or chat_id in PENDING_GEO_INPUT
+        or chat_id in PENDING_CUSTOM_TOPUP
+        or chat_id in PENDING_B2B_CUSTOM_AMOUNT
+    )
     PENDING_UPLOADS.pop(chat_id, None)
     PENDING_MODES.pop(chat_id, None)
     PENDING_SUPPLIER_POLICIES.pop(chat_id, None)
+    PENDING_GEO.pop(chat_id, None)
+    PENDING_GEO_INPUT.discard(chat_id)
+    PENDING_CUSTOM_TOPUP.discard(chat_id)
+    PENDING_B2B_CUSTOM_AMOUNT.discard(chat_id)
+    PENDING_B2B_INN.pop(chat_id, None)
+    PENDING_B2B_NAME.pop(chat_id, None)
+    PENDING_INVOICE_PROOF.pop(chat_id, None)
     return had_state
 
 
 def _select_scenario(chat_id: int, scenario: str) -> bool:
+    _prune_pending_bot_maps()
     expected_mode = _scenario_job_mode(scenario)
+    from .geo_policy import GEO_SUPPORTED_MODES
+    PENDING_GEO_INPUT.discard(chat_id)
+    if expected_mode not in GEO_SUPPORTED_MODES:
+        PENDING_GEO.pop(chat_id, None)
     pending = PENDING_UPLOADS.get(chat_id)
     cleared_incompatible = bool(pending and pending.mode != expected_mode)
     if cleared_incompatible:
@@ -298,29 +460,78 @@ def _supplier_policy_label(policy: str) -> str:
     return "Обычный поиск"
 
 
-def main_inline_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers")],
-            [InlineKeyboardButton(text="🎯 Подбор товара и аналогов", callback_data="scenario:exact_product")],
-            [InlineKeyboardButton(text="📄 Анализ закупки (44/223-ФЗ)", callback_data="scenario:report")],
-            [InlineKeyboardButton(text="📄🔎 Анализ + поиск поставщиков", callback_data="scenario:analysis_and_suppliers")],
-            [InlineKeyboardButton(text="🎁 Пригласить (+1 000 ₽)", callback_data="open_referral")],
-            [
-                InlineKeyboardButton(text="📊 Кабинет", callback_data="open_cabinet"),
-                InlineKeyboardButton(text="🕘 Задачи", callback_data="open_status"),
-            ],
-            [
-                InlineKeyboardButton(text="💳 Тарифы", callback_data="open_tariffs"),
-                InlineKeyboardButton(text="❓ Помощь", callback_data="open_help"),
-                InlineKeyboardButton(text="📞 Контакты", callback_data="open_contacts"),
-            ],
-        ]
-    )
+def _admin_menu_context(tg_user_id: str | int | None = None) -> tuple[bool, int]:
+    uid = str(tg_user_id or "").strip()
+    if not uid:
+        return False, 0
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            return False, 0
+        return True, unread_dialogs_count_for_admin(db)
+    except Exception:
+        return False, 0
+    finally:
+        db.close()
 
 
-def create_inline_keyboard() -> InlineKeyboardMarkup:
-    return main_inline_keyboard()
+def main_inline_keyboard(
+    tg_user_id: str | int | None = None,
+    *,
+    is_admin: bool | None = None,
+    unread_dialogs: int | None = None,
+) -> InlineKeyboardMarkup:
+    if is_admin is None:
+        is_admin, detected_unread = _admin_menu_context(tg_user_id)
+        if unread_dialogs is None:
+            unread_dialogs = detected_unread
+    unread_count = max(0, int(unread_dialogs or 0))
+    rows = [
+        [InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers")],
+        [InlineKeyboardButton(text="🎯 Подбор товара и аналогов", callback_data="scenario:exact_product")],
+        [InlineKeyboardButton(text="📄 Анализ закупки (44/223-ФЗ)", callback_data="scenario:report")],
+        [InlineKeyboardButton(text="📄🔎 Анализ + поиск поставщиков", callback_data="scenario:analysis_and_suppliers")],
+        [InlineKeyboardButton(text="🎁 Пригласить (+1 000 ₽)", callback_data="open_referral")],
+        [
+            InlineKeyboardButton(text="📊 Кабинет", callback_data="open_cabinet"),
+            InlineKeyboardButton(text="🕘 Задачи", callback_data="open_status"),
+        ],
+        [
+            InlineKeyboardButton(text="💳 Тарифы", callback_data="open_tariffs"),
+            InlineKeyboardButton(text="❓ Помощь", callback_data="open_help"),
+            InlineKeyboardButton(text="📞 Контакты", callback_data="open_contacts"),
+        ],
+    ]
+    if is_admin:
+        dialogs_label = (
+            f"💬 Диалоги с клиентами ({unread_count} новых)"
+            if unread_count > 0
+            else "💬 Диалоги с клиентами"
+        )
+        rows.append([InlineKeyboardButton(text=dialogs_label, callback_data="tg_chat:list")])
+    else:
+        rows.append([InlineKeyboardButton(text="💬 Написать в поддержку", callback_data="client_support:start")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def create_inline_keyboard(tg_user_id: str | int | None = None) -> InlineKeyboardMarkup:
+    return main_inline_keyboard(tg_user_id)
+
+
+def _inline_menu_for_message(message: Message) -> InlineKeyboardMarkup:
+    from_user = getattr(message, "from_user", None)
+    uid = getattr(from_user, "id", None)
+    if not uid:
+        uid = getattr(getattr(message, "chat", None), "id", None)
+    return main_inline_keyboard(uid)
+
+
+def _inline_menu_for_callback(callback: CallbackQuery) -> InlineKeyboardMarkup:
+    from_user = getattr(callback, "from_user", None)
+    uid = getattr(from_user, "id", None)
+    if not uid and getattr(callback, "message", None):
+        uid = getattr(getattr(callback.message, "chat", None), "id", None)
+    return main_inline_keyboard(uid)
 
 
 def supplier_policy_keyboard(
@@ -371,32 +582,110 @@ def analysis_and_suppliers_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def cabinet_inline_keyboard(web_url: str = "", *, has_web_user: bool = False, contact_url: str = "") -> InlineKeyboardMarkup:
-    rows = []
-    if contact_url:
-        rows.append([InlineKeyboardButton(text="💬 Пополнить баланс в Telegram", url=contact_url)])
+def cabinet_inline_keyboard(
+    web_url: str = "",
+    *,
+    has_web_user: bool = False,
+    contact_url: str = "",
+    direct_payment_only: bool = False,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if direct_payment_only:
+        if contact_url:
+            rows.append([InlineKeyboardButton(text="💬 Пополнить через менеджера", url=contact_url)])
+        rows.append([InlineKeyboardButton(text="💳 Персональные тарифы", callback_data="open_tariffs")])
+    else:
+        rows.append([InlineKeyboardButton(text="💳 Пополнить онлайн (ЮKassa)", callback_data="topup_online_menu")])
+        rows.append([InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")])
     if web_url:
         label = "🌐 Открыть веб-кабинет" if has_web_user else "🌐 Создать веб-кабинет"
         rows.append([InlineKeyboardButton(text=label, url=web_url)])
+    if contact_url and not direct_payment_only:
+        rows.append([InlineKeyboardButton(text="💬 Написать в Telegram", url=contact_url)])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def status_inline_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
-        ]
-    )
+def status_inline_keyboard(
+    *,
+    direct_payment_only: bool = False,
+    contact_url: str = "",
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if direct_payment_only:
+        if contact_url:
+            rows.append([InlineKeyboardButton(text="💬 Пополнить через менеджера", url=contact_url)])
+        rows.append([InlineKeyboardButton(text="💳 Персональные тарифы", callback_data="open_tariffs")])
+    else:
+        rows.append([InlineKeyboardButton(text="💳 Оплатить онлайн (Карта, СБП)", callback_data="topup_online_menu")])
+        rows.append([InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")])
+        rows.append([InlineKeyboardButton(text="💳 Все тарифы", callback_data="open_tariffs")])
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def tariffs_inline_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📞 Связаться с поддержкой", callback_data="open_contacts")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
-        ]
-    )
+def tariffs_inline_keyboard(
+    web_url: str = "",
+    *,
+    direct_payment_only: bool = False,
+    contact_url: str = "",
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if direct_payment_only:
+        if contact_url:
+            rows.append([InlineKeyboardButton(text="💬 Пополнить через менеджера", url=contact_url)])
+    else:
+        rows.append([InlineKeyboardButton(text="💳 Оплатить онлайн (Карта, СБП)", callback_data="topup_online_menu")])
+        rows.append([InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")])
+    if web_url:
+        rows.append([InlineKeyboardButton(text="🌐 Открыть веб-кабинет", url=web_url)])
+    rows.append([
+        InlineKeyboardButton(text="📞 Поддержка", callback_data="open_contacts"),
+        InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def topup_online_keyboard(packages: list[TariffPackage], *, show_bonus: bool = True) -> InlineKeyboardMarkup:
+    rows = []
+    for pkg in packages:
+        amount_rub = pkg.price_kopeks // 100
+        bonus_rub = ((pkg.bonus_kopeks or 0) // 100) if show_bonus else 0
+        badge = "🔥 " if (show_bonus and (pkg.badge or bonus_rub == 1500)) else "💳 "
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_part = f" (+{bonus_fmt})" if bonus_rub > 0 else ""
+        if show_bonus and amount_rub == 25000 and bonus_rub > 0:
+            bonus_part = " (+50%)"
+        label = f"{badge}{pkg.name} — {amount_fmt}{bonus_part}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"topup_yk_pkg_{pkg.id}")])
+    rows.append([InlineKeyboardButton(text="✏️ Произвольная сумма", callback_data="topup_yk_custom")])
+    rows.append([
+        InlineKeyboardButton(text="🏢 Счёт для юрлиц", callback_data="topup_b2b_menu"),
+        InlineKeyboardButton(text="🔙 К тарифам", callback_data="open_tariffs"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def topup_b2b_keyboard(packages: list[TariffPackage], *, show_bonus: bool = True) -> InlineKeyboardMarkup:
+    rows = []
+    for pkg in packages:
+        amount_rub = pkg.price_kopeks // 100
+        bonus_rub = ((pkg.bonus_kopeks or 0) // 100) if show_bonus else 0
+        badge = "🔥 " if (show_bonus and (pkg.badge or bonus_rub == 1500)) else "📄 "
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_part = f" (+{bonus_fmt})" if bonus_rub > 0 else ""
+        if show_bonus and amount_rub == 25000 and bonus_rub > 0:
+            bonus_part = " (+50%)"
+        label = f"{badge}{pkg.name} — {amount_fmt}{bonus_part}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"topup_b2b_pkg_{pkg.id}")])
+    rows.append([InlineKeyboardButton(text="✏️ Произвольная сумма", callback_data="topup_b2b_custom")])
+    rows.append([
+        InlineKeyboardButton(text="💳 Оплатить картой / СБП", callback_data="topup_online_menu"),
+        InlineKeyboardButton(text="🔙 К тарифам", callback_data="open_tariffs"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def help_inline_keyboard() -> InlineKeyboardMarkup:
@@ -409,9 +698,11 @@ def help_inline_keyboard() -> InlineKeyboardMarkup:
 
 
 def contacts_inline_keyboard(telegram_url: str = "") -> InlineKeyboardMarkup:
-    rows = []
+    rows = [
+        [InlineKeyboardButton(text="💬 Написать в поддержку здесь", callback_data="client_support:start")]
+    ]
     if telegram_url:
-        rows.append([InlineKeyboardButton(text="💬 Написать в Telegram", url=telegram_url)])
+        rows.append([InlineKeyboardButton(text="✈️ Написать менеджеру в Telegram", url=telegram_url)])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -433,6 +724,9 @@ def batch_inline_keyboard(pending: PendingBatch) -> InlineKeyboardMarkup:
         sub_row.append(InlineKeyboardButton(text="⚙️ Режим поиска", callback_data="batch:policy"))
     sub_row.append(InlineKeyboardButton(text="🗑 Очистить", callback_data="batch:cancel"))
     rows.append(sub_row)
+    if pending.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        geo_label = f"📍 {pending.delivery_city} · {pending.geo_radius_km} км" if pending.geo_radius_km else "📍 Приоритет доставки"
+        rows.append([InlineKeyboardButton(text=geo_label, callback_data="batch:geo")])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -510,31 +804,19 @@ def _source_link_rejection_text() -> str:
 
 def _looks_like_supplier_text_tz(text: str) -> bool:
     cleaned = str(text or "").strip()
-    if len(cleaned) < TEXT_TZ_MIN_CHARS:
+    if not cleaned or cleaned.startswith("/"):
         return False
-    words = _text_words(cleaned)
+    without_sources = NOTICE_NUMBER_RE.sub(" ", URL_RE.sub(" ", cleaned)).strip()
+    if len(without_sources) < TEXT_TZ_MIN_CHARS:
+        return False
+    if not any(ch.isalpha() for ch in without_sources):
+        return False
+    words = _text_words(without_sources)
     if len(words) < TEXT_TZ_MIN_WORDS:
         return False
-    lowered = cleaned.lower()
-    markers = (
-        "тз",
-        "техничес",
-        "описание объекта",
-        "объект закуп",
-        "закуп",
-        "поставка",
-        "поставщик",
-        "производител",
-        "требуется",
-        "необходим",
-        "характерист",
-        "спецификац",
-        "количество",
-        "гост",
-        " ту ",
-        " шт",
-    )
-    return any(marker in lowered for marker in markers)
+    if len(words) == 1 and not any(ch.isdigit() for ch in without_sources) and len(without_sources) < 20:
+        return False
+    return True
 
 
 def _text_words(text: str) -> list[str]:
@@ -665,6 +947,7 @@ def _supplier_multi_intro_text() -> str:
 
 def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources: int = 0) -> str:
     policy_label = _supplier_policy_label(pending.supplier_search_policy)
+    geo_note = f"\n📍 Приоритет: {html_escape(pending.delivery_city)}, до {pending.geo_radius_km} км. Вне радиуса и неизвестные адреса помечаются отдельно.\n" if pending.geo_radius_km else ""
     if pending.mode == MODE_SUPPLIER_SEARCH:
         lines = [
             "✅ ТЗ добавлено",
@@ -680,7 +963,7 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
         else:
             lines.append("Если одно ТЗ состоит из нескольких файлов, загрузите эти файлы одним архивом.")
         lines.append("👇 Добавьте ещё ТЗ через скрепку 📎 или нажмите «▶️ Запустить поиск» под сообщением:")
-        return "\n".join(lines)
+        return "\n".join(lines) + geo_note
     lines = [
         "✅ Материалы добавлены",
         f"• Файлов: {len(pending.files)}/{max_files}",
@@ -690,7 +973,7 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
     if pending.mode == MODE_ANALYSIS_AND_SUPPLIERS:
         lines.append(f"• Режим поиска: {policy_label}")
     lines.extend(["", "👇 Добавьте ещё материалы через скрепку 📎 или нажмите кнопку «▶️ Запустить» под сообщением:"])
-    return "\n".join(lines)
+    return "\n".join(lines) + geo_note
 
 
 def _source_added_text(pending: PendingBatch) -> str:
@@ -812,7 +1095,7 @@ def _chat_has_processing_job(chat_id: int) -> bool:
         return bool(
             db.query(Job.id)
             .filter(Job.created_by_telegram_id == str(chat_id))
-            .filter(Job.status.in_(["pending", "running"]))
+            .filter(Job.status.in_(["pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION]))
             .first()
         )
     except Exception:
@@ -828,15 +1111,28 @@ def _active_processing_jobs_for_chat(db, chat_id: int) -> list[Job]:
     return (
         db.query(Job)
         .filter(Job.created_by_telegram_id == str(chat_id))
-        .filter(Job.status.in_(["pending", "running"]))
+        .filter(Job.status.in_(["pending", "running", AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION]))
         .order_by(Job.created_at.desc())
         .all()
     )
 
 
 def _cancel_processing_job(db, job: Job, *, note: str, message: str) -> bool:
-    if job.status not in {"pending", "running"}:
+    if job.status not in {
+        "pending",
+        "running",
+        AWAITING_EXACT_SELECTION,
+        AWAITING_POSITION_SELECTION,
+        STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+    }:
         return False
+    if job.mode in {"price_monitoring", MODE_EXACT_PRODUCT}:
+        cancel_atomic = cancel_price_monitoring_job if job.mode == "price_monitoring" else cancel_exact_product_job
+        if not cancel_atomic(db, job, note=note, message=message):
+            return False
+        cancel_running_job(str(job.id))
+        BOT_CANCEL_NOTIFIED_JOBS.add(str(job.id))
+        return True
     release_job_reservation(db, job, note=note)
     now = now_utc()
     job.status = "cancelled"
@@ -897,7 +1193,7 @@ def _mode_to_billing_kind(mode: str) -> str:
         return KIND_EXACT_PRODUCT
     if mode in (MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS):
         return KIND_PROCUREMENT_REPORT
-    if mode == MODE_SUPPLIER_SEARCH_EXTRA:
+    if mode == KIND_SUPPLIER_SEARCH_EXTRA:
         return KIND_SUPPLIER_SEARCH_EXTRA
     return KIND_SUPPLIER_SEARCH
 
@@ -941,6 +1237,10 @@ def _progress_heading(snapshot: JobProgressSnapshot) -> str:
         return f"⛔ Задача отменена{num_suffix}"
     if snapshot.status == "failed":
         return f"⚠️ Не удалось подготовить файл{num_suffix}"
+    if snapshot.status == AWAITING_EXACT_SELECTION:
+        return f"Выберите товары для подбора{num_suffix}"
+    if snapshot.status == AWAITING_POSITION_SELECTION:
+        return f"Выберите позиции для мониторинга цен{num_suffix}"
     if snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         return f"⚠️ Нужно подтвердить выдачу отчёта{num_suffix}"
     if snapshot.status == STATUS_CUSTOMER_DECLINED:
@@ -1092,26 +1392,23 @@ def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None 
     if snapshot.status == "failed":
         err_lower = (snapshot.error or "").lower()
         msg_lower = (snapshot.message or "").lower()
+        friendly_err = sanitize_customer_error(snapshot.error, message=snapshot.message)
         if (
-            "нет содержимого" in err_lower
-            or "шаблон" in err_lower
-            or "пустой" in err_lower
-            or "нет содержимого" in msg_lower
-            or "нет позиций" in err_lower
+            "нет позиций" in friendly_err.lower()
+            or "не найдены" in friendly_err.lower()
+            or "шаблон" in friendly_err.lower()
+            or "пустой" in friendly_err.lower()
             or "нет позиций" in msg_lower
+            or "нет позиций" in err_lower
+            or "0 items" in err_lower
             or "пустая форма" in err_lower
             or "нет закупаемых позиций" in err_lower
         ):
-            title = (
-                "⚠️ В файле нет позиций для поиска"
-                if ("нет позиций" in msg_lower or "нет позиций" in err_lower or "пустая форма" in err_lower or "нет закупаемых позиций" in err_lower)
-                else "⚠️ В документе нет содержимого"
-            )
             return "\n".join(
                 [
-                    title,
+                    "⚠️ В файле нет позиций для поиска",
                     "",
-                    snapshot.error or "В загруженном файле отсутствует текст ТЗ или закупаемые позиции.",
+                    friendly_err,
                     "",
                     "💳 Баланс не списан (0 ₽).",
                     "Пожалуйста, загрузите файл со спецификацией/перечнем товаров или отправьте характеристики текстом прямо в этот чат.",
@@ -1668,7 +1965,9 @@ async def watch_job_progress(
             last_key = key
             last_heartbeat = now
 
-    if snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+    if snapshot.status in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION}:
+        await _send_exact_selection(message, job_id)
+    elif snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         await _edit_or_send_status(
             status_message,
             _partial_confirmation_text(snapshot),
@@ -1701,12 +2000,19 @@ def _scenario_for_message(message: Message) -> str:
     return PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
 
 
-def _start_text() -> str:
-    return (
-        f"👋 Добро пожаловать в {BRAND_NAME}!\n\n"
-        "Помогу быстро найти производителей и дилеров по ТЗ, подобрать товар и аналоги или разобрать закупочную документацию (44-ФЗ / 223-ФЗ).\n\n"
-        "💳 Списание средств происходит только после успешной выдачи готового результата."
-    )
+def _start_text(*, balance_rub: int = 0, include_legal_note: bool = False) -> str:
+    lines = [
+        f"👋 Добро пожаловать в {BRAND_NAME}!",
+        "",
+        "Помогу быстро найти производителей и дилеров по ТЗ, подобрать товар и аналоги или разобрать закупочную документацию (44-ФЗ / 223-ФЗ).",
+        "",
+        "💳 Списание средств происходит только после успешной выдачи готового результата.",
+    ]
+    if balance_rub > 0:
+        lines.extend(["", f"🎁 На вашем балансе <b>{balance_rub} ₽</b> для бесплатной проверки задач."])
+    if include_legal_note:
+        lines.extend(["", "Продолжая работу с ботом, вы соглашаетесь с условиями и политикой обработки ПДн (/legal)."])
+    return "\n".join(lines)
 
 
 def _contacts_text(settings, telegram_id: str = "") -> str:
@@ -1766,11 +2072,79 @@ def _low_balance_contact_info(settings, client: Client | None = None, mode: str 
     return contact_handle, contact_url
 
 
-def low_balance_inline_keyboard(settings, client: Client | None = None, mode: str = "") -> InlineKeyboardMarkup:
-    _, contact_url = _low_balance_contact_info(settings, client, mode=mode)
-    rows = []
+def _client_direct_payment_only(client: Client | None) -> bool:
+    return bool(client and getattr(client, "direct_payment_only", False))
+
+
+def _direct_payment_contact_url(settings, client: Client | None = None, *, amount_rub: int | None = None) -> str:
+    contact_handle = str(getattr(settings, "contact_telegram", "") or "").strip() or "@lexelence"
+    client_num = f" #{client.client_number}" if client and getattr(client, "client_number", None) else ""
+    amount_part = f" на {int(amount_rub):,} ₽".replace(",", " ") if amount_rub and amount_rub > 0 else ""
+    prefill_text = f"Здравствуйте! Хочу пополнить баланс TenderLex{client_num}{amount_part} по персональному тарифу."
+    return _telegram_contact_url_with_text(contact_handle, prefill_text)
+
+
+def _direct_payment_notice_text(db: Session, settings, client: Client | None) -> str:
+    lines = [
+        "💎 <b>Персональные условия оплаты TenderLex</b>",
+        "",
+        "Для вашего аккаунта подключены персональные сниженные тарифы.",
+    ]
+    if client is not None:
+        balances = client_service_balance_summary(db, client)
+        eff = balances.get("effective_prices") or {}
+        custom_lines: list[str] = []
+        price_order = [
+            (KIND_SUPPLIER_SEARCH, "🔎 Поиск поставщиков"),
+            (KIND_EXACT_PRODUCT, "🎯 Подбор товара и аналогов"),
+            (KIND_PROCUREMENT_REPORT, "📄 Анализ документации"),
+            (KIND_CUSTOM_BATCH_REPORT, "📊 Экспресс-оценка закупок"),
+            (KIND_PRICE_MONITORING, "📈 Мониторинг цен"),
+            (KIND_SUPPLIER_SEARCH_EXTRA, "🔎 Добор поставщиков"),
+        ]
+        for kind, label in price_order:
+            item = eff.get(kind) or {}
+            if item.get("source") == "client_override" and item.get("enabled") and int(item.get("price_kopeks") or 0) > 0:
+                custom_lines.append(f"• {label}: <b>{_price_text(int(item['price_kopeks']))}</b>")
+        if custom_lines:
+            lines.extend(["", "<b>Ваши персональные тарифы:</b>", *custom_lines])
+        money = balances.get("money") or {}
+        lines.extend(["", f"Текущий баланс: <b>{_money_text(int(money.get('available_kopeks') or 0))}</b>"])
+    lines.extend([
+        "",
+        "Пополнение баланса по персональным условиям проходит напрямую через личного менеджера — напишите нам в Telegram, и мы быстро зачислим нужную сумму без комиссии.",
+        "",
+        "<i>Если вам потребуется оплата по безналичному счёту для юрлица (УПД/ЭДО) или онлайн-оплата картой на сайте, напишите менеджеру — согласуем условия под этот способ оплаты.</i>",
+    ])
+    return "\n".join(lines)
+
+
+def _direct_payment_keyboard(settings, client: Client | None = None, *, web_url: str = "") -> InlineKeyboardMarkup:
+    contact_url = _direct_payment_contact_url(settings, client)
+    rows: list[list[InlineKeyboardButton]] = []
     if contact_url:
-        rows.append([InlineKeyboardButton(text="💬 Написать в Telegram для пополнения", url=contact_url)])
+        rows.append([InlineKeyboardButton(text="💬 Пополнить через менеджера", url=contact_url)])
+    if web_url:
+        rows.append([InlineKeyboardButton(text="🌐 Открыть веб-кабинет", url=web_url)])
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def low_balance_inline_keyboard(settings, client: Client | None = None, mode: str = "") -> InlineKeyboardMarkup:
+    if _client_direct_payment_only(client):
+        contact_url = _direct_payment_contact_url(settings, client)
+        rows: list[list[InlineKeyboardButton]] = []
+        if contact_url:
+            rows.append([InlineKeyboardButton(text="💬 Пополнить через менеджера", url=contact_url)])
+        rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+    _, contact_url = _low_balance_contact_info(settings, client, mode=mode)
+    rows = [
+        [InlineKeyboardButton(text="💳 Пополнить баланс онлайн (ЮKassa)", callback_data="topup_online_menu")],
+        [InlineKeyboardButton(text="🏢 Счёт для юрлиц (безнал)", callback_data="topup_b2b_menu")],
+    ]
+    if contact_url:
+        rows.append([InlineKeyboardButton(text="💬 Написать в Telegram", url=contact_url)])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1993,13 +2367,18 @@ def _tariffs_text(db, settings) -> str:
                 )
         lines.append("<i>При пополнении от 25 000 ₽ — максимальный бонус +50% и персональные условия.</i>")
 
+    price_search_kopeks = effective_price_kopeks(db, None, KIND_SUPPLIER_SEARCH) or 9900
+    price_exact_kopeks = effective_price_kopeks(db, None, KIND_EXACT_PRODUCT) or 9900
+    price_report_kopeks = effective_price_kopeks(db, None, KIND_PROCUREMENT_REPORT) or 9900
+    price_combo_kopeks = price_search_kopeks + price_report_kopeks
+
     lines.extend([
         "",
         "<b>Стоимость операций (списание с баланса):</b>",
-        "• 🔎 Поиск поставщиков: 99 ₽",
-        "• 🎯 Подбор товара и аналогов: 99 ₽",
-        "• 📄 Анализ документации: 99 ₽",
-        "• ⚡ Анализ + поиск: 198 ₽",
+        f"• 🔎 Поиск поставщиков: {_price_text(price_search_kopeks)}",
+        f"• 🎯 Подбор товара и аналогов: {_price_text(price_exact_kopeks)} / поз.",
+        f"• 📄 Анализ документации: {_price_text(price_report_kopeks)}",
+        f"• ⚡ Анализ + поиск: {_price_text(price_combo_kopeks)}",
     ])
 
     if supplier:
@@ -2048,9 +2427,16 @@ def _default_extra_supplier_price_kopeks(item: dict) -> int:
 def _bot_payment_instructions(settings) -> str:
     instructions = str(settings.payment_instructions or "").strip()
     lowered = instructions.casefold()
-    if "max" in lowered or "макс" in lowered:
+    if "max" in lowered or "макс" in lowered or "напишите владельцу" in lowered:
         instructions = ""
-    return html_escape(instructions or BOT_PAYMENT_INSTRUCTIONS)
+    return instructions or BOT_PAYMENT_INSTRUCTIONS
+
+
+def _bot_yookassa_ready(settings: SystemSettings) -> bool:
+    return bool(
+        str(getattr(settings, "yookassa_shop_id", "") or "").strip()
+        and str(getattr(settings, "yookassa_secret_key", "") or "").strip()
+    )
 
 
 def _partial_confirmation_text(snapshot: JobProgressSnapshot) -> str:
@@ -2090,6 +2476,111 @@ def _registry_fallback_confirmation_text(snapshot: JobProgressSnapshot) -> str:
         "При отказе списания за поиск поставщиков не будет.\n\n"
         "Получить отчёт без подтверждения реестра?"
     )
+
+
+def _exact_selection_view(job: Job, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
+    selection = read_selection(job)
+    items = selection.get("items") or []
+    selected = set(selection.get("selected_ids") or [])
+    page_count = max(1, (len(items) + 6) // 7)
+    page = max(0, min(int(page), page_count - 1))
+    rows = []
+    for index in range(page * 7, min(len(items), (page + 1) * 7)):
+        item = items[index]
+        checked = "☑" if item["id"] in selected else "☐"
+        rows.append([InlineKeyboardButton(text=f"{checked} №{item.get('position_no', index + 1)} {item['name']}"[:64],
+                                         callback_data=f"exact_toggle:{job.id}:{index}")])
+    navigation = []
+    if page > 0:
+        navigation.append(InlineKeyboardButton(text="← Назад", callback_data=f"exact_page:{job.id}:{page - 1}"))
+    if page + 1 < page_count:
+        navigation.append(InlineKeyboardButton(text="Далее →", callback_data=f"exact_page:{job.id}:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([InlineKeyboardButton(text=f"Подтвердить выбор ({len(selected)})", callback_data=f"exact_confirm:{job.id}")])
+    rows.append([InlineKeyboardButton(text="Отменить задачу", callback_data=f"cancel_job:{job.id}")])
+    if job.mode == "price_monitoring":
+        maximum = max(1, int(selection.get("max_positions") or len(items) or 1))
+        unit_price = max(0, int(selection.get("price_kopeks") or 0))
+        text = (
+            f"Выберите позиции для мониторинга цен — {len(selected)} из {maximum}.\n"
+            f"Страница {page + 1} из {page_count}, всего позиций: {len(items)}.\n"
+            f"Стоимость: {unit_price / 100:.2f} ₽ за позицию с подтверждённой ценой.\n"
+            f"Максимум при выборе: {maximum * unit_price / 100:.2f} ₽. Итоговое списание — только за найденные цены.\n"
+            "Мониторинг начнётся после подтверждения.")
+    else:
+        maximum = max(1, int(selection.get("max_positions") or len(items) or 1))
+        unit_price = max(0, int(selection.get("price_kopeks") or 0))
+        total_price = len(selected) * unit_price
+        price_str = f"Стоимость: {unit_price / 100:.2f} ₽ за позицию"
+        if len(selected) > 0:
+            price_str += f" (выбрано на сумму: {total_price / 100:.2f} ₽)"
+        text = (f"Выберите позиции для подбора товара и аналогов — {len(selected)} из {maximum}.\n"
+                f"Страница {page + 1} из {page_count}, всего позиций: {len(items)}.\n"
+                f"{price_str}.\n"
+                "Подбор начнётся после подтверждения. Результат — общий Word-отчёт по выбранным строкам.")
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _send_exact_selection(message: Message, job_id: str, page: int = 0) -> None:
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job or job.status not in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION}:
+            return
+        text, keyboard = _exact_selection_view(job, page)
+    finally:
+        db.close()
+    await message.answer(text, reply_markup=keyboard, parse_mode=None)
+
+
+@router.callback_query(F.data.startswith("exact_toggle:"))
+@router.callback_query(F.data.startswith("exact_page:"))
+@router.callback_query(F.data.startswith("exact_confirm:"))
+async def exact_selection_callback(callback: CallbackQuery) -> None:
+    parts = str(callback.data or "").split(":")
+    if len(parts) < 2 or not callback.message:
+        return
+    action, job_id = parts[:2]
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
+    db = SessionLocal()
+    confirmed = False
+    try:
+        job = db.get(Job, job_id)
+        if not job or job.mode not in {MODE_EXACT_PRODUCT, "price_monitoring"}:
+            raise ValueError("Задача не найдена.")
+        page = 0
+        if action == "exact_toggle":
+            index = int(parts[2])
+            toggle_exact_draft_position(db, job, index)
+            page = index // 7
+        elif action == "exact_page":
+            page = int(parts[2])
+        else:
+            selection = read_selection(job)
+            confirmed = confirm_position_selection(db, job, selection.get("revision"), selection.get("selected_ids"))
+        text, keyboard = _exact_selection_view(job, page)
+    except (ValueError, IndexError) as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    finally:
+        db.close()
+    await callback.answer("Выбор подтверждён" if confirmed else "Выбор обновлён")
+    if confirmed:
+        enqueue_job(job_id)
+        started_text = (
+            "Мониторинг выбранных позиций запущен."
+            if job.mode == "price_monitoring"
+            else "Подбор выбранных товаров запущен."
+        )
+        await callback.message.edit_text(started_text, reply_markup=None, parse_mode=None)
+        snapshot = await watch_job_progress(callback.message, job_id, status_message=callback.message)
+        if snapshot and snapshot.status == "completed":
+            await _send_job_outputs(callback.message, job_id, snapshot)
+    else:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
 
 
 def _partial_confirmation_keyboard(job_id: str, confirmation_kind: str = "") -> InlineKeyboardMarkup:
@@ -2273,13 +2764,20 @@ def _record_telegram_terms_acceptance(db, telegram_id: str) -> None:
 
 @router.message(Command("start"))
 async def start(message: Message, command: CommandObject | None = None) -> None:
+    _prune_pending_bot_maps()
     telegram_id, username, name = _telegram_user_fields(message)
+    _clear_support_session_safe(telegram_id, role_scope=None)
     access_note = ""
     first_use = False
     db = SessionLocal()
     try:
+        if not is_admin_telegram_user(db, telegram_id) and is_telegram_user_blocked(db, telegram_id):
+            await message.answer("⛔ Доступ ограничен администратором.")
+            return
         link_token = ""
         ref_code = ""
+        outreach_contract = ""
+        outreach_src = ""
         command_args = str(getattr(command, "args", "") or "").strip()
         if command_args.startswith("link_"):
             link_token = command_args.removeprefix("link_")
@@ -2287,6 +2785,14 @@ async def start(message: Message, command: CommandObject | None = None) -> None:
             ref_code = command_args.removeprefix("ref_")
         elif command_args.startswith("ref-"):
             ref_code = command_args.removeprefix("ref-")
+        elif command_args.startswith("c_"):
+            cand_c = re.sub(r"[^0-9A-Za-z_-]", "", command_args.removeprefix("c_"))[:40]
+            if cand_c:
+                outreach_contract = cand_c
+        elif command_args.startswith("src_"):
+            cand_src = re.sub(r"[^0-9A-Za-z_-]", "", command_args)[:40]
+            if cand_src:
+                outreach_src = cand_src
         if link_token:
             try:
                 link_result = consume_web_to_telegram_token(
@@ -2327,14 +2833,52 @@ async def start(message: Message, command: CommandObject | None = None) -> None:
                     logger.warning("bot_referral_welcome_error", extra={"error": str(ref_err)})
         if account_error:
             access_note = f"\n\n⚠️ {account_error}"
+        start_balance_rub = 0
         if client:
+            start_balance_rub = max(
+                0,
+                int((getattr(client, "money_balance_kopeks", 0) or 0) - (getattr(client, "money_reserved_kopeks", 0) or 0)) // 100,
+            )
             first_use = not bool(db.query(Job.id).filter(Job.client_id == client.id).first())
             record_journey_event(db, client.id, channel="telegram", event_name="bot_started")
+            if outreach_contract:
+                _select_scenario(message.chat.id, SCENARIO_SUPPLIERS)
+                record_journey_event(
+                    db,
+                    client.id,
+                    channel="telegram",
+                    event_name="outreach_entry",
+                    outcome="autoeis",
+                    reason_code=outreach_contract,
+                )
+                access_note += (
+                    f"\n\n📄 <b>Контракт № {html_escape(outreach_contract)}</b>: "
+                    "режим поиска поставщиков уже включён. Пришлите файл спецификации/ТЗ или список позиций — подберу прямых производителей и дилеров."
+                )
+            elif outreach_src:
+                _select_scenario(message.chat.id, SCENARIO_SUPPLIERS)
+                src_map = {
+                    "src_hh": "hh",
+                    "src_sj": "superjob",
+                    "src_supl": "suplbiz",
+                }
+                src_outcome = src_map.get(outreach_src.lower(), outreach_src.removeprefix("src_").lower() or "outreach")
+                record_journey_event(
+                    db,
+                    client.id,
+                    channel="telegram",
+                    event_name="outreach_entry",
+                    outcome=src_outcome,
+                    reason_code=outreach_src,
+                )
+                access_note += (
+                    "\n\n🔎 Режим поиска поставщиков включён. Пришлите файл ТЗ/спецификации или описание товара — подберу производителей и дилеров с проверенными контактами."
+                )
     finally:
         db.close()
     await message.answer(
-        _start_text() + access_note,
-        reply_markup=main_inline_keyboard(),
+        _start_text(balance_rub=start_balance_rub, include_legal_note=True) + access_note,
+        reply_markup=_inline_menu_for_message(message),
         parse_mode=ParseMode.HTML,
     )
 
@@ -2380,11 +2924,12 @@ async def show_status(message: Message) -> None:
     partial_confirmations: list[tuple[str, JobProgressSnapshot]] = []
     recoverable_result_offers: list[tuple[str, JobProgressSnapshot]] = []
     recoverable_outputs: list[tuple[str, JobProgressSnapshot]] = []
+    position_selections: list[str] = []
     db = SessionLocal()
     try:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await message.answer(account_error, reply_markup=main_inline_keyboard())
+            await message.answer(account_error, reply_markup=_inline_menu_for_message(message))
             return
         if not client:
             await message.answer(
@@ -2400,11 +2945,14 @@ async def show_status(message: Message) -> None:
             .limit(5)
             .all()
         )
+        settings = get_or_create_settings(db)
+        is_direct_only = _client_direct_payment_only(client)
+        direct_contact_url = _direct_payment_contact_url(settings, client) if is_direct_only else ""
         if not jobs:
             await message.answer(
                 "🕘 Задач пока нет\n\n"
                 "Выберите сценарий для создания первой задачи:",
-                reply_markup=status_inline_keyboard(),
+                reply_markup=status_inline_keyboard(direct_payment_only=is_direct_only, contact_url=direct_contact_url),
             )
             return
         lines = ["🕘 Последние задачи"]
@@ -2414,10 +2962,15 @@ async def show_status(message: Message) -> None:
                 f"{index}. {_progress_heading(snapshot)} — {_status_label(snapshot.status)}, {snapshot.progress}%\n"
                 f"   {_friendly_stage_text(snapshot.message)}"
             )
-        await message.answer("\n".join(lines), reply_markup=status_inline_keyboard())
+        await message.answer(
+            "\n".join(lines),
+            reply_markup=status_inline_keyboard(direct_payment_only=is_direct_only, contact_url=direct_contact_url),
+        )
         for job in jobs:
             snapshot = _job_snapshot(job, db)
             job_id = str(job.id)
+            if job.status in {AWAITING_EXACT_SELECTION, AWAITING_POSITION_SELECTION}:
+                position_selections.append(job_id)
             if (
                 snapshot.confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK
                 and snapshot.confirmation_outcome == "accepted"
@@ -2435,6 +2988,8 @@ async def show_status(message: Message) -> None:
         db.close()
     for job_id, snapshot in partial_confirmations:
         await _send_partial_confirmation(message, job_id, snapshot)
+    for job_id in position_selections:
+        await _send_exact_selection(message, job_id)
     for job_id, _snapshot in recoverable_result_offers:
         await message.answer("✅ Вы уже согласились получить вариант без подтверждения реестра. Повторяю выдачу файла.")
         try:
@@ -2462,7 +3017,7 @@ async def open_status_callback(callback: CallbackQuery) -> None:
     try:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await callback.message.answer(account_error, reply_markup=main_inline_keyboard())
+            await callback.message.answer(account_error, reply_markup=_inline_menu_for_callback(callback))
             return
         if not client:
             await callback.message.answer(
@@ -2489,10 +3044,14 @@ async def open_status_callback(callback: CallbackQuery) -> None:
                     f"   {_friendly_stage_text(snapshot.message)}"
                 )
             text = "\n".join(lines)
+        settings = get_or_create_settings(db)
+        is_direct_only = _client_direct_payment_only(client)
+        direct_contact_url = _direct_payment_contact_url(settings, client) if is_direct_only else ""
+        status_kb = status_inline_keyboard(direct_payment_only=is_direct_only, contact_url=direct_contact_url)
         try:
-            await callback.message.edit_text(text, reply_markup=status_inline_keyboard())
+            await callback.message.edit_text(text, reply_markup=status_kb)
         except Exception:
-            await callback.message.answer(text, reply_markup=status_inline_keyboard())
+            await callback.message.answer(text, reply_markup=status_kb)
     finally:
         db.close()
 
@@ -2541,7 +3100,7 @@ async def create_button(message: Message) -> None:
         "• 🎯 Подбор товара и аналогов — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты\n"
         "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
         "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
-        reply_markup=create_inline_keyboard(),
+        reply_markup=_inline_menu_for_message(message),
     )
 
 
@@ -2550,7 +3109,10 @@ async def open_create_menu_callback(callback: CallbackQuery) -> None:
     if not callback.message:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
+    if callback.from_user:
+        _clear_support_session_safe(str(callback.from_user.id), role_scope=None)
     await callback.answer()
+    menu_kb = _inline_menu_for_callback(callback)
     try:
         await callback.message.edit_text(
             "🚀 Создать задачу\n\n"
@@ -2559,7 +3121,7 @@ async def open_create_menu_callback(callback: CallbackQuery) -> None:
             "• 🎯 Подбор товара и аналогов — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты\n"
             "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
             "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
-            reply_markup=create_inline_keyboard(),
+            reply_markup=menu_kb,
         )
     except Exception:
         await callback.message.answer(
@@ -2569,7 +3131,7 @@ async def open_create_menu_callback(callback: CallbackQuery) -> None:
             "• 🎯 Подбор товара и аналогов — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты\n"
             "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
             "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
-            reply_markup=create_inline_keyboard(),
+            reply_markup=menu_kb,
         )
 
 
@@ -2578,6 +3140,8 @@ async def scenario_select_callback(callback: CallbackQuery) -> None:
     if not callback.message:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
+    if callback.from_user:
+        _clear_support_session_safe(str(callback.from_user.id), role_scope=None)
     target = str(callback.data or "").split(":", 1)[1]
     chat_id = int(callback.message.chat.id)
     if target == "suppliers":
@@ -2718,6 +3282,459 @@ async def policy_button(message: Message) -> None:
     )
 
 
+def _parse_delivery_input(text: str, *, mode: str) -> tuple[str, int | None]:
+    if text.strip().casefold() in {"выкл", "off"}:
+        return "", None
+    city, separator, radius = text.rpartition(";")
+    if not separator:
+        raise ValueError("Введите город и радиус через точку с запятой: Москва; 300. Для отключения: выкл.")
+    from .geo_policy import validate_geo_request
+    return validate_geo_request(city, radius.strip(), mode=mode)
+
+
+async def _apply_delivery_choice(message: Message, value: str) -> None:
+    chat_id = int(message.chat.id)
+    mode = _scenario_job_mode(PENDING_MODES.get(chat_id, SCENARIO_SUPPLIERS))
+    try:
+        city, radius = _parse_delivery_input(value, mode=mode)
+    except ValueError as exc:
+        await message.answer(html_escape(str(exc)))
+        return
+    with SessionLocal() as db:
+        client, _ = get_client_by_telegram_id(db, str(message.from_user.id if message.from_user else ""))
+        settings = get_or_create_settings(db)
+        allowed = bool(getattr(settings, "geo_radius_search_enabled_global", False) or (client and client.allowed_geo_radius))
+        if radius and not allowed:
+            await message.answer("Приоритет доставки пока не подключён для вашего аккаунта.")
+            return
+        surcharge = float(getattr(settings, "geo_radius_surcharge_pct", 30) or 0)
+    PENDING_GEO_INPUT.discard(chat_id)
+    if radius:
+        PENDING_GEO[chat_id] = (city, radius)
+    else:
+        PENDING_GEO.pop(chat_id, None)
+    pending = PENDING_UPLOADS.get(chat_id)
+    if pending:
+        pending.delivery_city, pending.geo_radius_km = city, radius
+    note = (f"📍 Приоритет: {html_escape(city)}, до {radius} км. Надбавка: {surcharge:g}%. "
+            "Ближайшие поставщики идут первыми; варианты вне радиуса и без подтверждённого адреса помечаются отдельно. "
+            "Расстояние приблизительное. Для отключения: /delivery выкл.") if radius else "Приоритет доставки отключён."
+    await message.answer(note, reply_markup=batch_inline_keyboard(pending) if pending else main_menu())
+
+
+@router.message(Command("delivery"))
+async def delivery_command(message: Message, command: CommandObject) -> None:
+    if await _reject_if_chat_processing(message):
+        return
+    mode = _scenario_job_mode(PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS))
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        await message.answer("Приоритет доставки доступен в поиске поставщиков и в режиме «Анализ + поиск».")
+        return
+    if command.args:
+        await _apply_delivery_choice(message, command.args)
+    else:
+        PENDING_GEO_INPUT.add(int(message.chat.id))
+        await message.answer("Введите город и радиус: Москва; 300. Диапазон — от 10 до 5000 км. Для отключения: выкл.")
+
+
+@router.callback_query(F.data == "batch:geo")
+async def delivery_prompt_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.")
+        return
+    mode = _scenario_job_mode(PENDING_MODES.get(callback.message.chat.id, SCENARIO_SUPPLIERS))
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        await callback.answer("Выберите поиск поставщиков или анализ + поиск.", show_alert=True)
+        return
+    PENDING_GEO_INPUT.add(int(callback.message.chat.id))
+    await callback.answer()
+    await callback.message.answer("Введите город и радиус: Москва; 300. Ближайшие поставщики будут первыми, варианты вне радиуса помечаются отдельно. Для отключения: выкл.")
+
+
+@router.message(lambda message: message.chat.id in PENDING_GEO_INPUT and bool(message.text) and not message.text.startswith("/"))
+async def delivery_text_input(message: Message) -> None:
+    await _apply_delivery_choice(message, str(message.text or ""))
+
+
+@router.callback_query(F.data.startswith("invoice_proof:"))
+async def invoice_proof_callback(callback: CallbackQuery) -> None:
+    if not callback.message or not callback.from_user:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    invoice_id = str(callback.data or "").partition(":")[2]
+    db = SessionLocal()
+    try:
+        invoice = db.query(Invoice).join(Client, Client.id == Invoice.client_id).filter(
+            Invoice.id == invoice_id, Client.telegram_id == str(callback.from_user.id)
+        ).first()
+        if not invoice or invoice.status in {"paid", "cancelled"}:
+            await callback.answer("Счёт не найден или уже закрыт.", show_alert=True)
+            return
+        PENDING_INVOICE_PROOF[callback.message.chat.id] = invoice.id
+        await callback.answer()
+        await callback.message.answer(
+            "Пришлите платёжное поручение с отметкой банка файлом PDF, JPG или PNG либо фотографией. "
+            "Мы проверим документ; баланс пополнится после подтверждения оплаты. Для отмены нажмите /cancel."
+        )
+    finally:
+        db.close()
+
+
+@router.message(lambda message: message.chat.id in PENDING_INVOICE_PROOF and bool(message.document or message.photo))
+async def receive_invoice_proof(message: Message, bot: Bot) -> None:
+    invoice_id = PENDING_INVOICE_PROOF.get(message.chat.id)
+    if not invoice_id or not message.from_user:
+        return
+    db = SessionLocal()
+    try:
+        invoice = db.query(Invoice).join(Client, Client.id == Invoice.client_id).filter(
+            Invoice.id == invoice_id, Client.telegram_id == str(message.from_user.id)
+        ).first()
+        if not invoice or invoice.status in {"paid", "cancelled"}:
+            PENDING_INVOICE_PROOF.pop(message.chat.id, None)
+            await message.answer("Счёт не найден или уже закрыт.")
+            return
+        if message.document:
+            attachment = message.document
+            content_type = str(attachment.mime_type or "").lower()
+            filename = attachment.file_name or "payment-proof"
+        else:
+            attachment = message.photo[-1]
+            content_type = "image/jpeg"
+            filename = "payment-proof.jpg"
+        if content_type not in {"application/pdf", "image/jpeg", "image/png"}:
+            await message.answer("Пришлите платёжку в формате PDF, JPG или PNG.")
+            return
+        if attachment.file_size and attachment.file_size > 10 * 1024 * 1024:
+            await message.answer("Размер платёжки не должен превышать 10 МБ.")
+            return
+        remote = await bot.get_file(attachment.file_id, request_timeout=60)
+        buffer = io.BytesIO()
+        await bot.download_file(remote.file_path, destination=buffer, timeout=120)
+        from .invoice_service import save_invoice_payment_proof, notify_invoice_payment_proof
+        try:
+            path = await save_invoice_payment_proof(invoice, buffer.getvalue(), original_name=filename, content_type=content_type)
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return
+        db.commit()
+        db.refresh(invoice)
+        PENDING_INVOICE_PROOF.pop(message.chat.id, None)
+        await message.answer("Платёжка отправлена на проверку. Баланс пополнится после подтверждения оплаты.")
+        await notify_invoice_payment_proof(invoice, path)
+    except Exception:
+        db.rollback()
+        logger.exception("invoice_proof_telegram_upload_failed")
+        await message.answer("Не удалось отправить платёжку. Попробуйте ещё раз или обратитесь в поддержку.")
+    finally:
+        db.close()
+
+
+async def _generate_and_send_b2b_invoice(
+    message: Message,
+    db: Session,
+    user,
+    ctx: dict,
+    buyer_inn: str,
+    buyer_name: str,
+    buyer_kpp: str,
+    buyer_address: str,
+) -> None:
+    client, _ = get_or_create_trial_client_by_telegram_id(
+        db,
+        str(user.id),
+        username=user.username or "",
+        name=user.full_name or "",
+    )
+    if not client:
+        await message.answer("Ошибка: клиент не найден.")
+        return
+    if _client_direct_payment_only(client):
+        settings = get_or_create_settings(db)
+        await message.answer(
+            _direct_payment_notice_text(db, settings, client),
+            reply_markup=_direct_payment_keyboard(settings, client),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    amount_rub = int(ctx.get("amount_rub", 1000) or 1000)
+    if client_has_custom_tariffs(db, client):
+        bonus_rub = 0
+        credit_rub = amount_rub
+    else:
+        bonus_rub = int(ctx.get("bonus_rub", 0) or 0)
+        credit_rub = int(ctx.get("credit_rub", amount_rub + bonus_rub) or (amount_rub + bonus_rub))
+    package_name = str(ctx.get("package_name") or "Пополнение баланса")
+
+    inv_num = next_invoice_number(db)
+    invoice = Invoice(
+        invoice_number=inv_num,
+        client_id=client.id,
+        amount_rub=amount_rub,
+        bonus_rub=bonus_rub,
+        total_credit_rub=credit_rub,
+        tariff_name=package_name,
+        service_name="Предоставление права использования сервиса TenderLex",
+        buyer_inn=buyer_inn,
+        buyer_kpp=buyer_kpp,
+        buyer_name=buyer_name,
+        buyer_address=buyer_address,
+        buyer_email=f"TG:{user.id} (@{user.username})" if user.username else f"TG:{user.id}",
+        status="issued",
+    )
+    db.add(invoice)
+    db.commit()
+    db.refresh(invoice)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        pdf_path = os.path.join(tmp_dir, f"invoice_{inv_num}.pdf")
+        xlsx_path = os.path.join(tmp_dir, f"invoice_{inv_num}.xlsx")
+
+        has_pdf = False
+        try:
+            generate_invoice_pdf(invoice, pdf_path)
+            has_pdf = os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0
+        except Exception as exc:
+            logger.warning("Failed to generate PDF invoice %s: %s", inv_num, exc)
+
+        has_xlsx = False
+        try:
+            generate_invoice_xlsx(invoice, xlsx_path)
+            has_xlsx = os.path.exists(xlsx_path) and os.path.getsize(xlsx_path) > 0
+        except Exception as exc:
+            logger.warning("Failed to generate XLSX invoice %s: %s", inv_num, exc)
+
+        date_str = format_date_ru(invoice.created_at)
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        credit_fmt = f"{credit_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_str = f" (включая бонус +{bonus_fmt})" if bonus_rub > 0 else ""
+        text = (
+            f"📄 <b>Счёт на оплату № <code>{invoice.invoice_number}</code> от {date_str}</b>\n\n"
+            f"🏢 <b>Плательщик:</b> {html_escape(buyer_name)}\n"
+            f"<b>ИНН:</b> <code>{buyer_inn}</code>"
+            f"{f' | КПП: <code>{buyer_kpp}</code>' if buyer_kpp else ''}\n"
+            f"💵 <b>Сумма к оплате:</b> <b>{amount_fmt}</b> (Без НДС, УСН)\n"
+            f"🎁 <b>Зачисление на баланс:</b> <b>{credit_fmt}</b>{bonus_str}\n\n"
+            f"🏛 <b>Банковские реквизиты для оплаты:</b>\n"
+            f"• <b>Получатель:</b> {SELLER_NAME}\n"
+            f"• <b>ИНН:</b> <code>{SELLER_INN}</code>\n"
+            f"• <b>Банк:</b> {SELLER_BANK_NAME}\n"
+            f"• <b>БИК:</b> <code>{SELLER_BANK_BIK}</code>\n"
+            f"• <b>Р/с:</b> <code>{SELLER_ACCOUNT}</code>\n"
+            f"• <b>Корр. счёт:</b> <code>{SELLER_BANK_CORR}</code>\n"
+            f"• <b>Назначение платежа:</b> <code>Оплата по счету № {invoice.invoice_number} от {date_str} за информационные услуги TenderLex. Без НДС.</code>\n\n"
+            f"📎 <i>Счёт прикреплён файлами ниже. Закрывающие документы (УПД) передаются по ЭДО (Диадок / СБИС). После оплаты можно отправить платёжку; баланс пополнится после проверки поступления.</i>"
+        )
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📎 Отправить платёжку", callback_data=f"invoice_proof:{invoice.id}")],
+            [InlineKeyboardButton(text="💼 Мой кабинет", callback_data="open_cabinet")],
+            [InlineKeyboardButton(text="📞 Поддержка", callback_data="open_contacts")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+        ])
+
+        await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+        if has_pdf:
+            pdf_file = FSInputFile(pdf_path, filename=f"Schet_{invoice.invoice_number}.pdf")
+            await message.answer_document(pdf_file, caption=f"📄 Счёт на оплату № {invoice.invoice_number} (PDF с печатью)")
+        if has_xlsx:
+            xlsx_file = FSInputFile(xlsx_path, filename=f"Schet_{invoice.invoice_number}.xlsx")
+            await message.answer_document(xlsx_file, caption=f"📊 Счёт на оплату № {invoice.invoice_number} (Excel)")
+
+    try:
+        await notify_admin_invoice_telegram(invoice)
+    except Exception as exc:
+        logger.warning("Failed to alert admin on invoice generation: %s", exc)
+
+
+@router.message(lambda message: message.chat.id in PENDING_CUSTOM_TOPUP and bool(message.text) and not message.text.startswith("/"))
+async def process_custom_topup_amount(message: Message) -> None:
+    chat_id = message.chat.id
+    raw = message.text.strip().replace(" ", "").replace("₽", "").replace("руб", "")
+    if not raw.isdigit():
+        await message.answer("⚠️ Пожалуйста, введите сумму числом (например: <code>3000</code>) или нажмите /cancel для отмены:", parse_mode=ParseMode.HTML)
+        return
+    amount_rub = int(raw)
+    if amount_rub < 500:
+        await message.answer("⚠️ Минимальная сумма пополнения — <b>500 ₽</b>. Введите сумму от 500 ₽ или нажмите /cancel:", parse_mode=ParseMode.HTML)
+        return
+
+    PENDING_CUSTOM_TOPUP.discard(chat_id)
+    user = message.from_user
+    if not user:
+        return
+
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        if not _bot_yookassa_ready(settings):
+            await message.answer("Оплата онлайн временно недоступна. Пожалуйста, воспользуйтесь счётом для юрлиц или обратитесь в поддержку.")
+            return
+
+        client, _ = get_or_create_trial_client_by_telegram_id(db, str(user.id), username=user.username or "", name=user.full_name or "")
+        if not client:
+            await message.answer("Клиент не найден.")
+            return
+        if _client_direct_payment_only(client):
+            await message.answer(
+                _direct_payment_notice_text(db, settings, client),
+                reply_markup=_direct_payment_keyboard(settings, client),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, client)
+        bonus_rub = bonus_kopeks // 100
+        credit_rub = amount_rub + bonus_rub
+        package_name = f"Пополнение {amount_rub:,} ₽"
+
+        await _initiate_yookassa_checkout(message, db, settings, client, user, amount_rub, bonus_rub, credit_rub, package_name)
+    finally:
+        db.close()
+
+
+@router.message(lambda message: message.chat.id in PENDING_B2B_CUSTOM_AMOUNT and bool(message.text) and not message.text.startswith("/"))
+async def process_custom_b2b_amount(message: Message) -> None:
+    chat_id = message.chat.id
+    raw = message.text.strip().replace(" ", "").replace("₽", "").replace("руб", "")
+    if not raw.isdigit():
+        await message.answer("⚠️ Пожалуйста, введите сумму числом (например: <code>10000</code>) или нажмите /cancel для отмены:", parse_mode=ParseMode.HTML)
+        return
+    amount_rub = int(raw)
+    if amount_rub < 500:
+        await message.answer("⚠️ Минимальная сумма счёта — <b>500 ₽</b>. Введите сумму от 500 ₽ или нажмите /cancel:", parse_mode=ParseMode.HTML)
+        return
+
+    PENDING_B2B_CUSTOM_AMOUNT.discard(chat_id)
+    user = message.from_user
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        client, _ = get_or_create_trial_client_by_telegram_id(db, str(user.id if user else ""), username=user.username if user else "", name=user.full_name if user else "")
+        if _client_direct_payment_only(client):
+            await message.answer(
+                _direct_payment_notice_text(db, settings, client),
+                reply_markup=_direct_payment_keyboard(settings, client),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        bonus_kopeks = calculate_deposit_bonus_kopeks(amount_rub * 100, db, client)
+        bonus_rub = bonus_kopeks // 100
+        credit_rub = amount_rub + bonus_rub
+        package_name = f"Пополнение {amount_rub:,} ₽"
+
+        PENDING_B2B_INN[chat_id] = {
+            "amount_rub": amount_rub,
+            "bonus_rub": bonus_rub,
+            "credit_rub": credit_rub,
+            "package_name": package_name,
+        }
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        credit_fmt = f"{credit_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_line = f" (на баланс <b>{credit_fmt}</b>, бонус +{bonus_fmt})" if bonus_rub > 0 else ""
+        text = (
+            f"🏢 <b>Счёт на сумму {amount_fmt}</b>{bonus_line}\n\n"
+            f"Введите <b>ИНН вашей организации или ИП</b> (10 или 12 цифр):\n"
+            f"<i>Реквизиты компании (наименование, КПП, адрес) будут определены автоматически через базу ФНС.</i>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Отмена", callback_data="topup_b2b_menu")]
+        ])
+        await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    finally:
+        db.close()
+
+
+@router.message(lambda message: message.chat.id in PENDING_B2B_INN and bool(message.text) and not message.text.startswith("/"))
+async def process_b2b_inn_input(message: Message) -> None:
+    chat_id = message.chat.id
+    raw_inn = re.sub(r"\D+", "", str(message.text or "")).strip()
+    if len(raw_inn) not in (10, 12):
+        await message.answer(
+            "⚠️ <b>Некорректный ИНН.</b>\n"
+            "ИНН юридического лица состоит из 10 цифр, а ИП — из 12 цифр.\n"
+            "Пожалуйста, введите корректный ИНН или нажмите /cancel:",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    ctx = PENDING_B2B_INN.get(chat_id, {})
+    user = message.from_user
+    if not user:
+        return
+
+    await message.answer("🔍 <i>Поиск реквизитов организации в базе ФНС...</i>", parse_mode=ParseMode.HTML)
+
+    db = SessionLocal()
+    try:
+        enriched = await enrich_company_by_inn(raw_inn)
+        company_name = enriched.get("company_name") or enriched.get("full_name") or ""
+        company_kpp = enriched.get("kpp") or ""
+        company_address = enriched.get("legal_address") or ""
+
+        if not company_name:
+            PENDING_B2B_INN.pop(chat_id, None)
+            PENDING_B2B_NAME[chat_id] = {
+                **ctx,
+                "buyer_inn": raw_inn,
+                "buyer_kpp": company_kpp,
+                "buyer_address": company_address,
+            }
+            await message.answer(
+                f"ℹ️ ИНН <code>{raw_inn}</code> принят, но не удалось автоматически определить наименование в базе.\n\n"
+                f"Пожалуйста, <b>введите наименование организации или ИП</b> (например: <code>ООО «Вектор»</code>):",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        PENDING_B2B_INN.pop(chat_id, None)
+        await _generate_and_send_b2b_invoice(
+            message=message,
+            db=db,
+            user=user,
+            ctx=ctx,
+            buyer_inn=raw_inn,
+            buyer_name=company_name,
+            buyer_kpp=company_kpp,
+            buyer_address=company_address,
+        )
+    finally:
+        db.close()
+
+
+@router.message(lambda message: message.chat.id in PENDING_B2B_NAME and bool(message.text) and not message.text.startswith("/"))
+async def process_b2b_name_input(message: Message) -> None:
+    chat_id = message.chat.id
+    name_str = message.text.strip()
+    if len(name_str) < 3:
+        await message.answer("⚠️ Пожалуйста, введите полное наименование организации или ИП:")
+        return
+
+    ctx = PENDING_B2B_NAME.pop(chat_id, {})
+    user = message.from_user
+    if not user:
+        return
+
+    db = SessionLocal()
+    try:
+        await _generate_and_send_b2b_invoice(
+            message=message,
+            db=db,
+            user=user,
+            ctx=ctx,
+            buyer_inn=ctx.get("buyer_inn", ""),
+            buyer_name=name_str,
+            buyer_kpp=ctx.get("buyer_kpp", ""),
+            buyer_address=ctx.get("buyer_address", ""),
+        )
+    finally:
+        db.close()
+
+
 @router.message(F.text == BUTTON_STATUS)
 async def status_button(message: Message) -> None:
     await show_status(message)
@@ -2763,16 +3780,24 @@ async def cancel_job_callback(callback: CallbackQuery) -> None:
         if not job:
             await callback.answer("Задача не найдена.", show_alert=True)
             return
-        if job.status not in {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION}:
+        if job.status not in {
+            "pending",
+            "running",
+            AWAITING_EXACT_SELECTION,
+            AWAITING_POSITION_SELECTION,
+            STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+        }:
             await callback.answer("Эту задачу уже нельзя отменить.", show_alert=True)
             await _edit_or_send_status(callback.message, _format_job_progress(_job_snapshot(job)), clear_reply_markup=True)
             return
-        _cancel_processing_job(
+        if not _cancel_processing_job(
             db,
             job,
             note="Резерв возвращён: задача отменена в Telegram",
             message="Задача отменена в Telegram",
-        )
+        ):
+            await callback.answer("Задача уже завершена; отменить её нельзя.", show_alert=True)
+            return
         snapshot = _job_snapshot(job)
     finally:
         db.close()
@@ -2786,19 +3811,63 @@ async def cancel_job_callback(callback: CallbackQuery) -> None:
     )
 
 
+async def _watch_and_deliver_resumed_job(
+    message: Message,
+    job_id: str,
+    *,
+    status_message: Message | None = None,
+) -> None:
+    chat_id = int(message.chat.id)
+    BATCH_RUNNING_CHATS.add(chat_id)
+    try:
+        snapshot = await watch_job_progress(message, job_id, status_message=status_message)
+        if not (snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION):
+            await _send_job_outputs(message, job_id, snapshot)
+    except Exception:
+        logger.exception("Error watching resumed job %s in chat %s", job_id, chat_id)
+    finally:
+        BATCH_RUNNING_CHATS.discard(chat_id)
+
+
 @router.callback_query(F.data.startswith("retry_normal:"))
 async def retry_normal_callback(callback: CallbackQuery) -> None:
     job_id = str(callback.data or "").split(":", 1)[1].strip()
     if not callback.message:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
-    await callback.answer()
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
     db = SessionLocal()
+    status_msg: Message | None = None
     try:
         job = db.get(Job, job_id)
         if not job:
-            await callback.message.answer("⚠️ Задача не найдена.")
+            await callback.answer("Задача не найдена.", show_alert=True)
             return
+        if job.status not in {"failed", "cancelled"}:
+            await callback.answer("Повторный запуск доступен только для отменённых или завершившихся с ошибкой задач.", show_alert=True)
+            return
+        from .models import BillingTransaction
+        already_charged = (
+            db.query(BillingTransaction.id)
+            .filter(BillingTransaction.job_id == job.id, BillingTransaction.operation == "charge")
+            .first()
+        )
+        if already_charged:
+            await callback.answer("Эта задача уже завершена и оплачена. Запустите новую задачу.", show_alert=True)
+            return
+        client = job.client
+        if client and not getattr(job, "is_admin_rerun", False):
+            try:
+                reserve_job_units(db, client, job, supplier_search_count=1)
+            except BillingError as exc:
+                await callback.answer("Недостаточно средств на балансе.", show_alert=True)
+                await callback.message.answer(
+                    f"⚠️ Недостаточно средств для запуска обычного поиска:\n{html_escape(str(exc))}\n\nПополните баланс для продолжения.",
+                    reply_markup=main_menu(),
+                )
+                return
         job.supplier_search_policy = SUPPLIER_POLICY_NORMAL
         job.status = "pending"
         job.progress = 0
@@ -2807,13 +3876,16 @@ async def retry_normal_callback(callback: CallbackQuery) -> None:
         job.updated_at = now_utc()
         db.commit()
         enqueue_job(job.id)
-        await callback.message.answer(
+        await callback.answer("Поиск запущен!")
+        status_msg = await callback.message.answer(
             "🚀 Запустил обычный поиск поставщиков по открытому рынку.\n\n"
             f"Статус задачи можно отслеживать кнопкой «{BUTTON_STATUS}».",
             reply_markup=processing_menu(),
         )
     finally:
         db.close()
+    if status_msg is not None:
+        asyncio.create_task(_watch_and_deliver_resumed_job(callback.message, job_id, status_message=status_msg))
 
 
 @router.message(F.text == BUTTON_CANCEL_BATCH)
@@ -2841,7 +3913,7 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
                 "📎 ТЗ не добавлено\n\n"
                 "Отправьте файл ТЗ/ООЗ, архив с несколькими файлами или текстовое описание объекта закупки."
             )
-        await message.answer(text, reply_markup=create_inline_keyboard())
+        await message.answer(text, reply_markup=_inline_menu_for_message(message))
         return
     _record_telegram_event(message, "launch_attempted", mode=pending.mode)
     BATCH_RUNNING_CHATS.add(chat_id)
@@ -2862,6 +3934,7 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
             pending.mode,
             incoming_file_count=len(pending.files),
             supplier_search_count=supplier_search_count,
+            geo_radius_km=pending.geo_radius_km,
         )
         if error:
             if client:
@@ -2903,6 +3976,8 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
                     files=files,
                     sources=[],
                     supplier_search_policy=pending.supplier_search_policy,
+                    delivery_city=pending.delivery_city,
+                    geo_radius_km=pending.geo_radius_km,
                     initial_status="draft",
                 )
                 created_batch_entities.append(created)
@@ -2944,6 +4019,8 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
                 files=pending.files,
                 sources=pending.sources,
                 supplier_search_policy=pending.supplier_search_policy,
+                delivery_city=pending.delivery_city,
+                geo_radius_km=pending.geo_radius_km,
                 initial_status="draft",
             )
             reserve_error = _reserve_created_job(db, client, job)
@@ -3034,15 +4111,16 @@ async def batch_cancel_callback(callback: CallbackQuery) -> None:
     chat_id = int(callback.message.chat.id)
     _clear_pending_state(chat_id)
     await callback.answer("Материалы очищены.")
+    menu_kb = _inline_menu_for_callback(callback)
     try:
         await callback.message.edit_text(
             "🗑 Материалы очищены.\n\nВыберите новый сценарий для создания задачи:",
-            reply_markup=create_inline_keyboard(),
+            reply_markup=menu_kb,
         )
     except Exception:
         await callback.message.answer(
             "🗑 Материалы очищены.\n\nВыберите новый сценарий для создания задачи:",
-            reply_markup=create_inline_keyboard(),
+            reply_markup=menu_kb,
         )
 
 
@@ -3342,7 +4420,7 @@ async def _send_job_outputs_locked(
             else:
                 await message.answer(
                     "🚀 Что хотите сделать дальше?",
-                    reply_markup=main_inline_keyboard(),
+                    reply_markup=_inline_menu_for_message(message),
                 )
             return True
         if snapshot and snapshot.status not in BOT_TERMINAL_JOB_STATUSES:
@@ -3416,7 +4494,7 @@ def format_exact_product_telegram_summary(report_data: dict) -> str:
     if not positions:
         return ""
 
-    lines = ["🎯 *Подбор товара и аналогов:*"]
+    lines = ["🎯 Подбор товара и аналогов:"]
     for idx, pos in enumerate(positions[:3], start=1):
         name = str(pos.get("name_in_tz") or f"Позиция {idx}").strip()
         brand = str(pos.get("identified_brand") or "").strip()
@@ -3450,14 +4528,14 @@ def format_exact_product_telegram_summary(report_data: dict) -> str:
             spec_info = f"{len(specs) - len(mismatches)}/{len(specs)} парам. (расхождений: {len(mismatches)})"
 
         lines.append(
-            f"\n*{idx}. {name}*\n"
+            f"\n{idx}. {name}\n"
             f"• Товар: {prod_title}\n"
             f"• Минпромторг (ГИСП): {gisp_info}\n"
             f"• Сверка ТЗ: {spec_info}"
         )
 
     if len(positions) > 3:
-        lines.append(f"\n_...и ещё {len(positions) - 3} поз. в прикреплённом файле._")
+        lines.append(f"\n…и ещё {len(positions) - 3} поз. в прикреплённом файле.")
 
     return "\n".join(lines)
 
@@ -3514,7 +4592,7 @@ async def access_button(message: Message) -> None:
         settings = get_or_create_settings(db)
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await message.answer(account_error, reply_markup=main_inline_keyboard())
+            await message.answer(account_error, reply_markup=_inline_menu_for_message(message))
             return
         if not client:
             await message.answer(
@@ -3547,14 +4625,20 @@ async def access_button(message: Message) -> None:
             )
 
         balances = client_service_balance_summary(db, client)
-        contact_url = ""
+        is_direct_only = _client_direct_payment_only(client)
+        contact_url = _direct_payment_contact_url(settings, client) if is_direct_only else ""
         money = balances.get("money") or {}
-        if isinstance(money, dict) and (money.get("available_kopeks", 1) <= 0 or money.get("low")):
+        if not is_direct_only and isinstance(money, dict) and (money.get("available_kopeks", 1) <= 0 or money.get("low")):
             _, contact_url = _low_balance_contact_info(settings, client)
 
         await message.answer(
             cabinet_text,
-            reply_markup=cabinet_inline_keyboard(web_url, has_web_user=has_web_user, contact_url=contact_url),
+            reply_markup=cabinet_inline_keyboard(
+                web_url,
+                has_web_user=has_web_user,
+                contact_url=contact_url,
+                direct_payment_only=is_direct_only,
+            ),
             **_contact_message_options(),
         )
     finally:
@@ -3575,7 +4659,7 @@ async def open_cabinet_callback(callback: CallbackQuery) -> None:
         settings = get_or_create_settings(db)
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await callback.message.answer(account_error, reply_markup=main_inline_keyboard())
+            await callback.message.answer(account_error, reply_markup=_inline_menu_for_callback(callback))
             return
         if not client:
             await callback.message.answer(
@@ -3608,12 +4692,18 @@ async def open_cabinet_callback(callback: CallbackQuery) -> None:
             )
 
         balances = client_service_balance_summary(db, client)
-        contact_url = ""
+        is_direct_only = _client_direct_payment_only(client)
+        contact_url = _direct_payment_contact_url(settings, client) if is_direct_only else ""
         money = balances.get("money") or {}
-        if isinstance(money, dict) and (money.get("available_kopeks", 1) <= 0 or money.get("low")):
+        if not is_direct_only and isinstance(money, dict) and (money.get("available_kopeks", 1) <= 0 or money.get("low")):
             _, contact_url = _low_balance_contact_info(settings, client)
 
-        kb = cabinet_inline_keyboard(web_url, has_web_user=has_web_user, contact_url=contact_url)
+        kb = cabinet_inline_keyboard(
+            web_url,
+            has_web_user=has_web_user,
+            contact_url=contact_url,
+            direct_payment_only=is_direct_only,
+        )
         try:
             await callback.message.edit_text(cabinet_text, reply_markup=kb, **_contact_message_options())
         except Exception:
@@ -3634,7 +4724,7 @@ def _referral_text_and_keyboard(db: Session, client: Client | None, user) -> tup
     text = (
         "🎁 <b>Реферальная программа TenderLex</b>\n\n"
         "Дарите коллегам бонус +1 000 ₽ к первому пополнению баланса и получайте 1 000 ₽ себе за каждого активного пользователя!\n\n"
-        "🔹 <b>Что получает коллега:</b> 5 бесплатных проверок при регистрации + 1 000 ₽ бонусом на баланс при первом пополнении от 1 000 ₽.\n"
+        "🔹 <b>Что получает коллега:</b> пробный баланс на первые расчёты при регистрации + 1 000 ₽ бонусом на баланс при первом пополнении от 1 000 ₽.\n"
         "🔹 <b>Что получаете вы:</b> 1 000 ₽ на свой баланс, как только приглашенный коллега впервые пополнит счёт.\n\n"
         f"🔗 <b>Ваша ссылка для приглашения:</b>\n<code>{bot_link}</code>\n\n"
         "📊 <b>Ваша статистика:</b>\n"
@@ -3649,7 +4739,7 @@ def _referral_text_and_keyboard(db: Session, client: Client | None, user) -> tup
         "1. Находит реальных производителей и дилеров по ТЗ с прямыми телефонами и email.\n"
         "2. Подбирает точную модель товара и аналоги под первую часть заявки, в том числе из реестра Минпромторга (ГИСП).\n"
         "3. Формирует полный структурированный отчет по закупке (ТЗ, условия оплаты, сроки, логистика и требования к товару).\n\n"
-        "По моей ссылке ты получишь 5 бесплатных проверок + бонус 1 000 ₽ к первому пополнению баланса:\n"
+        "По моей ссылке ты получишь пробный баланс на первые расчёты + бонус 1 000 ₽ к первому пополнению баланса:\n"
         f"👉 {bot_link}"
     )
 
@@ -3716,8 +4806,20 @@ async def tariffs_button(message: Message) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
+        web_url = f"{str(settings.public_base_url or 'https://tenderlex.ru').rstrip('/')}/cabinet"
+        telegram_id = str(message.from_user.id if message.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
+            kb = tariffs_inline_keyboard(
+                web_url,
+                direct_payment_only=True,
+                contact_url=_direct_payment_contact_url(settings, client),
+            )
+            await message.answer(text, reply_markup=kb, **_contact_message_options())
+            return
         text = _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
-        await message.answer(text, reply_markup=tariffs_inline_keyboard(), **_contact_message_options())
+        await message.answer(text, reply_markup=tariffs_inline_keyboard(web_url), **_contact_message_options())
     finally:
         db.close()
 
@@ -3731,14 +4833,524 @@ async def open_tariffs_callback(callback: CallbackQuery) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
-        text = _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
-        kb = tariffs_inline_keyboard()
+        web_url = f"{str(settings.public_base_url or 'https://tenderlex.ru').rstrip('/')}/cabinet"
+        telegram_id = str(callback.from_user.id if callback.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
+            kb = tariffs_inline_keyboard(
+                web_url,
+                direct_payment_only=True,
+                contact_url=_direct_payment_contact_url(settings, client),
+            )
+        else:
+            text = _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
+            kb = tariffs_inline_keyboard(web_url)
         try:
             await callback.message.edit_text(text, reply_markup=kb, **_contact_message_options())
         except Exception:
             await callback.message.answer(text, reply_markup=kb, **_contact_message_options())
     finally:
         db.close()
+
+
+async def _initiate_yookassa_checkout(
+    target: CallbackQuery | Message,
+    db: Session,
+    settings: SystemSettings,
+    client: Client,
+    user,
+    amount_rub: int,
+    bonus_rub: int,
+    credit_rub: int,
+    package_name: str,
+) -> None:
+    if _client_direct_payment_only(client):
+        notice = _direct_payment_notice_text(db, settings, client)
+        kb = _direct_payment_keyboard(settings, client)
+        if isinstance(target, CallbackQuery):
+            await target.answer("Для персонального тарифа пополнение проходит через менеджера.", show_alert=True)
+            if target.message:
+                await target.message.answer(notice, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await target.answer(notice, reply_markup=kb, parse_mode=ParseMode.HTML)
+        return
+    if client_has_custom_tariffs(db, client):
+        bonus_rub = 0
+        credit_rub = amount_rub
+    bot = target.bot
+    bot_info = await bot.get_me() if bot else None
+    bot_username = bot_info.username if bot_info and bot_info.username else "tenderlex_bot"
+    return_url = f"https://t.me/{bot_username}"
+
+    description = f"TenderLex: {package_name}"
+    customer_email = getattr(client, "contact_email", "") or ""
+    if not customer_email and getattr(client, "web_users", None) and client.web_users:
+        customer_email = getattr(client.web_users[0], "email", "") or ""
+    if not customer_email or "@" not in customer_email:
+        customer_email = f"tg_{user.id}@tenderlex.ru"
+    metadata = {
+        "client_id": client.id,
+        "telegram_id": str(user.id),
+        "source": "telegram_bot",
+        "package_name": package_name,
+        "amount_rub": amount_rub,
+        "bonus_rub": bonus_rub,
+        "total_credit_rub": credit_rub,
+    }
+
+    try:
+        payment_data = create_yookassa_payment(
+            shop_id=settings.yookassa_shop_id,
+            secret_key=settings.yookassa_secret_key,
+            amount_rub=amount_rub,
+            return_url=return_url,
+            description=description,
+            customer_email=customer_email if ("@" in customer_email) else None,
+            metadata=metadata,
+            send_receipt=bool(getattr(settings, "yookassa_send_receipt", False)),
+        )
+    except YooKassaError as exc:
+        err_msg = f"❌ Ошибка платёжного шлюза: {html_escape(str(exc))}"
+        if isinstance(target, CallbackQuery):
+            await target.answer(str(exc), show_alert=True)
+            if target.message:
+                await target.message.answer(err_msg, parse_mode=ParseMode.HTML)
+        else:
+            await target.answer(err_msg, parse_mode=ParseMode.HTML)
+        return
+
+    yoo_payment_id = payment_data.get("id")
+    confirmation = payment_data.get("confirmation", {}) or {}
+    confirmation_url = str(confirmation.get("confirmation_url") or "")
+
+    web_user_id = client.web_users[0].id if getattr(client, "web_users", None) else None
+    yk_record = YooKassaPayment(
+        payment_id=yoo_payment_id,
+        client_id=client.id,
+        user_id=web_user_id,
+        status="pending",
+        amount_rub=amount_rub,
+        bonus_rub=bonus_rub,
+        total_credit_rub=credit_rub,
+        package_name=package_name,
+        confirmation_url=confirmation_url,
+    )
+    db.add(yk_record)
+    db.commit()
+    db.refresh(yk_record)
+
+    notify_admin_payment_attempt(
+        payment_id=yk_record.payment_id,
+        amount_rub=yk_record.amount_rub,
+        bonus_rub=yk_record.bonus_rub,
+        total_credit_rub=yk_record.total_credit_rub,
+        package_name=yk_record.package_name or "Пополнение баланса",
+        user_email=f"TG:{user.id} (@{user.username})" if user.username else f"TG:{user.id}",
+        client_name=user.full_name or user.username or f"TG:{user.id}",
+    )
+
+    amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+    credit_fmt = f"{credit_rub:,} ₽".replace(",", " ")
+    bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+
+    bonus_line = f"\n🎁 <b>Бонус к зачислению:</b> +{bonus_fmt}" if bonus_rub > 0 else ""
+    text = (
+        f"💳 <b>Счёт на оплату через ЮKassa готов!</b>\n\n"
+        f"📦 <b>Тариф:</b> {html_escape(package_name)}\n"
+        f"💵 <b>К оплате:</b> <b>{amount_fmt}</b>\n"
+        f"💰 <b>На баланс поступит:</b> <b>{credit_fmt}</b>{bonus_line}\n\n"
+        f"Способы оплаты: банковские карты (МИР, Visa, Mastercard), СБП, SberPay, Mir Pay без комиссии.\n\n"
+        f"👉 <b>Для оплаты нажмите на зеленую кнопку «Оплатить» ниже или перейдите по прямой ссылке:</b>\n"
+        f"🔗 <a href=\"{confirmation_url}\"><b>Открыть страницу оплаты ЮKassa в браузере</b></a>\n\n"
+        f"<i>После завершения оплаты нажмите «Проверить зачисление» — средства сразу поступят на ваш баланс.</i>"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💳 Оплатить {amount_fmt} ↗️", url=confirmation_url)],
+        [InlineKeyboardButton(text="🔄 Проверить зачисление", callback_data=f"check_yk_{yk_record.id}")],
+        [InlineKeyboardButton(text="🔙 К выбору пакетов", callback_data="topup_online_menu")],
+    ])
+
+    if isinstance(target, CallbackQuery):
+        await target.answer()
+        if target.message:
+            try:
+                await target.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await target.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:
+        await target.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data == "topup_online_menu")
+async def topup_online_menu_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        telegram_id = str(callback.from_user.id if callback.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client)
+            kb = _direct_payment_keyboard(settings, client)
+            try:
+                await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+        has_custom = client_has_custom_tariffs(db, client) if client else False
+        packages = list_deposit_packages(db)
+        bonus_prompt = (
+            "Выберите сумму пополнения (для вашего аккаунта действуют персональные тарифы — бонусы к пополнению не начисляются):"
+            if has_custom
+            else "🎁 <b>Выберите готовый пакет с бонусом или укажите свою сумму:</b>"
+        )
+        text = (
+            "💳 <b>Пополнение баланса онлайн через ЮKassa</b>\n\n"
+            "Моментальное зачисление средств на ваш единый баланс TenderLex.\n"
+            "Способы оплаты: <b>банковские карты (МИР, Visa, Mastercard), СБП, SberPay, Mir Pay</b> без комиссии.\n\n"
+            f"{bonus_prompt}"
+        )
+        kb = topup_online_keyboard(packages, show_bonus=not has_custom)
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception:
+            await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data.startswith("topup_yk_pkg_"))
+async def topup_yk_pkg_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    pkg_id = callback.data.removeprefix("topup_yk_pkg_").strip()
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка пользователя.", show_alert=True)
+        return
+
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        client, _ = get_or_create_trial_client_by_telegram_id(db, str(user.id), username=user.username or "", name=user.full_name or "")
+        if not client:
+            await callback.answer("Клиент не найден.", show_alert=True)
+            return
+        if _client_direct_payment_only(client):
+            await callback.answer("Для персонального тарифа пополнение проходит через менеджера.", show_alert=True)
+            await callback.message.answer(
+                _direct_payment_notice_text(db, settings, client),
+                reply_markup=_direct_payment_keyboard(settings, client),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        if not _bot_yookassa_ready(settings):
+            await callback.answer("Оплата онлайн временно недоступна. Пожалуйста, воспользуйтесь счётом для юрлиц или напишите в поддержку.", show_alert=True)
+            return
+
+        pkg = db.query(TariffPackage).filter(TariffPackage.id == pkg_id).first()
+        if not pkg:
+            await callback.answer("Пакет не найден.", show_alert=True)
+            return
+
+        amount_rub = pkg.price_kopeks // 100
+        bonus_rub = 0 if client_has_custom_tariffs(db, client) else (pkg.bonus_kopeks or 0) // 100
+        credit_rub = amount_rub + bonus_rub
+        package_name = pkg.name
+
+        await _initiate_yookassa_checkout(callback, db, settings, client, user, amount_rub, bonus_rub, credit_rub, package_name)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data == "topup_yk_custom")
+async def topup_yk_custom_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    chat_id = callback.message.chat.id
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        telegram_id = str(callback.from_user.id if callback.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client)
+            kb = _direct_payment_keyboard(settings, client)
+            try:
+                await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+        has_custom = client_has_custom_tariffs(db, client) if client else False
+    finally:
+        db.close()
+    _clear_pending_state(chat_id)
+    PENDING_CUSTOM_TOPUP.add(chat_id)
+    bonus_block = (
+        "<i>Для вашего аккаунта действуют персональные тарифы (бонусы к пополнению не начисляются).</i>\n\n"
+        if has_custom
+        else (
+            "🎁 <b>Действуют автоматические бонусы к пополнению:</b>\n"
+            "• от 3 000 ₽ — бонус +17%\n"
+            "• от 5 000 ₽ — бонус +30%\n"
+            "• от 10 000 ₽ — бонус +40%\n"
+            "• от 25 000 ₽ — максимальный бонус +50%\n\n"
+        )
+    )
+    text = (
+        "✏️ <b>Пополнение баланса на произвольную сумму</b>\n\n"
+        "Введите сумму пополнения в рублях (целое число, минимум <b>500 ₽</b>).\n\n"
+        f"{bonus_block}"
+        "<i>Отправьте сообщение с суммой (например: <code>5000</code>) или нажмите «Отмена»:</i>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data="topup_online_menu")]
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data.startswith("check_yk_"))
+async def check_yk_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    yk_id = callback.data.removeprefix("check_yk_").strip()
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        record = db.query(YooKassaPayment).filter(YooKassaPayment.id == yk_id).first()
+        if not record:
+            await callback.answer("Платёж не найден.", show_alert=True)
+            return
+        caller_tg_id = str(callback.from_user.id if callback.from_user else "")
+        caller_client, _ = get_client_by_telegram_id(db, caller_tg_id)
+        if not caller_client or caller_client.id != record.client_id:
+            await callback.answer("Этот платёж относится к другому аккаунту.", show_alert=True)
+            return
+
+        if record.status == "succeeded":
+            await callback.answer("✅ Оплата уже зачислена на ваш баланс!", show_alert=True)
+            return
+
+        try:
+            live_data = fetch_yookassa_payment(
+                shop_id=settings.yookassa_shop_id,
+                secret_key=settings.yookassa_secret_key,
+                payment_id=record.payment_id,
+            )
+        except YooKassaError as exc:
+            await callback.answer(f"Ошибка проверки статуса: {exc}", show_alert=True)
+            return
+
+        if not live_data:
+            await callback.answer("⏳ Данные о платеже пока не поступили в ЮKassa.", show_alert=True)
+            return
+
+        live_status = live_data.get("status")
+        if live_status == "succeeded":
+            from .main import _process_yookassa_payment_success
+            _process_yookassa_payment_success(db, live_data, record)
+            await callback.answer("🎉 Оплата успешно подтверждена!", show_alert=True)
+            text = (
+                f"🎉 <b>Оплата через ЮKassa успешно завершена!</b>\n\n"
+                f"📦 <b>Тариф:</b> {html_escape(record.package_name or 'Пополнение баланса')}\n"
+                f"💵 <b>Оплачено:</b> {record.amount_rub:,} ₽\n"
+                f"💰 <b>Зачислено на баланс:</b> <b>{record.total_credit_rub:,} ₽</b>\n\n"
+                f"✅ Баланс успешно пополнен. Все сервисы TenderLex активны!"
+            )
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💼 Мой кабинет", callback_data="open_cabinet")],
+                [InlineKeyboardButton(text="🚀 Создать задачу", callback_data="open_create_menu")],
+            ])
+            try:
+                await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        elif live_status == "canceled":
+            from .main import _process_yookassa_payment_canceled
+            _process_yookassa_payment_canceled(db, live_data, record)
+            await callback.answer("❌ Платёж был отменён.", show_alert=True)
+            try:
+                await callback.message.edit_text(
+                    "❌ <b>Платёж отменён или истёк срок ожидания.</b>\n\nВы можете создать новый платёж в любое время.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="💳 Попробовать снова", callback_data="topup_online_menu")],
+                        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+                    ]),
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+        else:
+            await callback.answer("⏳ Платёж ещё обрабатывается ЮKassa. Завершите оплату на странице шлюза и повторите проверку через несколько секунд.", show_alert=True)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data == "topup_b2b_menu")
+async def topup_b2b_menu_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        telegram_id = str(callback.from_user.id if callback.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client)
+            kb = _direct_payment_keyboard(settings, client)
+            try:
+                await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+        has_custom = client_has_custom_tariffs(db, client) if client else False
+        packages = list_deposit_packages(db)
+        bonus_prompt = (
+            "Выберите сумму счёта (для вашего аккаунта действуют персональные тарифы — бонусы к пополнению не начисляются):"
+            if has_custom
+            else "🎁 <b>Выберите сумму счёта (бонус действует и для юрлиц):</b>"
+        )
+        text = (
+            "🏢 <b>Счёт на оплату для юридических лиц и ИП (безналичный расчёт)</b>\n\n"
+            "• Оплата по счёту через любой банк на расчётный счёт в АО «Альфа-Банк».\n"
+            "• Автоматическое формирование счёта с синей печатью и подписью в PDF и Excel.\n"
+            "• Закрывающие документы (УПД) передаются по ЭДО (Диадок / СБИС) или скан-копиями.\n\n"
+            f"{bonus_prompt}"
+        )
+        kb = topup_b2b_keyboard(packages, show_bonus=not has_custom)
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception:
+            await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data.startswith("topup_b2b_pkg_"))
+async def topup_b2b_pkg_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    pkg_id = callback.data.removeprefix("topup_b2b_pkg_").strip()
+    user = callback.from_user
+    chat_id = callback.message.chat.id
+    if not user:
+        await callback.answer("Ошибка пользователя.", show_alert=True)
+        return
+
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        client, _ = get_client_by_telegram_id(db, str(user.id))
+        if _client_direct_payment_only(client):
+            await callback.answer("Для персонального тарифа пополнение проходит через менеджера.", show_alert=True)
+            await callback.message.answer(
+                _direct_payment_notice_text(db, settings, client),
+                reply_markup=_direct_payment_keyboard(settings, client),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        pkg = db.query(TariffPackage).filter(TariffPackage.id == pkg_id).first()
+        if not pkg:
+            await callback.answer("Пакет не найден.", show_alert=True)
+            return
+
+        amount_rub = pkg.price_kopeks // 100
+        bonus_rub = 0 if (client and client_has_custom_tariffs(db, client)) else (pkg.bonus_kopeks or 0) // 100
+        credit_rub = amount_rub + bonus_rub
+        package_name = pkg.name
+
+        _clear_pending_state(chat_id)
+        PENDING_B2B_INN[chat_id] = {
+            "amount_rub": amount_rub,
+            "bonus_rub": bonus_rub,
+            "credit_rub": credit_rub,
+            "package_name": package_name,
+        }
+        await callback.answer()
+        amount_fmt = f"{amount_rub:,} ₽".replace(",", " ")
+        credit_fmt = f"{credit_rub:,} ₽".replace(",", " ")
+        bonus_fmt = f"{bonus_rub:,} ₽".replace(",", " ")
+        bonus_line = f" (на баланс <b>{credit_fmt}</b>, бонус +{bonus_fmt})" if bonus_rub > 0 else ""
+        text = (
+            f"🏢 <b>Счёт на сумму {amount_fmt}</b>{bonus_line}\n\n"
+            f"Введите <b>ИНН вашей организации или ИП</b> (10 или 12 цифр):\n"
+            f"<i>Реквизиты компании (наименование, КПП, адрес) будут определены автоматически через базу ФНС.</i>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Отмена", callback_data="topup_b2b_menu")]
+        ])
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception:
+            await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data == "topup_b2b_custom")
+async def topup_b2b_custom_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    chat_id = callback.message.chat.id
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        telegram_id = str(callback.from_user.id if callback.from_user else "")
+        client, _ = get_client_by_telegram_id(db, telegram_id) if telegram_id else (None, None)
+        if _client_direct_payment_only(client):
+            text = _direct_payment_notice_text(db, settings, client)
+            kb = _direct_payment_keyboard(settings, client)
+            try:
+                await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+        has_custom = client_has_custom_tariffs(db, client) if client else False
+    finally:
+        db.close()
+    _clear_pending_state(chat_id)
+    PENDING_B2B_CUSTOM_AMOUNT.add(chat_id)
+    bonus_block = (
+        "<i>Для вашего аккаунта действуют персональные тарифы (бонусы к пополнению не начисляются).</i>\n\n"
+        if has_custom
+        else (
+            "🎁 <b>Бонусы начисляются автоматически:</b>\n"
+            "• от 3 000 ₽ — бонус +17%\n"
+            "• от 5 000 ₽ — бонус +30%\n"
+            "• от 10 000 ₽ — бонус +40%\n"
+            "• от 25 000 ₽ — максимальный бонус +50%\n\n"
+        )
+    )
+    text = (
+        "✏️ <b>Счёт для юрлиц на произвольную сумму</b>\n\n"
+        "Введите желаемую сумму счёта в рублях (целое число, минимум <b>500 ₽</b>).\n\n"
+        f"{bonus_block}"
+        "<i>Отправьте сообщение с суммой (например: <code>15000</code>) или нажмите «Отмена»:</i>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data="topup_b2b_menu")]
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 @router.message(Command("contacts"))
@@ -3794,6 +5406,7 @@ async def help_button(message: Message) -> None:
         "📋 Что нужно для запуска:\n"
         "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n"
         "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n\n"
+        "📍 Приоритет доставки: после добавления ТЗ нажмите кнопку географии или /delivery Москва; 300. Ближайшие поставщики идут первыми, дальние и неизвестные адреса отмечаются отдельно; действует надбавка по вашему тарифу.\n\n"
         "💳 Списание средств происходит только после успешной выдачи готового результата.\n"
         "📊 Баланс и история доступны в разделе «Кабинет» на сайте https://tenderlex.ru/cabinet\n\n"
         f"⚖️ Правовая информация: {LEGAL_INDEX_URL}"
@@ -3820,6 +5433,7 @@ async def open_help_callback(callback: CallbackQuery) -> None:
         "📋 Что нужно для запуска:\n"
         "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n"
         "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n\n"
+        "📍 Приоритет доставки: после добавления ТЗ нажмите кнопку географии или /delivery Москва; 300. Ближайшие поставщики идут первыми, дальние и неизвестные адреса отмечаются отдельно; действует надбавка по вашему тарифу.\n\n"
         "💳 Списание средств происходит только после успешной выдачи готового результата.\n"
         "📊 Баланс и история доступны в разделе «Кабинет» на сайте https://tenderlex.ru/cabinet\n\n"
         f"⚖️ Правовая информация: {LEGAL_INDEX_URL}"
@@ -3852,6 +5466,143 @@ async def handle_nurturing_unsubscribe(callback: CallbackQuery) -> None:
             )
         except Exception:
             pass
+
+
+@router.callback_query(F.data.startswith("nurturing_fb:"))
+async def handle_nurturing_feedback(callback: CallbackQuery) -> None:
+    feedback_type = str(callback.data or "").split(":", 1)[1]
+    db = SessionLocal()
+    try:
+        user_id = str(callback.from_user.id if callback.from_user else "")
+        client, _ = get_client_by_telegram_id(db, user_id)
+        record_journey_event(
+            db,
+            client.id if client else None,
+            channel="telegram",
+            event_name="nurturing_feedback",
+            outcome=feedback_type,
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    if feedback_type == "good":
+        await callback.answer("Спасибо за отзыв!")
+        if callback.message:
+            try:
+                await callback.message.edit_text(
+                    "🎉 <b>Рады, что результаты расчетов подошли!</b>\n\n"
+                    "Если прямо сейчас в работе новые спецификации по 44-ФЗ / 223-ФЗ — просто отправьте файл ТЗ или номер ЕИС в чат в любое время.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_inline_menu_for_callback(callback),
+                )
+            except Exception:
+                pass
+    elif feedback_type == "bad":
+        await callback.answer("Спасибо за честный ответ!")
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="💬 Написать в поддержку", callback_data="open_contacts")],
+                [InlineKeyboardButton(text="📱 Оставить телефон для разбора", callback_data="prompt_share_contact")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+            ]
+        )
+        if callback.message:
+            try:
+                await callback.message.edit_text(
+                    "🤝 <b>Спасибо за честный ответ!</b>\n\n"
+                    "Мы хотим понять, почему подбор не устроил (мало заводов, не те аналоги или сложный ГОСТ). "
+                    "Основатель и специалист сервиса могут лично разобрать ваше ТЗ и начислить дополнительные расчеты.\n\n"
+                    "Нажмите кнопку ниже, чтобы связаться с нами или оставить телефон:",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                )
+            except Exception:
+                pass
+    else:  # need_credits
+        await callback.answer("Поможем с лимитами!")
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="💬 Написать в поддержку", callback_data="open_contacts")],
+                [InlineKeyboardButton(text="📱 Оставить телефон", callback_data="prompt_share_contact")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+            ]
+        )
+        if callback.message:
+            try:
+                await callback.message.edit_text(
+                    "🎁 <b>С удовольствием поможем вашему отделу закупок!</b>\n\n"
+                    "Если вам нужны дополнительные бесплатные лимиты для тестирования сложных позиций — "
+                    "напишите нам в поддержку или оставьте номер, активируем расширенный тестовый пакет.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                )
+            except Exception:
+                pass
+
+
+@router.callback_query(F.data == "prompt_share_contact")
+async def handle_prompt_share_contact(callback: CallbackQuery) -> None:
+    await callback.answer()
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📱 Отправить мой контакт", request_contact=True)],
+            [KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    if callback.message:
+        await callback.message.answer(
+            "📱 <b>Связь со специалистом TenderLex:</b>\n\n"
+            "Нажмите кнопку внизу экрана <b>«Отправить мой контакт»</b>, чтобы передать номер телефона для связи по вашим спецификациям и закупкам.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb,
+        )
+
+
+@router.message(F.contact)
+async def handle_contact_received(message: Message) -> None:
+    if not message.contact:
+        return
+    raw_phone = str(message.contact.phone_number or "").strip()
+    if not raw_phone:
+        return
+    if not raw_phone.startswith("+"):
+        raw_phone = "+" + raw_phone
+
+    telegram_id, username, name = _telegram_user_fields(message)
+    db = SessionLocal()
+    try:
+        client, _ = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        if client:
+            client.phone = raw_phone
+            for wu in getattr(client, "web_users", []):
+                wu.phone = raw_phone
+            record_journey_event(
+                db,
+                client.id,
+                channel="telegram",
+                event_name="phone_shared",
+                outcome=raw_phone,
+            )
+            db.commit()
+    finally:
+        db.close()
+
+    await message.answer(
+        f"✅ <b>Спасибо! Ваш номер телефона сохранён:</b> <code>{raw_phone}</code>\n\n"
+        "Специалист TenderLex свяжется с вами при необходимости разбора сложных закупок или настройки тарифа.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+@router.message(F.text.in_({"❌ Отмена", "Отмена"}))
+async def handle_cancel_reply_keyboard(message: Message) -> None:
+    if message.from_user:
+        _clear_support_session_safe(str(message.from_user.id), role_scope=None)
+    await message.answer("Действие отменено.", reply_markup=ReplyKeyboardRemove())
 
 
 @router.callback_query(F.data.startswith("find_more_prompt:"))
@@ -3933,14 +5684,14 @@ async def find_more_suppliers_accept(callback: CallbackQuery) -> None:
             pitch = ""
             if callback.message:
                 pitch = await _send_client_low_balance_notification(
-                    callback.message, client, settings, error=detail, mode=MODE_SUPPLIER_SEARCH_EXTRA, job_title=job_title
+                    callback.message, client, settings, error=detail, mode=KIND_SUPPLIER_SEARCH_EXTRA, job_title=job_title
                 )
             await _alert_owner_about_low_balance(
                 _message_bot(callback.message) if callback.message else None,
                 client,
                 reason="Попытка запуска дополнительного поиска без средств",
                 job_title=job_title,
-                mode=MODE_SUPPLIER_SEARCH_EXTRA,
+                mode=KIND_SUPPLIER_SEARCH_EXTRA,
                 ai_pitch=pitch,
             )
         else:
@@ -3969,6 +5720,9 @@ async def exact_suppliers_prompt_callback(callback: CallbackQuery) -> None:
     if not callback.message:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
     await callback.message.answer(
         _exact_to_suppliers_confirmation_text(),
         reply_markup=_exact_to_suppliers_confirmation_keyboard(job_id),
@@ -3978,6 +5732,10 @@ async def exact_suppliers_prompt_callback(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("exact_suppliers_no:"))
 async def exact_suppliers_no_callback(callback: CallbackQuery) -> None:
+    job_id = str(callback.data or "").split(":", 1)[1]
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
     if callback.message:
         try:
             await callback.message.delete()
@@ -3985,7 +5743,7 @@ async def exact_suppliers_no_callback(callback: CallbackQuery) -> None:
             pass
         await callback.message.answer(
             "🚀 Что хотите сделать дальше?",
-            reply_markup=main_inline_keyboard(),
+            reply_markup=_inline_menu_for_callback(callback),
         )
     await callback.answer("Поиск отменён.")
 
@@ -4160,10 +5918,18 @@ async def multi_strategy_choice_callback(callback: CallbackQuery) -> None:
         db.close()
     await callback.answer("Стратегия сохранена!")
     mode_name = "🔍 Попозиционный глубокий поиск" if normalized == "per_item" else "⚖️ Сбалансированный поиск"
+    status_msg: Message | None = None
     try:
-        await callback.message.edit_text(f"✅ Выбрана стратегия: {mode_name}.\n\nВозобновляю поиск поставщиков...")
+        status_msg = await callback.message.edit_text(f"✅ Выбрана стратегия: {mode_name}.\n\nВозобновляю поиск поставщиков...")
     except Exception:
-        pass
+        try:
+            status_msg = await callback.message.answer(
+                f"✅ Выбрана стратегия: {mode_name}.\n\nВозобновляю поиск поставщиков...",
+                reply_markup=processing_menu(),
+            )
+        except Exception:
+            pass
+    asyncio.create_task(_watch_and_deliver_resumed_job(callback.message, job_id, status_message=status_msg))
 
 
 @router.callback_query(F.data.startswith("result_offer_no:"))
@@ -4255,7 +6021,20 @@ async def handle_document(message: Message, bot: Bot) -> None:
         await _handle_document_locked(message, bot)
 
 
+@router.message(F.photo)
+async def handle_photo(message: Message, bot: Bot) -> None:
+    if await _handle_support_private_message(message, bot):
+        return
+    await message.answer(
+        "📷 Для поиска поставщиков или анализа закупки отправьте файл документом (.pdf, .docx, .xlsx) или текстом.\n"
+        "Чтобы отправить изображение в поддержку менеджеру, нажмите кнопку ниже.",
+        reply_markup=_inline_menu_for_message(message),
+    )
+
+
 async def _handle_document_locked(message: Message, bot: Bot) -> None:
+    if await _handle_support_private_message(message, bot):
+        return
     if await _reject_if_chat_processing(message):
         return
     scenario = _scenario_for_message(message)
@@ -4294,7 +6073,7 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
             await message.answer(
                 "⚠️ Формат файла не поддерживается.\n\n"
                 "Поддерживаются документы (.docx, .doc, .pdf, .xlsx, .xls, .rtf, .odt), архивы (.zip, .rar, .7z) и текст (.txt).",
-                reply_markup=main_inline_keyboard(),
+                reply_markup=_inline_menu_for_message(message),
             )
             return
         if document.file_size and document.file_size > max_mb * 1024 * 1024:
@@ -4320,6 +6099,8 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
                 mode=mode,
                 files=[],
                 supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+                delivery_city=PENDING_GEO.get(message.chat.id, ("", None))[0],
+                geo_radius_km=PENDING_GEO.get(message.chat.id, ("", None))[1],
             )
             PENDING_UPLOADS[message.chat.id] = pending
         if client_uses_trial_access(db, client) and mode == MODE_SUPPLIER_SEARCH:
@@ -4328,11 +6109,11 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
                 added_sources = _add_pending_sources(pending, caption_sources)
                 record_journey_event(db, client.id, channel="telegram", event_name="input_added", mode=mode, outcome="document")
                 note_text = (
-                    f"🔄 Предыдущий файл заменён на: <b>{filename}</b>\n"
+                    f"🔄 Предыдущий файл заменён на: <b>{html_escape(filename)}</b>\n"
                     f"<i>(в бесплатном доступе обрабатывается 1 ТЗ за раз)</i>\n\n"
                     f"👇 Нажмите «▶️ Запустить поиск» под сообщением:"
                 )
-                await message.answer(note_text, reply_markup=batch_inline_keyboard(pending))
+                await message.answer(note_text, reply_markup=batch_inline_keyboard(pending), parse_mode=ParseMode.HTML)
                 return
         if len(pending.files) >= settings.max_files_per_batch:
             await message.answer(f"В комплекте уже максимум файлов: {settings.max_files_per_batch}.", reply_markup=batch_menu())
@@ -4414,6 +6195,8 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
                 mode=mode,
                 files=[],
                 supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+                delivery_city=PENDING_GEO.get(message.chat.id, ("", None))[0],
+                geo_radius_km=PENDING_GEO.get(message.chat.id, ("", None))[1],
             )
             PENDING_UPLOADS[message.chat.id] = pending
         if client_uses_trial_access(db, client) and mode == MODE_SUPPLIER_SEARCH and pending.files:
@@ -4425,7 +6208,7 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
                 "<i>(в бесплатном доступе обрабатывается 1 ТЗ за раз)</i>\n\n"
                 "👇 Нажмите «▶️ Запустить поиск» под сообщением:"
             )
-            await message.answer(note_text, reply_markup=batch_inline_keyboard(pending))
+            await message.answer(note_text, reply_markup=batch_inline_keyboard(pending), parse_mode=ParseMode.HTML)
             return True
         if len(pending.files) >= settings.max_files_per_batch:
             await message.answer(f"В комплекте уже максимум ТЗ: {settings.max_files_per_batch}.", reply_markup=batch_inline_keyboard(pending))
@@ -4466,7 +6249,7 @@ async def _handle_source_text(message: Message) -> bool:
         return False
 
     if not _scenario_accepts_source_links(scenario):
-        await message.answer(_source_link_rejection_text(), reply_markup=main_inline_keyboard())
+        await message.answer(_source_link_rejection_text(), reply_markup=_inline_menu_for_message(message))
         return True
     mode = _job_mode_for_scenario(scenario)
     db = SessionLocal()
@@ -4503,6 +6286,8 @@ async def _handle_source_text(message: Message) -> bool:
                 mode=mode,
                 files=[],
                 supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+                delivery_city=PENDING_GEO.get(message.chat.id, ("", None))[0],
+                geo_radius_km=PENDING_GEO.get(message.chat.id, ("", None))[1],
             )
             PENDING_UPLOADS[message.chat.id] = pending
         _add_pending_sources(pending, sources)
@@ -4514,78 +6299,389 @@ async def _handle_source_text(message: Message) -> bool:
 
 
 
-# --- SITE CHAT OPERATOR RELAY HANDLERS ---
-CHAT_SESSIONS_FILE = "/root/projects/tenderlex/data/chat_sessions.json"
-OPERATOR_REPLY_SESSIONS: dict[int, str] = {}
-
-def _load_chat_sessions() -> dict:
-    for attempt in range(5):
-        try:
-            if not os.path.exists(CHAT_SESSIONS_FILE):
-                return {}
-            with open(CHAT_SESSIONS_FILE, "r", encoding="utf-8") as f:
-                raw = f.read().strip()
-                return json.loads(raw) if raw else {}
-        except Exception as e:
-            time.sleep(0.1)
-    return {}
-
-def _save_chat_sessions(data: dict) -> None:
+# --- OMNICHANNEL SUPPORT CHAT BRIDGE (Option A + Option B + Client Support) ---
+def _clear_support_session_safe(tg_user_id: str | int | None, *, role_scope: str | None = "client_dm") -> None:
+    uid = str(tg_user_id or "").strip()
+    if not uid:
+        return
+    db = SessionLocal()
     try:
-        d = os.path.dirname(CHAT_SESSIONS_FILE)
-        if not os.path.exists(d):
-            os.makedirs(d, exist_ok=True)
-        tmp_path = f"{CHAT_SESSIONS_FILE}.tmp.{os.getpid()}_{int(time.time() * 1000)}"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, CHAT_SESSIONS_FILE)
-    except Exception as e:
-        logger.error(f"Error saving chat sessions: {e}")
+        clear_active_tg_session(db, tg_user_id=uid, role_scope=role_scope)
+    except Exception:
+        rollback = getattr(db, "rollback", None)
+        if callable(rollback):
+            rollback()
+    finally:
+        db.close()
+
+
+def _support_session_active_kb(state_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👤 О клиенте", callback_data=f"tg_chat:info:{state_id}"),
+                InlineKeyboardButton(text="💬 Все диалоги", callback_data="tg_chat:list"),
+            ],
+            [
+                InlineKeyboardButton(text="🏠 Главное меню", callback_data="tg_chat:exit"),
+            ],
+        ]
+    )
+
+
+def _support_reply_sent_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💬 Все диалоги", callback_data="tg_chat:list"),
+                InlineKeyboardButton(text="🏠 Главное меню", callback_data="tg_chat:exit"),
+            ],
+        ]
+    )
+
+
+def _build_admin_dialogs_payload(db: Session, *, limit: int = 8) -> tuple[str, InlineKeyboardMarkup] | None:
+    dialogs = list_recent_dialogs_for_bot(db, limit=limit)
+    if not dialogs:
+        return None
+    rows = []
+    lines = ["💬 <b>Диалоги с клиентами</b>", "Выберите клиента, чтобы открыть переписку:", ""]
+    for item in dialogs:
+        badge = f"🔔{item['unread_count']} " if item["unread_count"] > 0 else ""
+        btn_label = f"{badge}{item['display_name']}"[:50]
+        rows.append([InlineKeyboardButton(text=btn_label, callback_data=f"tg_chat:enter:{item['state_id']}")])
+        lines.append(f"• {badge}<b>{html_escape(item['display_name'])}</b> — {html_escape(item['last_preview'])}")
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _download_bot_support_attachments(
+    message: Message,
+    bot: Bot | None,
+    *,
+    client_id: str = "",
+    guest_session_id: str = "",
+    job_id: str = "",
+    prefix: str = "tg",
+) -> list[dict]:
+    active_bot = bot or getattr(message, "bot", None)
+    if not active_bot:
+        return []
+    atts: list[dict] = []
+    if message.document:
+        doc = message.document
+        fname = sanitize_filename(doc.file_name or "document")
+        if doc.file_size and doc.file_size > 15 * 1024 * 1024:
+            raise ValueError(f"Файл {fname} превышает лимит 15 МБ.")
+        buf = io.BytesIO()
+        await active_bot.download(doc, destination=buf)
+        raw = buf.getvalue()
+        if raw:
+            atts.append(
+                save_attachment_bytes(
+                    filename=fname,
+                    content=raw,
+                    client_id=client_id,
+                    guest_session_id=guest_session_id,
+                    job_id=job_id,
+                    prefix=prefix,
+                    enforce_allowlist=True,
+                )
+            )
+    elif message.photo:
+        photo = message.photo[-1]
+        fname = f"photo_{int(time.time())}.jpg"
+        buf = io.BytesIO()
+        await active_bot.download(photo, destination=buf)
+        raw = buf.getvalue()
+        if raw:
+            atts.append(
+                save_attachment_bytes(
+                    filename=fname,
+                    content=raw,
+                    client_id=client_id,
+                    guest_session_id=guest_session_id,
+                    job_id=job_id,
+                    prefix=prefix,
+                    enforce_allowlist=True,
+                )
+            )
+    return atts
+
+
+def _format_dialog_card_text(db: Session, state: SupportDialogState) -> str:
+    profile = get_dialog_profile(db, client_id=state.client_id, guest_session_id=state.guest_session_id)
+    msgs = (
+        db.query(JobChatMessage)
+        .filter(JobChatMessage.client_id == state.client_id)
+        .order_by(JobChatMessage.created_at.desc())
+        .limit(6)
+        .all()
+    )
+    lines = [
+        f"👤 <b>{html_escape(profile['display_name'])}</b>",
+    ]
+    if profile["email"]:
+        lines.append(f"✉️ <b>Email:</b> {html_escape(profile['email'])}")
+    if profile["phone"]:
+        lines.append(f"📞 <b>Телефон:</b> {html_escape(profile['phone'])}")
+    if profile["tg_username"]:
+        lines.append(f"✈️ <b>Telegram:</b> {html_escape(profile['tg_username'])}")
+    if profile["is_guest"] and profile["guest_session_id"]:
+        lines.append(f"🌐 <b>Сессия:</b> <code>{html_escape(profile['guest_session_id'])}</code>")
+    if profile["jobs_summary"]:
+        lines.append("📋 <b>Задачи:</b> " + "; ".join(html_escape(j) for j in profile["jobs_summary"][:3]))
+    lines.append("")
+    if msgs:
+        lines.append("<b>Последние сообщения:</b>")
+        for m in reversed(msgs):
+            who = "👤 Клиент" if m.sender_role == "client" else "🛡 Вы"
+            body = (m.message or "📎 Вложение").replace("\n", " ")[:180]
+            lines.append(f"• <b>{who}:</b> {html_escape(body)}")
+    else:
+        lines.append("<i>Сообщений пока нет.</i>")
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith("tg_chat:"))
+async def handle_admin_tg_chat_callback(callback: CallbackQuery) -> None:
+    if not callback.message or not callback.from_user:
+        return
+    uid = str(callback.from_user.id)
+    parts = str(callback.data or "").split(":", 2)
+    action = parts[1] if len(parts) > 1 else ""
+    arg = parts[2] if len(parts) > 2 else ""
+
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            await callback.answer("Недостаточно прав.", show_alert=True)
+            return
+
+        if action == "exit":
+            clear_active_tg_session(db, tg_user_id=uid, role_scope="admin_reply")
+            await callback.answer("Главное меню")
+            await callback.message.answer(
+                "🏠 <b>Главное меню TenderLex</b>\n\n"
+                "Режим ответа клиенту выключен, переписка сохранена.\n"
+                "Вернуться к перепискам можно через кнопку <b>«💬 Диалоги с клиентами»</b> ниже.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_inline_menu_for_callback(callback),
+            )
+            return
+
+        if action == "list":
+            await callback.answer()
+            dialogs_payload = _build_admin_dialogs_payload(db, limit=8)
+            if not dialogs_payload:
+                await callback.message.answer(
+                    "Диалогов с клиентами пока нет.",
+                    reply_markup=_inline_menu_for_callback(callback),
+                )
+                return
+            dialogs_text, dialogs_kb = dialogs_payload
+            await callback.message.answer(
+                dialogs_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=dialogs_kb,
+            )
+            return
+
+        state = db.get(SupportDialogState, arg) if arg else None
+        if not state:
+            await callback.answer("Диалог не найден.", show_alert=True)
+            return
+
+        if action == "info":
+            await callback.answer()
+            await callback.message.answer(
+                _format_dialog_card_text(db, state),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_support_session_active_kb(state.id),
+            )
+            return
+
+        if action == "enter":
+            profile = get_dialog_profile(db, client_id=state.client_id, guest_session_id=state.guest_session_id)
+            set_active_tg_session(
+                db,
+                tg_user_id=uid,
+                role_scope="admin_reply",
+                dialog_key=profile["dialog_key"],
+                client_id=profile["client_id"],
+                guest_session_id=profile["guest_session_id"],
+                dialog_label=profile["display_name"],
+                ttl_hours=DEFAULT_ADMIN_SESSION_TTL_HOURS,
+            )
+            await callback.answer(f"Вы отвечаете: {profile['display_name'][:40]}")
+            await callback.message.answer(
+                _format_dialog_card_text(db, state)
+                + "\n\n✍️ <b>Вы в чате с этим клиентом.</b>\n"
+                "Отправляйте текст, фото или файлы — всё сразу уйдёт клиенту и сохранится в админке.\n"
+                "<i>Чтобы вернуться в меню бота, нажмите «🏠 Главное меню» ниже.</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_support_session_active_kb(state.id),
+            )
+            return
+
+        if action == "close":
+            from_u = callback.from_user
+            actor_name = " ".join(
+                p for p in [getattr(from_u, "first_name", "") or "", getattr(from_u, "last_name", "") or ""] if p
+            ).strip() or getattr(from_u, "username", "") or "Администратор"
+            clear_active_tg_session(db, tg_user_id=uid, role_scope="admin_reply")
+            await close_support_dialog(db, state=state, actor_name=actor_name)
+            await callback.answer("Диалог завершён")
+            try:
+                await callback.message.edit_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[InlineKeyboardButton(text="🔒 Диалог закрыт", callback_data="none")]]
+                    )
+                )
+            except Exception:
+                pass
+            await callback.message.answer(
+                f"🔒 Диалог <b>{html_escape(state.topic_title or state.client_id)}</b> завершён.",
+                parse_mode=ParseMode.HTML,
+            )
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data.startswith("client_support:"))
+async def handle_client_support_callback(callback: CallbackQuery) -> None:
+    if not callback.message or not callback.from_user:
+        return
+    uid = str(callback.from_user.id)
+    parts = str(callback.data or "").split(":", 2)
+    action = parts[1] if len(parts) > 1 else "start"
+    arg = parts[2] if len(parts) > 2 else ""
+
+    db = SessionLocal()
+    try:
+        if action == "cancel":
+            clear_active_tg_session(db, tg_user_id=uid, role_scope="client_dm")
+            await callback.answer("Вышли из чата поддержки")
+            await callback.message.answer(
+                "Вы вернулись в главное меню TenderLex.",
+                reply_markup=_inline_menu_for_callback(callback),
+            )
+            return
+
+        if not is_admin_telegram_user(db, uid) and is_telegram_user_blocked(db, uid):
+            clear_active_tg_session(db, tg_user_id=uid, role_scope="client_dm")
+            await callback.answer("⛔ Доступ ограничен администратором.", show_alert=True)
+            return
+
+        job_id = ""
+        if action == "reply" and arg:
+            state = db.get(SupportDialogState, arg)
+            if state and state.client_id:
+                latest_job_msg = (
+                    db.query(JobChatMessage)
+                    .filter(JobChatMessage.client_id == state.client_id, JobChatMessage.job_id != "")
+                    .order_by(JobChatMessage.created_at.desc())
+                    .first()
+                )
+                if latest_job_msg:
+                    job_id = latest_job_msg.job_id
+        set_active_tg_session(
+            db,
+            tg_user_id=uid,
+            role_scope="client_dm",
+            dialog_key=f"tg_client:{uid}",
+            job_id=job_id,
+            dialog_label="Поддержка TenderLex",
+            ttl_hours=DEFAULT_CLIENT_SESSION_TTL_HOURS,
+        )
+        await callback.answer("Напишите ваш вопрос")
+        await callback.message.answer(
+            "💬 <b>Связь со специалистом TenderLex</b>\n\n"
+            "Напишите ваш вопрос, прикрепите документ или скриншот — сообщение сразу поступит оператору, а ответ придёт прямо сюда в бот.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🏠 Вернуться в меню", callback_data="client_support:cancel")]]
+            ),
+        )
+    finally:
+        db.close()
+
 
 @router.callback_query(F.data.startswith("reply:"))
 async def handle_site_chat_reply_btn(callback: CallbackQuery) -> None:
-    if not callback.message:
+    if not callback.message or not callback.from_user:
         return
-    session_id = str(callback.data or "").split(":", 1)[1]
-    OPERATOR_REPLY_SESSIONS[callback.message.chat.id] = session_id
-    await callback.answer("Режим ответа активирован")
-    await callback.message.answer(
-        f"✍️ <b>Введите ответ для клиента</b> <code>{html_escape(session_id)}</code> <b>(просто отправьте текст ниже):</b>",
-        parse_mode="HTML",
-        reply_markup=ForceReply(input_field_placeholder=f"Ответ для {session_id}..."),
-    )
+    uid = str(callback.from_user.id)
+    raw_sid = str(callback.data or "").split(":", 1)[1].strip()
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            await callback.answer("Доступно только администратору.", show_alert=True)
+            return
+        try:
+            clean_sid = validate_guest_session_id(raw_sid)
+        except ValueError:
+            await callback.answer("Некорректная сессия.", show_alert=True)
+            return
+        get_or_create_guest_session(db, clean_sid)
+        profile = get_dialog_profile(db, guest_session_id=clean_sid)
+        state = profile["state"]
+        set_active_tg_session(
+            db,
+            tg_user_id=uid,
+            role_scope="admin_reply",
+            dialog_key=profile["dialog_key"],
+            client_id=profile["client_id"],
+            guest_session_id=clean_sid,
+            dialog_label=profile["display_name"],
+            ttl_hours=DEFAULT_ADMIN_SESSION_TTL_HOURS,
+        )
+        await callback.answer("Режим ответа активирован")
+        await callback.message.answer(
+            f"✍️ <b>Режим ответа клиенту на сайт:</b> <code>{html_escape(clean_sid)}</code>\n"
+            "Отправляйте сообщения ниже — чтобы вернуться, нажмите «🏠 Главное меню».",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_support_session_active_kb(state.id),
+        )
+    finally:
+        db.close()
+
 
 @router.callback_query(F.data.startswith("close:"))
 async def handle_site_chat_close_btn(callback: CallbackQuery) -> None:
-    if not callback.message:
+    if not callback.message or not callback.from_user:
         return
-    session_id = str(callback.data or "").split(":", 1)[1]
-    OPERATOR_REPLY_SESSIONS.pop(callback.message.chat.id, None)
-    
-    sessions = _load_chat_sessions()
-    if session_id in sessions:
-        sessions[session_id].setdefault("messages", []).append({
-            "id": "sys_" + str(int(time.time() * 1000)),
-            "sender": "system",
-            "text": "Диалог завершен администратором. Спасибо за обращение!",
-            "timestamp": now_utc().isoformat(),
-        })
-        _save_chat_sessions(sessions)
-        
-    await callback.answer("Диалог закрыт")
+    uid = str(callback.from_user.id)
+    raw_sid = str(callback.data or "").split(":", 1)[1].strip()
+    db = SessionLocal()
     try:
-        await callback.message.edit_reply_markup(
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔒 Диалог закрыт", callback_data="none")]
-            ])
+        if not is_admin_telegram_user(db, uid):
+            await callback.answer("Доступно только администратору.", show_alert=True)
+            return
+        try:
+            clean_sid = validate_guest_session_id(raw_sid)
+        except ValueError:
+            await callback.answer("Некорректная сессия.", show_alert=True)
+            return
+        get_or_create_guest_session(db, clean_sid)
+        profile = get_dialog_profile(db, guest_session_id=clean_sid)
+        clear_active_tg_session(db, tg_user_id=uid, role_scope="admin_reply")
+        await close_support_dialog(db, state=profile["state"])
+        await callback.answer("Диалог закрыт")
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🔒 Диалог закрыт", callback_data="none")]]
+                )
+            )
+        except Exception:
+            pass
+        await callback.message.answer(
+            f"🔒 <b>Диалог по сессии</b> <code>{html_escape(clean_sid)}</code> <b>закрыт.</b>",
+            parse_mode=ParseMode.HTML,
         )
-    except Exception:
-        pass
-    await callback.message.answer(
-        f"🔒 <b>Диалог по сессии</b> <code>{html_escape(session_id)}</code> <b>закрыт.</b>",
-        parse_mode="HTML",
-        reply_markup=main_inline_keyboard(),
-    )
+    finally:
+        db.close()
 
 
 @router.callback_query(F.data == "none")
@@ -4620,7 +6716,7 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
             kind = KIND_EXACT_PRODUCT
         elif mode_val in (MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS):
             kind = KIND_PROCUREMENT_REPORT
-        elif mode_val == MODE_SUPPLIER_SEARCH_EXTRA:
+        elif mode_val == KIND_SUPPLIER_SEARCH_EXTRA:
             kind = KIND_SUPPLIER_SEARCH_EXTRA
 
         price_kopeks = effective_price_kopeks(db, client, kind) or 9900
@@ -4648,7 +6744,7 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
                     chat_id=int(client_tg),
                     text=notification_text,
                     parse_mode=ParseMode.HTML,
-                    reply_markup=main_inline_keyboard(),
+                    reply_markup=main_inline_keyboard(client_tg),
                 )
             except Exception as notify_err:
                 logger.warning("failed_to_notify_client_of_bonus", extra={"error": str(notify_err), "client_id": client.id})
@@ -4671,68 +6767,368 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
         db.close()
 
 
-async def _handle_operator_chat_message(message: Message) -> bool:
-    chat_id = message.chat.id
-    text = str(message.text or "").strip() if message.text else ""
-    if not text:
+@router.callback_query(F.data == "owner_check_yc_balance")
+async def handle_owner_check_yc_balance(callback: CallbackQuery) -> None:
+    owner_id = str(config.owner_telegram_id or "").strip()
+    user_id = str(callback.from_user.id if callback.from_user else "")
+    if not owner_id or user_id != owner_id:
+        await callback.answer("Действие доступно только владельцу сервиса.", show_alert=True)
+        return
+
+    from .admin_alerts import (
+        DEFAULT_YANDEX_BILLING_ACCOUNT_ID,
+        get_yandex_billing_console_url,
+        query_yandex_billing_balance_live,
+    )
+
+    info = await query_yandex_billing_balance_live()
+    if info.get("error"):
+        await callback.answer(
+            f"Не удалось получить актуальный баланс Яндекс.Облака ({info['error']}).",
+            show_alert=True,
+        )
+        return
+
+    balance_val = float(info.get("balance", 0.0))
+    is_active = bool(info.get("is_active", False))
+    billing_id = str(info.get("billing_account_id") or DEFAULT_YANDEX_BILLING_ACCOUNT_ID)
+    status_label = "активен" if is_active else "заблокирован"
+    now_str = time.strftime("%H:%M:%S", time.localtime())
+
+    if balance_val >= 150.0 and is_active:
+        title = "✅ <b>TenderLex: Баланс Яндекс.Облака в норме!</b>"
+        footer = f"👉 <i>Проверено в {now_str}. Поиск поставщиков работает штатно.</i>"
+    else:
+        title = "⚠️ <b>TenderLex: Заканчивается баланс Яндекс.Облака!</b>"
+        footer = (
+            f"👉 <i>Проверено в {now_str}. Пополните счёт в Яндекс.Облаке "
+            f"во избежание сбоев в поиске поставщиков.</i>"
+        )
+
+    new_text = (
+        f"{title}\n\n"
+        f"<b>Текущий остаток:</b> <code>{balance_val:.2f} ₽</code>\n"
+        f"<b>Статус аккаунта:</b> {status_label}\n\n"
+        f"{footer}"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💳 Пополнить баланс (Яндекс.Облако)",
+                    url=get_yandex_billing_console_url(billing_id),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Проверить баланс сейчас",
+                    callback_data="owner_check_yc_balance",
+                )
+            ],
+        ]
+    )
+
+    if callback.message:
+        try:
+            await callback.message.edit_text(
+                new_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            pass
+
+    await callback.answer(
+        f"Актуальный баланс: {balance_val:.2f} ₽ ({status_label})",
+        show_alert=True,
+    )
+
+
+async def _handle_support_private_message(message: Message, bot: Bot | None = None) -> bool:
+    bot = bot or getattr(message, "bot", None)
+    tg_uid, username, full_name = _telegram_user_fields(message)
+    if not tg_uid:
         return False
 
-    session_id = OPERATOR_REPLY_SESSIONS.get(chat_id)
-    if not session_id and message.reply_to_message and message.reply_to_message.text:
-        match = re.search(r"sess_[a-z0-9_]+", message.reply_to_message.text, re.IGNORECASE)
-        if match:
-            session_id = match.group(0)
+    text_raw = str(getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    if text_raw.startswith("/") and not text_raw.startswith("/reply "):
+        return False
 
-    if not session_id and text.startswith("/reply "):
-        parts = text.split(" ", 2)
-        if len(parts) >= 3:
-            session_id = parts[1]
-            text = parts[2]
+    has_media = bool(getattr(message, "document", None) or getattr(message, "photo", None))
+    if not text_raw and not has_media:
+        return False
 
-    if session_id:
-        session_id = session_id.strip("`'\" \t\r\n")
-        sessions = _load_chat_sessions()
-        matched_key = None
-        if session_id in sessions:
-            matched_key = session_id
-        else:
-            for k in sessions.keys():
-                if k.lower() == session_id.lower() or session_id.lower() in k.lower():
-                    matched_key = k
-                    break
-        
-        if not matched_key and session_id:
-            matched_key = session_id
-            sessions[matched_key] = {
-                "sessionId": session_id,
-                "created": now_utc().isoformat(),
-                "messages": [],
-                "updated": now_utc().isoformat(),
-            }
+    db = SessionLocal()
+    try:
+        is_admin = is_admin_telegram_user(db, tg_uid)
 
-        sessions[matched_key].setdefault("messages", []).append({
-            "id": "admin_" + str(int(time.time() * 1000)),
-            "sender": "admin",
-            "text": text,
-            "timestamp": now_utc().isoformat(),
-        })
-        sessions[matched_key]["updated"] = now_utc().isoformat()
-        _save_chat_sessions(sessions)
-        OPERATOR_REPLY_SESSIONS.pop(chat_id, None)
-        await message.answer(
-            f"✅ <b>Ответ успешно доставлен клиенту на сайт!</b>\n\n💬 <b>Текст:</b> {html_escape(text)}",
-            parse_mode="HTML",
-            reply_markup=main_menu(),
-        )
-        return True
+        # 1. Native Telegram Reply via exact message map (admin or client)
+        reply_to = getattr(message, "reply_to_message", None)
+        if reply_to:
+            mapped = lookup_tg_reply_target(
+                db,
+                tg_chat_id=message.chat.id,
+                reply_to_message_id=reply_to.message_id,
+            )
+            if mapped:
+                if mapped.direction in ("admin_dm_card", "admin_dm_echo", "topic_post", "topic_header") and is_admin:
+                    try:
+                        atts = await _download_bot_support_attachments(
+                            message,
+                            bot,
+                            client_id=mapped.client_id,
+                            guest_session_id=mapped.guest_session_id,
+                            job_id=mapped.job_id,
+                            prefix="adm_dm",
+                        )
+                    except ValueError as exc:
+                        await message.answer(f"⚠️ {exc}")
+                        return True
+                    res = await deliver_admin_reply(
+                        db,
+                        client_id=mapped.client_id,
+                        guest_session_id=mapped.guest_session_id,
+                        job_id=mapped.job_id,
+                        text=text_raw,
+                        attachments=atts,
+                        source_channel="tg_dm",
+                        actor_tg_user_id=tg_uid,
+                        actor_name=full_name or "Специалист TenderLex",
+                        notify_client_tg=True,
+                        mirror_to_other_tg=True,
+                    )
+                    state_id = res["state"].id
+                    await message.answer(
+                        f"✅ <b>Ответ отправлен → {html_escape(res['profile']['display_name'])}</b>",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[[InlineKeyboardButton(text="✍️ Продолжить чат с этим клиентом", callback_data=f"tg_chat:enter:{state_id}")]]
+                        ),
+                    )
+                    return True
+                if mapped.direction == "client_dm_reply":
+                    if not is_admin and is_telegram_user_blocked(db, tg_uid):
+                        await message.answer("⛔ Доступ к поддержке ограничен администратором.")
+                        return True
+                    try:
+                        atts = await _download_bot_support_attachments(
+                            message,
+                            bot,
+                            client_id=mapped.client_id,
+                            guest_session_id=mapped.guest_session_id,
+                            job_id=mapped.job_id,
+                            prefix="cli_tg",
+                        )
+                    except ValueError as exc:
+                        await message.answer(f"⚠️ {exc}")
+                        return True
+                    try:
+                        await deliver_client_telegram_message(
+                            db,
+                            tg_user_id=tg_uid,
+                            username=username,
+                            full_name=full_name,
+                            text=text_raw,
+                            attachments=atts,
+                            job_id=mapped.job_id,
+                        )
+                    except PermissionError as exc:
+                        await message.answer(f"⛔ {exc}")
+                        return True
+                    await message.answer(
+                        "✅ Ваше сообщение передано специалисту TenderLex. Как только появится ответ — я сразу пришлю его сюда!",
+                        reply_markup=_inline_menu_for_message(message),
+                    )
+                    return True
+
+        # 2. Legacy `/reply <guest_session_id> <text>` command for authorized admins
+        if is_admin and text_raw.startswith("/reply "):
+            parts = text_raw.split(" ", 2)
+            if len(parts) >= 3:
+                try:
+                    clean_sid = validate_guest_session_id(parts[1])
+                except ValueError as exc:
+                    await message.answer(f"⚠️ {exc}")
+                    return True
+                get_or_create_guest_session(db, clean_sid)
+                res = await deliver_admin_reply(
+                    db,
+                    guest_session_id=clean_sid,
+                    text=parts[2],
+                    source_channel="tg_dm",
+                    actor_tg_user_id=tg_uid,
+                    actor_name=full_name or "Специалист TenderLex",
+                    notify_client_tg=True,
+                    mirror_to_other_tg=True,
+                )
+                await message.answer(
+                    f"✅ <b>Ответ отправлен → {html_escape(res['profile']['display_name'])}</b>",
+                    parse_mode=ParseMode.HTML,
+                )
+                return True
+
+        # 3. Persistent Admin DM chat session (Option A: "Войти в чат")
+        if is_admin:
+            admin_sess = get_active_tg_session(db, tg_user_id=tg_uid, role_scope="admin_reply")
+            if admin_sess:
+                try:
+                    atts = await _download_bot_support_attachments(
+                        message,
+                        bot,
+                        client_id=admin_sess.client_id,
+                        guest_session_id=admin_sess.guest_session_id,
+                        job_id=admin_sess.job_id,
+                        prefix="adm_dm",
+                    )
+                except ValueError as exc:
+                    await message.answer(f"⚠️ {exc}")
+                    return True
+                res = await deliver_admin_reply(
+                    db,
+                    client_id=admin_sess.client_id,
+                    guest_session_id=admin_sess.guest_session_id,
+                    job_id=admin_sess.job_id,
+                    text=text_raw,
+                    attachments=atts,
+                    source_channel="tg_dm",
+                    actor_tg_user_id=tg_uid,
+                    actor_name=full_name or "Специалист TenderLex",
+                    notify_client_tg=True,
+                    mirror_to_other_tg=True,
+                )
+                state = res["state"]
+                admin_sess.expires_at = now_utc() + timedelta(hours=DEFAULT_ADMIN_SESSION_TTL_HOURS)
+                db.commit()
+                await message.answer(
+                    f"✅ Доставлено → <b>{html_escape(res['profile']['display_name'])}</b>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_support_reply_sent_kb(),
+                )
+                return True
+
+        # 4. Persistent Client Support DM session ("Написать в поддержку")
+        client_sess = get_active_tg_session(db, tg_user_id=tg_uid, role_scope="client_dm")
+        if client_sess:
+            if not is_admin and is_telegram_user_blocked(db, tg_uid):
+                clear_active_tg_session(db, tg_user_id=tg_uid, role_scope="client_dm")
+                await message.answer("⛔ Доступ к поддержке ограничен администратором.")
+                return True
+            try:
+                client_for_att, _ = get_client_by_telegram_id(db, tg_uid)
+                atts = await _download_bot_support_attachments(
+                    message,
+                    bot,
+                    client_id=client_for_att.id if client_for_att else "",
+                    guest_session_id="" if client_for_att else f"tg_{tg_uid}",
+                    prefix="cli_tg",
+                )
+            except ValueError as exc:
+                await message.answer(f"⚠️ {exc}")
+                return True
+            try:
+                await deliver_client_telegram_message(
+                    db,
+                    tg_user_id=tg_uid,
+                    username=username,
+                    full_name=full_name,
+                    text=text_raw,
+                    attachments=atts,
+                    job_id=client_sess.job_id,
+                )
+            except PermissionError as exc:
+                await message.answer(f"⛔ {exc}")
+                return True
+            client_sess.expires_at = now_utc() + timedelta(hours=DEFAULT_CLIENT_SESSION_TTL_HOURS)
+            db.commit()
+            await message.answer(
+                "✅ Сообщение передано в поддержку TenderLex. Можете отправить ещё детали/файлы или вернуться в меню.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🏠 Вернуться в меню", callback_data="client_support:cancel")]]
+                ),
+            )
+            return True
+    finally:
+        db.close()
 
     return False
-# --- END SITE CHAT HANDLERS ---
+
+
+@router.message(Command("dialogs"))
+async def cmd_admin_dialogs(message: Message) -> None:
+    uid = str(message.from_user.id if message.from_user else "")
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            await message.answer("Команда доступна только администратору.", reply_markup=_inline_menu_for_message(message))
+            return
+        dialogs_payload = _build_admin_dialogs_payload(db, limit=8)
+        if not dialogs_payload:
+            await message.answer("Активных диалогов пока нет.", reply_markup=_inline_menu_for_message(message))
+            return
+        dialogs_text, dialogs_kb = dialogs_payload
+        await message.answer(
+            dialogs_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=dialogs_kb,
+        )
+    finally:
+        db.close()
+
+
+@router.message(Command("exit_chat"))
+async def cmd_admin_exit_chat(message: Message) -> None:
+    uid = str(message.from_user.id if message.from_user else "")
+    db = SessionLocal()
+    try:
+        clear_active_tg_session(db, tg_user_id=uid, role_scope=None)
+    finally:
+        db.close()
+    await message.answer(
+        "🏠 <b>Главное меню TenderLex</b>\n\n"
+        "Режим ответа клиенту выключен, переписка сохранена.\n"
+        "Вернуться к перепискам можно через кнопку <b>«💬 Диалоги с клиентами»</b> ниже.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=_inline_menu_for_message(message),
+    )
+
+
+@router.message(Command("support_setup"))
+async def cmd_admin_support_setup_dm(message: Message) -> None:
+    uid = str(message.from_user.id if message.from_user else "")
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            await message.answer("Команда доступна только администратору.", reply_markup=_inline_menu_for_message(message))
+            return
+        gid = get_configured_support_group_id(db)
+        diag = await test_support_group_connection(db, send_test_ping=False) if gid else None
+    finally:
+        db.close()
+
+    group_status = (
+        f"✅ Подключена: <code>{html_escape(gid)}</code>"
+        if diag and diag.get("ok")
+        else (f"⚠️ {html_escape(gid)}: {html_escape(diag.get('error', ''))}" if gid and diag else "не настроена (работает режим ЛС бота — Вариант A)")
+    )
+    await message.answer(
+        "🛠 <b>Настройка поддержки в Telegram</b>\n\n"
+        f"• <b>Ваш Telegram Admin ID:</b> <code>{html_escape(uid)}</code>\n"
+        "• <b>Вариант A (ЛС этого бота):</b> ✅ работает сейчас через кнопку <b>«💬 Диалоги с клиентами»</b> в главном меню, кнопку <b>«✍️ Ответить этому клиенту»</b> под сообщением или обычный Reply.\n"
+        f"• <b>Вариант B (Группа с темами по клиентам, на будущее):</b> {group_status}\n\n"
+        "<b>Если позже захотите включить Вариант B:</b>\n"
+        "1. Создайте одну закрытую группу в Telegram и в её настройках включите <b>«Темы» (Topics)</b> (вручную темы создавать не нужно — бот сам создаст тему при обращении).\n"
+        "2. Добавьте этого бота в группу и назначьте <b>Администратором</b> с правом <b>«Управление темами»</b>.\n"
+        "3. Отправьте <code>/support_setup</code> прямо в этой группе — бот покажет её ID (вида <code>-100...</code>) и проверит права.\n"
+        "4. Вставьте полученный ID в Админ-панели -> «Настройки» -> «Telegram-поддержка» и нажмите «Сохранить».",
+        parse_mode=ParseMode.HTML,
+        reply_markup=_inline_menu_for_message(message),
+    )
 
 
 @router.message(F.text)
 async def unknown_text(message: Message) -> None:
-    if await _handle_operator_chat_message(message):
+    if await _handle_support_private_message(message, getattr(message, "bot", None)):
         return
     if await _handle_supplier_text_tz(message):
         return
@@ -4741,7 +7137,7 @@ async def unknown_text(message: Message) -> None:
     await message.answer(
         "ℹ️ Выберите действие кнопкой ниже\n\n"
         "Для поставщиков отправьте ТЗ/ООЗ. Для анализа документации можно добавить номер извещения, файлы или ссылку на закупку.",
-        reply_markup=main_inline_keyboard(),
+        reply_markup=_inline_menu_for_message(message),
     )
 
 
@@ -4750,8 +7146,136 @@ async def unsupported_message(message: Message) -> None:
     await message.answer(
         "⚠️ Этот тип сообщения не поддерживается.\n\n"
         "Отправьте документ, архив, текст ТЗ, номер извещения или ссылку на закупку.",
-        reply_markup=main_inline_keyboard(),
+        reply_markup=_inline_menu_for_message(message),
     )
+
+
+# --- OPTION B: ADMIN FORUM SUPERGROUP ROUTER ---
+@support_group_router.message(Command("support_setup", "id"))
+async def support_group_setup_command(message: Message) -> None:
+    uid = str(message.from_user.id if message.from_user else "")
+    db = SessionLocal()
+    try:
+        if not is_admin_telegram_user(db, uid):
+            await reject_group_message(message)
+            return
+        chat_id_str = str(message.chat.id)
+        diag = await test_support_group_connection(db, group_id_override=chat_id_str, send_test_ping=False)
+        configured = get_configured_support_group_id(db)
+    finally:
+        db.close()
+
+    status_line = (
+        f"✅ <b>Готово!</b> {html_escape(diag.get('message', ''))}"
+        if diag.get("ok")
+        else f"⚠️ <b>Требуется настройка:</b> {html_escape(diag.get('error', ''))}"
+    )
+    saved_note = (
+        "✅ Этот ID уже сохранён в настройках системы."
+        if configured == chat_id_str
+        else f"👉 Скопируйте <code>{html_escape(chat_id_str)}</code> в Админ-панель -> Настройки -> «ID группы поддержки Telegram» и сохраните."
+    )
+    await message.answer(
+        f"🛠 <b>Диагностика группы поддержки TenderLex</b>\n\n"
+        f"• <b>ID этой группы:</b> <code>{html_escape(chat_id_str)}</code>\n"
+        f"• {status_line}\n\n"
+        f"{saved_note}",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@support_group_router.message()
+async def support_group_message_handler(message: Message, bot: Bot) -> None:
+    if message.from_user and getattr(message.from_user, "is_bot", False):
+        return
+
+    uid = str(message.from_user.id if message.from_user else "")
+    full_name = _telegram_user_fields(message)[2] or "Специалист TenderLex"
+    db = SessionLocal()
+    try:
+        if not is_support_group_chat(db, message.chat.id):
+            await reject_group_message(message)
+            return
+
+        if not is_admin_telegram_user(db, uid):
+            return
+
+        thread_id = int(getattr(message, "message_thread_id", None) or 0)
+        text_raw = str(message.text or message.caption or "").strip()
+        has_media = bool(message.document or message.photo)
+        if not text_raw and not has_media:
+            return
+
+        if thread_id <= 0:
+            if text_raw.startswith("/dialogs"):
+                dialogs = list_recent_dialogs_for_bot(db, limit=10)
+                if not dialogs:
+                    await message.answer("Активных диалогов пока нет.")
+                    return
+                lines = ["📋 <b>Активные диалоги (откройте нужную тему слева):</b>", ""]
+                for item in dialogs:
+                    badge = f"🔔{item['unread_count']} " if item["unread_count"] > 0 else ""
+                    lines.append(f"• {badge}<b>{html_escape(item['display_name'])}</b> — {html_escape(item['last_preview'])}")
+                await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+            return
+
+        state = lookup_topic_dialog(db, tg_chat_id=message.chat.id, tg_thread_id=thread_id)
+        if not state:
+            return
+
+        if text_raw.startswith("/info"):
+            await message.answer(
+                _format_dialog_card_text(db, state),
+                parse_mode=ParseMode.HTML,
+                message_thread_id=thread_id,
+            )
+            return
+
+        if text_raw.startswith("/close"):
+            await close_support_dialog(db, state=state, actor_name=full_name)
+            await message.answer("🔒 Диалог и тема закрыты.", message_thread_id=thread_id)
+            return
+
+        try:
+            atts = await _download_bot_support_attachments(
+                message,
+                bot,
+                client_id=state.client_id,
+                guest_session_id=state.guest_session_id,
+                prefix="adm_topic",
+            )
+        except ValueError as exc:
+            await message.answer(f"⚠️ {exc}", message_thread_id=thread_id)
+            return
+
+        await deliver_admin_reply(
+            db,
+            client_id=state.client_id,
+            guest_session_id=state.guest_session_id,
+            text=text_raw,
+            attachments=atts,
+            source_channel="tg_topic",
+            actor_tg_user_id=uid,
+            actor_name=full_name,
+            notify_client_tg=True,
+            mirror_to_other_tg=True,
+        )
+    finally:
+        db.close()
+
+
+@support_group_router.callback_query()
+async def support_group_callback_handler(callback: CallbackQuery) -> None:
+    if not callback.message:
+        return
+    db = SessionLocal()
+    try:
+        if not is_support_group_chat(db, callback.message.chat.id):
+            await reject_group_callback(callback)
+            return
+    finally:
+        db.close()
+    await callback.answer()
 
 
 @group_safety_router.message()
@@ -4789,6 +7313,24 @@ async def run_bot() -> None:
         pass
     await configure_bot_profile(bot)
     dispatcher = Dispatcher()
+
+    @dispatcher.error()
+    async def _global_bot_error_handler(event: ErrorEvent) -> bool:
+        logger.exception("Unhandled exception in Telegram bot update handler: %s", event.exception)
+        try:
+            from .admin_alerts import send_telegram_admin_alert
+            err_type = type(event.exception).__name__
+            err_msg = html_escape(str(event.exception)[:240])
+            await send_telegram_admin_alert(
+                f"⚠️ <b>Ошибка обработчика Telegram-бота</b>\n<code>{err_type}: {err_msg}</code>",
+                deduplicate_key=f"bot_handler_err:{err_type}",
+                throttle_seconds=900,
+            )
+        except Exception:
+            pass
+        return True
+
+    dispatcher.include_router(support_group_router)
     dispatcher.include_router(group_safety_router)
     dispatcher.include_router(router)
     reminder_task = asyncio.create_task(_onboarding_reminder_loop(bot))
@@ -4854,11 +7396,12 @@ async def send_admin_supplement_telegram(
         return False
     bot = Bot(token=config.bot_token)
     try:
-        title = job_title or "Задача"
+        title = html_escape(job_title or "Задача")
+        safe_job_id = html_escape(str(job_id or ""), quote=True)
         header = f"✨ <b>Отчёт по вашей задаче дополнен экспертами TenderLex</b>\n\n📌 <b>Задача:</b> {title}"
         if comment:
-            header += f"\n\n💬 <b>Комментарий эксперта:</b>\n{comment}"
-        header += f"\n\n🌐 <a href=\"https://tenderlex.ru/cabinet#job-{job_id}\">Открыть задачу в личном кабинете</a>"
+            header += f"\n\n💬 <b>Комментарий эксперта:</b>\n{html_escape(comment)}"
+        header += f"\n\n🌐 <a href=\"https://tenderlex.ru/cabinet#job-{safe_job_id}\">Открыть задачу в личном кабинете</a>"
 
         file_list: list[tuple[Path, str]] = []
         if files:

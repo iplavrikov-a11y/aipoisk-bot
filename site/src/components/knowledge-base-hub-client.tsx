@@ -35,7 +35,7 @@ export function KnowledgeBaseHubClient() {
   }, []);
 
   return (
-    <div className="space-y-10">
+    <div className="tl-knowledge-hub space-y-10">
       {/* CATEGORY PILLS (NO SEARCH BAR) */}
       <div className="flex flex-wrap items-center justify-center gap-2 max-w-5xl mx-auto">
         {KNOWLEDGE_CATEGORIES.map((cat) => {

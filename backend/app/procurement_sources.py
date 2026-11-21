@@ -454,9 +454,16 @@ async def _fetch_source_page_in_context(context, url: str, kind: str = "") -> di
     try:
         async def guard_public_network(route) -> None:
             request_url = str(route.request.url or "")
+            lower_url = request_url.lower()
+            if lower_url == "about:blank" or (
+                (lower_url.startswith("data:") or lower_url.startswith("blob:"))
+                and not route.request.is_navigation_request()
+            ):
+                await route.continue_()
+                return
             parsed = urlparse(request_url)
             if parsed.scheme not in {"http", "https"}:
-                await route.continue_()
+                await route.abort("blockedbyclient")
                 return
             if await asyncio.to_thread(source_url_is_public, request_url):
                 await route.continue_()
