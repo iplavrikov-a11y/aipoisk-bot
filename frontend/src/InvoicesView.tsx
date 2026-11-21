@@ -1,45 +1,30 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CheckCircle2, ExternalLink, FileText, Loader2, RefreshCw, XCircle } from 'lucide-react'
-
-type Invoice = {
-  id: string
-  invoice_number: string
-  amount_rub: number
-  bonus_rub: number
-  total_credit_rub: number
-  tariff_name: string
-  buyer_inn: string
-  buyer_kpp?: string
-  buyer_name: string
-  buyer_email?: string
-  buyer_phone?: string
-  buyer_telegram?: string
-  status: 'issued' | 'proof_submitted' | 'paid' | 'cancelled' | string
-  created_at?: string | null
-  paid_at?: string | null
-  proof_submitted_at?: string | null
-  proof_original_name?: string | null
-  proof_status?: 'submitted' | 'none' | string
-  settlement_mode?: 'credited' | 'manual_closed' | string | null
-}
-
-const statusCopy: Record<string, { label: string; color: string }> = {
-  issued: { label: 'Ожидает оплаты', color: '#92400e' },
-  proof_submitted: { label: 'Платёжка на проверке', color: '#0369a1' },
-  paid: { label: 'Закрыт', color: '#047857' },
-  cancelled: { label: 'Отменён', color: '#64748b' },
-}
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  CreditCard,
+  FileText,
+  Loader2,
+  RefreshCw,
+  Search,
+  UserRound,
+  Wallet,
+  X,
+  XCircle,
+} from 'lucide-react'
+import { PaymentRow } from './invoices/PaymentRow'
+import {
+  formatMoney,
+  PERIOD_OPTIONS,
+  type InvoicePayload,
+  type PaymentOverviewResponse,
+  type PaymentPeriod,
+  type PaymentStatusFilter,
+  type PaymentTab,
+} from './invoices/types'
 
 const PAGE_SIZE = 25
 
-function money(value: number) {
-  return Number(value || 0).toLocaleString('ru-RU') + ' ₽'
-}
-
-function date(value?: string | null) {
-  if (!value) return '—'
-  const parsed = new Date(value)
-  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString('ru-RU')
+type InvoicesViewProps = {
+  onOpenClient?: (clientId: string) => void
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -65,47 +50,108 @@ function formatError(error: unknown) {
   }
 }
 
-export function InvoicesView() {
-  const [invoices, setInvoices] = useState<Invoice[]>([])
-  const [total, setTotal] = useState(0)
+export function InvoicesView({ onOpenClient }: InvoicesViewProps) {
+  const [period, setPeriod] = useState<PaymentPeriod>('all')
+  const [tab, setTab] = useState<PaymentTab>('all')
+  const [statusFilter, setStatusFilter] = useState<PaymentStatusFilter>('active')
+  const [searchInput, setSearchInput] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
   const [page, setPage] = useState(0)
+
+  const [data, setData] = useState<PaymentOverviewResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [actionInvoiceId, setActionInvoiceId] = useState<string | null>(null)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
   const [error, setError] = useState('')
 
-  const load = useCallback(async (targetPage = page, manual = false) => {
-    if (manual) setRefreshing(true)
-    else setLoading(true)
-    setError('')
-    try {
-      const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(targetPage * PAGE_SIZE) })
-      const data = await request<{ invoices?: Invoice[]; total?: number }>(`/api/admin/invoices?${query}`)
-      setInvoices(data.invoices || [])
-      setTotal(data.total ?? (data.invoices || []).length)
-    } catch (err) {
-      setError(formatError(err))
-    } finally {
-      setLoading(false)
-      setRefreshing(false)
-    }
-  }, [page])
+  const hasLoadedRef = useRef(false)
+  const requestSeqRef = useRef(0)
 
   useEffect(() => {
-    void load(page)
-  }, [load, page])
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(searchInput.trim())
+      setPage(0)
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [searchInput])
 
-  const awaitingReview = useMemo(
-    () => invoices.filter(invoice => invoice.status === 'proof_submitted').length,
-    [invoices],
+  const load = useCallback(
+    async (manual = false) => {
+      const seq = ++requestSeqRef.current
+      if (manual || hasLoadedRef.current) setRefreshing(true)
+      else setLoading(true)
+      setError('')
+      try {
+        const params = new URLSearchParams({
+          period,
+          tab,
+          status: statusFilter,
+          limit: String(PAGE_SIZE),
+          offset: String(page * PAGE_SIZE),
+        })
+        if (debouncedQuery) params.set('q', debouncedQuery)
+        const payload = await request<PaymentOverviewResponse>(`/api/admin/payments/overview?${params}`)
+        if (seq !== requestSeqRef.current) return
+        hasLoadedRef.current = true
+        setData(payload)
+      } catch (err) {
+        if (seq !== requestSeqRef.current) return
+        setError(formatError(err))
+      } finally {
+        if (seq === requestSeqRef.current) {
+          setLoading(false)
+          setRefreshing(false)
+        }
+      }
+    },
+    [period, tab, statusFilter, debouncedQuery, page],
   )
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
-  async function confirmPaid(invoice: Invoice) {
+  useEffect(() => {
+    void load(false)
+  }, [load])
+
+  function handlePeriodChange(nextPeriod: PaymentPeriod) {
+    setPeriod(nextPeriod)
+    setPage(0)
+  }
+
+  function handleTabChange(nextTab: PaymentTab) {
+    setTab(nextTab)
+    setStatusFilter(nextTab === 'all' ? 'active' : 'all')
+    setPage(0)
+  }
+
+  function handleStatusChange(nextStatus: PaymentStatusFilter) {
+    setStatusFilter(nextStatus)
+    setPage(0)
+  }
+
+  function openProofReview() {
+    setPeriod('all')
+    setTab('invoices')
+    setStatusFilter('pending')
+    setPage(0)
+  }
+
+  async function copyReference(refId: string) {
+    try {
+      await navigator.clipboard.writeText(refId)
+      setCopiedId(refId)
+      window.setTimeout(() => setCopiedId(curr => (curr === refId ? null : curr)), 1600)
+    } catch {
+      // Clipboard API unavailable
+    }
+  }
+
+  async function confirmPaid(invoice: InvoicePayload) {
     const confirmation = [
       `Подтвердить фактическое поступление денег по счёту № ${invoice.invoice_number}?`,
       '',
-      `На баланс клиента будет зачислено ${money(invoice.total_credit_rub)}${invoice.bonus_rub ? ` (включая бонус ${money(invoice.bonus_rub)})` : ''}.`,
+      `На баланс клиента будет зачислено ${formatMoney(invoice.total_credit_rub)}${
+        invoice.bonus_rub ? ` (включая бонус ${formatMoney(invoice.bonus_rub)})` : ''
+      }.`,
       'Подтверждайте только после сверки с поступлением на расчётный счёт.',
     ].join('\n')
     if (!window.confirm(confirmation)) return
@@ -113,11 +159,11 @@ export function InvoicesView() {
     setActionInvoiceId(invoice.id)
     setError('')
     try {
-      const data = await request<{ invoice: Invoice }>(`/api/admin/invoices/${encodeURIComponent(invoice.id)}/mark-paid`, {
+      await request<{ invoice: InvoicePayload }>(`/api/admin/invoices/${encodeURIComponent(invoice.id)}/mark-paid`, {
         method: 'POST',
         body: JSON.stringify({}),
       })
-      setInvoices(current => current.map(item => item.id === invoice.id ? data.invoice : item))
+      await load(true)
     } catch (err) {
       setError(formatError(err))
     } finally {
@@ -125,23 +171,26 @@ export function InvoicesView() {
     }
   }
 
-  async function closeAlreadyCredited(invoice: Invoice) {
+  async function closeAlreadyCredited(invoice: InvoicePayload) {
     const confirmation = [
       `Закрыть счёт № ${invoice.invoice_number} без начисления?`,
       '',
-      'Используйте это только если баланс клиенту уже начислен вручную другим действием.',
-      'Эта кнопка не зачисляет сумму и бонус повторно.',
+      'Используйте это только если баланс клиенту уже начислен вручную другим действием или счёт тестовый.',
+      'Эта кнопка не зачисляет сумму и бонус повторно и не добавляет счёт в выручку.',
     ].join('\n')
     if (!window.confirm(confirmation)) return
 
     setActionInvoiceId(invoice.id)
     setError('')
     try {
-      const data = await request<{ invoice: Invoice }>(`/api/admin/invoices/${encodeURIComponent(invoice.id)}/close-manually`, {
-        method: 'POST',
-        body: JSON.stringify({ confirm: true }),
-      })
-      setInvoices(current => current.map(item => item.id === invoice.id ? data.invoice : item))
+      await request<{ invoice: InvoicePayload }>(
+        `/api/admin/invoices/${encodeURIComponent(invoice.id)}/close-manually`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ confirm: true }),
+        },
+      )
+      await load(true)
     } catch (err) {
       setError(formatError(err))
     } finally {
@@ -149,132 +198,327 @@ export function InvoicesView() {
     }
   }
 
+  const summary = data?.summary
+  const items = data?.items || []
+  const total = data?.total ?? 0
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const tabCounts = data?.tab_counts
+  const statusCounts = data?.status_counts
+
+  const statusChips: Array<{ id: PaymentStatusFilter; label: string; count: number; hidden?: boolean }> = [
+    { id: 'active', label: 'Актуальные', count: statusCounts?.active ?? 0 },
+    {
+      id: 'succeeded',
+      label: tab === 'manual' ? 'Прямые пополнения' : 'Оплачено',
+      count: statusCounts?.succeeded ?? 0,
+    },
+    {
+      id: 'pending',
+      label: 'Ожидают',
+      count: statusCounts?.pending ?? 0,
+      hidden: tab === 'manual',
+    },
+    {
+      id: 'failed',
+      label: tab === 'manual' ? 'Возвраты / в счетах' : 'Отменённые / без начисления',
+      count: statusCounts?.failed ?? 0,
+    },
+    { id: 'all', label: 'Все', count: statusCounts?.all ?? 0 },
+  ]
+
+  const proofsAllTime = summary?.invoices.proof_submitted_all_time ?? 0
+  const openAllTime = summary?.invoices.open_all_time ?? 0
+
   return (
-    <section className="stack invoice-admin-view">
-      <div className="toolbar-panel invoice-toolbar">
-        <div>
-          <strong>Счета на безналичную оплату</strong>
-          <small>Платёжка ускоряет проверку, но баланс пополняется только после сверки поступления.</small>
+    <section className="stack invoice-admin-view payments-admin-view">
+      <div className="toolbar-panel payments-top-bar">
+        <div className="payments-period-group" role="group" aria-label="Период статистики">
+          {PERIOD_OPTIONS.map(opt => (
+            <button
+              key={opt.id}
+              type="button"
+              className={`payments-period-btn${period === opt.id ? ' active' : ''}`}
+              onClick={() => handlePeriodChange(opt.id)}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
-        <div className="invoice-toolbar-status">
-          {awaitingReview > 0 ? `На странице к проверке: ${awaitingReview}` : 'На странице нет платёжек на проверке'}
+
+        <div className="payments-top-actions">
+          {proofsAllTime > 0 ? (
+            <button
+              type="button"
+              className="payments-alert-pill urgent"
+              onClick={openProofReview}
+              title="Показать счета с прикреплёнными платёжками"
+            >
+              Платёжек на проверке: {proofsAllTime}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="payments-alert-pill neutral"
+              onClick={openProofReview}
+              title="Показать открытые безналичные счета"
+            >
+              {openAllTime > 0 ? `Открытых счетов: ${openAllTime}` : 'Нет открытых счетов'}
+            </button>
+          )}
+          <button
+            type="button"
+            className="secondary small-text"
+            onClick={() => void load(true)}
+            disabled={refreshing}
+          >
+            {refreshing ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
+            Обновить
+          </button>
         </div>
-        <button className="secondary small-text" onClick={() => void load(page, true)} disabled={refreshing}>
-          {refreshing ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-          Обновить
-        </button>
       </div>
 
-      {error && <div className="alert error"><XCircle size={18} />{error}</div>}
+      {summary && (
+        <div className="payments-kpi-grid">
+          <button
+            type="button"
+            className={`payments-kpi-card highlight${tab === 'all' && statusFilter === 'succeeded' ? ' active' : ''}`}
+            onClick={() => {
+              setTab('all')
+              setStatusFilter('succeeded')
+              setPage(0)
+            }}
+          >
+            <div className="payments-kpi-head">
+              <span>Выручка (ЮKassa + Счета)</span>
+              <Wallet size={16} />
+            </div>
+            <strong className="payments-kpi-value">{formatMoney(summary.total_revenue_rub)}</strong>
+            <small className="payments-kpi-sub">Подтверждённых оплат: {summary.total_paid_count}</small>
+          </button>
+
+          <button
+            type="button"
+            className={`payments-kpi-card${tab === 'yookassa' ? ' active' : ''}`}
+            onClick={() => handleTabChange('yookassa')}
+          >
+            <div className="payments-kpi-head">
+              <span>ЮKassa (онлайн)</span>
+              <CreditCard size={16} />
+            </div>
+            <strong className="payments-kpi-value">{formatMoney(summary.yookassa.succeeded_rub)}</strong>
+            <small className="payments-kpi-sub">
+              Успешно: {summary.yookassa.succeeded_count} · Ждут: {summary.yookassa.pending_count} · Отменено:{' '}
+              {summary.yookassa.canceled_count}
+            </small>
+          </button>
+
+          <button
+            type="button"
+            className={`payments-kpi-card${tab === 'invoices' ? ' active' : ''}`}
+            onClick={() => handleTabChange('invoices')}
+          >
+            <div className="payments-kpi-head">
+              <span>Безналичные счета</span>
+              <FileText size={16} />
+            </div>
+            <strong className="payments-kpi-value">{formatMoney(summary.invoices.paid_rub)}</strong>
+            <small className="payments-kpi-sub">
+              Оплачено: {summary.invoices.paid_count} · Ждут: {summary.invoices.issued_count}
+              {summary.invoices.proof_submitted_count > 0
+                ? ` · Платёжек: ${summary.invoices.proof_submitted_count}`
+                : ''}
+              {summary.invoices.manual_closed_count > 0
+                ? ` · Без начисления: ${summary.invoices.manual_closed_count}`
+                : ''}
+            </small>
+          </button>
+
+          <button
+            type="button"
+            className={`payments-kpi-card muted-card${tab === 'manual' ? ' active' : ''}`}
+            onClick={() => handleTabChange('manual')}
+          >
+            <div className="payments-kpi-head">
+              <span>Ручные начисления</span>
+              <UserRound size={16} />
+            </div>
+            <strong className="payments-kpi-value">{formatMoney(summary.manual.direct_rub)}</strong>
+            <small className="payments-kpi-sub">
+              Прямых: {summary.manual.direct_count} (отдельно от выручки, с бонусами)
+            </small>
+            {(summary.manual.refund_count > 0 || summary.manual.invoice_linked_count > 0) && (
+              <small className="payments-kpi-meta">
+                {summary.manual.refund_count > 0 &&
+                  `Возвраты: ${formatMoney(summary.manual.refund_rub)} (${summary.manual.refund_count})`}
+                {summary.manual.refund_count > 0 && summary.manual.invoice_linked_count > 0 && ' · '}
+                {summary.manual.invoice_linked_count > 0 &&
+                  `В счетах: ${formatMoney(summary.manual.invoice_linked_rub)} (${summary.manual.invoice_linked_count})`}
+              </small>
+            )}
+          </button>
+        </div>
+      )}
+
+      <div className="payments-filters-panel">
+        <div className="payments-tabs-row">
+          <div className="payments-tabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'all'}
+              className={`payments-tab-btn${tab === 'all' ? ' active' : ''}`}
+              onClick={() => handleTabChange('all')}
+            >
+              Все оплаты
+              <span className="payments-tab-badge">
+                {tab === 'all' ? (tabCounts?.all ?? 0) : (tabCounts?.all_active ?? 0)}
+              </span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'yookassa'}
+              className={`payments-tab-btn${tab === 'yookassa' ? ' active' : ''}`}
+              onClick={() => handleTabChange('yookassa')}
+            >
+              ЮKassa (онлайн)
+              <span className="payments-tab-badge">{tabCounts?.yookassa_total ?? 0}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'invoices'}
+              className={`payments-tab-btn${tab === 'invoices' ? ' active' : ''}`}
+              onClick={() => handleTabChange('invoices')}
+            >
+              Счета (безнал)
+              <span className="payments-tab-badge">{tabCounts?.invoices_total ?? 0}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'manual'}
+              className={`payments-tab-btn${tab === 'manual' ? ' active' : ''}`}
+              onClick={() => handleTabChange('manual')}
+            >
+              Ручные начисления
+              <span className="payments-tab-badge">{tabCounts?.manual_total ?? 0}</span>
+            </button>
+          </div>
+
+          <div className="payments-search-box">
+            <Search size={15} className="payments-search-icon" />
+            <input
+              type="text"
+              value={searchInput}
+              onChange={e => setSearchInput(e.target.value)}
+              placeholder="Клиент, #номер, email, ИНН, счёт, ID платежа…"
+              aria-label="Поиск по оплатам и счетам"
+            />
+            {searchInput && (
+              <button
+                type="button"
+                className="payments-search-clear"
+                onClick={() => setSearchInput('')}
+                aria-label="Очистить поиск"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="payments-status-chips">
+          {statusChips
+            .filter(chip => !chip.hidden)
+            .map(chip => (
+              <button
+                key={chip.id}
+                type="button"
+                className={`payments-status-chip${statusFilter === chip.id ? ' active' : ''}`}
+                onClick={() => handleStatusChange(chip.id)}
+              >
+                <span>{chip.label}</span>
+                <span className="payments-chip-count">{chip.count}</span>
+              </button>
+            ))}
+        </div>
+      </div>
+
+      {error && (
+        <div className="alert error">
+          <XCircle size={18} />
+          {error}
+        </div>
+      )}
 
       <div className="table-panel">
         {loading ? (
-          <div className="invoice-empty"><Loader2 size={20} className="spin" />Загружаем счета…</div>
-        ) : invoices.length === 0 ? (
-          <div className="invoice-empty">Счета ещё не выставлялись.</div>
+          <div className="invoice-empty">
+            <Loader2 size={20} className="spin" />
+            Загружаем счета и оплаты…
+          </div>
+        ) : items.length === 0 ? (
+          <div className="invoice-empty">
+            {debouncedQuery
+              ? 'По вашему запросу ничего не найдено.'
+              : 'За выбранный период и фильтр записей нет.'}
+          </div>
         ) : (
-          <table className="invoice-table">
+          <table className="invoice-table payments-table">
             <thead>
               <tr>
-                <th>Счёт</th>
-                <th>Плательщик</th>
+                <th>Операция и дата</th>
+                <th>Клиент / Плательщик</th>
                 <th>Сумма</th>
-                <th>Платёжка</th>
+                <th>Детали / Платёжка</th>
                 <th>Статус</th>
                 <th>Действие</th>
               </tr>
             </thead>
             <tbody>
-              {invoices.map(invoice => {
-                const status = statusCopy[invoice.status] || { label: invoice.status, color: '#475569' }
-                const hasProof = invoice.status === 'proof_submitted' || invoice.proof_status === 'submitted' || Boolean(invoice.proof_submitted_at)
-                const isWorking = actionInvoiceId === invoice.id
-                const settlementLabel = invoice.settlement_mode === 'credited'
-                  ? 'Зачислено через счёт'
-                  : invoice.settlement_mode === 'manual_closed'
-                    ? 'Закрыт без начисления'
-                    : 'Способ закрытия не указан'
-                return (
-                  <tr key={invoice.id}>
-                    <td>
-                      <strong>{invoice.invoice_number}</strong>
-                      <small>Выставлен: {date(invoice.created_at)}</small>
-                      <small>{invoice.tariff_name}</small>
-                    </td>
-                    <td>
-                      <strong>{invoice.buyer_name || '—'}</strong>
-                      <small>ИНН {invoice.buyer_inn || '—'}{invoice.buyer_kpp ? ` · КПП ${invoice.buyer_kpp}` : ''}</small>
-                      {invoice.buyer_email && <small>✉️ {invoice.buyer_email}</small>}
-                      {invoice.buyer_phone && <small>📞 {invoice.buyer_phone}</small>}
-                      {invoice.buyer_telegram && (
-                        <small>
-                          💬 <a href={`https://t.me/${invoice.buyer_telegram.replace('@', '')}`} target="_blank" rel="noreferrer" style={{ color: '#0284c7' }}>
-                            @{invoice.buyer_telegram.replace('@', '')}
-                          </a>
-                        </small>
-                      )}
-                    </td>
-                    <td>
-                      <strong>{money(invoice.amount_rub)}</strong>
-                      <small>На баланс: {money(invoice.total_credit_rub)}</small>
-                      {invoice.bonus_rub > 0 && <small>Бонус: +{money(invoice.bonus_rub)}</small>}
-                    </td>
-                    <td>
-                      {hasProof ? (
-                        <a className="download-pill input-file" href={`/api/admin/invoices/${encodeURIComponent(invoice.id)}/proof`} target="_blank" rel="noreferrer">
-                          <FileText size={14} />
-                          <span>{invoice.proof_original_name || 'Открыть платёжку'}</span>
-                          <ExternalLink size={12} />
-                        </a>
-                      ) : (
-                        <small>Не прикреплена</small>
-                      )}
-                      {invoice.proof_submitted_at && <small>Отправлена: {date(invoice.proof_submitted_at)}</small>}
-                    </td>
-                    <td>
-                      <span className="invoice-status" style={{ color: status.color }}>{status.label}</span>
-                      {invoice.paid_at && <small>Закрыт: {date(invoice.paid_at)}</small>}
-                      {invoice.status === 'paid' && <small>{settlementLabel}</small>}
-                    </td>
-                    <td>
-                      {invoice.status === 'paid' ? (
-                        <span className="invoice-confirmed"><CheckCircle2 size={15} />Закрыт</span>
-                      ) : (
-                        <div className="invoice-actions">
-                          <button
-                            className="button-primary small-text"
-                            disabled={isWorking}
-                            onClick={() => void confirmPaid(invoice)}
-                            title="После сверки поступления на расчётный счёт начислит клиенту сумму счёта и бонус"
-                          >
-                            {isWorking ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}
-                            {isWorking ? 'Зачисляем…' : 'Зачислить на баланс'}
-                          </button>
-                          <button
-                            className="secondary small-text"
-                            disabled={isWorking}
-                            onClick={() => void closeAlreadyCredited(invoice)}
-                            title="Закрывает счёт без повторного начисления"
-                          >
-                            Закрыть без начисления
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
+              {items.map(item => (
+                <PaymentRow
+                  key={item.id}
+                  item={item}
+                  actionInvoiceId={actionInvoiceId}
+                  copiedId={copiedId}
+                  onCopyRef={copyReference}
+                  onOpenClient={onOpenClient}
+                  onConfirmPaid={confirmPaid}
+                  onCloseManually={closeAlreadyCredited}
+                />
+              ))}
             </tbody>
           </table>
         )}
       </div>
+
       {!loading && total > 0 && (
         <div className="invoice-pagination">
-          <span>Показано {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} из {total}</span>
+          <span>
+            Показано {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} из {total}
+          </span>
           <div>
-            <button className="secondary small-text" disabled={page === 0 || refreshing} onClick={() => setPage(current => current - 1)}>Назад</button>
-            <span>Страница {page + 1} из {pageCount}</span>
-            <button className="secondary small-text" disabled={page + 1 >= pageCount || refreshing} onClick={() => setPage(current => current + 1)}>Далее</button>
+            <button
+              type="button"
+              className="secondary small-text"
+              disabled={page === 0 || refreshing}
+              onClick={() => setPage(current => current - 1)}
+            >
+              Назад
+            </button>
+            <span>
+              Страница {page + 1} из {pageCount}
+            </span>
+            <button
+              type="button"
+              className="secondary small-text"
+              disabled={page + 1 >= pageCount || refreshing}
+              onClick={() => setPage(current => current + 1)}
+            >
+              Далее
+            </button>
           </div>
         </div>
       )}

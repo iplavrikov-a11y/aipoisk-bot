@@ -23,6 +23,7 @@ import {
   KeyRound,
   Loader2,
   LogIn,
+  Menu,
   MemoryStick,
   Minus,
   MoreHorizontal,
@@ -760,7 +761,7 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   },
   invoices: {
     title: 'Счета и оплаты',
-    description: 'Выставленные счета, платёжные поручения клиентов и ручное подтверждение зачисления.',
+    description: 'Оплаты через ЮKassa, безналичные счета, платёжки на проверке и сводка поступлений.',
   },
   settings: {
     title: 'Настройки',
@@ -1408,6 +1409,7 @@ export function App() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [showServerModal, setShowServerModal] = useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [selectedClientForJobs, setSelectedClientForJobs] = useState<string>('')
   const [selectedClientForDialogs, setSelectedClientForDialogs] = useState<string>('')
   const [selectedJobForView, setSelectedJobForView] = useState<{ jobId: string; clientId?: string; jobNumber?: number | null } | null>(null)
@@ -1466,6 +1468,7 @@ export function App() {
 
   function setView(nextView: View) {
     setViewState(nextView)
+    setMobileNavOpen(false)
     try {
       localStorage.setItem('aipoisk_admin_view', nextView)
       if (window.location.hash.replace(/^#\/?/, '') !== nextView) {
@@ -1475,10 +1478,34 @@ export function App() {
   }
 
   useEffect(() => {
+    if (!mobileNavOpen) return
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false)
+    }
+    const mqDesktop = window.matchMedia('(min-width: 981px)')
+    const onDesktopMatch = (event: MediaQueryListEvent) => {
+      if (event.matches) setMobileNavOpen(false)
+    }
+    if (mqDesktop.matches) {
+      setMobileNavOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    mqDesktop.addEventListener('change', onDesktopMatch)
+    return () => {
+      document.body.style.overflow = prevOverflow
+      window.removeEventListener('keydown', onKeyDown)
+      mqDesktop.removeEventListener('change', onDesktopMatch)
+    }
+  }, [mobileNavOpen])
+
+  useEffect(() => {
     function handleHashChange() {
       const hash = window.location.hash.replace(/^#\/?/, '').trim() as View
       if (VALID_VIEWS.includes(hash)) {
         setViewState(hash)
+        setMobileNavOpen(false)
         try { localStorage.setItem('aipoisk_admin_view', hash) } catch {}
       }
     }
@@ -1909,16 +1936,81 @@ export function App() {
     )
   }
 
+  const currentNavItem = nav.find(item => item.id === view)
+  const hasServerWarning = Boolean(
+    opsStatus?.server && (
+      opsStatus.server.cpu_percent >= 80 ||
+      opsStatus.server.ram_percent >= 85 ||
+      opsStatus.server.disk_free_gb < 10 ||
+      (opsStatus.services || []).some(s => s.warning || s.status !== 'ok')
+    )
+  )
+
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <a className="brand" href="https://tenderlex.ru/" target="_blank" rel="noreferrer">
-          <div className="brand-mark"><Search size={18} /></div>
-          <div>
-            <div className="brand-name">TenderLex</div>
-            <div className="brand-sub">tenderlex.ru</div>
-          </div>
-        </a>
+      <div className="mobile-topbar">
+        <button
+          type="button"
+          className="mobile-burger-btn"
+          onClick={() => setMobileNavOpen(v => !v)}
+          aria-label={mobileNavOpen ? 'Закрыть меню разделов' : 'Открыть меню разделов'}
+          aria-expanded={mobileNavOpen}
+          aria-controls="admin-sidebar-drawer"
+        >
+          {mobileNavOpen ? <X size={20} /> : <Menu size={20} />}
+          {totalUnreadDialogs > 0 && !mobileNavOpen && (
+            <span className="mobile-burger-dot" aria-label={`Непрочитанных диалогов: ${totalUnreadDialogs}`}>
+              {totalUnreadDialogs > 99 ? '99+' : totalUnreadDialogs}
+            </span>
+          )}
+        </button>
+
+        <div className="mobile-topbar-title">
+          <div className="mobile-topbar-brand">TenderLex</div>
+          <div className="mobile-topbar-section">{currentNavItem?.label || viewCopy[view]?.title || 'Панель'}</div>
+        </div>
+
+        <div className="mobile-topbar-actions">
+          {opsStatus && (
+            <button
+              type="button"
+              className={`mobile-status-btn ${hasServerWarning ? 'warning' : ''}`}
+              onClick={() => setShowServerModal(true)}
+              aria-label="Состояние сервера и баланс Яндекс"
+              title="Состояние сервера и баланс Яндекс"
+            >
+              <Server size={16} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {mobileNavOpen && (
+        <div
+          className="mobile-sidebar-backdrop"
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside id="admin-sidebar-drawer" className={mobileNavOpen ? 'sidebar mobile-open' : 'sidebar'}>
+        <div className="sidebar-head">
+          <a className="brand" href="https://tenderlex.ru/" target="_blank" rel="noreferrer">
+            <div className="brand-mark"><Search size={18} /></div>
+            <div>
+              <div className="brand-name">TenderLex</div>
+              <div className="brand-sub">tenderlex.ru</div>
+            </div>
+          </a>
+          <button
+            type="button"
+            className="sidebar-close-btn"
+            onClick={() => setMobileNavOpen(false)}
+            aria-label="Закрыть меню"
+          >
+            <X size={18} />
+          </button>
+        </div>
         <nav className="nav">
           {nav.map(item => {
             const Icon = item.icon
@@ -1955,6 +2047,18 @@ export function App() {
             )
           })}
         </nav>
+        <div className="sidebar-mobile-footer">
+          <button
+            type="button"
+            className="secondary full-width"
+            onClick={() => {
+              setMobileNavOpen(false)
+              void logout()
+            }}
+          >
+            Выйти из админки
+          </button>
+        </div>
       </aside>
 
       <main className="main">
@@ -2096,7 +2200,7 @@ export function App() {
         )}
         {isReady && view === 'outreach' && <OutreachView />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
-        {isReady && view === 'invoices' && <InvoicesView />}
+        {isReady && view === 'invoices' && <InvoicesView onOpenClient={handleSelectClient} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} onSettingsUpdated={setSettings} />}
         {isReady && view === 'mcp' && <McpApiView clients={clients} />}

@@ -702,7 +702,7 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
             </div>
           </div>
 
-          <div style={{ position: 'relative', width: '240px' }}>
+          <div style={{ position: 'relative', width: '100%', maxWidth: '240px' }}>
             <Search size={14} style={{ position: 'absolute', left: '10px', top: '9px', color: '#94a3b8' }} />
             <input
               type="text"

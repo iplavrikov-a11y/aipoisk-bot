@@ -3997,6 +3997,29 @@ def admin_list_invoices_api(
     return {"invoices": [inv.to_dict() for inv in invoices], "total": total}
 
 
+@app.get("/api/admin/payments/overview", dependencies=[Depends(require_admin)])
+def admin_payments_overview_api(
+    period: str = Query("all"),
+    tab: str = Query("all"),
+    status: str = Query("active"),
+    q: str = Query(""),
+    limit: int = Query(25, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(db_session),
+) -> dict:
+    from .admin_payments_service import build_admin_payments_overview
+
+    return build_admin_payments_overview(
+        db,
+        period=period,
+        tab=tab,
+        status=status,
+        q=q,
+        limit=limit,
+        offset=offset,
+    )
+
+
 @app.get("/api/admin/invoices/{invoice_id}/proof", dependencies=[Depends(require_admin)])
 def admin_invoice_proof_api(invoice_id: str, db: Session = Depends(db_session)) -> FileResponse:
     invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
@@ -5658,7 +5681,7 @@ def _sync_open_invoice_on_admin_grant(
         db.query(Invoice)
         .filter(
             Invoice.client_id == client.id,
-            Invoice.status == "issued",
+            Invoice.status.in_(("issued", "proof_submitted")),
         )
         .order_by(Invoice.created_at.asc(), Invoice.id.asc())
         .all()

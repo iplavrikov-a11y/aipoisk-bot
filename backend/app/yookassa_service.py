@@ -246,7 +246,9 @@ def format_payment_method_type(pm_type: str | None) -> str:
     mapping = {
         "bank_card": "💳 Банковская карта",
         "sbp": "⚡ СБП (Система быстрых платежей)",
+        "sberbank": "🟢 SberPay",
         "sber_pay": "🟢 SberPay",
+        "b2b_sberbank": "🟢 SberPay B2B",
         "sber_b2b": "🟢 SberPay B2B",
         "tinkoff_bank": "🟡 T-Pay",
         "mir_pay": "🇷🇺 Mir Pay",

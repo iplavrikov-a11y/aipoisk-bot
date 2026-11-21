@@ -52,11 +52,19 @@ export function DialogsView({
   const [blockingAction, setBlockingAction] = useState(false)
   const [statusActionLoading, setStatusActionLoading] = useState(false)
   const [showContextPanel, setShowContextPanel] = useState(true)
+  const [isMobileViewport, setIsMobileViewport] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 980px)').matches : false
+  )
+  const [mobilePane, setMobilePane] = useState<'list' | 'thread' | 'context'>(() =>
+    initialClientId ? 'thread' : 'list'
+  )
   const [error, setError] = useState('')
 
   const dialogsInFlightRef = useRef(false)
   const hasLoadedDialogsRef = useRef(false)
   const selectedClientIdRef = useRef<string | null>(null)
+  const isMobileViewportRef = useRef<boolean>(isMobileViewport)
+  const mobilePaneRef = useRef<'list' | 'thread' | 'context'>(mobilePane)
   const messagesAbortRef = useRef<AbortController | null>(null)
   const messagesReqSeqRef = useRef(0)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
@@ -65,10 +73,28 @@ export function DialogsView({
   const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
 
   selectedClientIdRef.current = selectedClientId
+  isMobileViewportRef.current = isMobileViewport
+  mobilePaneRef.current = mobilePane
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 980px)')
+    const onChange = (event: MediaQueryListEvent) => {
+      setIsMobileViewport(event.matches)
+      isMobileViewportRef.current = event.matches
+      if (event.matches && mobilePaneRef.current === 'list' && selectedClientIdRef.current) {
+        setSelectedClientId(null)
+      }
+    }
+    setIsMobileViewport(mq.matches)
+    isMobileViewportRef.current = mq.matches
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
 
   useEffect(() => {
     if (initialClientId) {
       setSelectedClientId(initialClientId)
+      setMobilePane('thread')
       onClearInitialClient?.()
     }
   }, [initialClientId])
@@ -186,7 +212,9 @@ export function DialogsView({
   }
 
   useEffect(() => {
-    void loadDialogs(!initialClientId)
+    const isNarrow = typeof window !== 'undefined' && window.matchMedia('(max-width: 980px)').matches
+    // On mobile do NOT auto-open the first dialog, because GET /chat marks unread messages as read on the server.
+    void loadDialogs(!initialClientId && !isNarrow)
     return () => {
       messagesAbortRef.current?.abort()
     }
@@ -213,9 +241,10 @@ export function DialogsView({
       if (cancelled) return
       if (!document.hidden) {
         const activeId = selectedClientIdRef.current
+        const canPollChat = Boolean(activeId) && !(isMobileViewportRef.current && mobilePaneRef.current === 'list')
         await Promise.all([
           loadDialogs(false, true),
-          activeId ? loadChatMessages(activeId, true) : Promise.resolve(),
+          canPollChat && activeId ? loadChatMessages(activeId, true) : Promise.resolve(),
         ])
       }
       if (!cancelled) {
@@ -232,8 +261,9 @@ export function DialogsView({
     const onVisibilityChange = () => {
       if (!document.hidden && !cancelled) {
         const activeId = selectedClientIdRef.current
+        const canPollChat = Boolean(activeId) && !(isMobileViewportRef.current && mobilePaneRef.current === 'list')
         void loadDialogs(false, true)
-        if (activeId) {
+        if (canPollChat && activeId) {
           void loadChatMessages(activeId, true)
         }
       }
@@ -443,9 +473,12 @@ export function DialogsView({
     }
   }
 
+  const effectiveMobilePane: 'list' | 'thread' | 'context' =
+    !selectedClientId ? 'list' : mobilePane
+
   return (
     <div
-      className="dialogs-workspace"
+      className={`dialogs-workspace dialogs-workspace--mobile-${effectiveMobilePane}`}
       style={{
         display: 'flex',
         height: 'calc(100vh - 114px)',
@@ -463,7 +496,10 @@ export function DialogsView({
         clients={clients}
         loading={loading}
         selectedClientId={selectedClientId}
-        onSelectClient={cid => setSelectedClientId(cid)}
+        onSelectClient={cid => {
+          setSelectedClientId(cid)
+          if (isMobileViewport) setMobilePane('thread')
+        }}
         queueTab={queueTab}
         onQueueTabChange={setQueueTab}
         searchQuery={searchQuery}
@@ -506,31 +542,55 @@ export function DialogsView({
         onCloseOrReopen={() => void handleCloseOrReopen()}
         onSendReply={handleSendReply}
         onOpenJob={onOpenJob}
-        showContextPanel={showContextPanel}
-        onToggleContextPanel={() => setShowContextPanel(v => !v)}
+        showContextPanel={isMobileViewport ? effectiveMobilePane === 'context' : showContextPanel}
+        onToggleContextPanel={() => {
+          if (isMobileViewport) {
+            setMobilePane(prev => (prev === 'context' ? 'thread' : 'context'))
+          } else {
+            setShowContextPanel(v => !v)
+          }
+        }}
+        onBackToList={isMobileViewport ? () => {
+          setMobilePane('list')
+          setSelectedClientId(null)
+        } : undefined}
         composerRef={composerRef}
       />
 
-      {showContextPanel && (selectedDialog || clientProfile) && (
+      {(isMobileViewport ? effectiveMobilePane === 'context' : (showContextPanel && Boolean(selectedDialog || clientProfile))) && (
         <DialogContextPanel
           client={clientProfile}
           jobs={clientJobs}
           generalMessagesCount={generalMessagesCount}
           activeJobFilter={activeJobFilter}
-          onSelectJobFilter={jid => setActiveJobFilter(jid)}
+          onSelectJobFilter={jid => {
+            setActiveJobFilter(jid)
+            if (isMobileViewport) setMobilePane('thread')
+          }}
           onSetReplyJob={jid => {
             setReplyJobId(jid)
-            composerRef.current?.focus()
+            if (isMobileViewport) {
+              setMobilePane('thread')
+              window.requestAnimationFrame(() => composerRef.current?.focus())
+            } else {
+              composerRef.current?.focus()
+            }
           }}
           onAttachJobFile={item => {
             setPendingJobFiles(prev =>
               prev.some(x => x.job_id === item.job_id && x.kind === item.kind) ? prev : [...prev, item].slice(0, 10)
             )
-            composerRef.current?.focus()
+            if (isMobileViewport) {
+              setMobilePane('thread')
+              window.requestAnimationFrame(() => composerRef.current?.focus())
+            } else {
+              composerRef.current?.focus()
+            }
           }}
           onOpenJob={onOpenJob}
           onOpenClient={onOpenClient}
           onSaveNotes={handleSaveNotes}
+          onBackToThread={isMobileViewport ? () => setMobilePane('thread') : undefined}
         />
       )}
     </div>

@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react'
 import {
+  ArrowLeft,
   User,
   Phone,
   Mail,
@@ -36,6 +37,7 @@ interface DialogContextPanelProps {
   onOpenJob?: (jobId: string, clientId?: string, jobNumber?: number | null) => void
   onOpenClient?: (clientId: string) => void
   onSaveNotes: (clientId: string, notes: string) => Promise<void>
+  onBackToThread?: () => void
 }
 
 type JobsTab = 'with_chat' | 'with_result' | 'all'
@@ -51,6 +53,7 @@ export function DialogContextPanel({
   onOpenJob,
   onOpenClient,
   onSaveNotes,
+  onBackToThread,
 }: DialogContextPanelProps) {
   const [jobSearch, setJobSearch] = useState('')
   const [jobsTab, setJobsTab] = useState<JobsTab>('all')
@@ -100,7 +103,52 @@ export function DialogContextPanel({
   const visibleJobs = useMemo(() => filteredJobs.slice(0, visibleLimit), [filteredJobs, visibleLimit])
   const remainingCount = Math.max(0, filteredJobs.length - visibleJobs.length)
 
-  if (!client) return null
+  if (!client) {
+    if (!onBackToThread) return null
+    return (
+      <div
+        className="dialogs-context-col"
+        style={{
+          width: 350,
+          minWidth: 280,
+          flexShrink: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+          background: '#fff',
+          borderRadius: 10,
+          border: '1px solid #e2e8f0',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          className="dialogs-mobile-context-bar"
+          style={{
+            padding: '8px 12px',
+            borderBottom: '1px solid #e2e8f0',
+            background: '#f8fafc',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexShrink: 0,
+          }}
+        >
+          <button
+            type="button"
+            className="ghost"
+            onClick={onBackToThread}
+            style={{ minHeight: 32, padding: '4px 10px', fontSize: 12, fontWeight: 600 }}
+          >
+            <ArrowLeft size={14} />
+            <span>Назад к переписке</span>
+          </button>
+        </div>
+        <div style={{ padding: 24, color: '#64748b', fontSize: 13, textAlign: 'center' }}>
+          Загрузка карточки клиента и задач…
+        </div>
+      </div>
+    )
+  }
 
   const notesDirty = !client.is_guest && notesDraft !== (client.notes || '')
 
@@ -134,6 +182,30 @@ export function DialogContextPanel({
       }}
     >
       {/* Client Card Section */}
+      {onBackToThread && (
+        <div
+          className="dialogs-mobile-context-bar"
+          style={{
+            padding: '8px 12px',
+            borderBottom: '1px solid #e2e8f0',
+            background: '#f8fafc',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexShrink: 0,
+          }}
+        >
+          <button
+            type="button"
+            className="ghost"
+            onClick={onBackToThread}
+            style={{ minHeight: 32, padding: '4px 10px', fontSize: 12, fontWeight: 600 }}
+          >
+            <ArrowLeft size={14} />
+            <span>Назад к переписке</span>
+          </button>
+        </div>
+      )}
       <div style={{ padding: '12px 14px', borderBottom: '1px solid #e2e8f0', background: '#fafafa', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, color: '#0f172a', minWidth: 0 }}>

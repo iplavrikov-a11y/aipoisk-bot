@@ -1,5 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react'
 import {
+  AlertTriangle,
+  ArrowLeft,
   MessageSquare,
   Send,
   Paperclip,
@@ -71,6 +73,7 @@ interface DialogThreadProps {
   onOpenJob?: (jobId: string, clientId?: string, jobNumber?: number | null) => void
   showContextPanel: boolean
   onToggleContextPanel: () => void
+  onBackToList?: () => void
   composerRef?: React.RefObject<HTMLTextAreaElement | null>
 }
 
@@ -104,6 +107,7 @@ export function DialogThread({
   onOpenJob,
   showContextPanel,
   onToggleContextPanel,
+  onBackToList,
   composerRef,
 }: DialogThreadProps) {
   const [filterDropdownOpen, setFilterDropdownOpen] = useState(false)
@@ -213,26 +217,63 @@ export function DialogThread({
   if (!selectedDialog && !clientProfile) {
     return (
       <div
+        className="dialogs-thread-col"
         style={{
           flex: 1,
           minWidth: 0,
           display: 'flex',
           flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
           background: '#fff',
           borderRadius: 10,
           border: '1px solid #e2e8f0',
-          color: '#94a3b8',
-          fontSize: 13,
-          gap: 10,
-          padding: 24,
+          overflow: 'hidden',
         }}
       >
-        <MessageSquare size={40} color="#cbd5e1" />
-        <div style={{ fontWeight: 600, color: '#475569' }}>Выберите диалог в очереди слева</div>
-        <div style={{ fontSize: 12, textAlign: 'center', maxWidth: 340 }}>
-          Вся переписка по задачам, результаты и карточка клиента откроются здесь в едином окне.
+        {onBackToList && (
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc', flexShrink: 0 }}>
+            <button
+              type="button"
+              className="ghost dialogs-mobile-back-btn"
+              onClick={onBackToList}
+              style={{ minHeight: 32, padding: '4px 10px', fontSize: 12, fontWeight: 600 }}
+            >
+              <ArrowLeft size={14} />
+              <span>Диалоги</span>
+            </button>
+          </div>
+        )}
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#94a3b8',
+            fontSize: 13,
+            gap: 10,
+            padding: 24,
+          }}
+        >
+          {loadingMessages ? (
+            <>
+              <Loader2 size={28} className="spin" color="#0d9488" />
+              <div style={{ fontWeight: 600, color: '#475569' }}>Загрузка переписки…</div>
+            </>
+          ) : error ? (
+            <>
+              <AlertTriangle size={32} color="#dc2626" />
+              <div style={{ fontWeight: 600, color: '#991b1b', textAlign: 'center' }}>{error}</div>
+            </>
+          ) : (
+            <>
+              <MessageSquare size={40} color="#cbd5e1" />
+              <div style={{ fontWeight: 600, color: '#475569' }}>Выберите диалог в очереди слева</div>
+              <div style={{ fontSize: 12, textAlign: 'center', maxWidth: 340 }}>
+                Вся переписка по задачам, результаты и карточка клиента откроются здесь в едином окне.
+              </div>
+            </>
+          )}
         </div>
       </div>
     )
@@ -261,6 +302,7 @@ export function DialogThread({
 
   return (
     <div
+      className="dialogs-thread-col"
       style={{
         flex: 1,
         minWidth: 0,
@@ -278,6 +320,18 @@ export function DialogThread({
         {/* Row 1: Identity + Lifecycle Actions */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0, flexWrap: 'wrap' }}>
+            {onBackToList && (
+              <button
+                type="button"
+                className="ghost dialogs-mobile-back-btn"
+                onClick={onBackToList}
+                title="Вернуться к списку диалогов"
+                style={{ minHeight: 30, padding: '3px 9px', fontSize: 12, fontWeight: 600 }}
+              >
+                <ArrowLeft size={14} />
+                <span>Диалоги</span>
+              </button>
+            )}
             <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: '#0f172a' }}>
               {name}
             </h4>
@@ -306,7 +360,7 @@ export function DialogThread({
             )}
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
             {!isBlocked && (
               <button
                 type="button"
@@ -1045,8 +1099,8 @@ export function DialogThread({
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-          <div style={{ flex: 1 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 200px', minWidth: 0 }}>
             <textarea
               ref={composerRef}
               rows={2}
@@ -1063,7 +1117,7 @@ export function DialogThread({
             />
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end', flexShrink: 0 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end', flexShrink: 0, marginLeft: 'auto' }}>
             {telegramId && (
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#0284c7', cursor: 'pointer', userSelect: 'none' }}>
                 <input

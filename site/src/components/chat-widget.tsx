@@ -549,7 +549,7 @@ export function ChatWidget() {
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 font-sans">
+    <div className="fixed bottom-3 right-3 sm:bottom-4 sm:right-4 z-50 font-sans">
       {/* Floating Action Button (Compact Dismissible Pill) */}
       {!isOpen && !isPillDismissed && !hideFloatingPill && (
         <div className="relative group flex items-center bg-gradient-to-r from-teal-700 via-teal-800 to-slate-900 text-white pl-2.5 pr-1 py-1 rounded-full shadow-lg hover:shadow-teal-900/30 hover:scale-[1.02] transition-all duration-200 border border-teal-400/30">
@@ -595,7 +595,7 @@ export function ChatWidget() {
 
       {/* Chat Window Modal */}
       {isOpen && (
-        <div className="w-[360px] sm:w-[410px] h-[550px] max-h-[85vh] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-200">
+        <div className="w-[calc(100vw-24px)] max-w-[380px] sm:w-[410px] sm:max-w-[410px] h-[550px] max-h-[82dvh] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-200">
           {/* Header */}
           <div className="bg-[#174b3f] text-white px-4 py-3.5 flex items-center justify-between border-b border-[#103a31]">
             <div className="flex items-center gap-3">
